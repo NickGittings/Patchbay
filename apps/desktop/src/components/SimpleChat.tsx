@@ -1,5 +1,5 @@
-import ChatWorkers from './ChatWorkers'
-import { useChatTeams, resetLead } from '../lib/chatTeams'
+import ChatCoordination from './ChatCoordination'
+import { useChatTeams, resetLead, controlTeam } from '../lib/chatTeams'
 import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { useEffect, useRef, useState } from 'react'
@@ -58,7 +58,7 @@ import {
   chatInputRequests,
 } from '../lib/chat'
 import { autoDrafts, autoDraftKey, emptyAutoDraft } from '../lib/autoDrafts'
-import { pauseAuto } from '../lib/auto'
+import { pauseAuto, stopAuto } from '../lib/auto'
 import './simple.css'
 
 const pendingActions = new Set<string>()
@@ -391,26 +391,69 @@ export default function SimpleChat({
         >
           Auto mode
         </button>
-        {team && (
-          <button
-            disabled={!!team.reset || !!ui.pendingAction || !!ui.pendingWorkflow}
-            title="Start a fresh provider conversation. Workers and a concise work handoff are retained."
-            onClick={() =>
-              void run('reset', async () => {
-                await resetLead(team)
-              })
-            }
-          >
-            Clear conversation
-          </button>
-        )}
-        <button
-          disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
-          onClick={() => setClearKey(key)}
-          title="Clear Patchbay’s saved history. Provider transcripts and terminal history remain available."
-        >
-          Clear chat
-        </button>
+        <details className="chat-menu">
+          <summary aria-label="Chat menu">•••</summary>
+          <div className="chat-menu-items">
+            {team && (
+              <div>
+                <button
+                  disabled={!!pending || team.state !== 'running'}
+                  onClick={() =>
+                    void run('pause', async () => {
+                      await controlTeam(team, { kind: 'pause' })
+                      if (chatAutoActive(s.auto?.status)) pauseAuto(projectId, task)
+                    })
+                  }
+                >
+                  Pause work
+                </button>
+                <button
+                  disabled={!!pending || team.state === 'running'}
+                  onClick={() =>
+                    void run('continue', async () => {
+                      await controlTeam(team, { kind: 'resume' })
+                      if (s.auto?.status === 'paused') await resumeAuto(projectId, task)
+                    })
+                  }
+                >
+                  Continue work
+                </button>
+                <button
+                  disabled={!!pending || team.state === 'stopped'}
+                  onClick={() =>
+                    void run('stop', async () => {
+                      await controlTeam(team, { kind: 'stop' })
+                      if (s.auto && !['done', 'stopped'].includes(s.auto.status))
+                        stopAuto(projectId, task)
+                    })
+                  }
+                >
+                  Stop work
+                </button>
+              </div>
+            )}
+            {team && (
+              <button
+                disabled={!!team.reset || !!ui.pendingAction || !!ui.pendingWorkflow}
+                title="Start a fresh provider conversation. Workers and a concise work handoff are retained."
+                onClick={() =>
+                  void run('reset', async () => {
+                    await resetLead(team)
+                  })
+                }
+              >
+                Clear conversation
+              </button>
+            )}
+            <button
+              disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
+              onClick={() => setClearKey(key)}
+              title="Clear Patchbay’s saved history. Provider transcripts and terminal history remain available."
+            >
+              Clear chat
+            </button>
+          </div>
+        </details>
         <button
           className="inspector-close simple-hide-chat"
           aria-label="Hide chat"
@@ -425,7 +468,7 @@ export default function SimpleChat({
           <span>Clear this worktree’s chat history? Agents keep their context.</span>
           <button
             disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
-            onClick={() => {
+            onClick={async () => {
               const current = useStore.getState()
               if (
                 simpleKey(current.project?.id, current.activeTask) !== clearKey ||
@@ -433,7 +476,12 @@ export default function SimpleChat({
                 useSimpleUi.getState().worktrees[key]?.pendingAction
               )
                 return
-              if (clearSimpleChat(projectId, task)) setClearKey(undefined)
+              try {
+                if (team) await controlTeam(team, { kind: 'historyBoundary' })
+                if (clearSimpleChat(projectId, task)) setClearKey(undefined)
+              } catch (error) {
+                setFailure(String(error))
+              }
             }}
           >
             Clear
@@ -441,7 +489,7 @@ export default function SimpleChat({
           <button onClick={() => setClearKey(undefined)}>Cancel</button>
         </div>
       )}
-      {team && <ChatWorkers key={team.id} team={team} />}
+      {team && <ChatCoordination key={team.id} team={team} />}
       {s.auto && (
         <p role="status">
           Auto · {s.auto.stage} · {s.auto.status} {s.auto.reason}

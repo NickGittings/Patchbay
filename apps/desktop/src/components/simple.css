@@ -412,37 +412,37 @@
   flex: none;
 }
 
-.chat-workers {
-  margin: 0.5rem 0;
-  padding: 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+.chat-menu {
+  position: relative;
 }
-
-.chat-workers summary {
+.chat-menu summary {
   cursor: pointer;
+  list-style: none;
+  padding: 0.25rem 0.5rem;
 }
-
-.chat-worker {
-  margin-top: 0.65rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--border);
+.chat-menu[open] {
+  z-index: 10;
 }
-
-.chat-workers textarea {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 5rem;
+.chat-menu-items {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  min-width: 180px;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
 }
-
-.chat-workers fieldset label {
-  display: block;
-  margin: 0.4rem 0;
+.chat-menu-items,
+.chat-menu-items > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }
-
-.chat-workers input[type='number'] {
-  width: 4rem;
+.chat-coordination {
+  padding: 0 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 
 .simple-dismiss {

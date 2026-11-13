@@ -32,7 +32,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 20 adds explicit fresh conversations and per-session context observations.
 // Protocol 21 binds agent capabilities to a process generation and rotates them on resume.
 // Protocol 22 resets conversations using the service's retained private launch settings.
-pub const PROTOCOL: u32 = 22;
+// Protocol 23 adds structurally classified chat resume outcomes.
+pub const PROTOCOL: u32 = 23;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -134,6 +135,44 @@ impl Write for DeadlineStream<'_> {
         self.stream.flush()
     }
 }
+/// Whether a chat submission was acknowledged, certainly refused, or may be in the terminal.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ChatPrompt {
+    Delivered,
+    Refused { error: String },
+    Uncertain { error: String },
+}
+#[derive(Debug)]
+struct PastedPrompt(anyhow::Error);
+impl std::fmt::Display for PastedPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Message delivery is unconfirmed: {}", self.0)
+    }
+}
+impl std::error::Error for PastedPrompt {}
+
+/// A confirmed resume outcome, distinct from a lost transport reply.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ChatResume {
+    Resumed,
+    HistoryUnavailable {
+        error: String,
+    },
+    Failed {
+        error: String,
+        failure: ResumeFailure,
+    },
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResumeFailure {
+    Authentication,
+    Access,
+    Configuration,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Endpoint {
     pub protocol: u32,
@@ -363,6 +402,14 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
+    ChatPrompt {
+        id: String,
+        viewer: String,
+        generation: u64,
+        text: String,
+        #[serde(default)]
+        force: bool,
+    },
     Resize {
         id: String,
         viewer: String,
@@ -400,6 +447,14 @@ pub enum Request {
     Resume {
         id: String,
         request_id: String,
+    },
+    ChatResume {
+        id: String,
+        request_id: String,
+    },
+    /// Bounded original briefing for durable lead recovery, without private launch settings.
+    ChatBriefing {
+        id: String,
     },
     Conversation {
         id: String,
@@ -600,6 +655,7 @@ impl Client {
             | Request::NewConversation { .. }
             | Request::ResetConversation { .. }
             | Request::Resume { .. }
+            | Request::ChatResume { .. }
             | Request::Stop { .. }
             | Request::StopAll
             | Request::Forget { .. }
@@ -814,6 +870,7 @@ pub struct Service {
     confirmed: Mutex<Vec<(String, u64, Adapter, String)>>,
     maintenance: Mutex<HashMap<String, MaintenanceLease>>,
     operation: Mutex<()>,
+    submissions: Mutex<HashMap<String, (u64, u64)>>,
     bulk_stop: Mutex<()>,
     persistence: Mutex<()>,
     instance: String,
@@ -890,6 +947,7 @@ impl Service {
             confirmed: Mutex::default(),
             maintenance: Mutex::default(),
             operation: Mutex::new(()),
+            submissions: Mutex::default(),
             bulk_stop: Mutex::new(()),
             persistence: Mutex::new(()),
             instance: uuid::Uuid::new_v4().to_string(),
@@ -1649,6 +1707,81 @@ impl Service {
             restart_context,
         )
     }
+    fn submit_prompt(
+        &self,
+        client: &str,
+        id: String,
+        viewer: String,
+        generation: u64,
+        text: String,
+        force: bool,
+    ) -> Result<()> {
+        let _operation = self.operation.lock().unwrap();
+        // Force accepts a confirmed working turn as well as a ready prompt; authority,
+        // generation and the absence of a pending approval gate both writes.
+        let check = |reserved: bool| -> Result<()> {
+            anyhow::ensure!(
+                self.owns(client, &id, &viewer),
+                "Viewer does not have terminal authority"
+            );
+            let snapshot = self
+                .pty
+                .snapshot_with(&id, 0)
+                .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            anyhow::ensure!(
+                snapshot.running && snapshot.generation == generation,
+                "The session generation changed"
+            );
+            if !force
+                && !reserved
+                && self
+                    .submissions
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .is_some_and(|(g, since)| {
+                        *g == generation
+                            && snapshot
+                                .status
+                                .agent
+                                .as_ref()
+                                .is_none_or(|a| a.since_ms <= *since)
+                    })
+            {
+                bail!("A message already owns this ready prompt; wait for the next turn");
+            }
+            if force {
+                anyhow::ensure!(
+                    prompt_ready(&snapshot.status) || prompt_forceable(&snapshot.status),
+                    "The agent is not confirmed working, or is waiting for an answer"
+                );
+            } else {
+                anyhow::ensure!(
+                    prompt_ready(&snapshot.status),
+                    "The agent is not at a ready prompt"
+                );
+            }
+            Ok(())
+        };
+        check(false)?;
+        self.pty
+            .write_generation(&id, generation, paste(&text).as_bytes())?;
+        let since = self
+            .pty
+            .snapshot_with(&id, 0)
+            .and_then(|s| s.status.agent.map(|a| a.since_ms))
+            .unwrap_or(0);
+        self.submissions
+            .lock()
+            .unwrap()
+            .insert(id.clone(), (generation, since));
+        std::thread::sleep(PROMPT_SUBMIT_DELAY);
+        check(true).map_err(PastedPrompt)?;
+        self.pty
+            .write_generation(&id, generation, b"\r")
+            .map_err(PastedPrompt)?;
+        Ok(())
+    }
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
             Request::List => serde_json::to_value(self.summaries())?,
@@ -1801,42 +1934,27 @@ impl Service {
                 text,
                 force,
             } => {
-                // Force accepts a confirmed working turn as well as a ready prompt; authority,
-                // generation and the absence of a pending approval gate both writes.
-                let check = || -> Result<()> {
-                    anyhow::ensure!(
-                        self.owns(client, &id, &viewer),
-                        "Viewer does not have terminal authority"
-                    );
-                    let snapshot = self
-                        .pty
-                        .snapshot_with(&id, 0)
-                        .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-                    anyhow::ensure!(
-                        snapshot.running && snapshot.generation == generation,
-                        "The session generation changed"
-                    );
-                    if force {
-                        anyhow::ensure!(
-                            prompt_ready(&snapshot.status) || prompt_forceable(&snapshot.status),
-                            "The agent is not confirmed working, or is waiting for an answer"
-                        );
-                    } else {
-                        anyhow::ensure!(
-                            prompt_ready(&snapshot.status),
-                            "The agent is not at a ready prompt"
-                        );
-                    }
-                    Ok(())
-                };
-                check()?;
-                self.pty
-                    .write_generation(&id, generation, paste(&text).as_bytes())?;
-                // Ink needs a separate input event after it has processed the bracketed paste.
-                std::thread::sleep(PROMPT_SUBMIT_DELAY);
-                check().map_err(|e| e.context("The message was pasted but not submitted"))?;
-                self.pty.write_generation(&id, generation, b"\r")?;
+                self.submit_prompt(client, id, viewer, generation, text, force)?;
                 serde_json::Value::Null
+            }
+            Request::ChatPrompt {
+                id,
+                viewer,
+                generation,
+                text,
+                force,
+            } => {
+                let outcome = match self.submit_prompt(client, id, viewer, generation, text, force)
+                {
+                    Ok(()) => ChatPrompt::Delivered,
+                    Err(e) if e.is::<PastedPrompt>() => ChatPrompt::Uncertain {
+                        error: e.to_string(),
+                    },
+                    Err(e) => ChatPrompt::Refused {
+                        error: e.to_string(),
+                    },
+                };
+                serde_json::to_value(outcome)?
             }
             Request::Resize {
                 id,
@@ -1917,6 +2035,50 @@ impl Service {
                 record.metadata.conversation_pinned = true;
                 self.dirty.store(true, Ordering::Release);
                 serde_json::Value::Null
+            }
+            Request::ChatBriefing { id } => {
+                let records = self.records.lock().unwrap();
+                let record = records.get(&id).context("Unknown session")?;
+                let text = if let Some(backup) = &record.briefing_backup {
+                    let mut end = backup.len().min(8000);
+                    while !backup.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    backup[..end].to_owned()
+                } else if let Some(file) = record.spec.env.get(crate::context::CONTEXT_ENV) {
+                    crate::plans::read_limited(std::fs::File::open(file)?, 8000)?.0
+                } else {
+                    String::new()
+                };
+                serde_json::to_value(text)?
+            }
+            Request::ChatResume { id, request_id } => {
+                let outcome = match self.resume(&id, request_id) {
+                    Ok(_) => ChatResume::Resumed,
+                    Err(e) if e.is::<crate::adapters::HistoryUnavailable>() => {
+                        ChatResume::HistoryUnavailable {
+                            error: e.to_string(),
+                        }
+                    }
+                    Err(e) => {
+                        let failure = if e.is::<crate::profiles::CredentialError>() {
+                            ResumeFailure::Authentication
+                        } else if e.chain().any(|cause| {
+                            cause
+                                .downcast_ref::<std::io::Error>()
+                                .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+                        }) {
+                            ResumeFailure::Access
+                        } else {
+                            ResumeFailure::Configuration
+                        };
+                        ChatResume::Failed {
+                            error: format!("{e:#}"),
+                            failure,
+                        }
+                    }
+                };
+                serde_json::to_value(outcome)?
             }
             Request::Resume { id, request_id } => {
                 serde_json::to_value(self.resume(&id, request_id)?)?
@@ -2326,10 +2488,9 @@ fn prepare_resume(
             .adapter
             .context("Select an adapter to resume this conversation")?
     };
-    let conversation = metadata
-        .conversation_id
-        .as_ref()
-        .context("Set conversation ID before resuming")?;
+    let conversation = metadata.conversation_id.as_ref().ok_or_else(|| {
+        crate::adapters::HistoryUnavailable("Provider conversation ID is unavailable".into())
+    })?;
     spec.command = adapter.resume_with_env(resume_command, conversation, &spec.cwd, &spec.env)?;
     crate::adapters::require_executable(&spec.command, &spec.cwd, &spec.env)?;
     Ok(original)
@@ -5839,6 +6000,62 @@ mod tests {
         )
         .unwrap();
         assert!(Service::load(&dir).unwrap().list()[0].interrupted);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn chat_recovery_reads_bounded_briefing_and_classifies_missing_id_separately_from_configuration()
+     {
+        let dir = std::env::temp_dir().join(format!("patchbay-chat-{}", uuid::Uuid::new_v4()));
+        private_dir(&dir).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let record: Record = serde_json::from_value(serde_json::json!({
+            "id": "lead", "metadata": { "projectId": "p", "projectName": "P", "projectRoot": dir,
+            "componentId": "@task", "terminalId": "lead", "name": "Lead", "kind": "agent", "adapter": "codex" },
+            "spec": { "id": "lead", "command": "codex", "cwd": dir, "env": {}, "ready_when": "", "service": false, "dirs": [] },
+            "snapshot": null, "history": [], "interrupted": false, "requestIds": [], "briefingBackup": "界".repeat(4000),
+        })).unwrap();
+        service
+            .records
+            .lock()
+            .unwrap()
+            .insert("lead".into(), record);
+        let text: String = serde_json::from_value(
+            service
+                .handle("client", Request::ChatBriefing { id: "lead".into() })
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(text.len() <= 8000);
+        assert!(text.starts_with('界'));
+        let outcome = service
+            .handle(
+                "client",
+                Request::ChatResume {
+                    id: "lead".into(),
+                    request_id: "resume1".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(outcome["kind"], "historyUnavailable");
+        service
+            .records
+            .lock()
+            .unwrap()
+            .get_mut("lead")
+            .unwrap()
+            .metadata
+            .adapter = None;
+        let outcome = service
+            .handle(
+                "client",
+                Request::ChatResume {
+                    id: "lead".into(),
+                    request_id: "resume2".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(outcome["kind"], "failed");
+        assert_eq!(outcome["failure"], "configuration");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

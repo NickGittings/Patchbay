@@ -10,7 +10,7 @@ The rail's **Chat mode** toggle (`simpleMode`) opens one worktree conversation b
 
 `simpleUi.ts` holds only drafts, structured mentions, one queued message, a chat-only Changes tab flag, diff selection and a transient terminal drawer reason (`closed`, `user`, `input`) per worktree. The composer has one terminal toggle beside Send. Both controls use `selectRecipient`, following the current step and giving input waits priority. The resizable drawer hosts exactly that session's `TerminalPane`, switches as the recipient changes, and starts closed. Input requests show the hook message and open the drawer; ending a request closes only a drawer opened for input. View of a planner run no chat claims pins it in the drawer (`terminalSession.pinned`) until Hide, a new input wait, or its record being forgotten; a drawer whose record is gone reads as closed. There are no stage tabs, per-agent terminal cards or disclosure overrides. The timeline follows new items unless the user has scrolled up. `useSimpleData` computes `changeGroups` and its file references once for the chat-only Changes tab, diff and Chat, and supplies their shared worktree scope; App's `SimpleChanges` chooses the default file, the newest hook-reported write still listed, only in Chat; `SimpleDiff` keeps Map / Stories / Changes visible above the diff. Finding references and the latest hook-reported `Edited …` link select that tab. Full Navigation never shows it.
 
-Prompt delivery uses hook-confirmed readiness and generation checks (`simpleComposer.ts::promptReady` / `deliverPrompt`, `session::prompt_ready`). Enter sends (or starts/queues), Shift+Enter adds a newline, and Enter picks a mention while autocomplete is open. Installed hooks gate new/resumed agents. Sessions whose hooks confirm the turn (`authoritative`: working, asking, or a submission not yet acknowledged) queue by default; an unconfirmed state, such as after Esc, never queues, since no hook may report its end; `simpleQueue.ts::followQueuedPrompts` delivers once at a ready prompt even after switching worktrees. Queued messages append with a blank line, can be canceled back to the draft or sent now, and return to drafts on restart, exit or a failed/uncertain write without retrying. Send anyway (protocol 13 `force`) also accepts a hook-confirmed `working` turn, never `needsInput`, a Codex permission request still in its automatic-review grace (`AgentReport.approval_pending` ↔ `approvalPending`) or an agent without authoritative status, since the pasted Enter would answer a dialog; the service enforces this (`session::prompt_forceable`, mirrored by `simpleComposer.ts` `forceable`) along with the authority and generation checks. During an input wait the composer offers Answer in terminal, which opens the drawer. `sendToSession` shares claim/write/release, submission stamps, prompt logging and reply persistence. Drafts and queues are in-memory UI state and never dirty or persist the map. Composer authority is released after writing unless a visible terminal owns it. The shared terminal registry preserves scrollback across drawer, Full and pop-out hosts.
+Prompt delivery uses hook-confirmed readiness and generation checks (`simpleComposer.ts::promptReady` / `deliverPrompt`, `session::prompt_ready`). Enter sends (or starts/queues), Shift+Enter adds a newline, and Enter picks a mention while autocomplete is open. Installed hooks gate new/resumed agents. Sessions whose hooks confirm the turn (`authoritative`: working, asking, or a submission not yet acknowledged) queue by default; an unconfirmed state, such as after Esc, never queues, since no hook may report its end; `simpleQueue.ts::followQueuedPrompts` delivers once at a ready prompt even after switching worktrees. Queued messages append with a blank line, can be canceled back to the draft or sent now, and return to drafts on restart, exit or a failed/uncertain write without retrying. Send anyway (protocol 13 `force`) also accepts a hook-confirmed `working` turn, never `needsInput`, a Codex permission request still in its automatic-review grace (`AgentReport.approval_pending` ↔ `approvalPending`) or an agent without authoritative status, since the pasted Enter would answer a dialog; the service enforces this (`session::prompt_forceable`, mirrored by `simpleComposer.ts` `forceable`) along with the authority and generation checks. During an input wait the composer offers Answer in terminal, which opens the drawer. `sendToSession` shares claim/write/release, submission stamps, prompt logging and reply persistence. Drafts, structured mentions and unconfirmed delivery reservations persist in local chat storage without dirtying the map. Queued messages restore as drafts after app restart; an interrupted submission requires explicit delivery resolution before another send. Composer authority is released after writing unless a visible terminal owns it. The shared terminal registry preserves scrollback across drawer, Full and pop-out hosts.
 
 Tool activity remains mirrored through `HookEvent.{tool,target,file_target}`, `status::Activity` and `types.ts::Activity`. Explicit file targets alone link to diffs or pulse map components; command previews and patch bodies are never paths. The newest 50 accepted tool events are retained per generation, merged by sequence in `activity.ts`, and scoped to the selected worktree. Chat's Auto button keeps the existing Light settings, hook checks and ownership controls; Auto stages drive the flow and gates appear as chat prompts.
 
@@ -26,7 +26,7 @@ The composer subscribes to provider usage and the shared clock. It shows every u
 
 Each worktree can have one persistent chat team. The saved `selectedAgent` becomes its lead when
 coordination is initialized; existing conversations migrate paused, preserving their history and
-recipient without launching workers. The **Lead** selector queues a durable provider-conversation
+recipient without launching workers. **Switch agent** queues an explicit durable provider-conversation
 replacement. **Clear conversation** uses the same handoff while retaining workers, assignments,
 results, inbox messages and checkpoints. **Clear visible history** only advances the existing reply
 and plan-card boundaries; it leaves provider context and team state untouched.
@@ -54,16 +54,26 @@ resume, stop, retry, worker settings, new-lead selection, side messages and expl
 Auto, chat and manual provider runs share exclusive target ownership; stopping a team releases its
 target without deleting results or worktrees.
 Full view shows chat-owned rounds as read-only activity; pause, stop and retry go through Chat's
-worker controls so round state and team ownership remain consistent. Manual plan handoffs cannot
+menu and inline failure actions so round state and team ownership remain consistent. Manual plan handoffs cannot
 adopt chat-owned coordinators.
 
 `watchProviderRuns` continues to refresh and drive all open projects while Chat is unmounted or a
 different worktree is selected. Core reserves each delivery before transport and batches pending
 messages in sequence at a hook-confirmed ready prompt. It checks session generation, approval state,
 authority and the last delivered ready turn. It never forces an automated message. A lost submission
-reply stays uncertain until explicitly marked delivered or retried. Side-thread user messages are
-persisted for the worker and copied to its owning lead. Explicit results, failures and native input
-waits notify the lead; worker replies remain in isolated side threads.
+reply stays uncertain until explicitly marked delivered or retried. Explicit results, failures and native input
+waits notify the lead. Worker conversations remain available through Sessions; Chat shows one lead
+conversation, compact coordination status and actionable failures. Worker presets and concurrency
+settings live in Settings → Agent roles. Pause work, Continue work and Stop work live in the chat menu.
+Lead messaging and its inbox remain available while worker scheduling is paused or stopped.
+
+The lead requests progress, findings, blockers and dependencies from existing agents with
+`agent team-ask --id <request-id> --to <assignment-or-session-id> --text <question>`.
+`team.informationRequests` tracks questions and responses durably. Busy recipients receive questions
+at their next ready prompt and answer with `agent team-reply --id <request-id> --text <response>`.
+Requests and replies deduplicate by ID and authenticate the recipient’s membership and generation.
+Exited or superseded recipients produce a durable failure notice without launching a replacement worker.
+The lead synthesizes reported results and validation for the user and follows up on outstanding requests.
 
 Provider-native compaction remains in control of context size. An observed compaction, provider
 conversation change or lead generation change schedules one recovery update at a ready prompt. It
@@ -80,7 +90,7 @@ the replacement generation before delivery resumes. The visible transcript clear
 confirmed replacement, and retains a concise handoff with an idempotent application marker. Failed
 or interrupted replacement preserves history and retries the same request identity after explicit
 Resume. Unfinished coordination restores paused after app restart, including uncertain deliveries.
-Session protocol 22 resets existing leads by session ID and generation inside the service, retaining
+Session protocol 23 retains protocol 22’s generation-bound resets for existing leads by session ID and generation inside the service, retaining
 their private environment, original launch options and recoverable briefing without exposing those
 settings in session summaries. Retried reset identities launch only once, and stale generations
 cannot replace a newer process. A paused team can resume a queued replacement even if its old lead
@@ -88,6 +98,21 @@ session has been removed, provided the replacement has a saved launch template o
 
 `npm run check` covers team handoffs, history boundaries, background worktree routing and existing
 chat behavior. `node scripts/smoke-all.mjs chat-team chat-controls` exercises real session transport
-with disposable fake providers, authenticated report/code results, side-thread messaging, worker
-controls and both clear actions. Core regression tests also cover ownership, dependencies, worker
+with disposable fake providers, authenticated report/code results, existing-agent information requests,
+chat-menu controls, both clear actions, exact resume, forgotten sessions and missing provider history.
+The chat-team harness quits and relaunches the desktop to verify preserved drafts, history, responses,
+stop decisions and reconnection without a duplicate lead. Core regression tests also cover ownership, dependencies, worker
 limits, stale generations, duplicate commands, compaction and reset races.
+
+`chat_continue` resolves a worktree’s durable lead through core `continue_lead`, returning the session,
+generation and `connected | resumed | reconstructed` outcome. Send connects to live work, resumes
+its exact provider ID, or automatically reconstructs only a confirmed unavailable conversation ID or
+provider history. Authentication, access and configuration failures are structured and actionable;
+transport uncertainty retains the durable launch identity. Recovery uses the same saved agent preset,
+retained original briefing, current plan, checkpoint, assignments/results, workflow requests, outstanding
+information requests and bounded recent saved messages. Visible-history boundaries exclude cleared
+messages from that context. Reconstruction reuses the replacement journal with history clearing disabled
+and adds a small notice. Team membership reconciles before delivery; pending user messages wait for
+recovery/inbox delivery and a later ready prompt. Service-level submission reservations serialize pastes
+and prevent two clients from consuming the same ready prompt. Explicit pause/stop decisions survive
+recovery. Intentional agent switching and conversation clearing remain separate actions.

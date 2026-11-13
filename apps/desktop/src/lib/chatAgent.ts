@@ -35,7 +35,9 @@ export function startChatAgent(projectId: string, task: string | null) {
 }
 async function launchChatAgent(projectId: string, task: string | null) {
   if (teamFor(projectId, task))
-    throw new Error('Switch agent to replace the missing lead. Your draft was kept.')
+    throw new Error(
+      'Reconnect the existing lead before starting another agent. Your draft was kept.',
+    )
   const s = useStore.getState()
   const preset = chatPreset(projectId, task)
   if (!preset) throw new Error('Choose an available Chat agent in Settings → Agent roles.')

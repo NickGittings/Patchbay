@@ -54,6 +54,10 @@ pub struct ScanReport {
 #[serde(rename_all = "camelCase")]
 pub struct Job {
     #[serde(default)]
+    pub shared_worktree: bool,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
     pub result_kind: ResultKind,
     pub id: String,
     pub preset: String,
@@ -90,6 +94,8 @@ impl Job {
         let preset = terminal.id.clone();
         Self {
             result_kind: ResultKind::Code,
+            shared_worktree: false,
+            paths: vec![],
             id: new_id(),
             preset,
             terminal,
@@ -157,6 +163,8 @@ pub struct Draft {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AssignmentDraft {
+    #[serde(default)]
+    pub paths: Vec<String>,
     #[serde(default)]
     pub result_kind: ResultKind,
     pub id: String,
@@ -931,6 +939,7 @@ fn add_assignments(r: &mut Run, drafts: Vec<AssignmentDraft>) -> Result<()> {
             "Report assignments require a chat-owned round"
         );
         valid_id(&draft.id)?;
+        chat::validate_paths(&draft.paths)?;
         ensure!(
             !draft.instructions.trim().is_empty(),
             "Assignment instructions are empty"
@@ -952,7 +961,8 @@ fn add_assignments(r: &mut Run, drafts: Vec<AssignmentDraft>) -> Result<()> {
             .clone();
         if let Some(j) = r.jobs.iter().find(|j| j.id == draft.id) {
             ensure!(
-                j.instructions == draft.instructions
+                j.paths == draft.paths
+                    && j.instructions == draft.instructions
                     && j.components == draft.components
                     && j.dependencies == draft.dependencies
                     && j.preset == draft.preset
@@ -963,6 +973,7 @@ fn add_assignments(r: &mut Run, drafts: Vec<AssignmentDraft>) -> Result<()> {
         }
         let mut j = Job::new(terminal);
         j.result_kind = draft.result_kind;
+        j.paths = draft.paths;
         j.id = draft.id;
         j.instructions = draft.instructions;
         j.components = draft.components;
@@ -1001,7 +1012,7 @@ fn add_assignments(r: &mut Run, drafts: Vec<AssignmentDraft>) -> Result<()> {
 }
 fn job_done(j: &Job) -> bool {
     j.state == JobState::Integrated
-        || (j.result_kind == ResultKind::Report
+        || ((j.result_kind == ResultKind::Report || j.shared_worktree)
             && j.state == JobState::Complete
             && j.summary.is_some())
 }
@@ -1134,7 +1145,7 @@ pub fn launch(
             WORKER_SCOPE
         };
         let mut mapped = target_project(project, r.task.as_deref(), &r.components)?;
-        let task = if scope == WORKER_SCOPE {
+        let task = if scope == WORKER_SCOPE && !r.jobs[index.unwrap()].shared_worktree {
             if r.jobs[index.unwrap()].result_kind == ResultKind::Code {
                 clean(target(r)?)?;
                 ensure!(
@@ -1179,7 +1190,11 @@ pub fn launch(
         };
         let mut terminal = j.terminal.clone();
         terminal.id = j.request_id.clone();
-        let body = if j.result_kind == ResultKind::Report && scope == WORKER_SCOPE {
+        let body = if j.shared_worktree && j.result_kind == ResultKind::Report {
+            "Inspect the live shared worktree without editing code or Git state. Other agents may be working; state what you observed and any validation limits. Submit agent team-report --summary <report>. Contact the lead using agent team-send --id <id> --to lead --text <question>. Do not use provider-native subagents."
+        } else if j.shared_worktree {
+            "Work ONLY on your assigned scope in this shared worktree. Other agents may be editing independent files. Ask the lead with agent team-send before expanding scope or changing overlapping files. Never commit, stash, reset, merge, or alter other agents' changes. Report changed files and validation explicitly using agent team-report --summary <report>. A final reply or process exit is not completion. Do not use provider-native subagents."
+        } else if j.result_kind == ResultKind::Report && scope == WORKER_SCOPE {
             "Investigate ONLY your assignment in this isolated committed baseline. Do not edit source or Git state. Submit an explicit report using $PATCHBAY_CLI agent team-report --summary <report>. Include the baseline revision and validation limitations. A final reply or process exit does not complete your assignment. Ask your lead questions with agent team-send --id <unique-id> --to lead --text <question>. Never use provider-native subagents."
         } else {
             match scope {
@@ -1230,6 +1245,9 @@ pub fn launch(
                 .map(|p| p.text)
                 .unwrap_or_default()
         );
+        if j.shared_worktree {
+            text.push_str(&format!("\nReserved paths (empty means component scope): {}. Do not expand this scope without the lead's agreement.\n", j.paths.join(", ")));
+        }
         if let Some(auto) = &r.auto {
             text.push_str(&auto.markdown(if scope == SCAN_SCOPE {
                 "scan"
@@ -1237,7 +1255,7 @@ pub fn launch(
                 "implement"
             }));
         }
-        if r.chat_team.is_some() {
+        if r.chat_team.is_some() && !j.shared_worktree {
             text.push_str("\nThis is a coordinated chat assignment. Use agent team-result --commit <HEAD-sha> --summary <summary> for code results, agent team-report --summary <report> for report assignments, agent team to inspect, and agent team-send --id <unique-id> --to lead --text <question> to contact the lead. Only your lead routes dependencies.\n");
         }
         let spec = context::job_agent_spec(
@@ -1262,6 +1280,7 @@ pub fn launch(
             task.as_deref(),
         ));
         j.state = JobState::Launching;
+        j.error = None;
         j.launched_ms = now_ms();
         let launch = Launch {
             project: mapped,
@@ -1303,6 +1322,12 @@ pub fn launch(
         }
         Ok(r.clone())
     });
+    if let Err(error) = &result
+        && (error.to_string().contains("Waiting for coordination")
+            || error.to_string().contains("concurrency limit"))
+    {
+        chat::waiting(root, project_id, id, job_id, &error.to_string())?;
+    }
     if let Err(error) = &result
         && preparing
     {
@@ -1452,6 +1477,7 @@ mod tests {
     }
     fn assignment(id: &str, dependencies: Vec<String>) -> AssignmentDraft {
         AssignmentDraft {
+            paths: vec![],
             result_kind: ResultKind::Code,
             id: id.into(),
             instructions: format!("Implement {id}"),

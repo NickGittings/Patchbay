@@ -89,44 +89,48 @@
       document.querySelector('[aria-label="Implementation assignments"]'),
     )
     assert(
-      assignments.textContent.includes('Use Worker activity in Chat') &&
+      assignments.textContent.includes('Use the Chat menu') &&
         !['Pause', 'Resume', 'Stop', 'Retry'].some((text) => button(text, assignments)),
       'Full view exposed manual controls for chat-owned assignments',
     )
     await until('worker results retained in background', () => jobs().every((j) => j.summary))
     state().setSimpleMode(true)
-    await until('chat restored', () => document.querySelector('.chat-workers'))
+    await until('chat restored', () => document.querySelector('[aria-label="Work status"]'))
     assert(state().simple.selectedAgent === team().lead.sessionId, 'lead selection lost')
     assert(
       !document.querySelector('.simple-thread').textContent.includes('WORKER-SIDE-THREAD-ONLY'),
       'worker reply entered main transcript',
     )
-    const activity = document.querySelector('.chat-workers')
-    activity.open = true
-    button('Pause', activity).click()
+    assert(!document.querySelector('.chat-workers'), 'Worker activity panel remains in Chat')
+    assert(!button('Open side thread'), 'Side-thread controls remain in Chat')
+    const menu = document.querySelector('.chat-menu')
+    menu.open = true
+    button('Pause work', menu).click()
     await until('paused team', () => team().state === 'paused')
-    const worker = [...activity.querySelectorAll('.chat-worker')][0]
-    button('Open side thread', worker).click()
-    await until('side thread', () => worker.querySelector('textarea'))
-    input(worker.querySelector('textarea'), 'Keep the baseline in your report')
-    button('Send to worker and copy agent', worker).click()
-    await until(
-      'copied side message',
-      () => team().messages.filter((m) => m.sender === 'user').length === 2,
-    )
-    assert(
-      team()
-        .messages.filter((m) => m.sender === 'user')
-        .every((m) => m.state === 'pending'),
-      'paused team delivered a message',
-    )
-    button('Resume', activity).click()
+    const send = async (text) => {
+      input(document.querySelector('[aria-label="Message agent"]'), text)
+      const submit = await until('message enabled', () => {
+        const b = button('Send') ?? button('Queue')
+        return b && !b.disabled && b
+      })
+      submit.click()
+      await until('message delivered', () =>
+        state().simple.log.some((e) => e.kind === 'prompt' && e.text === text),
+      )
+    }
+    await send('ask-fixture')
+    await until('durable information request', () => team().informationRequests?.length === 1)
+    assert(!team().informationRequests[0].response, 'Paused scheduling delivered a worker request')
+    assert(team().state === 'paused', 'Lead messaging resumed worker scheduling')
+    button('Continue work', menu).click()
     await until('resumed team', () => team().state === 'running')
-    await until('side message delivered', () =>
-      team()
-        .messages.filter((m) => m.sender === 'user')
-        .every((m) => m.state === 'delivered'),
+    await until('existing agent response', () => team().informationRequests[0].response)
+    await until('lead synthesis', () =>
+      document
+        .querySelector('.simple-thread')
+        .textContent.includes('I gathered the existing agent'),
     )
+    assert(jobs().length === 2, 'Gathering information launched a duplicate worker')
     button('Clear chat').click()
     button(
       'Clear',
@@ -138,17 +142,24 @@
     )
     await smoke.createTask({ title: 'Other chat', branch: 'other-chat', components: ['app'] })
     await until('other worktree', () => state().activeTask !== null)
-    assert(!document.querySelector('.chat-workers'), 'another worktree showed the first team')
+    assert(
+      !document.querySelector('[aria-label="Work status"]'),
+      'another worktree showed the first team',
+    )
     assert(!state().simple?.selectedAgent, 'another worktree inherited the lead')
     state().setActiveTask(null)
-    await until('original worktree team', () => document.querySelector('.chat-workers'))
-    button('Stop workers', document.querySelector('.chat-workers')).click()
+    await until('original worktree team', () =>
+      document.querySelector('[aria-label="Work status"]'),
+    )
+    document.querySelector('.chat-menu').open = true
+    button('Stop work', document.querySelector('.chat-menu')).click()
     await until('stopped team', () => team().state === 'stopped')
     assert(
       jobs().every((j) => j.task && j.summary),
       'Stop discarded worktrees or completed results',
     )
-    // A forgotten lead still belongs to its durable team and must be replaced through it.
+    // Send recovers the missing durable lead without requiring an intentional agent switch.
+    const transcript = state().simple.log.map((e) => e.id)
     const missingLead = team().lead.sessionId
     await smoke.terminalStop(missingLead)
     await until('lead stopped', async () => !(await smoke.terminalSnapshot(missingLead))?.running)
@@ -158,53 +169,75 @@
       'lead record forgotten',
       () => !state().sessionRecords.some((r) => r.id === missingLead),
     )
-    input(
-      document.querySelector('[aria-label="Message agent"]'),
-      'Keep this draft during replacement',
-    )
-    await until('missing lead recovery guidance', () =>
-      document.querySelector('.chat-recipient')?.textContent.includes('Switch agent'),
-    )
-    assert(button('Send').disabled, 'missing lead could launch an unrelated session')
-    await until('switch agent enabled', () => {
-      const b = button('Switch agent…')
-      return b && !b.disabled && b
-    })
-    button('Switch agent…').click()
-    const picker = await until('switch agent picker', () =>
-      document.querySelector('[aria-label="Switch chat agent"]'),
-    )
-    input(picker, 'team-agent', 'change')
-    await until('replacement lead', () => team().lead.sessionId !== missingLead && !team().reset)
-    const replacement = await until('replacement record', () =>
-      state().sessionRecords.find((r) => r.id === team().lead.sessionId),
-    )
+    await send('Continue after the forgotten lead')
+    await until('reconstructed lead', () => team().lead.sessionId !== missingLead && !team().reset)
+    const replacement = state().sessionRecords.find((r) => r.id === team().lead.sessionId)
+    assert(replacement, 'Recovered lead has no session record')
     assert(
       state().rootTerminals.some((t) => t.id === replacement.metadata.terminalId),
-      'replacement terminal was not registered in its workspace',
+      'Recovered terminal was not registered',
     )
-    await smoke.refreshChatTeams(projectId)
-    assert(state().simple.selectedAgent === replacement.id, 'refresh reselected the forgotten lead')
+    assert(team().state === 'stopped', 'Recovery discarded the explicit stop decision')
     assert(
-      document.querySelector('[aria-label="Message agent"]').value ===
-        'Keep this draft during replacement',
-      'replacement discarded the draft',
+      transcript.every((id) => state().simple.log.some((e) => e.id === id)),
+      'Recovery cleared the conversation',
     )
-    const generation = state().sessions[replacement.id].generation
+    assert(
+      state().simple.log.some(
+        (e) => e.text === 'Context restored from the saved conversation and team state.',
+      ),
+      'Recovery notice missing',
+    )
+    const generation = team().lead.generation
+    const conversation = team().lead.conversation
     await smoke.terminalStop(replacement.id)
     await until(
       'replacement stopped',
       async () => !(await smoke.terminalSnapshot(replacement.id))?.running,
     )
     await smoke.reconcileSessions()
-    await smoke.startTerminal('@task', replacement.metadata.terminalId, null, projectId)
-    await until('replacement restarted', async () => {
-      await smoke.reconcileSessions()
-      const session = state().sessions[replacement.id]
-      return session?.running && session.generation > generation
-    })
+    await send('Resume the exact conversation')
+    assert(team().lead.sessionId === replacement.id, 'Exact resume changed the session')
+    assert(team().lead.generation > generation, 'Stopped lead was not resumed')
+    await until('exact provider identity', () => team().lead.conversation === conversation)
+    const resumedGeneration = team().lead.generation
+    await send('erase-history-fixture')
+    await until('history erased', () =>
+      document
+        .querySelector('.simple-thread')
+        .textContent.includes('History removed for recovery verification.'),
+    )
+    await smoke.terminalStop(replacement.id)
+    await until(
+      'stopped without provider history',
+      async () => !(await smoke.terminalSnapshot(replacement.id))?.running,
+    )
+    await smoke.reconcileSessions()
+    await send('Continue without provider history')
+    assert(
+      team().lead.sessionId === replacement.id,
+      'Missing-history reconstruction changed the retained session',
+    )
+    assert(
+      team().lead.generation > resumedGeneration,
+      'Missing history did not reconstruct context',
+    )
+    for (const text of [
+      'Continue after the forgotten lead',
+      'Resume the exact conversation',
+      'Continue without provider history',
+    ]) {
+      assert(
+        state().simple.log.filter((e) => e.kind === 'prompt' && e.text === text).length === 1,
+        `Duplicate or missing message: ${text}`,
+      )
+    }
+    smoke.simpleUi
+      .getState()
+      .patch(smoke.simpleKey(projectId, null), { draft: 'Draft preserved across app restart' })
+    await smoke.flushWorkspace()
     await smoke.report(
-      'PASS coordinated chat: persistent lead, isolated report/code workers, fresh conversation, side threads, pause/resume, both clear actions, retained results, forgotten lead recovery and replacement restart',
+      'PASS coordinated chat: continuous lead, existing-agent information requests, isolated workers, chat-menu controls, retained history/results, automatic forgotten-lead recovery, exact resume, missing-history reconstruction and single delivery',
     )
   } catch (e) {
     await smoke.report(

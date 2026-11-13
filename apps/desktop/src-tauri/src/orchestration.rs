@@ -154,6 +154,10 @@ pub async fn provider_job_start(
             if server.is_none() { return Err("The agent command bridge is unavailable; restart Patchbay or continue locally in the lead terminal".into()); }
             crate::agent_commands::cli()?;
         }
+        if let Err(error) = orchestration::chat::shared_launch_available(&root, &project_id, &id, &job, &bridge.list()?) {
+            orchestration::chat::waiting(&root, &project_id, &id, &job, &error.to_string()).map_err(err)?;
+            return Err(err(error));
+        }
         orchestration::launch(&root, &project_id, &id, &job, &project, |mut launch| {
             if let Some(task) = launch.task.as_deref() {
                 let mut call = |r| bridge.call(r).map_err(anyhow::Error::msg);

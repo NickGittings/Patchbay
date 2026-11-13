@@ -173,7 +173,11 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
               </button>
             )}
           </div>
-          {run.chatTeam && <p>Use Worker activity in Chat to pause, stop or retry this work.</p>}
+          {run.chatTeam && (
+            <p>
+              Use the Chat menu to pause, continue or stop work. Failures appear inline in Chat.
+            </p>
+          )}
           {run.error && <p role="status">{run.error}</p>}
           <table>
             <thead>

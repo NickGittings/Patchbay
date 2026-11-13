@@ -55,6 +55,35 @@ pub async fn chat_teams(
                             spec,
                         );
                     }
+                    if let Request::Prompt {
+                        id,
+                        viewer,
+                        generation,
+                        text,
+                        force,
+                    } = request
+                    {
+                        return match bridge
+                            .call::<patchbay_core::session::ChatPrompt>(Request::ChatPrompt {
+                                id,
+                                viewer,
+                                generation,
+                                text,
+                                force,
+                            })
+                            .map_err(anyhow::Error::msg)?
+                        {
+                            patchbay_core::session::ChatPrompt::Delivered => {
+                                Ok(serde_json::Value::Null)
+                            }
+                            patchbay_core::session::ChatPrompt::Refused { error } => {
+                                Err(chat::DeliveryRefused(error).into())
+                            }
+                            patchbay_core::session::ChatPrompt::Uncertain { error } => {
+                                Err(anyhow::anyhow!(error))
+                            }
+                        };
+                    }
                     bridge.call(request).map_err(anyhow::Error::msg)
                 };
                 chat::replace_lead(&root, &project_id, &team.id, &records, &mut call)
@@ -90,7 +119,10 @@ pub async fn chat_team_initialize(
         }
         drop(restored);
         let target = target(&root, seed.task.as_deref())?;
-        chat::initialize(&root, &project_id, &target, seed, &records).map_err(err)
+        let session = seed.session_id.clone();
+        let team = chat::initialize(&root, &project_id, &target, seed, &records).map_err(err)?;
+        let briefing: String = bridge.call(Request::ChatBriefing { id: session })?;
+        chat::retain_briefing(&root, &project_id, &team.id, &briefing).map_err(err)
     })
     .await
 }
@@ -203,4 +235,127 @@ pub async fn chat_team_new_lead(
         chat::new_lead(&root, &project, &project_id, &id, terminal, request_id).map_err(err)
     })
     .await
+}
+
+/// Main-window workflow driver uses the same authenticated lead command and durable job IDs.
+#[tauri::command]
+pub async fn chat_team_delegate_shared(
+    window: WebviewWindow,
+    project_id: String,
+    project: patchbay_core::Project,
+    id: String,
+    request_id: String,
+    assignments: Vec<orchestration::AssignmentDraft>,
+    state: State<'_, AppState>,
+) -> CmdResult<Team> {
+    crate::main_only(&window)?;
+    let (root, scoped) = task_repo(&state, &project_id)?;
+    let access = scoped.access.snapshot();
+    let bridge = state.service.clone();
+    blocking(move || {
+        let project = access.restrict(project, &[]).map_err(err)?;
+        let team = chat::list(&root, &project_id)
+            .map_err(err)?
+            .into_iter()
+            .find(|t| t.id == id)
+            .ok_or("Unknown team")?;
+        let launch = patchbay_core::agent_bridge::LaunchContext {
+            generation: Some(team.lead.generation),
+            project_id,
+            task: team.task,
+            agent_session: team.lead.session_id,
+            role: patchbay_core::agent_bridge::Role::Component,
+        };
+        chat::command(
+            &root,
+            &project,
+            &launch,
+            &bridge.list()?,
+            chat::Command::DelegateShared {
+                id: request_id,
+                assignments,
+            },
+        )
+        .map_err(err)
+    })
+    .await
+}
+
+/// Resolve the worktree's existing conversation before submitting a user message.
+#[tauri::command]
+pub async fn chat_continue(
+    window: WebviewWindow,
+    project_id: String,
+    project: patchbay_core::Project,
+    id: String,
+    saved_context: String,
+    state: State<'_, AppState>,
+) -> Result<chat::Continuation, chat::ContinuationFailure> {
+    use chat::{ContinuationFailure, FailureKind};
+    crate::main_only(&window)
+        .map_err(|e| ContinuationFailure::new(FailureKind::Configuration, e))?;
+    let (root, scoped) = task_repo(&state, &project_id)
+        .map_err(|e| ContinuationFailure::new(FailureKind::Configuration, e))?;
+    let access = scoped.access.snapshot();
+    let bridge = state.service.clone();
+    let server = state.agent_commands.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<chat::Continuation> {
+        let project = access
+            .restrict(project, &[])
+            .map_err(|e| ContinuationFailure::new(FailureKind::Access, e.to_string()))?;
+        chat::continue_lead(
+            &root,
+            &project,
+            &project_id,
+            &id,
+            &saved_context,
+            |mut request| {
+                if let Request::ChatResume { id, .. } | Request::ResetConversation { id, .. } =
+                    &request
+                {
+                    let records = bridge
+                        .list()
+                        .map_err(|e| ContinuationFailure::new(FailureKind::Connection, e))?;
+                    let record = records.iter().find(|r| &r.id == id).ok_or_else(|| {
+                        ContinuationFailure::new(
+                            FailureKind::Connection,
+                            "Session unavailable; retry to reconcile",
+                        )
+                    })?;
+                    let mut roots = match &record.metadata.task {
+                        Some(task) => vec![target(&root, Some(task)).map_err(anyhow::Error::msg)?],
+                        None => scoped.roots(),
+                    };
+                    roots.extend(patchbay_core::plans::existing_dir(&root));
+                    patchbay_core::session::check_resume(record, &roots).map_err(|e| {
+                        ContinuationFailure::new(FailureKind::Access, format!("{e:#}"))
+                    })?;
+                }
+                if let Request::NewConversation { spec, metadata, .. } = &mut request {
+                    crate::agent_commands::inject(
+                        server.clone(),
+                        &project_id,
+                        metadata.task.as_deref(),
+                        spec,
+                    );
+                }
+                bridge
+                    .call_reporting(request)
+                    .map_err(|(message, uncertain)| {
+                        ContinuationFailure::new(
+                            if uncertain {
+                                FailureKind::Uncertain
+                            } else {
+                                FailureKind::Connection
+                            },
+                            message,
+                        )
+                        .into()
+                    })
+            },
+        )
+    })
+    .await
+    .map_err(|e| ContinuationFailure::new(FailureKind::Uncertain, e.to_string()))?
+    .map_err(ContinuationFailure::from_error)
 }

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import type { SessionRecord, SessionState } from '../types'
 export interface Mention {
   id: string
@@ -21,6 +22,15 @@ export interface QueuedPrompt {
   atMs: number
 }
 export interface SimpleUi {
+  unconfirmed?: {
+    sessionId: string
+    generation: number
+    text: string
+    stage: import('./simple').SimpleStage
+    mentions: string[]
+    atMs: number
+  }
+  connection?: 'Connecting…' | 'Restoring context…'
   chatPreset?: string
   dismissedStep?: string
   coordinationReset?: boolean
@@ -105,11 +115,56 @@ export const simpleKey = (projectId: string | undefined, task: string | null) =>
 export const useSimpleUi = create<{
   worktrees: Record<string, SimpleUi>
   patch: (key: string, patch: Partial<SimpleUi>) => void
-}>((set) => ({
-  worktrees: {},
-  patch: (key, patch) =>
-    set((s) => ({
-      worktrees: { ...s.worktrees, [key]: { ...emptySimpleUi(), ...s.worktrees[key], ...patch } },
-    })),
-}))
+}>()(
+  persist(
+    (set) => ({
+      worktrees: {},
+      patch: (key, patch) =>
+        set((s) => ({
+          worktrees: {
+            ...s.worktrees,
+            [key]: { ...emptySimpleUi(), ...s.worktrees[key], ...patch },
+          },
+        })),
+    }),
+    {
+      name: 'patchbay.chat-drafts',
+      storage: createJSONStorage(() => ({
+        getItem: (key) => {
+          try {
+            return globalThis.window?.localStorage?.getItem(key) ?? null
+          } catch {
+            return null
+          }
+        },
+        setItem: (key, value) => {
+          try {
+            globalThis.window?.localStorage?.setItem(key, value)
+          } catch {
+            /* Keep the in-memory draft if storage is full. */
+          }
+        },
+        removeItem: (key) => {
+          try {
+            globalThis.window?.localStorage?.removeItem(key)
+          } catch {
+            /* Storage may be disabled. */
+          }
+        },
+      })),
+      partialize: (state) => ({
+        worktrees: Object.fromEntries(
+          Object.entries(state.worktrees).map(([key, ui]) => [
+            key,
+            {
+              ...emptySimpleUi(),
+              ...appendDraft(ui, ui.queued ?? { draft: '', mentions: [] }),
+              unconfirmed: ui.unconfirmed,
+            },
+          ]),
+        ),
+      }),
+    },
+  ),
+)
 export const EMPTY_SIMPLE_UI = emptySimpleUi()

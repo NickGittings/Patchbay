@@ -467,6 +467,44 @@ fn interactive_attach(client: &mut patchbay_core::session::Client, id: &str) -> 
 
 #[derive(Subcommand)]
 enum AgentCmd {
+    /// Request progress, findings or a dependency from an existing agent.
+    TeamAsk {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        text: String,
+    },
+    /// Respond durably to an information request from your lead.
+    TeamReply {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        text: String,
+    },
+    TeamCoordinate {
+        #[arg(long)]
+        paths: Vec<String>,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
+    TeamRequest {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        action: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
+    TeamDelegateShared {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
     /// Inspect your persistent chat team, inbox and delegation rounds.
     Team,
     /// Save goal, constraints, decisions, remaining work and validation as JSON.
@@ -596,6 +634,30 @@ fn agent(command: AgentCmd) -> Result<bool> {
             AgentCmd::Team => Action::ChatTeam {
                 command: TeamCommand::Inspect,
             },
+            AgentCmd::TeamCoordinate {
+                session,
+                file,
+                paths,
+            } => Action::ChatTeam {
+                command: TeamCommand::Coordinate {
+                    session,
+                    paths,
+                    components: read_proposal(&file)?,
+                },
+            },
+            AgentCmd::TeamRequest { id, action, file } => Action::ChatTeam {
+                command: TeamCommand::Request {
+                    id,
+                    action,
+                    settings: read_proposal(&file)?,
+                },
+            },
+            AgentCmd::TeamDelegateShared { id, file } => Action::ChatTeam {
+                command: TeamCommand::DelegateShared {
+                    id,
+                    assignments: read_proposal(&file)?,
+                },
+            },
             AgentCmd::TeamCheckpoint { file } => Action::ChatTeam {
                 command: TeamCommand::Checkpoint {
                     checkpoint: read_proposal(&file)?,
@@ -606,6 +668,12 @@ fn agent(command: AgentCmd) -> Result<bool> {
                     id,
                     assignments: read_proposal(&file)?,
                 },
+            },
+            AgentCmd::TeamAsk { id, to, text } => Action::ChatTeam {
+                command: TeamCommand::Ask { id, to, text },
+            },
+            AgentCmd::TeamReply { id, text } => Action::ChatTeam {
+                command: TeamCommand::Reply { id, text },
             },
             AgentCmd::TeamSend { id, to, text } => Action::ChatTeam {
                 command: TeamCommand::Send { id, to, text },

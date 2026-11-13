@@ -1,6 +1,17 @@
 //! Durable chat ownership and inbox. Visible history is deliberately not a source of truth.
 use super::*;
 use crate::session::Request;
+use anyhow::Context;
+
+/// Transport confirmed that a team prompt was refused before any text was pasted.
+#[derive(Debug)]
+pub struct DeliveryRefused(pub String);
+impl std::fmt::Display for DeliveryRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for DeliveryRefused {}
 
 const MESSAGE_LIMIT: usize = 64 * 1024;
 
@@ -87,6 +98,35 @@ pub struct Handoff {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ScopeReservation {
+    pub generation: u64,
+    pub components: Vec<String>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRequest {
+    pub id: String,
+    pub action: String,
+    pub settings: serde_json::Value,
+    pub state: String,
+    pub result: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InformationRequest {
+    pub id: String,
+    pub recipient: String,
+    pub generation: u64,
+    pub question: String,
+    pub response: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Team {
     pub id: String,
     pub project_id: String,
@@ -95,8 +135,28 @@ pub struct Team {
     pub lead: Lead,
     pub state: State,
     pub workers: Vec<TerminalSpec>,
+    #[serde(default)]
+    pub presets: Vec<TerminalSpec>,
+    #[serde(default)]
+    pub agent_roles: BTreeMap<String, Vec<String>>,
     pub limit: usize,
     pub rounds: Vec<String>,
+    #[serde(default)]
+    pub requests: Vec<WorkflowRequest>,
+    #[serde(default)]
+    pub scopes: BTreeMap<String, ScopeReservation>,
+    #[serde(default)]
+    pub information_requests: Vec<InformationRequest>,
+    #[serde(default)]
+    pub continuation_request: Option<String>,
+    #[serde(default)]
+    pub saved_context: String,
+    #[serde(default)]
+    pub current_plan: String,
+    #[serde(default)]
+    pub original_briefing: String,
+    #[serde(default)]
+    pub observed_agents: BTreeMap<String, u64>,
     pub checkpoint: Checkpoint,
     pub messages: Vec<Message>,
     pub deliveries: Vec<Delivery>,
@@ -122,6 +182,30 @@ pub struct Owner {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Command {
     Inspect,
+    Ask {
+        id: String,
+        to: String,
+        text: String,
+    },
+    Reply {
+        id: String,
+        text: String,
+    },
+    Request {
+        id: String,
+        action: String,
+        settings: serde_json::Value,
+    },
+    Coordinate {
+        session: String,
+        components: Vec<String>,
+        #[serde(default)]
+        paths: Vec<String>,
+    },
+    DelegateShared {
+        id: String,
+        assignments: Vec<AssignmentDraft>,
+    },
     Checkpoint {
         checkpoint: Checkpoint,
     },
@@ -151,6 +235,17 @@ pub enum Command {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Control {
+    Catalog {
+        presets: Vec<TerminalSpec>,
+        #[serde(default)]
+        roles: BTreeMap<String, Vec<String>>,
+    },
+    RequestState {
+        id: String,
+        state: String,
+        result: Option<String>,
+    },
+    HistoryBoundary,
     Pause,
     Block {
         reason: String,
@@ -235,7 +330,7 @@ pub(super) fn ensure_available(
 ) -> Result<()> {
     ensure!(
         !store.owners.iter().any(|o| Path::new(&o.target) == target
-            && !(auto && o.project_id == project && o.kind == "auto")),
+            && !(o.project_id == project && (auto && (o.kind == "chat" || o.kind == "auto")))),
         "This worktree is controlled by coordinated chat or Auto; stop its owner first"
     );
     Ok(())
@@ -269,11 +364,12 @@ pub fn auto_ownership(
             }) {
                 return Ok(());
             }
-            ensure_available(s, project, target, false)?;
+            ensure_available(s, project, target, true)?;
             ensure!(
                 !s.runs.iter().any(|r| Path::new(&r.target) == target
                     && !(r.project_id == project && r.auto.is_some())
-                    && matches!(r.state, State::Running | State::Paused)),
+                    && matches!(r.state, State::Running | State::Paused)
+                    && !(r.chat_team.is_some() && r.jobs.iter().all(job_done))),
                 "An unfinished provider run controls this worktree"
             );
             s.owners.push(Owner {
@@ -342,13 +438,8 @@ pub fn initialize(
         {
             return Ok(t.clone());
         }
-        ensure_available(s, project, target, false)?;
-        ensure!(
-            !s.runs.iter().any(|r| r.project_id == project
-                && Path::new(&r.target) == target
-                && matches!(r.state, State::Running | State::Paused)),
-            "An unfinished provider run controls this worktree"
-        );
+        ensure_available(s, project, target, true)?;
+
         let t = Team {
             id: new_id(),
             project_id: project.into(),
@@ -371,8 +462,18 @@ pub fn initialize(
                 State::Running
             },
             workers: vec![preset],
+            presets: vec![],
+            agent_roles: BTreeMap::new(),
             limit: 2,
             rounds: vec![],
+            requests: vec![],
+            scopes: BTreeMap::new(),
+            information_requests: vec![],
+            continuation_request: None,
+            saved_context: String::new(),
+            current_plan: String::new(),
+            original_briefing: excerpt(r.briefing_backup.as_deref().unwrap_or_default(), 8000),
+            observed_agents: BTreeMap::new(),
             checkpoint,
             messages: vec![],
             deliveries: vec![],
@@ -463,6 +564,13 @@ fn actor(s: &Store, launch: &LaunchContext, records: &[Record]) -> Result<(usize
             );
             return Ok((i, "lead".into()));
         }
+        if t.scopes
+            .get(&launch.agent_session)
+            .is_some_and(|scope| Some(scope.generation) == launch.generation)
+            && r.metadata.task == t.task
+        {
+            return Ok((i, launch.agent_session.clone()));
+        }
         if let Some(j) = s
             .runs
             .iter()
@@ -501,8 +609,180 @@ pub fn command(
         let (index, who) = actor(s, launch, records)?;
         let mut t = s.teams[index].clone();
         let lead = who == "lead";
+        ensure!(
+            lead || member(s, &t, &who).is_some()
+                || matches!(
+                    &command,
+                    Command::Inspect | Command::Send { .. } | Command::Reply { .. }
+                ),
+            "Existing agents may inspect and coordinate messages only"
+        );
         match command {
             Command::Inspect => {}
+            Command::Ask { id, to, text } => {
+                ensure!(lead, "Only the lead requests information");
+                valid_id(&id)?;
+                ensure!(
+                    !text.trim().is_empty() && text.len() <= 32000,
+                    "Invalid question"
+                );
+                if let Some(previous) = t.information_requests.iter().find(|r| r.id == id) {
+                    ensure!(
+                        previous.recipient == to && previous.question == text,
+                        "Information request ID already used"
+                    );
+                } else {
+                    let sid = member(s, &t, &to)
+                        .and_then(|j| j.session_id.as_deref())
+                        .unwrap_or(&to);
+                    let recipient = record(records, &t.project_id, sid)?;
+                    ensure!(
+                        to != "lead"
+                            && recipient.id != t.lead.session_id
+                            && recipient.metadata.kind == crate::TerminalKind::Agent,
+                        "Choose an existing agent"
+                    );
+                    ensure!(
+                        member(s, &t, &to).is_some() || recipient.metadata.task == t.task,
+                        "Agent is outside this worktree"
+                    );
+                    let generation = generation(recipient)?;
+                    if let Some(job) = member(s, &t, &to) {
+                        ensure!(
+                            recipient.request_ids.last() == Some(&job.request_id),
+                            "Assignment launch ownership changed"
+                        );
+                    }
+                    if member(s, &t, &to).is_none() {
+                        t.scopes.entry(to.clone()).or_insert(ScopeReservation {
+                            generation,
+                            components: vec![],
+                            paths: vec![],
+                        });
+                        ensure!(
+                            t.scopes[&to].generation == generation,
+                            "Agent generation changed; coordinate its scope first"
+                        );
+                    }
+                    t.information_requests.push(InformationRequest {
+                        id: id.clone(),
+                        recipient: to.clone(),
+                        generation,
+                        question: text.clone(),
+                        response: None,
+                        error: None,
+                    });
+                    append(
+                        &mut t,
+                        format!("ask-{id}"),
+                        "lead",
+                        &to,
+                        Some(to.clone()),
+                        format!(
+                            "Information request {id}: {text}\nReply through $PATCHBAY_CLI agent team-reply --id {id} --text <findings-progress-blockers-and-validation>. Keep working within your agreed scope."
+                        ),
+                    )?;
+                }
+            }
+            Command::Reply { id, text } => {
+                ensure!(
+                    !lead && !text.trim().is_empty() && text.len() <= 32000,
+                    "Invalid information response"
+                );
+                let request = t
+                    .information_requests
+                    .iter_mut()
+                    .find(|r| r.id == id)
+                    .ok_or_else(|| anyhow!("Unknown information request"))?;
+                ensure!(
+                    request.recipient == who && Some(request.generation) == launch.generation,
+                    "Information request belongs to another agent generation"
+                );
+                ensure!(
+                    request.error.is_none(),
+                    "Information request is no longer active"
+                );
+                if let Some(previous) = &request.response {
+                    ensure!(previous == &text, "Information response already recorded");
+                } else {
+                    request.response = Some(text.clone());
+                    append(
+                        &mut t,
+                        format!("reply-{id}"),
+                        &who,
+                        "lead",
+                        Some(who.clone()),
+                        format!(
+                            "Response to information request {id} from {who} (reported; verify before claiming completion):\n{text}"
+                        ),
+                    )?;
+                }
+            }
+
+            Command::Coordinate {
+                session,
+                components,
+                paths,
+            } => {
+                ensure!(lead, "Only the lead coordinates scope");
+                let r = record(records, &t.project_id, &session)?;
+                ensure!(
+                    r.metadata.task == t.task && session != t.lead.session_id,
+                    "Agent is outside this worktree"
+                );
+                ensure!(
+                    components
+                        .iter()
+                        .all(|id| project.components.iter().any(|c| &c.id == id)),
+                    "Unknown component"
+                );
+                validate_paths(&paths)?;
+                t.scopes.insert(
+                    session,
+                    ScopeReservation {
+                        generation: generation(r)?,
+                        components,
+                        paths,
+                    },
+                );
+            }
+            Command::Request {
+                id,
+                action,
+                settings,
+            } => {
+                ensure!(lead, "Only the lead can control workflows");
+                valid_id(&id)?;
+                ensure!(
+                    [
+                        "startAuto",
+                        "pauseAuto",
+                        "resumeAuto",
+                        "stopAuto",
+                        "startAgent"
+                    ]
+                    .contains(&action.as_str()),
+                    "Unknown workflow action"
+                );
+                ensure!(
+                    serde_json::to_vec(&settings)?.len() <= MESSAGE_LIMIT,
+                    "Settings too large"
+                );
+                if let Some(previous) = t.requests.iter().find(|r| r.id == id) {
+                    ensure!(
+                        previous.action == action && previous.settings == settings,
+                        "Request ID already used"
+                    );
+                } else {
+                    t.requests.push(WorkflowRequest {
+                        id,
+                        action,
+                        settings,
+                        state: "queued".into(),
+                        result: None,
+                    });
+                }
+            }
             Command::Checkpoint { checkpoint } => {
                 ensure!(lead, "Only the lead can checkpoint");
                 ensure!(
@@ -512,7 +792,13 @@ pub fn command(
                 t.checkpoint = checkpoint;
                 t.checkpoint_required = false;
             }
-            Command::Delegate { id, assignments } => {
+            Command::Delegate { .. } | Command::DelegateShared { .. } => {
+                let shared = matches!(&command, Command::DelegateShared { .. });
+                let (id, assignments) = match command {
+                    Command::Delegate { id, assignments }
+                    | Command::DelegateShared { id, assignments } => (id, assignments),
+                    _ => unreachable!(),
+                };
                 ensure!(
                     lead && t.state == State::Running && t.reset.is_none(),
                     "Delegation is paused; continue locally or Resume"
@@ -534,8 +820,9 @@ pub fn command(
                     return Ok(t);
                 }
                 ensure!(
-                    s.runs.iter().all(|r| r.chat_team.as_deref() != Some(&t.id)
-                        || matches!(r.state, State::Complete | State::Stopped)),
+                    shared
+                        || s.runs.iter().all(|r| r.chat_team.as_deref() != Some(&t.id)
+                            || matches!(r.state, State::Complete | State::Stopped)),
                     "Finish the existing round before delegating again"
                 );
                 ensure!(!assignments.is_empty(), "Create at least one assignment");
@@ -546,9 +833,10 @@ pub fn command(
                     "Assignment IDs must be unique across team rounds"
                 );
                 let tree = Path::new(&t.target);
-                if assignments
-                    .iter()
-                    .any(|a| a.result_kind == ResultKind::Code)
+                if !shared
+                    && assignments
+                        .iter()
+                        .any(|a| a.result_kind == ResultKind::Code)
                 {
                     clean(tree)?;
                 }
@@ -572,7 +860,11 @@ pub fn command(
                     integrated_head: head(tree)?,
                     jobs: vec![],
                     coordinator: Some(coordinator),
-                    workers: t.workers.clone(),
+                    workers: if shared && !t.presets.is_empty() {
+                        t.presets.clone()
+                    } else {
+                        t.workers.clone()
+                    },
                     sealed: true,
                     accepted_partial: false,
                     error: None,
@@ -601,6 +893,12 @@ pub fn command(
                     }
                 }
                 add_assignments(&mut r, assignments)?;
+                for job in &mut r.jobs {
+                    job.shared_worktree = shared;
+                    if shared {
+                        job.task.clone_from(&t.task);
+                    }
+                }
                 t.rounds.push(id);
                 s.runs.push(r);
             }
@@ -610,9 +908,34 @@ pub fn command(
                     "Workers communicate only with their owning lead"
                 );
                 ensure!(
-                    to == "lead" || member(s, &t, &to).is_some(),
+                    to == "lead"
+                        || member(s, &t, &to).is_some()
+                        || (lead
+                            && record(records, &t.project_id, &to)
+                                .is_ok_and(|r| r.metadata.task == t.task)),
                     "Recipient belongs to another team or does not exist"
                 );
+                if lead && to != "lead" && member(s, &t, &to).is_none() {
+                    let recipient = record(records, &t.project_id, &to)?;
+                    ensure!(
+                        recipient.metadata.kind == crate::TerminalKind::Agent,
+                        "Recipient must be an agent"
+                    );
+                    let generation = generation(recipient)?;
+                    if t.scopes
+                        .get(&to)
+                        .is_none_or(|scope| scope.generation != generation)
+                    {
+                        t.scopes.insert(
+                            to.clone(),
+                            ScopeReservation {
+                                generation,
+                                components: vec![],
+                                paths: vec![],
+                            },
+                        );
+                    }
+                }
                 append(
                     &mut t,
                     id,
@@ -640,7 +963,7 @@ pub fn command(
                     .unwrap();
                 let j = r.jobs.iter_mut().find(|j| j.id == who).unwrap();
                 ensure!(
-                    j.result_kind == ResultKind::Report,
+                    j.result_kind == ResultKind::Report || j.shared_worktree,
                     "Code assignments require committed results"
                 );
                 if let Some(previous) = &j.summary {
@@ -650,7 +973,7 @@ pub fn command(
                 j.state = JobState::Complete;
                 j.error = None;
                 let text = format!(
-                    "Report from {} (committed baseline {}):\n{}",
+                    "Report from {} (committed baseline {}; shared workers report live worktree edits):\n{}",
                     who,
                     j.base.as_deref().unwrap_or(&r.source_revision),
                     summary
@@ -663,6 +986,9 @@ pub fn command(
                     Some(who.clone()),
                     text,
                 )?;
+                if j.shared_worktree && j.result_kind == ResultKind::Code {
+                    t.checkpoint_required = true;
+                }
                 resume_after_submission(r);
             }
             Command::Result { summary, commit } => {
@@ -679,8 +1005,8 @@ pub fn command(
                     .unwrap();
                 let j = r.jobs.iter_mut().find(|j| j.id == who).unwrap();
                 ensure!(
-                    j.result_kind == ResultKind::Code,
-                    "Report assignments submit reports"
+                    j.result_kind == ResultKind::Code && !j.shared_worktree,
+                    "Shared and report assignments submit team-report without commits"
                 );
                 if let Some(old) = &j.commit {
                     ensure!(
@@ -767,12 +1093,22 @@ pub fn command(
                 {
                     return Ok(t);
                 }
-                let r = active_run(s, &t)?;
                 ensure!(
-                    r.jobs.iter().all(job_done),
+                    s.runs
+                        .iter()
+                        .filter(
+                            |r| r.chat_team.as_deref() == Some(&t.id) && r.state != State::Stopped
+                        )
+                        .all(|r| r.jobs.iter().all(job_done)),
                     "Every report must be submitted and every code result integrated"
                 );
-                r.state = State::Complete;
+                for r in s
+                    .runs
+                    .iter_mut()
+                    .filter(|r| r.chat_team.as_deref() == Some(&t.id) && r.state != State::Stopped)
+                {
+                    r.state = State::Complete;
+                }
                 t.checkpoint.validation = validation;
             }
         }
@@ -790,6 +1126,98 @@ fn resume_after_submission(r: &mut Run) {
         r.state = State::Running;
         r.error = None;
     }
+}
+pub(super) fn validate_paths(paths: &[String]) -> Result<()> {
+    ensure!(
+        paths.iter().all(|p| !p.is_empty()
+            && Path::new(p)
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))),
+        "Paths must be relative paths without . or .."
+    );
+    Ok(())
+}
+fn overlaps(a: &[String], ap: &[String], b: &[String], bp: &[String]) -> bool {
+    if !ap.is_empty() && !bp.is_empty() {
+        return ap.iter().any(|a| {
+            bp.iter()
+                .any(|b| Path::new(a).starts_with(b) || Path::new(b).starts_with(a))
+        });
+    }
+    a.is_empty() || b.is_empty() || a.iter().any(|c| b.contains(c))
+}
+pub fn waiting(root: &Path, project: &str, run: &str, job: &str, reason: &str) -> Result<()> {
+    modify(root, |s| {
+        let r = s
+            .runs
+            .iter_mut()
+            .find(|r| r.project_id == project && r.id == run)
+            .ok_or_else(|| anyhow!("Unknown run"))?;
+        if let Some(j) = r
+            .jobs
+            .iter_mut()
+            .find(|j| j.id == job && j.state == JobState::Pending)
+        {
+            j.error = Some(reason.into());
+        }
+        Ok(())
+    })
+}
+/// Existing agents start with the whole worktree reserved until the lead records an agreed scope.
+pub fn shared_launch_available(
+    root: &Path,
+    project: &str,
+    run: &str,
+    job: &str,
+    records: &[Record],
+) -> Result<()> {
+    modify(root, |s| {
+        let r = s
+            .runs
+            .iter()
+            .find(|r| r.id == run && r.project_id == project)
+            .ok_or_else(|| anyhow!("Unknown run"))?;
+        let Some(j) = r.jobs.iter().find(|j| j.id == job && j.shared_worktree) else {
+            return Ok(());
+        };
+        if j.result_kind == ResultKind::Report {
+            return Ok(());
+        }
+        let t = s
+            .teams
+            .iter()
+            .find(|t| Some(&t.id) == r.chat_team.as_ref())
+            .ok_or_else(|| anyhow!("Missing team"))?;
+        for record in records.iter().filter(|record| {
+            record.metadata.project_id == project
+                && record.metadata.task == t.task
+                && record.metadata.kind == crate::TerminalKind::Agent
+                && record.id != t.lead.session_id
+                && record
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.running)
+                && !ready(record)
+        }) {
+            if s.runs
+                .iter()
+                .filter(|r| r.chat_team.as_deref() == Some(&t.id))
+                .flat_map(|r| &r.jobs)
+                .any(|job| job.session_id.as_deref() == Some(&record.id))
+            {
+                continue;
+            }
+            let scope = t.scopes.get(&record.id);
+            ensure!(
+                scope.is_some_and(|scope| Some(scope.generation)
+                    == record.snapshot.as_ref().map(|s| s.generation)
+                    && !overlaps(&scope.components, &scope.paths, &j.components, &j.paths)),
+                "Waiting for coordination: {} owns an overlapping or unknown scope. Contact it, then record the agreed scope with team-coordinate.",
+                record.metadata.name
+            );
+        }
+        Ok(())
+    })
 }
 /// Reserve under the orchestration lock; excludes the persistent lead from the worker budget.
 pub(super) fn reserve_check(s: &Store, project: &str, run: &str, job: &str) -> Result<()> {
@@ -820,6 +1248,28 @@ pub(super) fn reserve_check(s: &Store, project: &str, run: &str, job: &str) -> R
             .filter(|j| j.id != job && matches!(j.state, JobState::Launching | JobState::Running))
             .count();
         ensure!(occupied < t.limit, "Worker concurrency limit reached");
+        let candidate = r.jobs.iter().find(|j| j.id == job).unwrap();
+        if candidate.shared_worktree && candidate.result_kind == ResultKind::Code {
+            ensure!(
+                !s.runs
+                    .iter()
+                    .filter(|other| other.target == t.target)
+                    .flat_map(|r| &r.jobs)
+                    .any(|other| other.id != job
+                        && matches!(
+                            other.state,
+                            JobState::Launching | JobState::Running | JobState::Integrating
+                        )
+                        && other.result_kind == ResultKind::Code
+                        && overlaps(
+                            &candidate.components,
+                            &candidate.paths,
+                            &other.components,
+                            &other.paths
+                        )),
+                "Waiting for coordination: another assignment owns this scope"
+            );
+        }
     }
     Ok(())
 }
@@ -834,6 +1284,47 @@ pub fn control(
     modify(root, |s| {
         let mut t = team(s, project, id)?.clone();
         match control {
+            Control::Catalog { presets, roles } => {
+                ensure!(presets.iter().all(supported), "Unsupported agent preset");
+                t.presets = presets;
+                t.agent_roles = roles;
+            }
+            Control::RequestState { id, state, result } => {
+                ensure!(
+                    ["starting", "waiting", "completed", "failed"].contains(&state.as_str()),
+                    "Invalid request state"
+                );
+                let request = t
+                    .requests
+                    .iter_mut()
+                    .find(|r| r.id == id)
+                    .ok_or_else(|| anyhow!("Unknown request"))?;
+                ensure!(
+                    request.state == "queued"
+                        || request.state == "waiting"
+                        || (request.state == "starting" && state != "starting"),
+                    "Request already claimed or finished"
+                );
+                ensure!(
+                    result
+                        .as_ref()
+                        .is_none_or(|text| text.len() <= MESSAGE_LIMIT),
+                    "Result too large"
+                );
+                request.state = state.clone();
+                request.result = result.clone();
+                if state != "starting" && state != "waiting" {
+                    append(
+                        &mut t,
+                        format!("workflow-{id}"),
+                        "patchbay",
+                        "lead",
+                        None,
+                        format!("Workflow {id}: {state}. {}", result.unwrap_or_default()),
+                    )?;
+                }
+            }
+            Control::HistoryBoundary => t.saved_context.clear(),
             Control::Pause => t.state = State::Paused,
             Control::Block { reason } => {
                 t.state = State::Paused;
@@ -1018,16 +1509,10 @@ pub fn control(
 }
 fn ensure_available_for_team(s: &Store, t: &Team) -> Result<()> {
     ensure!(
-        !s.owners
-            .iter()
-            .any(|o| o.target == t.target && !(o.kind == "chat" && o.id == t.id)),
+        !s.owners.iter().any(|o| o.target == t.target
+            && !(o.project_id == t.project_id
+                && (o.kind == "auto" || (o.kind == "chat" && o.id == t.id)))),
         "Auto or another owner controls this worktree"
-    );
-    ensure!(
-        !s.runs.iter().any(|r| r.target == t.target
-            && r.chat_team.as_deref() != Some(&t.id)
-            && matches!(r.state, State::Running | State::Paused)),
-        "An unfinished provider run controls this worktree"
     );
     Ok(())
 }
@@ -1065,7 +1550,7 @@ pub fn side_message(
         Ok(t.clone())
     })
 }
-const INSTRUCTIONS: &str = "You are this worktree's persistent Patchbay lead. You may automatically delegate investigation, review and code work to Patchbay-managed workers. Do not use provider-native subagents. Before delegating and after integration, save a durable checkpoint with $PATCHBAY_CLI agent team-checkpoint --file <json> (goal, constraints, decisions, remaining, validation). Inspect authoritative state with agent team; create a round with agent team-delegate --id <unique-round-id> --file <json-array> where assignments have globally unique id, instructions, components, dependencies, preset, resultKind (report or code). Use only configured worker presets. Report workers inspect the committed baseline; compare their findings with local edits. Code delegation requires a clean Git checkpoint: when local changes exist, explain the constraint and continue locally; never automatically commit or stash user changes. While code workers run, keep target edits under coordinator control. Route dependencies and messages with agent team-send --id <unique-id> --to <assignment-id> --text <message>. Workers contact only you. Integrate code SERIALly using agent team-integrate <assignment-id>, verify the result, checkpoint, then agent team-finish --validation <checks-and-results>. Process exit is never success. After native compaction or a new conversation inspect agent team before acting; checkpoint, assignments, messages, commits and integration facts are authoritative. Preserve workers and worktrees. Continue locally when authentication, status hooks or repository layout prevent delegation.";
+const INSTRUCTIONS: &str = "You are this worktree's persistent Patchbay lead. Remain available while agents and Auto run. Use agent team-request --id <id> --action <startAgent|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json> to control existing workflows. startAgent settings are {preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}; role-to-preset mappings are in team.agentRoles; presets are listed in team.presets (or team.workers until the catalog loads). startAuto accepts goal, effort (light/standard/thorough), device, agents, reviewers, workers, merge ({mode: ask, destinationBranch}), and stage; omit fields to use app defaults. Never automatically enable merge approval bypass. Use agent team-delegate-shared --id <id> --file <assignments-json> to start configured agents in this existing worktree without new worktrees. Inspect active sessions first, split independent scopes, record an existing agent's agreed components with agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...], and contact busy agents before overlapping edits. Wait for an explicit scope handoff; silence is not permission. Serialize Git mutations and preserve all local edits. Shared workers finish with team-report, without commits or integration. You may automatically delegate investigation, review and code work to Patchbay-managed workers. Do not use provider-native subagents. Before delegating and after integration, save a durable checkpoint with $PATCHBAY_CLI agent team-checkpoint --file <json> (goal, constraints, decisions, remaining, validation). Inspect authoritative state with agent team; create a round with agent team-delegate --id <unique-round-id> --file <json-array> where assignments have globally unique id, instructions, components, dependencies, preset, resultKind (report or code). Use only configured worker presets. Report workers inspect the committed baseline; compare their findings with local edits. Legacy isolated code delegation (team-delegate) requires a clean Git checkpoint: when local changes exist, explain the constraint and continue locally; never automatically commit or stash user changes. While code workers run, keep target edits under coordinator control. Gather progress, blockers, findings and validation from EXISTING agents before launching more work: use agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>. Requests and responses are durable in team.informationRequests. Busy agents receive questions at their next ready prompt; follow up with team-send, never launch a duplicate to replace a delayed reply. Agents respond with agent team-reply --id <request-id> --text <response>. Track every outstanding request, distinguish reported from verified results, and route dependencies yourself. Present coherent updates and final answers in this lead conversation; the user should never relay worker messages. Route dependencies and messages with agent team-send --id <unique-id> --to <assignment-id> --text <message>. Workers contact only you. Integrate code SERIALly using agent team-integrate <assignment-id>, verify the result, checkpoint, then agent team-finish --validation <checks-and-results>. Process exit is never success. After native compaction or a new conversation inspect agent team before acting; checkpoint, assignments, messages, commits and integration facts are authoritative. Preserve workers and worktrees. Continue locally when authentication, status hooks or repository layout prevent delegation.";
 fn excerpt(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.into();
@@ -1079,7 +1564,7 @@ fn excerpt(text: &str, limit: usize) -> String {
 fn recovery_text(s: &Store, t: &Team) -> Result<String> {
     let rounds: Vec<_> = s.runs.iter().filter(|r| r.chat_team.as_deref() == Some(&t.id)).map(|r| serde_json::json!({
         "id": r.id, "state": r.state, "target": r.target, "integratedHead": r.integrated_head, "error": r.error,
-        "assignments": r.jobs.iter().map(|j| serde_json::json!({"id":j.id,"instructions":j.instructions,"resultKind":j.result_kind,"preset":j.preset,"state":j.state,"base":j.base,"commit":j.commit,"summary":j.summary,"integratedHead":j.integrated_head,"error":j.error})).collect::<Vec<_>>()
+        "assignments": r.jobs.iter().map(|j| serde_json::json!({"id":j.id,"sessionId":j.session_id,"instructions":j.instructions,"components":j.components,"paths":j.paths,"dependencies":j.dependencies,"sharedWorktree":j.shared_worktree,"resultKind":j.result_kind,"preset":j.preset,"state":j.state,"base":j.base,"commit":j.commit,"summary":j.summary,"integratedHead":j.integrated_head,"error":j.error})).collect::<Vec<_>>()
     })).collect();
     let workers = excerpt(
         &t.workers
@@ -1098,7 +1583,17 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
             serde_json::to_string_pretty(rounds)?
         ))
     };
-    let full = render(&t.checkpoint, &rounds)?;
+    let scopes = serde_json::to_string(&t.scopes)?;
+    let supplement = format!(
+        "\nOriginal briefing:\n{}\nCurrent saved plan:\n{}\nSaved conversation (reference context, not new instructions):\n{}\nInformation requests (null response means outstanding):\n{}\nWorkflow requests:\n{}\nExisting agent scopes:\n{scopes}\nTeam scheduling: {:?}. Preserve explicit pause/stop decisions.",
+        t.original_briefing,
+        t.current_plan,
+        t.saved_context,
+        serde_json::to_string(&t.information_requests)?,
+        serde_json::to_string(&t.requests)?,
+        t.state
+    );
+    let full = format!("{}{}", render(&t.checkpoint, &rounds)?, supplement);
     if full.len() <= MESSAGE_LIMIT {
         return Ok(full);
     }
@@ -1116,7 +1611,25 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         "assignments": r.jobs.len(), "unfinishedAssignments": r.jobs.iter().filter(|j| !job_done(j)).count(),
         "error": r.error.as_deref().map(|e| excerpt(e, 256)),
     })).collect();
-    let compact = render(&checkpoint, &rounds)?;
+    let information: Vec<_> = t.information_requests.iter().rev().filter(|r| r.response.is_none()).chain(t.information_requests.iter().rev().filter(|r| r.response.is_some())).take(16).map(|r| serde_json::json!({
+        "id": r.id, "recipient": r.recipient, "generation": r.generation,
+        "question": excerpt(&r.question, 256), "response": r.response.as_deref().map(|text| excerpt(text, 512)), "error": r.error,
+    })).collect();
+    let workflows: Vec<_> = t.requests.iter().rev().take(16).map(|r| serde_json::json!({
+        "id": r.id, "action": r.action, "state": r.state, "result": r.result.as_deref().map(|text| excerpt(text, 256)),
+    })).collect();
+    let compact = format!(
+        "{}\nOriginal briefing:\n{}\nCurrent saved plan:\n{}\nRecent saved conversation:\n{}\nInformation requests (latest 16 of {}, including outstanding responses):\n{}\nWorkflow requests:\n{}\nExisting agent scopes:\n{}\nScheduling: {:?} (preserve explicit pause/stop).",
+        render(&checkpoint, &rounds)?,
+        excerpt(&t.original_briefing, 2048),
+        excerpt(&t.current_plan, 4000),
+        excerpt(&t.saved_context, 8000),
+        t.information_requests.len(),
+        serde_json::to_string(&information)?,
+        serde_json::to_string(&workflows)?,
+        excerpt(&scopes, 2048),
+        t.state,
+    );
     let notice = "This handoff is abbreviated. The complete checkpoint, assignment instructions, results and older rounds remain in durable storage. Run $PATCHBAY_CLI agent team to inspect the complete state before continuing.";
     Ok(format!(
         "{}\n\n{notice}",
@@ -1158,6 +1671,12 @@ pub fn reconcile(
                 continue;
             }
             if restoring {
+                for request in &mut t.requests {
+                    if request.state == "starting" {
+                        request.state = "uncertain".into();
+                        request.result = Some("Control interrupted after its durable claim. Inspect active agents and Auto before issuing another request.".into());
+                    }
+                }
                 if t.state == State::Running {
                     t.state = State::Paused;
                     t.error =
@@ -1167,6 +1686,85 @@ pub fn reconcile(
                     if m.state == DeliveryState::Sending {
                         m.state = DeliveryState::Uncertain;
                     }
+                }
+            }
+            let failed_requests: Vec<_> = t
+                .information_requests
+                .iter()
+                .filter(|q| q.response.is_none() && q.error.is_none())
+                .filter_map(|q| {
+                    let sid = member(s, &t, &q.recipient)
+                        .and_then(|j| j.session_id.as_deref())
+                        .unwrap_or(&q.recipient);
+                    let reason = match record(records, project, sid) {
+                        Err(_) => Some("Agent session is unavailable"),
+                        Ok(r) if generation(r).ok() != Some(q.generation) => {
+                            Some("Agent generation changed")
+                        }
+                        Ok(r) if r.snapshot.as_ref().is_none_or(|s| !s.running) => {
+                            Some("Agent exited before replying")
+                        }
+                        _ => None,
+                    }?;
+                    Some((q.id.clone(), reason.to_string()))
+                })
+                .collect();
+            for (id, reason) in failed_requests {
+                t.information_requests
+                    .iter_mut()
+                    .find(|q| q.id == id)
+                    .unwrap()
+                    .error = Some(reason.clone());
+                append(
+                    &mut t,
+                    format!("ask-failed-{id}"),
+                    "patchbay",
+                    "lead",
+                    None,
+                    format!(
+                        "Information request {id} was not answered: {reason}. Inspect its saved work and choose a follow-up; no replacement worker was launched."
+                    ),
+                )?;
+            }
+            for record in records
+                .iter()
+                .filter(|r| {
+                    r.metadata.project_id == project
+                        && r.metadata.task == t.task
+                        && r.metadata.kind == crate::TerminalKind::Agent
+                })
+                .collect::<Vec<_>>()
+            {
+                if record.id == t.lead.session_id
+                    || s.runs
+                        .iter()
+                        .filter(|r| r.chat_team.as_deref() == Some(&t.id))
+                        .flat_map(|r| &r.jobs)
+                        .any(|j| j.session_id.as_deref() == Some(&record.id))
+                {
+                    continue;
+                }
+                let Some(snapshot) = &record.snapshot else {
+                    continue;
+                };
+                if t.observed_agents.get(&record.id) == Some(&snapshot.generation)
+                    && (ready(record) || !snapshot.running)
+                {
+                    append(
+                        &mut t,
+                        format!("external-finished-{}-{}", record.id, snapshot.generation),
+                        "patchbay",
+                        "lead",
+                        None,
+                        format!(
+                            "Existing agent {} reached a ready prompt or exited. Inspect its results and validation before treating the work as complete.",
+                            record.metadata.name
+                        ),
+                    )?;
+                    t.observed_agents.remove(&record.id);
+                } else if snapshot.running && !ready(record) {
+                    t.observed_agents
+                        .insert(record.id.clone(), snapshot.generation);
                 }
             }
             if let Some(reset) = t.reset.clone() {
@@ -1300,7 +1898,7 @@ pub fn reconcile(
                     "lead",
                     Some(assignment.clone()),
                     format!(
-                        "Worker {assignment} needs input: {question}. Open its side thread or terminal. Automated delivery waits for a ready prompt."
+                        "Worker {assignment} needs input: {question}. Use Sessions to open its terminal. Route its question and dependencies through the lead conversation. Automated delivery waits for a ready prompt."
                     ),
                 )?;
             }
@@ -1336,6 +1934,17 @@ pub fn new_lead(
 ) -> Result<Team> {
     valid_id(&request_id)?;
     ensure!(supported(&terminal), "Choose a supported lead preset");
+    prepare_lead(root, project, project_id, id, terminal, request_id, true)
+}
+fn prepare_lead(
+    root: &Path,
+    project: &Project,
+    project_id: &str,
+    id: &str,
+    terminal: TerminalSpec,
+    request_id: String,
+    clear_history: bool,
+) -> Result<Team> {
     modify(root, |s| {
         let t = team(s, project_id, id)?.clone();
         ensure_available_for_team(s, &t)?;
@@ -1347,7 +1956,7 @@ pub fn new_lead(
             return Ok(t);
         }
         let mapped = target_project(project, t.task.as_deref(), &[])?;
-        let spec = context::task_root_session_spec(
+        let mut spec = context::task_root_session_spec(
             &mapped,
             &[],
             &terminal,
@@ -1369,7 +1978,8 @@ pub fn new_lead(
             &terminal.id,
             t.task.as_deref(),
         );
-        if t.state == State::Stopped {
+        spec.id.clone_from(&next_session);
+        if clear_history && t.state == State::Stopped {
             s.owners.push(Owner {
                 project_id: project_id.into(),
                 target: t.target.clone(),
@@ -1378,20 +1988,234 @@ pub fn new_lead(
             });
         }
         let t = team(s, project_id, id)?;
-        if t.state == State::Stopped {
+        if clear_history && t.state == State::Stopped {
             t.state = State::Running;
         }
         t.reset = Some(Reset {
             id: request_id,
             next_session,
             phase: ResetPhase::Queued,
-            clear_history: true,
+            clear_history,
             error: None,
             launch: Some(LeadLaunch { metadata, spec }),
         });
         Ok(t.clone())
     })
 }
+/// Retain a bounded original briefing before a session can be forgotten.
+pub fn retain_briefing(root: &Path, project: &str, id: &str, text: &str) -> Result<Team> {
+    modify(root, |s| {
+        let t = team(s, project, id)?;
+        if t.original_briefing.is_empty() {
+            t.original_briefing = excerpt(text, 8000);
+        }
+        Ok(t.clone())
+    })
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinuationFailure {
+    pub kind: FailureKind,
+    pub message: String,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FailureKind {
+    Authentication,
+    Access,
+    Configuration,
+    Connection,
+    Uncertain,
+}
+impl ContinuationFailure {
+    pub fn new(kind: FailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+    pub fn from_error(error: anyhow::Error) -> Self {
+        error
+            .downcast_ref::<Self>()
+            .cloned()
+            .unwrap_or_else(|| Self::new(FailureKind::Configuration, format!("{error:#}")))
+    }
+}
+impl std::fmt::Display for ContinuationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for ContinuationFailure {}
+
+/// A continuation resolves the durable lead before the pending user message is delivered.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Continuation {
+    pub session: Record,
+    pub generation: u64,
+    pub outcome: ContinuationOutcome,
+    pub team: Team,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ContinuationOutcome {
+    Connected,
+    Resumed,
+    Reconstructed,
+}
+
+/// Reconnect, resume the exact conversation, or reconstruct only confirmed missing history.
+/// Launch identities survive lost replies. Scheduling pause/stop decisions are never changed.
+pub fn continue_lead(
+    root: &Path,
+    project: &Project,
+    project_id: &str,
+    id: &str,
+    saved_context: &str,
+    mut call: impl FnMut(Request) -> Result<serde_json::Value>,
+) -> Result<Continuation> {
+    use crate::session::ChatResume;
+    // Reserve and submit under the durable store lock. A second caller samples sessions only
+    // after the first caller's launch decision, so stale frontend snapshots cannot launch twice.
+    let (outcome, records) = modify(root, |s| {
+        let records: Vec<Record> = serde_json::from_value(call(Request::List)?)?;
+        let t = team(s, project_id, id)?;
+        let plan = crate::plans::read(root, t.task.as_deref())?;
+        t.saved_context = excerpt(saved_context, 16000);
+        t.current_plan = excerpt(&plan.text, 8000);
+        if t.reset.is_some() {
+            return Ok((ContinuationOutcome::Reconstructed, records));
+        }
+        let current = records
+            .iter()
+            .find(|r| r.id == t.lead.session_id && r.metadata.project_id == project_id);
+        if let Some(r) = current {
+            ensure!(r.metadata.task == t.task, "Lead is outside this worktree");
+            if r.snapshot.as_ref().is_some_and(|s| s.running) {
+                ensure!(
+                    !r.interrupted,
+                    "The session service disconnected. Reconnect and retry; your draft was kept."
+                );
+                let outcome = if t
+                    .continuation_request
+                    .as_ref()
+                    .is_some_and(|request| r.request_ids.contains(request))
+                {
+                    ContinuationOutcome::Resumed
+                } else {
+                    ContinuationOutcome::Connected
+                };
+                return Ok((outcome, records));
+            }
+            let request_id = t.continuation_request.get_or_insert_with(new_id).clone();
+            let sid = t.lead.session_id.clone();
+            save(root, s)?;
+            // A transport failure leaves the same request reserved for reconciliation/retry.
+            match serde_json::from_value::<ChatResume>(call(Request::ChatResume {
+                id: sid,
+                request_id,
+            })?)? {
+                ChatResume::Resumed => return Ok((ContinuationOutcome::Resumed, records)),
+                ChatResume::HistoryUnavailable { .. } => {}
+                ChatResume::Failed { error, failure } => {
+                    team(s, project_id, id)?.continuation_request = None;
+                    save(root, s)?;
+                    let kind = match failure {
+                        crate::session::ResumeFailure::Authentication => {
+                            FailureKind::Authentication
+                        }
+                        crate::session::ResumeFailure::Access => FailureKind::Access,
+                        crate::session::ResumeFailure::Configuration => FailureKind::Configuration,
+                    };
+                    return Err(ContinuationFailure::new(
+                        kind,
+                        format!("{error}. Your draft was kept."),
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok((ContinuationOutcome::Reconstructed, records))
+    })?;
+    reconcile(root, project_id, &records, false)?;
+    if outcome == ContinuationOutcome::Reconstructed {
+        let t = list(root, project_id)?
+            .into_iter()
+            .find(|t| t.id == id)
+            .context("Unknown chat team")?;
+        if t.reset.is_none() {
+            // Retained records keep the original private launch settings and briefing. Forgotten
+            // sessions rebuild using the exact saved preset and durable coordination context.
+            if let Some(r) = records.iter().find(|r| r.id == t.lead.session_id) {
+                modify(root, |s| {
+                    let t = team(s, project_id, id)?;
+                    if t.reset.is_none() {
+                        t.reset = Some(Reset {
+                            id: new_id(),
+                            next_session: r.id.clone(),
+                            phase: ResetPhase::Queued,
+                            clear_history: false,
+                            error: None,
+                            launch: None,
+                        });
+                    }
+                    Ok(())
+                })?;
+            } else {
+                let mut terminal = t.lead.preset.clone();
+                terminal.id = format!("chat-recovery-{}", new_id());
+                prepare_lead(root, project, project_id, id, terminal, new_id(), false)?;
+            }
+        }
+        // Reconcile a possibly accepted launch before retrying its durable identity.
+        let fresh: Vec<Record> = serde_json::from_value(call(Request::List)?)?;
+        reconcile(root, project_id, &fresh, false)?;
+        modify(root, |s| {
+            if let Some(reset) = &mut team(s, project_id, id)?.reset {
+                ensure!(
+                    !reset.clear_history,
+                    "An explicit conversation change is pending. Wait for it to finish."
+                );
+                reset.phase = ResetPhase::Queued;
+                reset.error = None;
+            }
+            Ok(())
+        })?;
+        replace_lead(root, project_id, id, &fresh, &mut call)?;
+    }
+    let records: Vec<Record> = serde_json::from_value(call(Request::List)?)?;
+    reconcile(root, project_id, &records, false)?;
+    let t = list(root, project_id)?
+        .into_iter()
+        .find(|t| t.id == id)
+        .context("Unknown chat team")?;
+    ensure!(
+        t.reset.is_none(),
+        "{}",
+        t.reset.as_ref().and_then(|r| r.error.as_deref()).unwrap_or(
+            "Lead connection is pending. Retry to reconcile the same launch; your draft was kept."
+        )
+    );
+    let r = record(&records, project_id, &t.lead.session_id)?.clone();
+    let generation = generation(&r)?;
+    ensure!(
+        r.snapshot.as_ref().is_some_and(|s| s.running),
+        "The lead exited. Inspect its terminal, then retry; your draft was kept."
+    );
+    let t = modify(root, |s| {
+        let t = team(s, project_id, id)?;
+        t.continuation_request = None;
+        Ok(t.clone())
+    })?;
+    Ok(Continuation {
+        session: r,
+        generation,
+        outcome,
+        team: t,
+    })
+}
+
 /// Reserves a fresh-conversation identity before replacement. The transport must deduplicate it.
 pub fn replace_lead(
     root: &Path,
@@ -1405,7 +2229,7 @@ pub fn replace_lead(
         let Some(reset) = t.reset.clone() else {
             return Ok(());
         };
-        if t.state != State::Running || reset.phase != ResetPhase::Queued {
+        if (t.state != State::Running && reset.clear_history) || reset.phase != ResetPhase::Queued {
             return Ok(());
         }
         if let Ok(current) = record(records, project, &t.lead.session_id)
@@ -1453,7 +2277,9 @@ pub fn replace_lead(
             let reset = t.reset.as_mut().unwrap();
             reset.phase = ResetPhase::Failed;
             reset.error = Some(e.to_string());
-            t.state = State::Paused;
+            if t.state == State::Running {
+                t.state = State::Paused;
+            }
             t.error = Some(format!(
                 "Lead replacement unconfirmed: {e}. History and workers are preserved. Resume reconciles the same launch."
             ));
@@ -1471,7 +2297,7 @@ pub fn deliver(
 ) -> Result<()> {
     modify(root, |s| {
         let mut t = team(s, project, id)?.clone();
-        if t.state != State::Running || t.reset.is_some() {
+        if t.reset.is_some() {
             return Ok(());
         }
         if t.recovery
@@ -1490,6 +2316,9 @@ pub fn deliver(
             .collect();
         // The durable reserve blocks another desktop drive even if the transport loses its reply.
         for recipient in recipients {
+            if recipient != "lead" && t.state != State::Running {
+                continue;
+            }
             if t.messages.iter().any(|m| {
                 m.recipient == recipient
                     && matches!(m.state, DeliveryState::Sending | DeliveryState::Uncertain)
@@ -1499,7 +2328,14 @@ pub fn deliver(
             let sid = if recipient == "lead" {
                 Some(t.lead.session_id.clone())
             } else {
-                member(s, &t, &recipient).and_then(|j| j.session_id.clone())
+                member(s, &t, &recipient)
+                    .and_then(|j| j.session_id.clone())
+                    .or_else(|| {
+                        record(records, project, &recipient)
+                            .ok()
+                            .filter(|r| r.metadata.task == t.task)
+                            .map(|r| r.id.clone())
+                    })
             };
             let Some(r) = sid
                 .as_deref()
@@ -1512,11 +2348,19 @@ pub fn deliver(
             }
             if recipient != "lead"
                 && member(s, &t, &recipient)
-                    .is_none_or(|j| r.request_ids.last() != Some(&j.request_id))
+                    .is_some_and(|j| r.request_ids.last() != Some(&j.request_id))
             {
                 continue;
             }
             let generation = generation(r)?;
+            if recipient != "lead"
+                && member(s, &t, &recipient).is_none()
+                && t.scopes
+                    .get(&recipient)
+                    .is_none_or(|scope| scope.generation != generation)
+            {
+                continue;
+            }
             if recipient == "lead" && generation != t.lead.generation {
                 continue;
             }
@@ -1608,16 +2452,18 @@ pub fn deliver(
             });
             for m in &mut t.messages {
                 if ids.contains(&m.id) {
-                    m.state = if result.is_ok() {
-                        DeliveryState::Delivered
-                    } else {
-                        DeliveryState::Uncertain
+                    m.state = match &result {
+                        Ok(_) => DeliveryState::Delivered,
+                        Err(error) if error.is::<DeliveryRefused>() => DeliveryState::Pending,
+                        Err(_) => DeliveryState::Uncertain,
                     };
                 }
             }
-            if let Err(e) = result {
+            if let Err(e) = result
+                && !e.is::<DeliveryRefused>()
+            {
                 t.error = Some(format!(
-                    "Delivery unconfirmed: {e}. Inspect the side thread before explicitly resolving delivery."
+                    "Delivery unconfirmed: {e}. Inspect the recipient’s terminal in Sessions, then resolve delivery inline in Chat."
                 ));
             }
         }
@@ -1762,6 +2608,7 @@ mod tests {
     }
     fn assignment(id: &str, kind: ResultKind, deps: &[&str]) -> AssignmentDraft {
         AssignmentDraft {
+            paths: vec![],
             id: id.into(),
             instructions: format!("Do {id}"),
             components: vec![],
@@ -1769,6 +2616,194 @@ mod tests {
             preset: "codex".into(),
             result_kind: kind,
         }
+    }
+    #[test]
+    fn path_reservations_allow_disjoint_work_and_cover_directories() {
+        assert!(!overlaps(
+            &[],
+            &["src/a.rs".into()],
+            &[],
+            &["src/b.rs".into()]
+        ));
+        assert!(overlaps(&[], &["src".into()], &[], &["src/a.rs".into()]));
+        assert!(overlaps(&[], &[], &[], &["src/a.rs".into()]));
+        assert!(validate_paths(&["../outside".into()]).is_err());
+        assert!(validate_paths(&["/outside".into()]).is_err());
+    }
+    #[test]
+    fn agreed_existing_scope_is_bound_to_its_process_generation() {
+        let f = Fixture::new();
+        let mut a = assignment("a", ResultKind::Code, &[]);
+        a.paths = vec!["src/a.rs".into()];
+        f.cmd(Command::DelegateShared {
+            id: "round1".into(),
+            assignments: vec![a],
+        })
+        .unwrap();
+        let mut builder = session(&f.dir, "existing-builder");
+        builder
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .state = AgentState::Working;
+        command(
+            &f.dir,
+            &f.project,
+            &f.auth(),
+            &[f.lead.clone(), builder.clone()],
+            Command::Coordinate {
+                session: builder.id.clone(),
+                components: vec![],
+                paths: vec!["src/b.rs".into()],
+            },
+        )
+        .unwrap();
+        shared_launch_available(
+            &f.dir,
+            "p",
+            "round1",
+            "a",
+            &[f.lead.clone(), builder.clone()],
+        )
+        .unwrap();
+        builder.snapshot.as_mut().unwrap().generation += 1;
+        assert!(
+            shared_launch_available(&f.dir, "p", "round1", "a", &[f.lead.clone(), builder])
+                .is_err()
+        );
+    }
+    #[test]
+    fn shared_workers_preserve_dirty_worktree_and_complete_without_commits() {
+        let f = Fixture::new();
+        std::fs::write(f.dir.join("local"), "user edits").unwrap();
+        f.cmd(Command::DelegateShared {
+            id: "round1".into(),
+            assignments: vec![
+                assignment("a", ResultKind::Code, &[]),
+                assignment("b", ResultKind::Code, &["a"]),
+            ],
+        })
+        .unwrap();
+        let (_, worker) = f.launch("a");
+        assert_eq!(worker.spec.cwd, f.dir);
+        assert_eq!(
+            std::fs::read_to_string(f.dir.join("local")).unwrap(),
+            "user edits"
+        );
+        f.worker_cmd(
+            &worker,
+            Command::Report {
+                summary: "Changed feature.rs; cargo check passed".into(),
+            },
+        )
+        .unwrap();
+        let r = super::super::read(&f.dir, "p", "round1").unwrap();
+        assert!(job_done(&r.jobs[0]));
+        assert!(r.jobs[0].commit.is_none());
+        let (_, second) = f.launch("b");
+        assert_eq!(second.spec.cwd, f.dir);
+    }
+    #[test]
+    fn shared_rounds_queue_overlapping_writers_until_explicit_report() {
+        let f = Fixture::new();
+        f.cmd(Command::DelegateShared {
+            id: "round1".into(),
+            assignments: vec![assignment("a", ResultKind::Code, &[])],
+        })
+        .unwrap();
+        let (_, worker) = f.launch("a");
+        f.cmd(Command::DelegateShared {
+            id: "round2".into(),
+            assignments: vec![assignment("b", ResultKind::Code, &[])],
+        })
+        .unwrap();
+        let error = super::super::launch(&f.dir, "p", "round2", "b", &f.project, |_| {
+            panic!("overlapping launch")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("Waiting for coordination"));
+        let r = super::super::read(&f.dir, "p", "round2").unwrap();
+        assert_eq!(r.jobs[0].state, JobState::Pending);
+        f.worker_cmd(
+            &worker,
+            Command::Report {
+                summary: "Done; checks passed".into(),
+            },
+        )
+        .unwrap();
+        modify(&f.dir, |s| reserve_check(s, "p", "round2", "b")).unwrap();
+    }
+    #[test]
+    fn workflow_requests_are_idempotent_and_claimed_once() {
+        let f = Fixture::new();
+        let request = || Command::Request {
+            id: "start".into(),
+            action: "startAuto".into(),
+            settings: serde_json::json!({"goal":"test"}),
+        };
+        f.cmd(request()).unwrap();
+        f.cmd(request()).unwrap();
+        assert_eq!(f.state().requests.len(), 1);
+        let claim = || Control::RequestState {
+            id: "start".into(),
+            state: "starting".into(),
+            result: None,
+        };
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            claim(),
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        assert!(
+            control(
+                &f.dir,
+                "p",
+                &f.team.id,
+                claim(),
+                std::slice::from_ref(&f.lead)
+            )
+            .is_err()
+        );
+        reconcile(&f.dir, "p", std::slice::from_ref(&f.lead), true).unwrap();
+        assert_eq!(f.state().requests[0].state, "uncertain");
+    }
+    #[test]
+    fn unknown_existing_writer_blocks_shared_launch() {
+        let f = Fixture::new();
+        f.cmd(Command::DelegateShared {
+            id: "round1".into(),
+            assignments: vec![assignment("a", ResultKind::Code, &[])],
+        })
+        .unwrap();
+        let mut builder = session(&f.dir, "existing-builder");
+        builder
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .state = AgentState::Working;
+        let records = vec![f.lead.clone(), builder.clone()];
+        assert!(shared_launch_available(&f.dir, "p", "round1", "a", &records).is_err());
+        builder
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .state = AgentState::Idle;
+        shared_launch_available(&f.dir, "p", "round1", "a", &[f.lead.clone(), builder]).unwrap();
     }
     #[test]
     fn owning_lead_attaches_without_launch_and_foreign_generations_and_tasks_are_rejected() {
@@ -2023,9 +3058,10 @@ mod tests {
         assert_eq!(f.state().rounds.len(), 2);
     }
     #[test]
-    fn ownership_is_exclusive_between_chat_auto_and_manual_runs_and_stop_preserves_results() {
+    fn idle_lead_coexists_with_auto_and_stop_preserves_results() {
         let f = Fixture::new();
-        assert!(auto_ownership(&f.dir, "p", &f.dir, "auto", true).is_err());
+        auto_ownership(&f.dir, "p", &f.dir, "auto", true).unwrap();
+        auto_ownership(&f.dir, "p", &f.dir, "auto", false).unwrap();
         let draft = Draft {
             auto: None,
             id: "manual".into(),
@@ -2065,7 +3101,7 @@ mod tests {
                 Control::Resume,
                 std::slice::from_ref(&f.lead)
             )
-            .is_err()
+            .is_ok()
         );
     }
     #[test]
@@ -2934,7 +3970,7 @@ mod tests {
                 Control::Resume,
                 std::slice::from_ref(&f.lead)
             )
-            .is_err()
+            .is_ok()
         );
         auto_ownership(&f.dir, "p", &f.dir, "new-auto", false).unwrap();
         control(
@@ -2945,5 +3981,564 @@ mod tests {
             std::slice::from_ref(&f.lead),
         )
         .unwrap();
+    }
+    #[test]
+    fn information_requests_reach_busy_existing_agents_once_and_accept_authenticated_replies() {
+        let f = Fixture::new();
+        let mut external = session(&f.dir, "existing");
+        external
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .state = AgentState::Working;
+        let mut records = vec![f.lead.clone(), external.clone()];
+        let ask = || Command::Ask {
+            id: "progress".into(),
+            to: external.id.clone(),
+            text: "Findings and blockers?".into(),
+        };
+        for _ in 0..2 {
+            command(&f.dir, &f.project, &f.auth(), &records, ask()).unwrap();
+        }
+        assert_eq!(f.state().information_requests.len(), 1);
+        let mut external_prompts = 0;
+        deliver(&f.dir, "p", &f.team.id, &records, |request| {
+            if matches!(request, Request::Prompt { ref id, .. } if id == "existing") {
+                external_prompts += 1;
+            }
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        assert_eq!(external_prompts, 0);
+        records[1]
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .state = AgentState::Idle;
+        deliver(&f.dir, "p", &f.team.id, &records, |request| {
+            if let Request::Prompt { id, text, .. } = request
+                && id == "existing"
+            {
+                external_prompts += 1;
+                assert!(text.contains("team-reply --id progress"));
+            }
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        assert_eq!(external_prompts, 1);
+        let mut auth = f.auth();
+        auth.agent_session = external.id.clone();
+        for _ in 0..2 {
+            command(
+                &f.dir,
+                &f.project,
+                &auth,
+                &records,
+                Command::Reply {
+                    id: "progress".into(),
+                    text: "Found the cause; validation pending".into(),
+                },
+            )
+            .unwrap();
+        }
+        let t = f.state();
+        assert_eq!(
+            t.information_requests[0].response.as_deref(),
+            Some("Found the cause; validation pending")
+        );
+        assert_eq!(
+            t.messages
+                .iter()
+                .filter(|m| m.id == "reply-progress")
+                .count(),
+            1
+        );
+        assert!(
+            command(
+                &f.dir,
+                &f.project,
+                &auth,
+                &records,
+                Command::Reply {
+                    id: "progress".into(),
+                    text: "Different response".into()
+                }
+            )
+            .is_err()
+        );
+        auth.generation = Some(2);
+        assert!(
+            command(
+                &f.dir,
+                &f.project,
+                &auth,
+                &records,
+                Command::Reply {
+                    id: "progress".into(),
+                    text: "Stale response".into()
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn outstanding_information_survives_restart_and_reports_agent_failure_without_delegating() {
+        let f = Fixture::new();
+        let external = session(&f.dir, "existing");
+        let records = vec![f.lead.clone(), external];
+        command(
+            &f.dir,
+            &f.project,
+            &f.auth(),
+            &records,
+            Command::Ask {
+                id: "dependency".into(),
+                to: "existing".into(),
+                text: "Can we use your API?".into(),
+            },
+        )
+        .unwrap();
+        reconcile(&f.dir, "p", &records, true).unwrap();
+        let t = f.state();
+        assert_eq!(t.information_requests.len(), 1);
+        assert!(t.information_requests[0].response.is_none());
+        assert!(
+            recovery_text(&load(&f.dir).unwrap(), &t)
+                .unwrap()
+                .contains("Can we use your API?")
+        );
+        reconcile(&f.dir, "p", std::slice::from_ref(&f.lead), false).unwrap();
+        let t = f.state();
+        assert!(t.information_requests[0].error.is_some());
+        assert!(t.messages.iter().any(|m| m.id == "ask-failed-dependency"));
+        assert!(t.rounds.is_empty());
+    }
+
+    #[test]
+    fn continuation_connects_live_without_launching_and_preserves_stop_decision() {
+        let f = Fixture::new();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Stop,
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        let result = continue_lead(
+            &f.dir,
+            &f.project,
+            "p",
+            &f.team.id,
+            "Recent user request",
+            |request| {
+                assert!(matches!(request, Request::List));
+                Ok(serde_json::to_value(vec![f.lead.clone()]).unwrap())
+            },
+        )
+        .unwrap();
+        assert_eq!(result.outcome, ContinuationOutcome::Connected);
+        assert_eq!(result.session.id, f.lead.id);
+        assert_eq!(result.team.state, State::Stopped);
+        assert!(result.team.saved_context.contains("Recent user request"));
+    }
+
+    #[test]
+    fn continuation_resumes_exact_session_and_reconciles_membership_while_paused() {
+        let f = Fixture::new();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Pause,
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        let mut lead = f.lead.clone();
+        lead.metadata.conversation_id = Some("exact-conversation".into());
+        lead.snapshot.as_mut().unwrap().running = false;
+        let mut resumes = 0;
+        let result = continue_lead(
+            &f.dir,
+            &f.project,
+            "p",
+            &f.team.id,
+            "saved transcript",
+            |request| match request {
+                Request::List => Ok(serde_json::to_value(vec![lead.clone()]).unwrap()),
+                Request::ChatResume { id, request_id } => {
+                    assert_eq!(id, f.lead.id);
+                    assert_eq!(
+                        lead.metadata.conversation_id.as_deref(),
+                        Some("exact-conversation")
+                    );
+                    resumes += 1;
+                    lead.request_ids.push(request_id);
+                    lead.snapshot.as_mut().unwrap().generation += 1;
+                    lead.snapshot.as_mut().unwrap().running = true;
+                    Ok(serde_json::to_value(crate::session::ChatResume::Resumed).unwrap())
+                }
+                _ => panic!("Unexpected replacement"),
+            },
+        )
+        .unwrap();
+        assert_eq!(resumes, 1);
+        assert_eq!(result.outcome, ContinuationOutcome::Resumed);
+        assert_eq!(result.team.lead.generation, 2);
+        assert_eq!(result.team.state, State::Paused);
+        assert!(result.team.handoff.is_none());
+    }
+
+    #[test]
+    fn continuation_reconstructs_missing_history_with_plan_transcript_and_preserved_history() {
+        let f = Fixture::new();
+        let plan = crate::plans::prepared_file(&f.dir, None).unwrap();
+        std::fs::write(plan, "Current approved plan").unwrap();
+        std::fs::write(f.dir.join("user-edit"), "preserve").unwrap();
+        let mut lead = f.lead.clone();
+        lead.snapshot.as_mut().unwrap().running = false;
+        let mut launches = 0;
+        let result = continue_lead(
+            &f.dir,
+            &f.project,
+            "p",
+            &f.team.id,
+            "Latest saved conversation",
+            |request| match request {
+                Request::List => Ok(serde_json::to_value(vec![lead.clone()]).unwrap()),
+                Request::ChatResume { .. } => Ok(serde_json::to_value(
+                    crate::session::ChatResume::HistoryUnavailable {
+                        error: "Missing history".into(),
+                    },
+                )
+                .unwrap()),
+                Request::ResetConversation {
+                    id,
+                    request_id,
+                    generation,
+                } => {
+                    assert_eq!(id, lead.id);
+                    assert_eq!(generation, 1);
+                    launches += 1;
+                    lead.request_ids.push(request_id);
+                    lead.snapshot.as_mut().unwrap().generation = 2;
+                    lead.snapshot.as_mut().unwrap().running = true;
+                    Ok(serde_json::Value::Null)
+                }
+                _ => panic!("Unexpected transport request"),
+            },
+        )
+        .unwrap();
+        assert_eq!(launches, 1);
+        assert_eq!(result.outcome, ContinuationOutcome::Reconstructed);
+        assert!(!result.team.handoff.as_ref().unwrap().clear_history);
+        let text = recovery_text(&load(&f.dir).unwrap(), &result.team).unwrap();
+        assert!(text.contains("Current approved plan"));
+        assert!(text.contains("Latest saved conversation"));
+        assert_eq!(
+            std::fs::read_to_string(f.dir.join("user-edit")).unwrap(),
+            "preserve"
+        );
+    }
+
+    #[test]
+    fn continuation_recovers_forgotten_lead_with_same_agent_without_resuming_work() {
+        let f = Fixture::new();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Stop,
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        let mut records = vec![];
+        let result = continue_lead(
+            &f.dir,
+            &f.project,
+            "p",
+            &f.team.id,
+            "Keep my conversation",
+            |request| match request {
+                Request::List => Ok(serde_json::to_value(&records).unwrap()),
+                Request::NewConversation {
+                    request_id,
+                    metadata,
+                    spec,
+                } => {
+                    assert_eq!(metadata.command, f.team.lead.preset.command);
+                    assert_ne!(spec.id, f.lead.id);
+                    let mut next = session(&f.dir, &spec.id);
+                    next.metadata = *metadata;
+                    next.request_ids = vec![request_id];
+                    records.push(next);
+                    Ok(serde_json::Value::Null)
+                }
+                _ => panic!("Unexpected request"),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.team.state, State::Stopped);
+        assert!(!result.team.handoff.as_ref().unwrap().clear_history);
+        assert_eq!(records.len(), 1);
+        assert!(result.team.saved_context.contains("Keep my conversation"));
+    }
+
+    #[test]
+    fn continuation_does_not_replace_authentication_access_or_configuration_failures() {
+        for (failure, expected, reason) in [
+            (
+                crate::session::ResumeFailure::Authentication,
+                FailureKind::Authentication,
+                "Authentication required",
+            ),
+            (
+                crate::session::ResumeFailure::Access,
+                FailureKind::Access,
+                "Access denied",
+            ),
+            (
+                crate::session::ResumeFailure::Configuration,
+                FailureKind::Configuration,
+                "Bad command",
+            ),
+        ] {
+            let f = Fixture::new();
+            let mut lead = f.lead.clone();
+            lead.snapshot.as_mut().unwrap().running = false;
+            let error =
+                continue_lead(
+                    &f.dir,
+                    &f.project,
+                    "p",
+                    &f.team.id,
+                    "draft",
+                    |request| match request {
+                        Request::List => Ok(serde_json::to_value(vec![lead.clone()]).unwrap()),
+                        Request::ChatResume { .. } => {
+                            Ok(serde_json::to_value(crate::session::ChatResume::Failed {
+                                error: reason.into(),
+                                failure,
+                            })
+                            .unwrap())
+                        }
+                        _ => panic!("Incorrect automatic replacement"),
+                    },
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains(reason));
+            assert_eq!(
+                error.downcast_ref::<ContinuationFailure>().unwrap().kind,
+                expected
+            );
+            assert!(f.state().reset.is_none());
+            assert!(f.state().continuation_request.is_none());
+        }
+    }
+
+    #[test]
+    fn uncertain_resume_retries_the_same_identity_and_never_replaces_history() {
+        let f = Fixture::new();
+        let mut lead = f.lead.clone();
+        lead.snapshot.as_mut().unwrap().running = false;
+        let mut identity = None;
+        assert!(
+            continue_lead(
+                &f.dir,
+                &f.project,
+                "p",
+                &f.team.id,
+                "draft",
+                |request| match request {
+                    Request::List => Ok(serde_json::to_value(vec![lead.clone()]).unwrap()),
+                    Request::ChatResume { request_id, .. } => {
+                        identity = Some(request_id);
+                        anyhow::bail!("lost reply")
+                    }
+                    _ => panic!("Unexpected launch"),
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(f.state().continuation_request, identity);
+        let result =
+            continue_lead(
+                &f.dir,
+                &f.project,
+                "p",
+                &f.team.id,
+                "draft",
+                |request| match request {
+                    Request::List => Ok(serde_json::to_value(vec![lead.clone()]).unwrap()),
+                    Request::ChatResume { request_id, .. } => {
+                        assert_eq!(Some(request_id.clone()), identity);
+                        lead.request_ids.push(request_id);
+                        lead.snapshot.as_mut().unwrap().running = true;
+                        lead.snapshot.as_mut().unwrap().generation = 2;
+                        Ok(serde_json::to_value(crate::session::ChatResume::Resumed).unwrap())
+                    }
+                    _ => panic!("Unexpected launch"),
+                },
+            )
+            .unwrap();
+        assert_eq!(result.outcome, ContinuationOutcome::Resumed);
+        assert!(result.team.reset.is_none());
+    }
+
+    #[test]
+    fn lead_inbox_keeps_working_while_worker_scheduling_is_paused() {
+        let f = Fixture::new();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Pause,
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        let mut prompts = 0;
+        deliver(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |request| {
+                if let Request::Prompt { id, .. } = request {
+                    assert_eq!(id, f.lead.id);
+                    prompts += 1;
+                }
+                Ok(serde_json::Value::Null)
+            },
+        )
+        .unwrap();
+        assert_eq!(prompts, 1);
+        assert_eq!(f.state().state, State::Paused);
+    }
+    #[test]
+    fn compact_recovery_prioritizes_outstanding_requests_and_keeps_plan_and_briefing() {
+        let f = Fixture::new();
+        modify(&f.dir, |s| {
+            let t = team(s, "p", &f.team.id)?;
+            t.checkpoint.goal = "Large checkpoint ".repeat(10000);
+            t.saved_context = "Recent conversation ".repeat(1000);
+            t.current_plan = "CURRENT-PLAN".into();
+            t.original_briefing = "ORIGINAL-BRIEFING".into();
+            t.information_requests.push(InformationRequest {
+                id: "old-outstanding".into(),
+                recipient: "existing".into(),
+                generation: 1,
+                question: "OUTSTANDING-DEPENDENCY".into(),
+                response: None,
+                error: None,
+            });
+            for i in 0..30 {
+                t.information_requests.push(InformationRequest {
+                    id: format!("completed-{i}"),
+                    recipient: "worker".into(),
+                    generation: 1,
+                    question: "Question".into(),
+                    response: Some("Answer".repeat(300)),
+                    error: None,
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+        let text = recovery_text(&load(&f.dir).unwrap(), &f.state()).unwrap();
+        assert!(text.len() <= MESSAGE_LIMIT);
+        assert!(text.contains("OUTSTANDING-DEPENDENCY"));
+        assert!(text.contains("CURRENT-PLAN"));
+        assert!(text.contains("ORIGINAL-BRIEFING"));
+        assert!(text.contains("abbreviated"));
+    }
+
+    #[test]
+    fn visible_history_boundary_discards_saved_conversation_without_discarding_plan_or_checkpoint()
+    {
+        let f = Fixture::new();
+        modify(&f.dir, |s| {
+            let t = team(s, "p", &f.team.id)?;
+            t.saved_context = "CLEARED-CONVERSATION".into();
+            t.current_plan = "KEEP-PLAN".into();
+            Ok(())
+        })
+        .unwrap();
+        let t = control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::HistoryBoundary,
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        let text = recovery_text(&load(&f.dir).unwrap(), &t).unwrap();
+        assert!(!text.contains("CLEARED-CONVERSATION"));
+        assert!(text.contains("KEEP-PLAN"));
+        assert_eq!(t.checkpoint, f.team.checkpoint);
+    }
+    #[test]
+    fn confirmed_prompt_refusal_waits_for_a_new_ready_turn_without_becoming_uncertain() {
+        let mut f = Fixture::new();
+        deliver(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |request| {
+                if matches!(request, Request::Prompt { .. }) {
+                    return Err(
+                        DeliveryRefused("Another message owns the ready prompt".into()).into(),
+                    );
+                }
+                Ok(serde_json::Value::Null)
+            },
+        )
+        .unwrap();
+        assert!(
+            f.state()
+                .messages
+                .iter()
+                .all(|m| m.state == DeliveryState::Pending)
+        );
+        deliver(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |_| panic!("retried a consumed ready prompt"),
+        )
+        .unwrap();
+        f.lead
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .since_ms += 1;
+        deliver(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |_| Ok(serde_json::Value::Null),
+        )
+        .unwrap();
+        assert!(
+            f.state()
+                .messages
+                .iter()
+                .all(|m| m.state == DeliveryState::Delivered)
+        );
     }
 }

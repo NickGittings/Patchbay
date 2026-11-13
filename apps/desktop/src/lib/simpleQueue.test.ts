@@ -390,3 +390,66 @@ test.each([
     )
   },
 )
+
+test('a lead queue remains deliverable while Auto runs in its worktree', async () => {
+  const { useChatTeams } = await import('./chatTeams')
+  useChatTeams.setState({ teams: { p: [{ task: 't', lead: { sessionId: sid } }] as never } })
+  useStore.setState({ project: { id: 'p' }, activeTask: 't', auto: { status: 'running' } } as never)
+  update(session('idle'))
+  queue()
+  await flushQueued(key)
+  expect(terminalPrompt).toHaveBeenCalledOnce()
+  useChatTeams.setState({ teams: {} })
+})
+
+test('queued user messages wait until recovery delivery finishes its turn', async () => {
+  const { useChatTeams } = await import('./chatTeams')
+  useChatTeams.setState({
+    teams: { p: [{ task: 't', lead: { sessionId: sid }, recovery: true, messages: [] }] as never },
+  })
+  update(session('idle'))
+  queue()
+  await flushQueued(key)
+  expect(terminalPrompt).not.toHaveBeenCalled()
+  expect(useSimpleUi.getState().worktrees[key].queued).toBeDefined()
+  const readySince = useStore.getState().sessions[sid].status!.agent!.sinceMs
+  useChatTeams.setState({
+    teams: {
+      p: [
+        {
+          task: 't',
+          lead: { sessionId: sid },
+          recovery: false,
+          messages: [],
+          deliveries: [{ recipient: 'lead', generation: 1, readySince }],
+        },
+      ] as never,
+    },
+  })
+  await flushQueued(key)
+  expect(terminalPrompt).not.toHaveBeenCalled()
+  const next = session('idle')
+  next.status!.agent!.sinceMs = readySince + 1
+  update(next)
+  await flushQueued(key)
+  expect(terminalPrompt).toHaveBeenCalledOnce()
+  useChatTeams.setState({ teams: {} })
+})
+
+test('an uncertain user send stays blocked until the user resolves delivery', async () => {
+  update(session('idle'))
+  queue()
+  vi.mocked(terminalPrompt).mockRejectedValueOnce({
+    message: 'Lost acknowledgement',
+    uncertain: true,
+  })
+  await flushQueued(key)
+  expect(useSimpleUi.getState().worktrees[key]).toMatchObject({
+    draft: 'follow @app up',
+    unconfirmed: { sessionId: sid, generation: 1, text: 'follow  up' },
+  })
+  queue()
+  await flushQueued(key)
+  expect(terminalPrompt).toHaveBeenCalledOnce()
+  expect(useSimpleUi.getState().worktrees[key].queued).toBeDefined()
+})

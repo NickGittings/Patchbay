@@ -182,6 +182,16 @@ fn save_at(
     Ok(profile)
 }
 
+/// Credential failures are classified at their source, before crossing the session transport.
+#[derive(Debug)]
+pub struct CredentialError(pub anyhow::Error);
+impl std::fmt::Display for CredentialError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.0)
+    }
+}
+impl std::error::Error for CredentialError {}
+
 fn token(profile: &Profile) -> Result<String> {
     let value = if let Some(name) = &profile.credential_env {
         std::env::var(name).with_context(|| {
@@ -261,7 +271,9 @@ pub fn launch_token(command: &str) -> Result<Option<String>> {
         return Ok(None);
     };
     let profiles = list()?;
-    token(credential_profile(&snapshot, &profiles)).map(Some)
+    token(credential_profile(&snapshot, &profiles))
+        .map(Some)
+        .map_err(|e| CredentialError(e).into())
 }
 
 fn credential_profile<'a>(snapshot: &'a Profile, profiles: &'a [Profile]) -> &'a Profile {

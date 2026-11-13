@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// A confirmed missing provider conversation; other failures must never trigger replacement.
+#[derive(Debug)]
+pub struct HistoryUnavailable(pub String);
+impl std::fmt::Display for HistoryUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for HistoryUnavailable {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Adapter {
@@ -102,10 +112,9 @@ impl Adapter {
                 bail!("Remove existing resume/continue/print options before resuming");
             }
         }
-        anyhow::ensure!(
-            Self::has_history(history, id),
-            "Provider history for {id} is missing; restore it or set the correct conversation ID"
-        );
+        if !Self::has_history(history, id)? {
+            return Err(HistoryUnavailable(format!("Provider history for {id} is missing")).into());
+        }
         let (program, options) = command.split_at(program_range.end);
         let mut result = program.to_string();
         result.push_str(match self {
@@ -117,27 +126,33 @@ impl Adapter {
         result.push_str(options);
         Ok(result)
     }
-    fn has_history(root: &Path, id: &str) -> bool {
-        fn contains(dir: &Path, id: &str, depth: usize) -> bool {
+    fn has_history(root: &Path, id: &str) -> Result<bool> {
+        fn contains(dir: &Path, id: &str, depth: usize) -> Result<bool> {
             if depth == 0 {
-                return false;
+                return Ok(false);
             }
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return false;
+            let entries = match std::fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(e) => return Err(e.into()),
             };
-            entries.flatten().any(|entry| {
-                let Ok(kind) = entry.file_type() else {
-                    return false;
-                };
-                if kind.is_dir() {
-                    return contains(&entry.path(), id, depth - 1);
+            for entry in entries {
+                let entry = entry?;
+                let kind = entry.file_type()?;
+                if kind.is_dir() && contains(&entry.path(), id, depth - 1)? {
+                    return Ok(true);
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
-                kind.is_file()
+                if kind.is_file()
                     && (name == format!("{id}.jsonl") || name.ends_with(&format!("-{id}.jsonl")))
-            })
+                {
+                    // Inaccessible history is an access error, never missing history.
+                    std::fs::File::open(entry.path())?;
+                    return Ok(true);
+                }
+            }
+            Ok(false)
         }
-        // Lookup only the exact id. Never infer a conversation from directory recency.
         contains(root, id, 6)
     }
 }
@@ -383,10 +398,10 @@ mod tests {
         let deep = fixture.join("1/2/3/4/5/6");
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::write(deep.join(format!("{id}.jsonl")), "{}").unwrap();
-        assert!(!Adapter::has_history(&fixture, id));
+        assert!(!Adapter::has_history(&fixture, id).unwrap());
         std::fs::write(fixture.join("1").join(format!("{id}.jsonl")), "{}").unwrap();
-        assert!(Adapter::has_history(&fixture, id));
-        assert!(!Adapter::has_history(&fixture, "12345678"));
+        assert!(Adapter::has_history(&fixture, id).unwrap());
+        assert!(!Adapter::has_history(&fixture, "12345678").unwrap());
 
         assert!(
             Adapter::Claude

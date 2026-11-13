@@ -444,3 +444,14 @@ test('a stopped reviewer resumes before a follow-up is delivered; failed resume 
   expect(events).toEqual(['resume', 'claim'])
   expect(p.write).toHaveBeenCalledOnce()
 })
+
+test('startup can queue behind the lead coordination turn without waiting for its completion', async () => {
+  const working = ready()
+  working.status!.agent!.state = 'working'
+  await waitForPrompt(context, {
+    current: () => context,
+    session: () => working,
+    allowWorking: true,
+  })
+  expect(promptReady(working)).toBe(false)
+})

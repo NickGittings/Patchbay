@@ -1,3 +1,4 @@
+import ChatWorkerSettings from './ChatWorkerSettings'
 import { useRail } from '../lib/rail'
 import SettingsDialog, { SettingsSection } from './SettingsDialog'
 import { Fragment, useId } from 'react'
@@ -81,6 +82,7 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
           </select>
         </label>
       </SettingsSection>
+      <ChatWorkerSettings />
       <SettingsSection title="Role defaults">
         {AGENT_ROLES.map((role) => {
           if (role === 'review') return reviewers

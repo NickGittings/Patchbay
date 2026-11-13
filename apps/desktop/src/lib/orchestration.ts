@@ -23,6 +23,7 @@ export interface ScanReport {
 }
 export interface ProviderJob {
   resultKind?: 'report' | 'code'
+  sharedWorktree?: boolean
   id: string
   preset: string
   terminal: TerminalSpec
@@ -98,7 +99,11 @@ export const startProviderJob = async (project: Project, id: string, job: string
     id,
     job,
   }).catch(async (e) => {
-    if (run?.chatTeam) {
+    if (
+      run?.chatTeam &&
+      !String(e).includes('Waiting for coordination') &&
+      !String(e).includes('concurrency limit')
+    ) {
       const team = teamFor(project.projectId!, run.task)
       if (team) await controlTeam(team, { kind: 'block', reason: String(e) })
     }
@@ -147,7 +152,7 @@ export function readyJobs(run: ProviderRun) {
           (dependency) =>
             dependency.id === id &&
             (dependency.state === 'integrated' ||
-              (dependency.resultKind === 'report' &&
+              ((dependency.resultKind === 'report' || dependency.sharedWorktree) &&
                 dependency.state === 'complete' &&
                 !!dependency.summary)),
         ),

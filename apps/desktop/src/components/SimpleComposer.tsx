@@ -1,3 +1,4 @@
+import type { ChatFailureKind } from '../lib/chatTeams'
 import { chatRecipient, chatAutoActive } from '../lib/chat'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { useClockNow } from '../lib/clock'
@@ -10,8 +11,14 @@ import {
   windowName,
 } from '../lib/usage'
 import { chatPreset, startChatAgent } from '../lib/chatAgent'
-import { useChatTeams } from '../lib/chatTeams'
-import { useRail } from '../lib/rail'
+import {
+  continueChat,
+  leadDeliveryPending,
+  refreshChatTeams,
+  teamFor,
+  useChatTeams,
+} from '../lib/chatTeams'
+import { selectPanel, useRail } from '../lib/rail'
 import { persistReplies } from '../lib/simpleReplies'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
@@ -72,10 +79,16 @@ export default function SimpleComposer({
   // The drawer renders only its record; one whose session is gone reads as closed.
   const open = ui.terminal !== 'closed' && !!terminalRecord
   const shown = open ? terminalRecord : recipient
-  const pending = !!ui.pendingAction || !!ui.coordinationReset
-  const [errorResult, setErrorResult] = useState({ key: '', text: '' })
+  const pending =
+    !!ui.pendingAction || (!!ui.coordinationReset && team?.reset?.clearHistory !== false)
+  const [errorResult, setErrorResult] = useState<{
+    key: string
+    text: string
+    kind?: ChatFailureKind
+  }>({ key: '', text: '' })
   const error = errorResult.key === scopeKey ? errorResult.text : ''
-  const setError = (text: string) => setErrorResult({ key: scopeKey, text })
+  const setError = (text: string, kind?: ChatFailureKind) =>
+    setErrorResult({ key: scopeKey, text, kind })
   const [caret, setCaret] = useState(0)
   const submitting = useRef(false)
   const input = useRef<HTMLTextAreaElement>(null)
@@ -115,23 +128,23 @@ export default function SimpleComposer({
     session: state,
     ready,
   })
-  const autoActive = chatAutoActive(s.autoStatus)
+  const autoActive = !team && chatAutoActive(s.autoStatus)
   const status =
     !recipient || autoActive
       ? {
           label: autoActive
             ? 'Pause Auto to resume manual coding'
             : team
-              ? 'Switch agent to replace the missing lead'
+              ? 'Send to reconnect'
               : s.project && chatPreset(s.project.id, s.activeTask)
                 ? 'Ready to start chat'
                 : 'Choose an available Chat agent in Settings',
           sendable:
             !autoActive &&
             !pending &&
-            !team &&
             !!s.project &&
-            !!chatPreset(s.project.id, s.activeTask),
+            s.serviceConnected &&
+            (!!team || !!chatPreset(s.project.id, s.activeTask)),
           action: 'none' as const,
           notice: undefined,
         }
@@ -146,11 +159,11 @@ export default function SimpleComposer({
         .slice(0, 8)
     : []
   // The service applies the same provider, turn and approval checks.
-  const canForce =
-    !chatAutoActive(s.autoStatus) && running && !ready && s.serviceConnected && forceable(state)
+  const canForce = !autoActive && running && !ready && s.serviceConnected && forceable(state)
   const asking = running && state?.status?.agent?.state === 'needsInput'
   const send = async (force = false) => {
-    if (submitting.current || !(force ? canForce : status.sendable) || !s.project) return
+    if (ui.unconfirmed || submitting.current || !(force ? canForce : status.sendable) || !s.project)
+      return
     const projectId = s.project.id,
       task = s.activeTask,
       draft = ui.draft,
@@ -217,7 +230,21 @@ export default function SimpleComposer({
     }
     try {
       let target = recipient
-      if (target && !useStore.getState().sessions[target.id]?.running) {
+      let resolvedTeam = team
+      if (!resolvedTeam) {
+        await refreshChatTeams(projectId).catch((error) => {
+          if (s.selectedAgent) throw error
+        })
+        resolvedTeam = teamFor(projectId, task)
+      }
+      let continued = false
+      if (resolvedTeam) {
+        check()
+        const result = await continueChat(resolvedTeam)
+        continued = true
+        target = result.session
+        recipientRef.current = target.id
+      } else if (target && !useStore.getState().sessions[target.id]?.running) {
         check()
         const requestId = crypto.randomUUID()
         const recipientId = target.id
@@ -252,13 +279,13 @@ export default function SimpleComposer({
       if (generation === undefined)
         throw new Error('The session has no active process. Open its terminal to continue.')
       const captured = { projectId, task, recipient: sid, generation }
-      if (running && generation !== initialGeneration)
+      if (running && !continued && generation !== initialGeneration)
         throw new Error('The process changed. Your draft was kept.')
       const stillCurrent = () => {
         check()
         if (
           useStore.getState().simple?.selectedAgent !== sid ||
-          chatAutoActive(useStore.getState().auto?.status) ||
+          (!resolvedTeam && chatAutoActive(useStore.getState().auto?.status)) ||
           (recipientRef.current && recipientRef.current !== sid)
         )
           return undefined
@@ -266,12 +293,29 @@ export default function SimpleComposer({
         return { ...captured, generation: current?.generation ?? -1 }
       }
       // New and resumed processes wait for their startup prompt.
-      if (!running)
+      if (!running || continued)
         await waitForPrompt(captured, {
           current: stillCurrent,
           session: () => useStore.getState().sessions[sid],
           provider: target!.metadata.adapter ?? null,
+          allowWorking: true,
         })
+      if (
+        ((!running || continued) && !promptReady(useStore.getState().sessions[sid])) ||
+        leadDeliveryPending(projectId, task, sid, generation)
+      ) {
+        check()
+        enqueuePrompt(scopeKey, {
+          sessionId: sid,
+          generation,
+          text,
+          draft,
+          mentions,
+          stage,
+          atMs: Date.now(),
+        })
+        return
+      }
       await sendToSession({
         projectId,
         task,
@@ -287,7 +331,8 @@ export default function SimpleComposer({
       if (latest?.draft === draft && JSON.stringify(latest.mentions) === JSON.stringify(mentions))
         patch({ draft: '', mentions: [] })
     } catch (e) {
-      setError(String(e))
+      const failure = e as { kind?: ChatFailureKind; message?: string }
+      setError(failure.message ?? String(e), failure.kind)
     } finally {
       submitting.current = false
       unsubscribe()
@@ -396,7 +441,7 @@ export default function SimpleComposer({
         </div>
       )}
       <div className="simple-composer-controls">
-        <span>{status.label}</span>
+        <span>{ui.connection ?? status.label}</span>
         {recipient && running && !autoActive && (
           <button disabled={pending} onClick={() => stopTerminal(recipient.id)}>
             Stop agent
@@ -446,7 +491,7 @@ export default function SimpleComposer({
             )}
         <button
           className="primary"
-          disabled={!status.sendable || !ui.draft.trim()}
+          disabled={!!ui.unconfirmed || !status.sendable || !ui.draft.trim()}
           onClick={() => void send()}
         >
           {status.action === 'queue' ? 'Queue' : 'Send'}
@@ -465,7 +510,55 @@ export default function SimpleComposer({
           This agent does not report a ready prompt. Continue in its terminal.
         </p>
       )}
-      {error && <p role="alert">{error}</p>}
+      {ui.unconfirmed && (
+        <p role="alert">
+          Message delivery was not confirmed. Inspect the terminal before retrying.{' '}
+          <button
+            onClick={() => {
+              const record = records.find((r) => r.id === ui.unconfirmed?.sessionId)
+              if (record) openTerminal(record)
+            }}
+          >
+            Inspect terminal
+          </button>
+          <button
+            onClick={() => {
+              const message = ui.unconfirmed!
+              logSimple(s.project!.id, s.activeTask, {
+                kind: 'prompt',
+                sessionId: message.sessionId,
+                generation: message.generation,
+                text: message.text,
+                stage: message.stage,
+                mentions: message.mentions,
+                atMs: message.atMs,
+              })
+              const matches = transmittedText(ui.draft, ui.mentions) === message.text
+              patch({ unconfirmed: undefined, ...(matches ? { draft: '', mentions: [] } : {}) })
+            }}
+          >
+            Mark sent
+          </button>
+          <button onClick={() => patch({ unconfirmed: undefined })}>Retry delivery</button>
+        </p>
+      )}
+      {error && (
+        <p role="alert">
+          {error}{' '}
+          {errorResult.kind === 'access' ? (
+            <button onClick={() => selectPanel('project')}>Folder access</button>
+          ) : (
+            errorResult.kind !== 'authentication' && (
+              <button onClick={() => useRail.setState({ settings: 'roles' })}>
+                Agent settings
+              </button>
+            )
+          )}
+          <button disabled={!!ui.unconfirmed} onClick={() => void send()}>
+            {errorResult.kind === 'authentication' ? 'Sign in and retry' : 'Retry connection'}
+          </button>
+        </p>
+      )}
     </div>
   )
 }

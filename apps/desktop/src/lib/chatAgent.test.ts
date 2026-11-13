@@ -115,11 +115,11 @@ test('switching uses a new preset conversation through the context handoff', asy
   expect(newLead).toHaveBeenCalledTimes(1)
 })
 
-test('a team with a forgotten lead requires replacement instead of launching an unrelated session', async () => {
+test('a team with a forgotten lead requires continuation before launching another session', async () => {
   const team = { id: 'team', projectId: 'p', task: null } as NonNullable<ReturnType<typeof teamFor>>
   vi.mocked(teamFor).mockReturnValue(team)
   useSimpleUi.getState().patch(simpleKey('p', null), { draft: 'Keep my request' })
-  await expect(startChatAgent('p', null)).rejects.toThrow('Switch agent')
+  await expect(startChatAgent('p', null)).rejects.toThrow('Reconnect the existing lead')
   expect(startTerminal).not.toHaveBeenCalled()
   expect(initializeTeam).not.toHaveBeenCalled()
   expect(useSimpleUi.getState().worktrees[simpleKey('p', null)].draft).toBe('Keep my request')

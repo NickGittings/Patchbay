@@ -1,4 +1,5 @@
 import { useStore } from '../store'
+import { leadDeliveryPending, teamFor, useChatTeams } from './chatTeams'
 import { chatAutoActive } from './chat'
 import {
   forceable,
@@ -53,9 +54,16 @@ export async function flushQueued(key: string, force = false) {
     const latest = useStore.getState()
     const project = latest.project?.id === projectId ? latest : latest.projects?.[projectId]?.state
     const workspace = project?.activeTask === task ? project : project?.taskWorkspaces?.[task ?? '']
-    return chatAutoActive(workspace?.auto?.status)
+    return !teamFor(projectId, task) && chatAutoActive(workspace?.auto?.status)
   }
-  if (autoActive() || useSimpleUi.getState().worktrees[key]?.coordinationReset) return
+  if (
+    autoActive() ||
+    useSimpleUi.getState().worktrees[key]?.coordinationReset ||
+    useSimpleUi.getState().worktrees[key]?.pendingAction ||
+    useSimpleUi.getState().worktrees[key]?.unconfirmed ||
+    leadDeliveryPending(projectId, task, queued.sessionId, queued.generation)
+  )
+    return
   const session = state.sessions[queued.sessionId]
   // Reconciliation can temporarily omit a session. Keep its place until it is known again.
   // A concurrent send also owns the draft until it settles; leave the queue untouched.
@@ -125,16 +133,21 @@ export function followQueuedPrompts() {
   const stopQueues = useSimpleUi.subscribe((state, previous) => {
     if (
       Object.entries(state.worktrees).some(
-        ([key, ui]) => ui.queued && ui.queued !== previous.worktrees[key]?.queued,
+        ([key, ui]) =>
+          ui.queued &&
+          (ui.queued !== previous.worktrees[key]?.queued ||
+            (previous.worktrees[key]?.pendingAction && !ui.pendingAction)),
       )
     )
       follow()
   })
+  const stopTeams = useChatTeams.subscribe(follow)
   const stopDeliveries = followDeliveries(follow)
   follow()
   return () => {
     stopSessions()
     stopQueues()
     stopDeliveries()
+    stopTeams()
   }
 }

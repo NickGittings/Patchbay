@@ -66,7 +66,7 @@ const SCRIPTS = {
       { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-team/project') },
       'chat-team-fixture.sh',
     ),
-    run: ['scripts/hooks-home.mjs'],
+    run: ['scripts/chat-team.mjs'],
   },
   'chat-controls': smoke('chat-controls.js', {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,

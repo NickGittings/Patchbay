@@ -347,7 +347,9 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                     .into_iter()
                     .filter(|r| r.chat_team.as_deref() == Some(&team.id))
                     .collect();
-            Ok(json!({"team": team, "rounds": rounds}))
+            Ok(
+                json!({"team": team, "rounds": rounds, "sessions": records.iter().filter(|r| r.metadata.task == team.task).collect::<Vec<_>>()}),
+            )
         }
         Action::ProviderRun { command } => {
             let project = scoped.project()?;

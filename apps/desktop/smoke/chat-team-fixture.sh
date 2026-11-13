@@ -17,7 +17,10 @@ import json, os, pathlib, subprocess, sys, tempfile, time, tty, uuid
 assert pathlib.Path(os.environ['PATCHBAY_CONTEXT_FILE']).is_file(), 'The lead or worker lost its project briefing'
 tty.setcbreak(sys.stdin.fileno())
 journal = pathlib.Path(os.environ['PATCHBAY_REPORT_DIR'])
-conversation = str(uuid.uuid4())
+conversation = sys.argv[2] if len(sys.argv) > 2 and sys.argv[1] == 'resume' else str(uuid.uuid4())
+history = pathlib.Path(os.environ['CODEX_HOME']) / 'sessions' / (conversation + '.jsonl')
+history.parent.mkdir(parents=True, exist_ok=True)
+history.write_text('{}\n')
 turn = str(uuid.uuid4())
 sequence = 0
 
@@ -33,7 +36,10 @@ def report(event, **extra):
     tmp.replace(journal / ('%020d.json' % sequence))
 
 def cli(*args):
-    return json.loads(subprocess.check_output([os.environ['PATCHBAY_CLI'], 'agent', *args], text=True))
+    response = json.loads(subprocess.check_output([os.environ['PATCHBAY_CLI'], 'agent', *args], text=True))
+    if not response['ok']:
+        raise RuntimeError(response.get('error'))
+    return response['result']
 
 def file_arg(data):
     f = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
@@ -75,8 +81,20 @@ for line in sys.stdin:
         os.unlink(checkpoint)
         os.unlink(assignments)
         report('Stop', reply='The lead delegated two assignments.')
+    elif text == 'ask-fixture' and not worker:
+        cli('team-ask', '--id', 'findings-request', '--to', 'inspect', '--text', 'What are your findings and blockers?')
+        report('Stop', reply='I requested findings from the existing agent.')
+    elif text == 'erase-history-fixture' and not worker:
+        history.unlink(missing_ok=True)
+        report('Stop', reply='History removed for recovery verification.')
+    elif worker:
+        state = cli('team')['team']
+        for request in state.get('informationRequests', []):
+            if request['recipient'] == worker and request['response'] is None:
+                cli('team-reply', '--id', request['id'], '--text', 'Inspected the baseline. No blockers; validation reported separately.')
+        report('Stop', reply='WORKER-SIDE-THREAD-ONLY')
     else:
-        report('Stop', reply='The lead received the retained coordination update.' if not worker else 'Worker received the side message.')
+        report('Stop', reply='I gathered the existing agent’s findings and will verify its reported validation.' if 'Response to information request' in text else 'The lead received the retained coordination update.')
 PYTHON
 cat > "$dir/codex" <<SH
 #!/bin/sh

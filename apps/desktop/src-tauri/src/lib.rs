@@ -2389,18 +2389,40 @@ async fn terminal_prompt(
     generation: u64,
     text: String,
     force: Option<bool>,
-) -> CmdResult<()> {
-    service(
-        &state,
-        Request::Prompt {
+) -> Result<(), PromptFailure> {
+    let bridge = state.service.clone();
+    let viewer = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = bridge.call_reporting::<session::ChatPrompt>(Request::ChatPrompt {
             id: session_id,
-            viewer: window.label().into(),
+            viewer,
             generation,
             text,
             force: force.unwrap_or(false),
-        },
-    )
+        });
+        match result {
+            Ok(session::ChatPrompt::Delivered) => Ok(()),
+            Ok(session::ChatPrompt::Refused { error }) => Err(PromptFailure {
+                message: error,
+                uncertain: false,
+            }),
+            Ok(session::ChatPrompt::Uncertain { error }) => Err(PromptFailure {
+                message: error,
+                uncertain: true,
+            }),
+            Err((message, uncertain)) => Err(PromptFailure { message, uncertain }),
+        }
+    })
     .await
+    .map_err(|e| PromptFailure {
+        message: e.to_string(),
+        uncertain: true,
+    })?
+}
+#[derive(serde::Serialize)]
+struct PromptFailure {
+    message: String,
+    uncertain: bool,
 }
 #[tauri::command]
 fn terminal_resize(
@@ -2985,9 +3007,11 @@ pub fn run() {
                 git_branches,
                 chat_teams::chat_teams,
                 chat_teams::chat_team_initialize,
+                chat_teams::chat_team_delegate_shared,
                 chat_teams::chat_team_control,
                 chat_teams::chat_team_message,
                 chat_teams::chat_team_new_lead,
+                chat_teams::chat_continue,
                 chat_teams::auto_worktree_ownership,
                 orchestration::provider_runs,
                 orchestration::provider_run_create,

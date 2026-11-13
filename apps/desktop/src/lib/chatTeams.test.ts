@@ -1,6 +1,14 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
+vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn(async () => {}) }))
 vi.mock('./ipc', () => ({ sessionsList: vi.fn() }))
+vi.mock('./auto', () => ({
+  startAuto: vi.fn(),
+  pauseAuto: vi.fn(),
+  resumeAuto: vi.fn(),
+  stopAuto: vi.fn(),
+}))
+import { startAuto, pauseAuto } from './auto'
 import { invoke } from '@tauri-apps/api/core'
 import { useStore, workspaceOf } from '../store'
 import { useSimpleUi, simpleKey } from './simpleUi'
@@ -8,6 +16,8 @@ import { clearSimpleChat } from './simpleActions'
 import { restoredSimple } from './simple'
 import {
   applyTeamHandoff,
+  continueChat,
+  continuationContext,
   cacheTeam,
   initializeTeam,
   refreshChatTeams,
@@ -317,4 +327,135 @@ test('a side-message RPC with an uncertain reply retries the same durable identi
     .mocked(invoke)
     .mock.calls.filter(([command]) => command === 'chat_team_message')
   expect(messages[0][1]).toEqual(messages[1][1])
+})
+
+function mockRequestDriver(action: string, settings = {}) {
+  const saved = team({
+    requests: [{ id: 'request', action, settings, state: 'queued', result: null }],
+  })
+  vi.mocked(invoke).mockImplementation(async (cmd, args) => {
+    if (cmd === 'chat_teams') return [saved] as never
+    if (cmd === 'chat_team_control') {
+      const control = (args as { control: { kind: string; state: string; result: string | null } })
+        .control
+      if (control.kind === 'requestState') {
+        const request = saved.requests![0]
+        if (control.state === 'starting' && !['queued', 'waiting'].includes(request.state))
+          throw new Error('Already claimed')
+        request.state = control.state
+        request.result = control.result
+      }
+    }
+    return saved as never
+  })
+  return saved
+}
+test('lead workflow controls claim requests once before applying the existing Auto handler', async () => {
+  const saved = mockRequestDriver('pauseAuto')
+  await Promise.all([refreshChatTeams('p'), refreshChatTeams('p')])
+  expect(pauseAuto).toHaveBeenCalledExactlyOnceWith('p', null)
+  expect(saved.requests![0].state).toBe('completed')
+})
+test('an overlapping Auto start remains waiting and can be retried after scope release', async () => {
+  const saved = mockRequestDriver('startAuto', { goal: 'New task' })
+  vi.mocked(startAuto).mockRejectedValueOnce(
+    new Error('An unfinished provider run controls this worktree'),
+  )
+  await refreshChatTeams('p')
+  expect(saved.requests![0].state).toBe('waiting')
+  await refreshChatTeams('p')
+  expect(saved.requests![0].state).toBe('completed')
+  expect(startAuto).toHaveBeenLastCalledWith(
+    'p',
+    null,
+    expect.objectContaining({ goal: 'New task', merge: { mode: 'ask', destinationBranch: '' } }),
+  )
+})
+
+test('live continuation resolves the durable lead once and keeps the transcript and draft', async () => {
+  const saved = team()
+  cacheTeam(saved)
+  useStore.setState({ sessions: { lead: { running: true, generation: 1 } } })
+  useSimpleUi.getState().patch(simpleKey('p', null), { draft: 'Pending question' })
+  vi.mocked(invoke).mockResolvedValue({
+    session: record,
+    generation: 1,
+    outcome: 'connected',
+    team: saved,
+  })
+  const first = continueChat(saved)
+  const second = continueChat(saved)
+  expect(first).toBe(second)
+  await first
+  expect(invoke).toHaveBeenCalledExactlyOnceWith(
+    'chat_continue',
+    expect.objectContaining({
+      id: 'team',
+      projectId: 'p',
+      savedContext: expect.stringContaining('Retain my changes'),
+    }),
+  )
+  expect(useStore.getState().simple?.log[0].text).toBe('Retain my changes')
+  expect(useSimpleUi.getState().worktrees[simpleKey('p', null)]).toMatchObject({
+    draft: 'Pending question',
+    connection: undefined,
+  })
+})
+
+test('reconstruction adds a small notice once without clearing earlier messages', async () => {
+  const original = useStore.getState().simple!
+  const reconstructed = team({
+    handoff: {
+      id: 'automatic-recovery',
+      sessionId: 'lead',
+      generation: 2,
+      startedMs: 100,
+      text: 'Private coordination details',
+      clearHistory: false,
+    },
+  })
+  vi.mocked(invoke).mockResolvedValue({ ...reconstructed, handoff: null })
+  await applyTeamHandoff(reconstructed)
+  await applyTeamHandoff(reconstructed)
+  expect(useStore.getState().simple?.log.map((e) => e.text)).toEqual([
+    original.log[0].text,
+    'Context restored from the saved conversation and team state.',
+  ])
+  expect(useStore.getState().simple?.clearBoundary).toBeUndefined()
+})
+
+test('continuation context honors visible-history clearing and excludes retained workflow text', () => {
+  const original = useStore.getState().simple!
+  useStore.getState().patchTask('p', null, {
+    simple: {
+      ...original,
+      clearBoundary: { atMs: 10, runs: [] },
+      retainedWorkflow: original.log,
+      log: [...original.log, { ...original.log[0], id: 'fresh', atMs: 11, text: 'New request' }],
+    },
+  })
+  const text = continuationContext('p', null)
+  expect(text).toContain('New request')
+  expect(text).not.toContain('Retain my changes')
+})
+
+test('structured access failures keep the selected lead, transcript and pending draft', async () => {
+  const saved = team()
+  cacheTeam(saved)
+  useStore.setState({ sessions: { lead: { running: true, generation: 1 } } })
+  useSimpleUi.getState().patch(simpleKey('p', null), { draft: 'Keep this draft' })
+  vi.mocked(invoke).mockRejectedValue({
+    kind: 'access',
+    message: 'Allow the locked project folder',
+  })
+  await expect(continueChat(saved)).rejects.toMatchObject({
+    kind: 'access',
+    message: 'Allow the locked project folder',
+  })
+  expect(useStore.getState().simple?.selectedAgent).toBe('lead')
+  expect(useStore.getState().simple?.log[0].text).toBe('Retain my changes')
+  expect(useSimpleUi.getState().worktrees[simpleKey('p', null)]).toMatchObject({
+    draft: 'Keep this draft',
+    connection: undefined,
+  })
 })

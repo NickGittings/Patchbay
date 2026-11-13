@@ -5,7 +5,7 @@ import { terminalAttach, terminalDetach, terminalPrompt, sessionResume } from '.
 import { logSimple } from './simpleActions'
 import { persistReplies } from './simpleReplies'
 import type { SimpleStage } from './simple'
-import type { Mention } from './simpleUi'
+import { simpleKey, useSimpleUi, type Mention } from './simpleUi'
 import { sessionReportedHooks, type HooksCheck } from './agentHooks'
 
 /** Only tokens selected through autocomplete are removed. Literal @text stays byte-for-byte. */
@@ -242,6 +242,8 @@ export async function waitForPrompt(
     wait?: (ms: number) => Promise<void>
     /** The agent's provider; `null` for neither Claude nor Codex, which never report a prompt. */
     provider?: 'claude' | 'codex' | null
+    /** Startup coordination may consume the first ready turn before the user's draft. */
+    allowWorking?: boolean
   },
 ) {
   const now = port.now ?? Date.now
@@ -261,6 +263,12 @@ export async function waitForPrompt(
     if (session.status?.agent?.state === 'needsInput')
       throw new Error('The agent needs input in its terminal.')
     if (promptReady(session)) return
+    if (
+      port.allowWorking &&
+      session.status?.agent?.authoritative &&
+      session.status.agent.state === 'working'
+    )
+      return
     // The composer adds hook advice from installed state: `authoritative` can't tell an Esc apart.
     if (now() - began >= 30000)
       throw new Error(
@@ -302,6 +310,11 @@ export async function sendToSession({
   force?: boolean
   current?: () => SendContext | undefined
 }) {
+  const key = simpleKey(projectId, task)
+  if (useSimpleUi.getState().worktrees[key]?.unconfirmed)
+    throw new Error(
+      'The previous message delivery is unconfirmed. Inspect the terminal and resolve it before sending again.',
+    )
   const captured = { projectId, task, recipient: sid, generation }
   const previousSubmission = lastSubmission(sid, generation)
   await deliverPrompt(
@@ -313,7 +326,26 @@ export async function sendToSession({
         (() => ({ ...captured, generation: useStore.getState().sessions[sid]?.generation ?? -1 })),
       session: () => useStore.getState().sessions[sid],
       claim: () => terminalAttach(sid, true),
-      write: (message) => terminalPrompt(sid, generation, message, force),
+      write: async (message) => {
+        useSimpleUi.getState().patch(key, {
+          unconfirmed: {
+            sessionId: sid,
+            generation,
+            text: message,
+            stage,
+            mentions,
+            atMs: Date.now(),
+          },
+        })
+        try {
+          await terminalPrompt(sid, generation, message, force)
+          useSimpleUi.getState().patch(key, { unconfirmed: undefined })
+        } catch (error) {
+          const failure = error as { uncertain?: boolean; message?: string }
+          if (!failure?.uncertain) useSimpleUi.getState().patch(key, { unconfirmed: undefined })
+          throw new Error(failure?.message ?? String(error))
+        }
+      },
       onSubmit: (atMs) => {
         if (atMs === undefined) {
           if (previousSubmission) submitted.set(sid, previousSubmission)
