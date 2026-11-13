@@ -532,9 +532,16 @@ async function driveLeadRequests(team: ChatTeam) {
             : team.lead.preset.id
         const settings = {
           goal: team.checkpoint.goal,
-          effort: 'standard',
-          merge: { mode: 'ask', destinationBranch: '' },
-          ...previous,
+          effort: previous?.effort ?? 'standard',
+          merge: previous?.merge ?? { mode: 'ask', destinationBranch: '' },
+          overrides: previous?.overrides,
+          agents: previous?.agents,
+          reviewers: previous?.reviewers,
+          scanners: previous?.scanners,
+          workers: previous?.workers,
+          autonomous: previous?.autonomous,
+          background: previous?.background,
+          resumeOnUsageReset: previous?.resumeOnUsageReset,
           ...request.settings,
           device,
         }

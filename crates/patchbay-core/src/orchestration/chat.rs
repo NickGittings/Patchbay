@@ -587,16 +587,6 @@ fn actor(s: &Store, launch: &LaunchContext, records: &[Record]) -> Result<(usize
     }
     Err(anyhow!("Session is not a current member of a chat team"))
 }
-fn active_run<'a>(s: &'a mut Store, t: &Team) -> Result<&'a mut Run> {
-    s.runs
-        .iter_mut()
-        .rev()
-        .find(|r| {
-            r.chat_team.as_deref() == Some(&t.id)
-                && !matches!(r.state, State::Complete | State::Stopped)
-        })
-        .ok_or_else(|| anyhow!("No active delegation round"))
-}
 /// Authenticated members derive their own team and task; caller-supplied team IDs are forbidden.
 pub fn command(
     root: &Path,
@@ -1253,7 +1243,7 @@ pub(super) fn reserve_check(s: &Store, project: &str, run: &str, job: &str) -> R
             ensure!(
                 !s.runs
                     .iter()
-                    .filter(|other| other.target == t.target)
+                    .filter(|other| other.target == t.target && other.state != State::Stopped)
                     .flat_map(|r| &r.jobs)
                     .any(|other| other.id != job
                         && matches!(
@@ -1394,7 +1384,16 @@ pub fn control(
                 s.owners.retain(|o| !(o.kind == "chat" && o.id == t.id));
             }
             Control::Retry { assignment } => {
-                let r = active_run(s, &t)?;
+                let r = s
+                    .runs
+                    .iter_mut()
+                    .find(|r| {
+                        r.project_id == project
+                            && r.chat_team.as_deref() == Some(&t.id)
+                            && !matches!(r.state, State::Complete | State::Stopped)
+                            && r.jobs.iter().any(|j| j.id == assignment)
+                    })
+                    .ok_or_else(|| anyhow!("Unknown assignment"))?;
                 let j = r
                     .jobs
                     .iter_mut()
@@ -2736,6 +2735,113 @@ mod tests {
         )
         .unwrap();
         modify(&f.dir, |s| reserve_check(s, "p", "round2", "b")).unwrap();
+    }
+    #[test]
+    fn retries_find_the_owning_round_and_preserve_unconfirmed_launch_identity() {
+        for state in [JobState::Failed, JobState::Launching] {
+            let f = Fixture::new();
+            f.cmd(Command::DelegateShared {
+                id: "round1".into(),
+                assignments: vec![assignment("a", ResultKind::Code, &[])],
+            })
+            .unwrap();
+            let (launched, _) = f.launch("a");
+            let original = &launched.jobs[0];
+            modify(&f.dir, |s| {
+                let r = s.runs.iter_mut().find(|r| r.id == "round1").unwrap();
+                r.jobs[0].state = state;
+                r.jobs[0].error = Some("Worker needs retry".into());
+                r.error = Some("Worker needs retry".into());
+                r.state = State::Paused;
+                Ok(())
+            })
+            .unwrap();
+            f.cmd(Command::DelegateShared {
+                id: "round2".into(),
+                assignments: vec![assignment("b", ResultKind::Report, &[])],
+            })
+            .unwrap();
+            let newer =
+                serde_json::to_value(super::super::read(&f.dir, "p", "round2").unwrap()).unwrap();
+            control(
+                &f.dir,
+                "p",
+                &f.team.id,
+                Control::Retry {
+                    assignment: "a".into(),
+                },
+                std::slice::from_ref(&f.lead),
+            )
+            .unwrap();
+            let retried = super::super::read(&f.dir, "p", "round1").unwrap();
+            assert_eq!(retried.state, State::Running);
+            assert!(retried.error.is_none());
+            assert_eq!(retried.jobs[0].state, JobState::Pending);
+            assert!(retried.jobs[0].error.is_none());
+            if state == JobState::Launching {
+                assert_eq!(retried.jobs[0].request_id, original.request_id);
+                assert_eq!(retried.jobs[0].session_id, original.session_id);
+            } else {
+                assert_ne!(retried.jobs[0].request_id, original.request_id);
+                assert!(retried.jobs[0].session_id.is_none());
+            }
+            assert_eq!(
+                serde_json::to_value(super::super::read(&f.dir, "p", "round2").unwrap()).unwrap(),
+                newer
+            );
+        }
+    }
+    #[test]
+    fn stopped_shared_rounds_release_scope_for_new_assignments() {
+        for state in [
+            JobState::Launching,
+            JobState::Running,
+            JobState::Integrating,
+        ] {
+            let f = Fixture::new();
+            f.cmd(Command::DelegateShared {
+                id: "round1".into(),
+                assignments: vec![assignment("a", ResultKind::Code, &[])],
+            })
+            .unwrap();
+            f.launch("a");
+            modify(&f.dir, |s| {
+                s.runs[0].jobs[0].state = state;
+                Ok(())
+            })
+            .unwrap();
+            for action in [Control::Stop, Control::Resume] {
+                control(
+                    &f.dir,
+                    "p",
+                    &f.team.id,
+                    action,
+                    std::slice::from_ref(&f.lead),
+                )
+                .unwrap();
+            }
+            f.cmd(Command::DelegateShared {
+                id: "round2".into(),
+                assignments: vec![assignment("b", ResultKind::Code, &[])],
+            })
+            .unwrap();
+            modify(&f.dir, |s| reserve_check(s, "p", "round2", "b")).unwrap();
+            let stopped = super::super::read(&f.dir, "p", "round1").unwrap();
+            assert_eq!(stopped.state, State::Stopped);
+            assert_eq!(stopped.jobs[0].state, state);
+            assert!(
+                control(
+                    &f.dir,
+                    "p",
+                    &f.team.id,
+                    Control::Retry {
+                        assignment: "a".into()
+                    },
+                    std::slice::from_ref(&f.lead)
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn workflow_requests_are_idempotent_and_claimed_once() {

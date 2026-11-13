@@ -348,7 +348,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                     .filter(|r| r.chat_team.as_deref() == Some(&team.id))
                     .collect();
             Ok(
-                json!({"team": team, "rounds": rounds, "sessions": records.iter().filter(|r| r.metadata.task == team.task).collect::<Vec<_>>()}),
+                json!({"team": team, "rounds": rounds, "sessions": records.iter().filter(|r| r.metadata.project_id == launch.project_id && r.metadata.task == team.task).collect::<Vec<_>>()}),
             )
         }
         Action::ProviderRun { command } => {
@@ -635,6 +635,7 @@ mod tests {
     struct Fixture {
         calls: Mutex<Vec<Request>>,
         project: Option<Project>,
+        sessions: Option<Vec<Record>>,
         saves: Mutex<usize>,
     }
     impl Host for Fixture {
@@ -657,6 +658,7 @@ mod tests {
         }
         fn request(&self, request: Request) -> Result<Value> {
             let response = match &request {
+                Request::List if self.sessions.is_some() => json!(self.sessions),
                 Request::List => json!([
                     record("one", "task"),
                     record("two", "task"),
@@ -707,6 +709,7 @@ mod tests {
         let host = Fixture {
             calls: Mutex::default(),
             project: None,
+            sessions: None,
             saves: Mutex::default(),
         };
         let result = dispatch(&host, &launch(), Action::Status {}).unwrap();
@@ -721,6 +724,7 @@ mod tests {
         let host = Fixture {
             calls: Mutex::default(),
             project: None,
+            sessions: None,
             saves: Mutex::default(),
         };
         let result = dispatch(
@@ -745,10 +749,87 @@ mod tests {
     }
 
     #[test]
+    fn team_sessions_are_bound_to_the_authenticated_project_and_task() {
+        use crate::orchestration::chat::{self, Checkpoint, Command, Initialize};
+
+        for task in [None, Some("task")] {
+            let root = std::env::temp_dir()
+                .join(format!("patchbay-team-sessions-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&root)
+                    .args(["init", "-q"])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let root = root.canonicalize().unwrap();
+            let mut own = record("one", "task");
+            own["metadata"]["task"] = json!(task);
+            own["snapshot"] = json!({
+                "data":"", "end":0, "generation":1, "running":true,
+                "startedMs":1, "status":crate::status::SessionStatus::default()
+            });
+            let mut unrelated = own.clone();
+            unrelated["id"] = json!("unrelated");
+            unrelated["metadata"]["projectId"] = json!("other-project");
+            let mut other_task = own.clone();
+            other_task["id"] = json!("other-task");
+            other_task["metadata"]["task"] = json!("elsewhere");
+            let sessions: Vec<Record> =
+                serde_json::from_value(json!([own, unrelated, other_task])).unwrap();
+            chat::initialize(
+                &root,
+                "p",
+                &root,
+                Initialize {
+                    task: task.map(str::to_owned),
+                    session_id: "one".into(),
+                    preset: serde_json::from_value(json!({
+                        "id":"codex", "name":"Codex", "kind":"agent", "command":"codex", "adapter":"codex"
+                    })).unwrap(),
+                    paused: false,
+                    checkpoint: Checkpoint::default(),
+                },
+                &sessions,
+            ).unwrap();
+            let host = Fixture {
+                calls: Mutex::default(),
+                saves: Mutex::default(),
+                sessions: Some(sessions),
+                project: Some(
+                    serde_json::from_value(json!({
+                        "name":"P", "root":root, "schemaVersion":4, "components":[], "links":[]
+                    }))
+                    .unwrap(),
+                ),
+            };
+            let mut launch = launch();
+            launch.task = task.map(str::to_owned);
+            launch.generation = Some(1);
+            let result = dispatch(
+                &host,
+                &launch,
+                Action::ChatTeam {
+                    command: Command::Inspect,
+                },
+            )
+            .unwrap();
+            let sessions = result["sessions"].as_array().unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0]["id"], "one");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn link_proposals_are_mapper_only_and_mappers_run_nothing_else() {
         let host = Fixture {
             calls: Mutex::default(),
             saves: Mutex::default(),
+            sessions: None,
             project: Some(Project {
                 worktree_setup: None,
                 schema_version: crate::model::SCHEMA_VERSION,
@@ -876,6 +957,7 @@ mod tests {
         let host = Fixture {
             calls: Mutex::default(),
             saves: Mutex::default(),
+            sessions: None,
             project: Some(Project {
                 worktree_setup: None,
                 schema_version: crate::model::SCHEMA_VERSION,

@@ -22,7 +22,7 @@ export default function ChatCoordination({ team }: { team: ChatTeam }) {
       setBusy(false)
     }
   }
-  const failures = jobs.filter((j) => j.state === 'failed')
+  const failures = jobs.filter((j) => j.state === 'failed' || (j.state === 'launching' && j.error))
   const asking = jobs.filter(
     (j) => j.sessionId && sessions[j.sessionId]?.status?.agent?.state === 'needsInput',
   )

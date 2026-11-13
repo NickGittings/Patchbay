@@ -26,7 +26,7 @@ import {
   useChatTeams,
   type ChatTeam,
 } from './chatTeams'
-import type { SessionRecord } from '../types'
+import type { AutoRun, SessionRecord } from '../types'
 const preset = {
   id: 'codex',
   name: 'Codex',
@@ -371,6 +371,59 @@ test('an overlapping Auto start remains waiting and can be retried after scope r
     expect.objectContaining({ goal: 'New task', merge: { mode: 'ask', destinationBranch: '' } }),
   )
 })
+
+test.each([undefined, 'implement'] as const)(
+  'lead Auto starts reuse configuration without carrying previous runtime state (stage %s)',
+  async (stage) => {
+    const previous: AutoRun = {
+      goal: 'Old task',
+      effort: 'thorough',
+      device: 'old-device',
+      merge: { mode: 'ask', destinationBranch: 'main' },
+      agents: { plan: 'planner' },
+      reviewers: ['reviewer'],
+      scanners: ['scanner'],
+      workers: ['worker'],
+      overrides: { maxRounds: 4 },
+      autonomous: true,
+      background: true,
+      resumeOnUsageReset: true,
+      runId: 'old-run',
+      ownershipId: 'old-owner',
+      stage: 'done',
+      status: 'done',
+      round: 3,
+      sessionId: 'old-session',
+      sessionRequestId: 'old-request',
+      implementationRun: 'old-build',
+      implementationLaunch: 'old-launch',
+      scanRound: 'old-scan',
+      log: [{ atMs: 1, text: 'Old log' }],
+    }
+    useStore.getState().patchTask('p', null, { auto: previous })
+    const saved = mockRequestDriver('startAuto', {
+      effort: 'light',
+      ...(stage ? { stage } : {}),
+    })
+    await refreshChatTeams('p')
+    expect(saved.requests![0].state).toBe('completed')
+    expect(startAuto).toHaveBeenCalledExactlyOnceWith('p', null, {
+      goal: 'Goal',
+      effort: 'light',
+      device: 'codex',
+      merge: previous.merge,
+      agents: previous.agents,
+      reviewers: previous.reviewers,
+      scanners: previous.scanners,
+      workers: previous.workers,
+      overrides: previous.overrides,
+      autonomous: true,
+      background: true,
+      resumeOnUsageReset: true,
+      ...(stage ? { stage } : {}),
+    })
+  },
+)
 
 test('live continuation resolves the durable lead once and keeps the transcript and draft', async () => {
   const saved = team()
