@@ -27,7 +27,7 @@ import { fixReviewFindings } from '../lib/reviewHandoff'
 import { chatRolePresets, roleDevice, roleDevices } from '../lib/agentRoles'
 import {
   defaultMergeDestination,
-  defaultReviewBase,
+  chatReviewBase,
   reviewState,
   startMergeAgent,
   useRunningReviewLanes,
@@ -132,9 +132,14 @@ export default function SimpleChat({
     model.stage === 'merge'
       ? worktrees.find((w) => w.path === merging?.spec.cwd)?.branch
       : undefined
-  const base =
-    mergeBase ?? target?.branch ?? (source && defaultReviewBase(source, s.tasks, worktrees, []))
-  const reviewBase = findings?.findings?.base || base
+  const base = chatReviewBase(source, s.tasks, worktrees, branches, mergeBase)
+  const reviewBase = chatReviewBase(
+    source,
+    s.tasks,
+    worktrees,
+    branches,
+    findings?.findings?.base || mergeBase,
+  )
   const checkKey = JSON.stringify([key, source?.head, target?.head])
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
   const state = flow(

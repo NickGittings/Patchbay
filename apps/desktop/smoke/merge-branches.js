@@ -57,12 +57,54 @@
     if (chat) {
       state().setSimpleMode(true)
       await until('Chat mounted', () => visible('.simple-chat'))
-      const { started } = await smoke.startReviewAgents(
-        project,
-        { worktree: root, branch: 'feature', base: 'main' },
-        [review],
+      smoke.simpleUi.getState().patch(smoke.simpleKey(project.projectId, null), { changes: true })
+      await until('initial committed comparison loaded', () =>
+        visible('.simple-diff .change-row[data-path="shared.txt"]'),
       )
-      const sid = started[0].sessionId
+      // Seed a completed Build so Review must choose its own base, before any saved findings.
+      const atMs = Date.now()
+      const built = {
+        id: 'fixture-build',
+        metadata: {
+          projectId: project.projectId,
+          projectRoot: root,
+          projectName: project.name,
+          componentId: '@task',
+          terminalId: 'fixture-build',
+          task: null,
+          name: 'Build fixture',
+          kind: 'agent',
+        },
+        spec: { cwd: root, command: review.command },
+        snapshot: { generation: 1, running: false, startedMs: atMs, exitCode: 0 },
+        history: [],
+      }
+      smoke.store.setState({ sessionRecords: [...state().sessionRecords, built] })
+      state().patchTask(project.projectId, null, {
+        simple: {
+          ...state().simple,
+          log: [
+            {
+              id: 'fixture-build',
+              kind: 'action',
+              action: 'implement',
+              stage: 'build',
+              sessionId: built.id,
+              generation: 1,
+              atMs,
+            },
+          ],
+        },
+      })
+      const start = await until('Chat Review enabled', () => {
+        const b = button('Review', visible('.simple-step') ?? document)
+        return b && !b.disabled && b
+      })
+      start.click()
+      const reviewer = await until('Chat review starts without Options', () =>
+        state().sessionRecords.find((r) => r.metadata.componentId === '@review'),
+      )
+      const sid = reviewer.id
       await until('review findings written', () =>
         smoke.terminalText(sid).text.includes('review-verified'),
       )
@@ -86,6 +128,18 @@
       })
       await smoke.terminalStop(sid)
       await smoke.reconcileSessions()
+      const finding = await until('review finding file link', () => visible('.finding-ref'))
+      finding.click()
+      await until(
+        'finding opens the committed diff',
+        () =>
+          visible('.simple-diff .change-row[aria-selected="true"][data-path="shared.txt"]') &&
+          visible('.simple-diff [data-new-line="1"]'),
+      )
+      assert(
+        !visible('.simple-diff').textContent.includes('Diff unavailable'),
+        'finding did not resolve after the review comparison reloaded',
+      )
       const anyway = await until('Merge anyway with review findings', () => button('Merge anyway'))
       assert(!anyway.disabled, 'Merge anyway disabled without a destination checkout')
       anyway.click()
@@ -170,7 +224,7 @@
     )
   } catch (error) {
     await smoke.report(
-      `FAIL merge-branches: ${error?.message ?? error} ${error?.stack ?? ''}; message=${state().message}; step=${visible('.simple-step')?.textContent}`,
+      `FAIL merge-branches: ${error?.message ?? error} ${error?.stack ?? ''}; message=${state().message}; step=${visible('.simple-step')?.textContent}; chat=${visible('.simple-chat')?.textContent.slice(-1600)}`,
     )
   }
 })()

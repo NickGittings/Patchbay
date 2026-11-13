@@ -137,6 +137,15 @@ test('an unavailable saved base uses an uncommitted comparison when no default e
   expect(ipc.gitReview).toHaveBeenLastCalledWith(expect.anything(), undefined, undefined)
 })
 
+test('Chat changes use the unchecked merge destination before a different task base', async () => {
+  h.savedBase = ''
+  useStore.setState({ tasks: [{ worktree: '/repo', base: 'release' }] as never })
+  render()
+  const reader = await settle()
+  expect(reader.base).toBe('main')
+  expect(ipc.gitReview).toHaveBeenLastCalledWith(expect.anything(), undefined, 'main')
+})
+
 test('a project outside Git still loads plans and changes from its component repositories', async () => {
   vi.mocked(ipc.gitWorktrees).mockResolvedValue([])
   vi.mocked(ipc.gitBranches).mockRejectedValue(new Error("The project isn't in a git repo"))

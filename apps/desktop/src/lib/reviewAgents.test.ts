@@ -33,6 +33,20 @@ const tree = (path: string, branch: string | undefined, current = false): Worktr
 })
 const source = tree('/feature', 'feature')
 
+test('Chat reviews an unchecked merge destination instead of a different task base', async () => {
+  const { chatReviewBase } = await import('./reviewAgents')
+  const open = tree('/feature', 'feature', true)
+  const branches = ['feature', 'main', 'develop']
+  const task = { worktree: open.path, base: 'develop' } as Task
+  expect(chatReviewBase(open, [task], [open], branches)).toBe('main')
+  expect(chatReviewBase(open, [], [open], branches)).toBe('main')
+  expect(chatReviewBase(open, [task], [open], branches, 'develop')).toBe('develop')
+  expect(chatReviewBase(open, [task], [open], branches, 'deleted')).toBe('main')
+  expect(chatReviewBase(open, [task], [open], branches, 'feature')).toBe('main')
+  expect(chatReviewBase(open, [task], [open], ['feature', 'develop'])).toBe('develop')
+  expect(chatReviewBase(undefined, [], [], [])).toBeUndefined()
+})
+
 beforeEach(() => {
   vi.resetAllMocks()
   useStore.setState(useStore.getInitialState())

@@ -24,6 +24,35 @@ The composer subscribes to provider usage and the shared clock. It shows every u
 
 ### Persistent lead and coordinated workers
 
+`reviewAgents::chatReviewBase` supplies Chat's review launches and changes reader with the same
+base. A valid saved review choice takes precedence; otherwise the default merge destination
+branch is used even without a checkout, followed by the available task/review defaults. Destination
+checkout metadata is needed separately for conflict checks and direct merges, never for choosing
+the review base. Finding selections made during a comparison reload resolve through
+`changeNav::resolveChangeSelection` when files arrive, preserving explicit component choices and
+the requested line.
+
+Chat root launches retain `SessionSpec.purpose = chat` (`ordinary` is the legacy default).
+`context::chat_session_spec` supplies a dedicated persistent-lead briefing: saved plans,
+assignments and conversation context are reference material until the user asks for work.
+Ordinary implementation/planning launches keep their existing handoff behavior. Restarts,
+resumes and conversation resets retain the launch purpose.
+
+Session protocol 24 bootstraps each Codex chat process with one internal CLI prompt requesting
+only “Ready”, without tools, edits, commits or delegation. The stored launch and resume commands
+exclude that prompt; the PTY appends it once per process, including resumed and reset conversations.
+Claude chat leads need no bootstrap. Codex starts with generation-bound `chatStartup: pending`;
+only an accepted successful Codex `Stop` with a current turn identity changes it to `ready`.
+Stale hooks, status files, interrupts and process exit cannot establish readiness. The bootstrap
+reply stays in the terminal and is suppressed from Chat reply history. Snapshots and started/status
+events carry readiness to the UI. Composer readiness, forced sends, coordinator delivery and the
+session service's final prompt gate all wait for startup to finish. The 30-second composer timeout
+reports that readiness could not be confirmed and leaves the user's message unsent.
+
+Chat identities use durable team membership: Lead for the team's lead, Builder for its workers
+and adopted scopes, otherwise Agent. Provider and preset labels remain separate. Opening a
+Builder terminal changes the drawer identity while the composer continues to address its recipient.
+
 Each worktree can have one persistent chat team. The saved `selectedAgent` becomes its lead when
 coordination is initialized; existing conversations migrate paused, preserving their history and
 recipient without launching workers. **Switch agent** queues an explicit durable provider-conversation

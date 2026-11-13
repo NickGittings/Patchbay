@@ -1,3 +1,5 @@
+import { changedFileRef } from './review'
+
 /** One changed file, named by the component whose list shows it. */
 export interface ChangeRef {
   componentId: string
@@ -15,6 +17,21 @@ export function changeRefs(
 export function changePosition(refs: readonly ChangeRef[], current: ChangeRef | null | undefined) {
   if (!current) return -1
   return refs.findIndex((r) => r.componentId === current.componentId && r.path === current.path)
+}
+
+/** Resolve a finding again after a comparison reload, preserving explicit component choices. */
+export function resolveChangeSelection<T extends ChangeRef>(
+  refs: ChangeRef[],
+  selection: T | null | undefined,
+  worktreeRoot?: string,
+) {
+  return (
+    selection && {
+      ...selection,
+      ...(refs.find((f) => f.componentId === selection.componentId && f.path === selection.path) ??
+        changedFileRef(refs, selection.path, worktreeRoot)),
+    }
+  )
 }
 
 /**

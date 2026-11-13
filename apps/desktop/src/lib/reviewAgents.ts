@@ -383,6 +383,22 @@ export function availableReviewBase(
   )
 }
 
+/** Chat reviews against its merge destination even when that branch has no checkout. */
+export function chatReviewBase(
+  source: Worktree | undefined,
+  tasks: Task[],
+  worktrees: Worktree[],
+  branches: string[],
+  savedBase?: string | null,
+) {
+  if (!source) return undefined
+  if (savedBase && savedBase !== source.branch && branches.includes(savedBase)) return savedBase
+  return (
+    defaultMergeDestination(source, worktrees, branches) ||
+    availableReviewBase(source, tasks, worktrees, branches)
+  )
+}
+
 /** What `defaultReviewBase` decides from, so a change to any of it can be noticed. */
 export const reviewBaseInputs = (
   source: Worktree,

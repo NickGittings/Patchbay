@@ -9,7 +9,7 @@ import {
   proposalRead,
   onProposal,
 } from './ipc'
-import { availableReviewBase } from './reviewAgents'
+import { chatReviewBase } from './reviewAgents'
 import { activeWorktree } from './tasks'
 import { relatedSession, workflowLog } from './simple'
 import { changeGroups } from './changeGroups'
@@ -90,7 +90,7 @@ export function useSimpleData(visible: boolean) {
         // Resolve the comparison from fresh metadata on every read, so an old
         // saved base cannot prevent these artifacts from refreshing.
         const source = worktrees.find((w) => (worktree ? w.path === worktree : w.current))
-        const base = availableReviewBase(source, state.tasks, worktrees, branches, savedBase)
+        const base = chatReviewBase(source, state.tasks, worktrees, branches, savedBase)
         const review = await gitReview(project, worktree, base)
         const merge = latestMerge(state)
         let request: MergeRequest | undefined = merge?.kind === 'action' ? merge.request : undefined

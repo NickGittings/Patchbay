@@ -5,8 +5,7 @@ import { useRef, useState } from 'react'
 import { StoryViewTabs } from './stories/StoryBoard'
 import { useStepKeys } from './changes/useStepKeys'
 import { useStore } from '../store'
-import { changePosition, stepChange } from '../lib/changeNav'
-import { changedFileRef } from '../lib/review'
+import { changePosition, resolveChangeSelection, stepChange } from '../lib/changeNav'
 import { useSimpleUi, type SimpleDiff as Selection } from '../lib/simpleUi'
 import type { useSimpleData } from '../lib/useSimpleData'
 import ChangeList from './changes/ChangeList'
@@ -26,11 +25,7 @@ export default function SimpleDiff({
   const { groups, files: order } = reader
   // Findings can be clicked while the comparison reloads and its file list is empty.
   // Resolve their path again when files arrive, preserving explicit listed selections.
-  const selected = selection && {
-    ...selection,
-    ...(order.find((f) => f.componentId === selection.componentId && f.path === selection.path) ??
-      changedFileRef(order, selection.path, reader.source?.path)),
-  }
+  const selected = resolveChangeSelection(order, selection, reader.source?.path)
   const file = selected
     ? (reader.data?.review.changes[selected.componentId]?.find((f) => f.path === selected.path) ??
       null)

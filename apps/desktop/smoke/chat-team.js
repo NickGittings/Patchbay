@@ -147,6 +147,19 @@
         .textContent.includes('I gathered the existing agent'),
     )
     assert(jobs().length === 2, 'Gathering information launched a duplicate worker')
+    const leadHeader = await until('Lead message header', () =>
+      document.querySelector(`.simple-agent[data-session="${team().lead.sessionId}"] header`),
+    )
+    assert(
+      leadHeader.textContent.includes('Lead · Codex') &&
+        leadHeader.textContent.includes('Preset: Team agent') &&
+        button('View Lead terminal', leadHeader),
+      'Message header mixed the Lead role, provider or preset',
+    )
+    assert(
+      document.querySelector('.chat-recipient').textContent.includes('Preset: Team agent'),
+      'Composer omitted the selected preset',
+    )
     button('Clear chat').click()
     button(
       'Clear',

@@ -1,10 +1,38 @@
 import { expect, test } from 'vitest'
-import { changePosition, changeRefs, stepChange, stepKey } from './changeNav'
+import {
+  changePosition,
+  changeRefs,
+  resolveChangeSelection,
+  stepChange,
+  stepKey,
+} from './changeNav'
 
 const refs = changeRefs([
   { id: 'a', files: [{ path: 'a/1.ts' }, { path: 'a/2.ts' }] },
   { id: 'b', files: [{ path: 'b/1.ts' }] },
 ])
+
+test('a finding selected during reload resolves when changed files arrive and keeps its line', () => {
+  const selection = { componentId: '@project', path: '/repo/src/app.txt', line: 4 }
+  expect(resolveChangeSelection([], selection, '/repo')).toEqual(selection)
+  const loaded = [{ componentId: 'app', path: 'src/app.txt' }]
+  const selected = resolveChangeSelection(loaded, selection, '/repo')
+  expect(selected).toEqual({ ...loaded[0], line: 4 })
+  expect(changePosition(loaded, selected)).toBe(0)
+  expect(resolveChangeSelection(loaded, null)).toBeNull()
+  expect(resolveChangeSelection(loaded, undefined)).toBeUndefined()
+})
+
+test('an explicit component stays selected when changed paths are shared', () => {
+  const loaded = [
+    { componentId: 'first', path: 'shared.txt' },
+    { componentId: 'second', path: 'shared.txt' },
+  ]
+  const selected = resolveChangeSelection(loaded, { ...loaded[1], line: 1 })
+  expect(selected).toEqual({ ...loaded[1], line: 1 })
+  expect(changePosition(loaded, selected)).toBe(1)
+  expect(stepChange(loaded, selected, -1)).toEqual(loaded[0])
+})
 
 test('stepping crosses component lists and stops at either end', () => {
   expect(stepChange(refs, refs[1], 1)).toEqual({ componentId: 'b', path: 'b/1.ts' })
