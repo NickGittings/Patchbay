@@ -6,6 +6,7 @@ import { StoryViewTabs } from './stories/StoryBoard'
 import { useStepKeys } from './changes/useStepKeys'
 import { useStore } from '../store'
 import { changePosition, stepChange } from '../lib/changeNav'
+import { changedFileRef } from '../lib/review'
 import { useSimpleUi, type SimpleDiff as Selection } from '../lib/simpleUi'
 import type { useSimpleData } from '../lib/useSimpleData'
 import ChangeList from './changes/ChangeList'
@@ -23,19 +24,26 @@ export default function SimpleDiff({
   const [history, setHistory] = useState<HistorySelection | null>(null)
   const task = useStore((s) => s.activeTask)
   const { groups, files: order } = reader
-  const file = selection
-    ? (reader.data?.review.changes[selection.componentId]?.find((f) => f.path === selection.path) ??
+  // Findings can be clicked while the comparison reloads and its file list is empty.
+  // Resolve their path again when files arrive, preserving explicit listed selections.
+  const selected = selection && {
+    ...selection,
+    ...(order.find((f) => f.componentId === selection.componentId && f.path === selection.path) ??
+      changedFileRef(order, selection.path, reader.source?.path)),
+  }
+  const file = selected
+    ? (reader.data?.review.changes[selected.componentId]?.find((f) => f.path === selected.path) ??
       null)
     : null
   const patch = useSimpleUi.getState().patch
   const step = (delta: -1 | 1) => {
     if (history) return
-    const next = stepChange(order, selection, delta)
+    const next = stepChange(order, selected, delta)
     if (next) patch(scopeKey, { diff: next })
   }
   const body = useRef<HTMLDivElement>(null)
   useStepKeys(step, [body])
-  const nav = { position: changePosition(order, selection), total: order.length, step }
+  const nav = { position: changePosition(order, selected), total: order.length, step }
   return (
     <div className="simple-diff">
       <header className="view-tabs-header">
@@ -52,7 +60,7 @@ export default function SimpleDiff({
               <ChangeList
                 files={g.files}
                 base={g.base}
-                selected={!history && g.id === selection?.componentId ? selection.path : undefined}
+                selected={!history && g.id === selected?.componentId ? selected.path : undefined}
                 onSelect={(path) => {
                   setHistory(null)
                   patch(scopeKey, { diff: { componentId: g.id, path } })
@@ -67,14 +75,14 @@ export default function SimpleDiff({
         </aside>
         {history ? (
           <CommitDetails onSelect={setHistory} selection={history} worktree={reader.source?.path} />
-        ) : file && selection ? (
+        ) : file && selected ? (
           <DiffView
             base={reader.base}
-            componentId={selection.componentId}
+            componentId={selected.componentId}
             file={file}
             revision={reader.data?.review}
             worktree={reader.source?.path}
-            lineFocus={selection.line}
+            lineFocus={selected.line}
             nav={nav}
           />
         ) : (

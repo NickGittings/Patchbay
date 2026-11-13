@@ -24,3 +24,17 @@ test('a listing marks only the run it lists interrupted', () => {
       .interrupted,
   ).toBeUndefined()
 })
+
+test('bootstrap readiness belongs to the snapshot generation', () => {
+  const previous = sessionFromSnapshot(
+    undefined,
+    { ...snapshot(1, true), chatStartup: 'ready' },
+    undefined,
+  )
+  expect(previous.chatStartup).toBe('ready')
+  expect(
+    sessionFromSnapshot(previous, { ...snapshot(2, true), chatStartup: 'pending' }, undefined)
+      .chatStartup,
+  ).toBe('pending')
+  expect(sessionFromSnapshot(previous, snapshot(3, true), undefined).chatStartup).toBeUndefined()
+})

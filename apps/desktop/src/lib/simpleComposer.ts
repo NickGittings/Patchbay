@@ -50,7 +50,13 @@ export interface Submission {
   previousTurnId?: string
 }
 export function promptReady(session: SessionState | undefined, submitted?: number | Submission) {
-  if (!session?.running || session.disconnected || session.interrupted) return false
+  if (
+    !session?.running ||
+    session.disconnected ||
+    session.interrupted ||
+    session.chatStartup === 'pending'
+  )
+    return false
   const agent = session.status?.agent
   return (
     !!agent?.authoritative &&
@@ -68,7 +74,13 @@ export function promptReady(session: SessionState | undefined, submitted?: numbe
  * approval's automatic-review grace and with a turn identity to track the forced message.
  */
 export function forceable(session: SessionState | undefined) {
-  if (!session?.running || session.disconnected || session.interrupted) return false
+  if (
+    !session?.running ||
+    session.disconnected ||
+    session.interrupted ||
+    session.chatStartup === 'pending'
+  )
+    return false
   const agent = session.status?.agent
   return (
     !!agent?.authoritative &&
@@ -105,9 +117,11 @@ export function composerStatus({
   /** `promptReady` for the session. */
   ready: boolean
 }): { label: string; sendable: boolean; action: 'send' | 'queue' | 'none'; notice?: HooksNotice } {
-  if (pending) return { label: 'Waiting for ready prompt…', sendable: false, action: 'none' }
   if (!connected || (session?.running && (session.disconnected || session.interrupted)))
     return { label: 'Session service disconnected', sendable: false, action: 'none' }
+  if (session?.running && session.chatStartup === 'pending')
+    return { label: 'Starting Lead · Codex…', sendable: false, action: 'none' }
+  if (pending) return { label: 'Waiting for ready prompt…', sendable: false, action: 'none' }
   const running = !!session?.running
   if (running && ready) return { label: 'Ready', sendable: true, action: 'send' }
   if (provider === null)
@@ -265,6 +279,7 @@ export async function waitForPrompt(
     if (promptReady(session)) return
     if (
       port.allowWorking &&
+      session.chatStartup !== 'pending' &&
       session.status?.agent?.authoritative &&
       session.status.agent.state === 'working'
     )
@@ -272,9 +287,11 @@ export async function waitForPrompt(
     // The composer adds hook advice from installed state: `authoritative` can't tell an Esc apart.
     if (now() - began >= 30000)
       throw new Error(
-        port.provider === null
-          ? 'No ready prompt after 30 seconds. Chat can message only Claude and Codex agents; open the terminal to continue.'
-          : 'No ready prompt after 30 seconds. Open the terminal to continue.',
+        session.chatStartup === 'pending'
+          ? 'Couldn’t confirm Lead readiness. Your message hasn’t been sent.'
+          : port.provider === null
+            ? 'No ready prompt after 30 seconds. Chat can message only Claude and Codex agents; open the terminal to continue.'
+            : 'No ready prompt after 30 seconds. Open the terminal to continue.',
       )
     await (port.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(
       100,

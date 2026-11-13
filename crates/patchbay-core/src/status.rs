@@ -398,9 +398,18 @@ pub(crate) fn unix_ms(time: SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
+/// Readiness of this process's internal Codex chat bootstrap turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatStartup {
+    Pending,
+    Ready,
+}
+
 /// Status of one session incarnation.
 #[derive(Default)]
 pub struct Tracker {
+    chat_startup: Option<ChatStartup>,
     /// Look for a local URL or `ready_when` (task terminals only).
     service: bool,
     ready_when: String,
@@ -440,6 +449,16 @@ pub struct Tracker {
 }
 
 impl Tracker {
+    #[must_use]
+    pub fn with_chat_startup(mut self, bootstrap: bool) -> Self {
+        self.chat_startup = bootstrap.then_some(ChatStartup::Pending);
+        self
+    }
+
+    #[must_use]
+    pub fn chat_startup(&self) -> Option<ChatStartup> {
+        self.chat_startup
+    }
     /// With `service`, output is scanned for a local URL and for `ready_when`,
     /// matched case-insensitively against lines (empty matches nothing).
     #[must_use]
@@ -701,7 +720,20 @@ impl Tracker {
             }
             self.pending_activity.push(activity);
         }
-        if event.event == "Stop"
+        // Only the accepted, successful end of a Codex turn releases startup. Earlier
+        // guards reject stale generations, nested conversations and retired turns.
+        // Keep this internal exchange in the terminal, out of chat reply history.
+        let bootstrap = self.chat_startup == Some(ChatStartup::Pending);
+        if bootstrap
+            && event.event == "Stop"
+            && state == AgentState::Review
+            && event.provider == crate::adapters::Adapter::Codex
+            && event.turn.is_some()
+        {
+            self.chat_startup = Some(ChatStartup::Ready);
+        }
+        if !bootstrap
+            && event.event == "Stop"
             && state == AgentState::Review
             && let Some(text) = &event.reply
         {
@@ -1423,6 +1455,64 @@ mod tests {
             reply: None,
             source: None,
         }
+    }
+
+    #[test]
+    fn chat_startup_requires_an_accepted_successful_stop_and_hides_its_reply() {
+        let mut tracker = Tracker::new("", false)
+            .with_identity("session", 42)
+            .with_chat_startup(true);
+        tracker.on_hook(hook("SessionStart", None, 1), 100);
+        assert_eq!(tracker.chat_startup(), Some(ChatStartup::Pending));
+        tracker.on_hook(hook("UserPromptSubmit", Some("bootstrap"), 2), 200);
+        tracker.on_hook(hook("PreToolUse", Some("bootstrap"), 3), 300);
+        tracker.on_hook(hook("PermissionRequest", Some("bootstrap"), 4), 400);
+        assert_eq!(tracker.chat_startup(), Some(ChatStartup::Pending));
+
+        // A Stop from another process, nested conversation or turn is not authority.
+        let mut stop = hook("Stop", Some("bootstrap"), 5);
+        stop.generation = 41;
+        tracker.on_hook(stop, 500);
+        let mut stop = hook("Stop", Some("bootstrap"), 5);
+        stop.conversation = "nested".into();
+        tracker.on_hook(stop, 500);
+        tracker.on_hook(hook("Stop", Some("other"), 6), 600);
+        assert_eq!(tracker.chat_startup(), Some(ChatStartup::Pending));
+
+        tracker.on_hook(hook("StopFailure", Some("bootstrap"), 7), 700);
+        tracker.on_hook(hook("Stop", Some("bootstrap"), 8), 800);
+        assert_eq!(tracker.chat_startup(), Some(ChatStartup::Pending));
+        tracker.on_hook(hook("UserPromptSubmit", Some("retry"), 9), 900);
+        let mut stop = hook("Stop", Some("retry"), 10);
+        stop.reply = Some("Ready".into());
+        tracker.on_hook(stop, 1000);
+        assert_eq!(tracker.chat_startup(), Some(ChatStartup::Ready));
+        assert!(tracker.replies().is_empty());
+        assert!(tracker.drain_replies().is_empty());
+        assert!(tracker.status(1000).agent.unwrap().authoritative);
+        tracker.on_hook(hook("UserPromptSubmit", Some("user"), 11), 1100);
+        let mut stop = hook("Stop", Some("user"), 12);
+        stop.reply = Some("User's answer".into());
+        tracker.on_hook(stop, 1200);
+        assert_eq!(tracker.replies()[0].text, "User's answer");
+    }
+
+    #[test]
+    fn chat_startup_never_uses_status_files_interrupts_or_exit_as_readiness() {
+        let mut tracker = Tracker::new("", false)
+            .with_identity("session", 42)
+            .with_chat_startup(true);
+        tracker.on_hook(hook("UserPromptSubmit", Some("bootstrap"), 1), 100);
+        tracker.on_hook(hook("Interrupt", Some("bootstrap"), 2), 200);
+        tracker.on_hook(hook("Stop", Some("bootstrap"), 3), 300);
+        assert_eq!(tracker.chat_startup(), Some(ChatStartup::Pending));
+        tracker.on_exit(400);
+        assert_eq!(tracker.chat_startup(), Some(ChatStartup::Pending));
+        assert_eq!(Tracker::new("", false).chat_startup(), None);
+        let fresh = Tracker::new("", false)
+            .with_identity("session", 43)
+            .with_chat_startup(true);
+        assert_eq!(fresh.chat_startup(), Some(ChatStartup::Pending));
     }
     #[test]
     fn compaction_preserves_work_approval_and_completion_eligibility() {

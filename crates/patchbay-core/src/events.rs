@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 )]
 pub enum TerminalEvent {
     Started {
+        #[serde(default)]
+        chat_startup: Option<crate::status::ChatStartup>,
         session_id: String,
         generation: u64,
         /// Unix milliseconds.
@@ -44,6 +46,8 @@ pub enum TerminalEvent {
     },
     /// What a running session is doing changed (see [`SessionStatus`]).
     Status {
+        #[serde(default)]
+        chat_startup: Option<crate::status::ChatStartup>,
         session_id: String,
         generation: u64,
         status: SessionStatus,

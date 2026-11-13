@@ -174,6 +174,7 @@ pub fn action(
             ("PATCHBAY_WORKTREE_ROOT".into(), task.worktree),
         ]
         .into(),
+        purpose: crate::pty::LaunchPurpose::Ordinary,
         resume_command: None,
         rerun_on_resume: false,
         owns_briefing: false,

@@ -304,6 +304,7 @@ fn ready(r: &Record) -> bool {
     !r.interrupted
         && r.snapshot.as_ref().is_some_and(|s| {
             s.running
+                && s.chat_startup != Some(crate::status::ChatStartup::Pending)
                 && s.status.context.compaction != crate::agent_context::Compaction::Compacting
                 && !s.status.stopped
                 && s.status.agent.as_ref().is_some_and(|a| {
@@ -1955,7 +1956,7 @@ fn prepare_lead(
             return Ok(t);
         }
         let mapped = target_project(project, t.task.as_deref(), &[])?;
-        let mut spec = context::task_root_session_spec(
+        let mut spec = context::chat_session_spec(
             &mapped,
             &[],
             &terminal,
@@ -1965,7 +1966,6 @@ fn prepare_lead(
                 title: "Persistent chat lead".into(),
                 body: recovery_text(s, &t)?,
             }],
-            None,
         )?;
         let metadata: crate::session::Metadata = serde_json::from_value(serde_json::json!({
             "projectId":project_id, "projectName":project.name, "projectRoot":project.root, "componentId":crate::model::TASK_ROOT_SCOPE,
@@ -2494,8 +2494,8 @@ mod tests {
         Record {
             id: sid.into(),
             metadata: serde_json::from_value(serde_json::json!({"projectId":"p", "projectName":"P", "projectRoot":root, "componentId":"@task", "terminalId":sid, "name":"Codex", "kind":"agent", "adapter":"codex"})).unwrap(),
-            spec: SessionSpec { id: sid.into(), command: "codex".into(), resume_command: None, rerun_on_resume: false, owns_briefing: false, exclusive_cwd: false, merge_source: None, cwd: root.into(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: vec![] },
-            snapshot: Some(Snapshot { launch_directory: None, truncated: false, data: vec![], end: 0, generation: 1, running: true, exit_code: None, started_ms: 1, exited_ms: None,
+            spec: SessionSpec { purpose: crate::pty::LaunchPurpose::Ordinary, id: sid.into(), command: "codex".into(), resume_command: None, rerun_on_resume: false, owns_briefing: false, exclusive_cwd: false, merge_source: None, cwd: root.into(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: vec![] },
+            snapshot: Some(Snapshot { chat_startup: None, launch_directory: None, truncated: false, data: vec![], end: 0, generation: 1, running: true, exit_code: None, started_ms: 1, exited_ms: None,
                 status: SessionStatus { agent: Some(AgentReport { state: AgentState::Idle, since_ms: 10, message: None, prompt: None, provider: Some(crate::adapters::Adapter::Codex), conversation_id: Some("c1".into()), turn_id: Some("turn1".into()), authoritative: true, approval_pending: false }), ..Default::default() }, activity: vec![], replies: vec![], last_reply: None, notice: None }),
             history: vec![], launch_command: String::new(), restart_context: None, briefing_backup: None, interrupted: false, request_ids: vec!["lead-request".into()],
         }
@@ -3318,6 +3318,56 @@ mod tests {
         )
         .unwrap();
     }
+
+    #[test]
+    fn coordination_waits_for_bootstrap_before_initializing_and_preserves_message_order() {
+        use crate::status::ChatStartup;
+        let mut f = Fixture::new();
+        f.lead.snapshot.as_mut().unwrap().chat_startup = Some(ChatStartup::Pending);
+        f.send("one", "first");
+        f.send("two", "second");
+        deliver(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |_| panic!("bootstrap is pending"),
+        )
+        .unwrap();
+        assert!(f.state().recovery);
+        assert!(
+            f.state()
+                .messages
+                .iter()
+                .all(|m| m.state == DeliveryState::Pending)
+        );
+        f.lead.snapshot.as_mut().unwrap().chat_startup = Some(ChatStartup::Ready);
+        let mut prompts = Vec::new();
+        deliver(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |r| {
+                if let Request::Prompt { text, .. } = r {
+                    prompts.push(text);
+                }
+                Ok(serde_json::Value::Null)
+            },
+        )
+        .unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].find("first").unwrap() < prompts[0].find("second").unwrap());
+        assert!(!f.state().recovery);
+        deliver(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |_| panic!("duplicate delivery"),
+        )
+        .unwrap();
+    }
     #[test]
     fn uncertain_delivery_and_restart_require_explicit_recovery_without_resending() {
         let mut f = Fixture::new();
@@ -3866,6 +3916,11 @@ mod tests {
         let reset = queued.reset.unwrap();
         assert_eq!(reset.phase, ResetPhase::Queued);
         assert!(reset.launch.is_some());
+        assert_eq!(
+            reset.launch.as_ref().unwrap().spec.purpose,
+            crate::pty::LaunchPurpose::Chat
+        );
+        assert!(reset.launch.as_ref().unwrap().spec.chat_bootstrap());
         let mut launches = 0;
         replace_lead(
             &f.dir,

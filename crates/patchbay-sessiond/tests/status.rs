@@ -149,6 +149,7 @@ fn pty_journal_delivers_native_reports_and_rejects_spoofed_launch_transport() {
     manager
         .spawn(
             SessionSpec {
+                purpose: patchbay_core::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,

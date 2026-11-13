@@ -1,4 +1,5 @@
 import type { ChatFailureKind } from '../lib/chatTeams'
+import { useChatIdentity } from '../lib/chatIdentity'
 import { chatRecipient, chatAutoActive } from '../lib/chat'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { useClockNow } from '../lib/clock'
@@ -24,7 +25,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import type { SessionRecord } from '../types'
-import { SIMPLE_ROLE_LABEL, recordStage, type SimpleStage } from '../lib/simple'
+import { type SimpleStage } from '../lib/simple'
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
   composerStatus,
@@ -79,6 +80,8 @@ export default function SimpleComposer({
   // The drawer renders only its record; one whose session is gone reads as closed.
   const open = ui.terminal !== 'closed' && !!terminalRecord
   const shown = open ? terminalRecord : recipient
+  const identity = useChatIdentity(recipient)
+  const terminalIdentity = useChatIdentity(shown)
   const pending =
     !!ui.pendingAction || (!!ui.coordinationReset && team?.reset?.clearHistory !== false)
   const [errorResult, setErrorResult] = useState<{
@@ -361,7 +364,7 @@ export default function SimpleComposer({
       {(recipient || team) && (
         <p className="chat-recipient" role="status">
           {recipient
-            ? `Agent: ${recipient.metadata.name} · ${provider ?? 'agent'} · ${status.label}`
+            ? `Talking to ${identity.label} · Preset: ${identity.preset} · ${status.label}`
             : status.label}
         </p>
       )}
@@ -444,7 +447,7 @@ export default function SimpleComposer({
         <span>{ui.connection ?? status.label}</span>
         {recipient && running && !autoActive && (
           <button disabled={pending} onClick={() => stopTerminal(recipient.id)}>
-            Stop agent
+            Stop {identity.role}
           </button>
         )}
         <button
@@ -455,13 +458,7 @@ export default function SimpleComposer({
             if (record) openTerminal(record)
           }}
         >
-          {open ? 'Hide' : 'View'}{' '}
-          {shown?.metadata.componentId === '@map'
-            ? shown.metadata.name
-            : shown
-              ? SIMPLE_ROLE_LABEL[recordStage(shown)]
-              : 'agent'}{' '}
-          terminal
+          {open ? 'Hide' : 'View'} {terminalIdentity.role} terminal
         </button>
         <button
           aria-label="Chat agent settings"

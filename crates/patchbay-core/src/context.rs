@@ -1459,6 +1459,7 @@ fn build_job_agent_spec(
         return Err(anyhow!("blocked by policy: {reason}"));
     }
     Ok(SessionSpec {
+        purpose: crate::pty::LaunchPurpose::Ordinary,
         resume_command: Some(resume_command),
         rerun_on_resume: false,
         owns_briefing: true,
@@ -1822,6 +1823,7 @@ pub fn plan_session_spec(
                 sections,
                 true,
                 kickoff,
+                crate::pty::LaunchPurpose::Ordinary,
             )
         }
         Some(_) => Err(anyhow!("Start implementation agents in Implementation")),
@@ -1876,6 +1878,7 @@ pub fn scoped_plan_session_spec(
         &sections,
         true,
         kickoff,
+        crate::pty::LaunchPurpose::Ordinary,
     )?;
     spec.env.insert(
         "PATCHBAY_PLANNING_SCOPE".into(),
@@ -1907,6 +1910,7 @@ pub fn plan_session_spec_for(
         sections,
         true,
         None,
+        crate::pty::LaunchPurpose::Ordinary,
     )
 }
 
@@ -1943,7 +1947,56 @@ pub fn task_root_session_spec(
         sections,
         false,
         kickoff,
+        crate::pty::LaunchPurpose::Ordinary,
     )
+}
+
+/// A persistent chat lead waits for the user's next message; saved artifacts are context.
+///
+/// # Errors
+/// As [`plan_session_spec`].
+pub fn chat_session_spec(
+    project: &Project,
+    component_ids: &[String],
+    terminal: &TerminalSpec,
+    task: Option<&str>,
+    policy: &dyn Policy,
+    sections: &[ContextSection],
+) -> Result<SessionSpec> {
+    anyhow::ensure!(
+        terminal.kind == TerminalKind::Agent,
+        "Choose an agent for chat"
+    );
+    root_session_spec(
+        project,
+        component_ids,
+        terminal,
+        task,
+        policy,
+        sections,
+        false,
+        None,
+        crate::pty::LaunchPurpose::Chat,
+    )
+}
+
+pub(crate) const CHAT_BOOTSTRAP: &str = "Reply ‘Ready’ and await the next message. Do not use tools, change files, commit, delegate, or begin previously described work.";
+
+pub(crate) fn chat_bootstrap_argument() -> String {
+    Shell::current().quote(CHAT_BOOTSTRAP)
+}
+
+fn chat_context(project: &Project, ids: &[String], sections: &[ContextSection]) -> String {
+    let mut out = format!(
+        "# Patchbay chat lead context\n\nYou are the persistent Lead for **{}** at `{}`. Await the user's next message before starting work. Saved plans, assignments and previous conversation context are reference material; do not execute them unless the user requests it. The startup readiness exchange requires only a short reply and no tools.\n\n## Project components\n\n",
+        project.name, project.root
+    );
+    for component in plan_components(project, ids) {
+        describe_component(&mut out, project, component);
+    }
+    out.push_str(&implementation_actions(Shell::current()));
+    append_sections(&mut out, sections);
+    out
 }
 
 /// Which review a root agent fixes.
@@ -2022,6 +2075,7 @@ fn root_session_spec(
     sections: &[ContextSection],
     planning: bool,
     kickoff: Option<Kickoff>,
+    purpose: crate::pty::LaunchPurpose,
 ) -> Result<SessionSpec> {
     let scope = if planning {
         PLAN_SCOPE
@@ -2050,6 +2104,8 @@ fn root_session_spec(
     if terminal.kind == TerminalKind::Agent {
         let briefing = if planning {
             plan_context(project, component_ids, sections)
+        } else if purpose == crate::pty::LaunchPurpose::Chat {
+            chat_context(project, component_ids, sections)
         } else {
             implementation_context(project, component_ids, sections, kickoff)
         };
@@ -2094,7 +2150,13 @@ fn root_session_spec(
             Kickoff::PlanStory => Cow::Borrowed(STORY_PROMPT),
         });
         // Implement's Restart has no kickoff, so a root start budgets for the longest one.
-        let reserve = if planning {
+        let reserve = if purpose == crate::pty::LaunchPurpose::Chat {
+            command_len(
+                Shell::current(),
+                &format!(" {}", chat_bootstrap_argument()),
+                &env,
+            )
+        } else if planning {
             0
         } else {
             root_reserve(Shell::current())
@@ -2126,6 +2188,7 @@ fn root_session_spec(
         .check(Scope::Plan(&components), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
     Ok(SessionSpec {
+        purpose,
         resume_command,
         rerun_on_resume: false,
         owns_briefing: false,
@@ -2249,6 +2312,7 @@ pub fn session_spec_with(
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
 
     Ok(SessionSpec {
+        purpose: crate::pty::LaunchPurpose::Ordinary,
         resume_command: None,
         rerun_on_resume: false,
         owns_briefing: false,
@@ -2993,6 +3057,36 @@ mod tests {
             kind: TerminalKind::Agent,
             ready_when: String::new(),
             action: None,
+        }
+    }
+
+    #[test]
+    fn chat_leads_receive_a_dedicated_briefing_and_only_codex_bootstraps() {
+        for provider in ["claude", "codex"] {
+            let mut terminal = planner();
+            terminal.command = provider.into();
+            let spec = chat_session_spec(&project(), &[], &terminal, None, &AllowAll, &[]).unwrap();
+            assert_eq!(spec.purpose, crate::pty::LaunchPurpose::Chat);
+            assert_eq!(spec.chat_bootstrap(), provider == "codex");
+            let text = std::fs::read_to_string(&spec.env[CONTEXT_ENV]).unwrap();
+            assert!(text.contains("persistent Lead"));
+            assert!(text.contains("Await the user's next message"));
+            assert!(text.contains("**API**"));
+            assert!(!text.contains("using the saved plan and applied assignments below"));
+            assert!(!spec.command.contains(CHAT_BOOTSTRAP));
+            assert_eq!(spec.resume_command.as_deref(), Some(spec.command.as_str()));
+            let mut legacy = serde_json::to_value(&spec).unwrap();
+            legacy.as_object_mut().unwrap().remove("purpose");
+            let legacy: SessionSpec = serde_json::from_value(legacy).unwrap();
+            assert_eq!(legacy.purpose, crate::pty::LaunchPurpose::Ordinary);
+        }
+        // Both supported shells preserve the full bootstrap as a single positional argument.
+        for shell in [Shell::Unix, Shell::Windows] {
+            let command = format!("codex resume conversation {}", shell.quote(CHAT_BOOTSTRAP));
+            assert_eq!(
+                command_tokens(&command, shell).unwrap(),
+                vec!["codex", "resume", "conversation", CHAT_BOOTSTRAP]
+            );
         }
     }
 
@@ -4594,6 +4688,7 @@ mod tests {
                 &mut env
             ));
             let output = launch(SessionSpec {
+                purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,

@@ -19,9 +19,20 @@ const DEFAULT_SIZE: (u16, u16) = (120, 30);
 const MONITOR_TICK: Duration = Duration::from_millis(250);
 const COMMAND_ENV: &str = "PATCHBAY_LAUNCH_COMMAND";
 
+/// Retained launch intent; existing sessions keep their ordinary startup behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LaunchPurpose {
+    #[default]
+    Ordinary,
+    Chat,
+}
+
 /// What to launch in a terminal session.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionSpec {
+    #[serde(default)]
+    pub purpose: LaunchPurpose,
     pub id: String,
     /// Empty for an interactive shell.
     pub command: String,
@@ -52,6 +63,18 @@ pub struct SessionSpec {
     /// against the user's grants before a recorded launch is resumed.
     #[serde(default)]
     pub dirs: Vec<PathBuf>,
+}
+
+impl SessionSpec {
+    pub(crate) fn chat_bootstrap(&self) -> bool {
+        self.purpose == LaunchPurpose::Chat
+            && (self
+                .env
+                .get(crate::agent_hooks::PROVIDER_ENV)
+                .is_some_and(|p| p == "codex")
+                || crate::context::command_provider(&self.command)
+                    == Some(crate::adapters::Adapter::Codex))
+    }
 }
 
 struct Session {
@@ -227,6 +250,8 @@ impl Backlog {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    #[serde(default)]
+    pub chat_startup: Option<crate::status::ChatStartup>,
     /// Original launch directory of this process incarnation. Legacy history may be unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_directory: Option<PathBuf>,
@@ -520,7 +545,8 @@ impl PtyManager {
             running: true,
             started_ms,
             tracker: Tracker::new(&spec.ready_when, spec.service)
-                .with_identity(&spec.id, generation),
+                .with_identity(&spec.id, generation)
+                .with_chat_startup(spec.chat_bootstrap()),
             notice: spec.notice.clone(),
             launch: Some(spec.clone()),
             ..Backlog::default()
@@ -565,6 +591,7 @@ impl PtyManager {
         drop(sessions);
         self.start_monitor();
         sink.emit(TerminalEvent::Started {
+            chat_startup: backlog.lock().unwrap().tracker.chat_startup(),
             session_id: spec.id.clone(),
             generation,
             started_ms,
@@ -700,6 +727,7 @@ impl PtyManager {
             // earlier status can follow these.
             if let Some(status) = backlog.tracker.changed(exited_ms) {
                 sink.emit(TerminalEvent::Status {
+                    chat_startup: backlog.tracker.chat_startup(),
                     session_id: spec.id.clone(),
                     generation,
                     status,
@@ -835,6 +863,7 @@ impl PtyManager {
                 // Exited runs still take status (stopped, seen); it never revives one.
                 if let Some(status) = guard.tracker.changed(observed_ms) {
                     sink.emit(TerminalEvent::Status {
+                        chat_startup: guard.tracker.chat_startup(),
                         session_id: id,
                         generation,
                         status,
@@ -847,6 +876,7 @@ impl PtyManager {
             // final status and exit.
             if let Some(status) = guard.tracker.changed(now) {
                 sink.emit(TerminalEvent::Status {
+                    chat_startup: guard.tracker.chat_startup(),
                     session_id: id,
                     generation,
                     status,
@@ -890,6 +920,10 @@ impl PtyManager {
             let (_, range) = crate::context::launch_program(&spec.command)
                 .ok_or_else(|| anyhow!("Invalid profile command"))?;
             runtime_command = spec.command[range.start..].to_owned();
+        }
+        if spec.chat_bootstrap() {
+            runtime_command.push(' ');
+            runtime_command.push_str(&crate::context::chat_bootstrap_argument());
         }
         let mut cmd = shell_command(&runtime_command);
         if cfg!(windows) && profile.is_some() {
@@ -1009,6 +1043,7 @@ impl PtyManager {
         let status = backlog.tracker.status(now_ms());
         let skip = backlog.data.len().saturating_sub(limit);
         Some(Snapshot {
+            chat_startup: backlog.tracker.chat_startup(),
             launch_directory: backlog.launch.as_ref().map(|spec| spec.cwd.clone()),
             truncated: backlog.end > backlog.data.len() as u64,
             data: backlog.data.iter().skip(skip).copied().collect(),
@@ -1048,6 +1083,7 @@ impl PtyManager {
         let backlog = backlog.lock().unwrap();
         backlog.launch.as_ref().is_some_and(|launch| {
             launch.command == spec.command
+                && launch.purpose == spec.purpose
                 && launch.cwd == spec.cwd
                 && launch.service == spec.service
                 && launch
@@ -1231,6 +1267,7 @@ impl PtyManager {
         backlog.tracker.on_seen(now);
         let status = backlog.tracker.changed(now)?;
         Some(TerminalEvent::Status {
+            chat_startup: backlog.tracker.chat_startup(),
             session_id: id.to_string(),
             generation: backlog.generation,
             status,
@@ -1550,6 +1587,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,
@@ -1601,6 +1639,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,
@@ -1656,6 +1695,7 @@ mod tests {
         let spec = SessionSpec {
             id: "profile-test".into(),
             command,
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -1686,6 +1726,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,
@@ -1743,6 +1784,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,
@@ -1787,6 +1829,7 @@ mod tests {
     fn reset_forgets_history_and_keeps_generations_unique() {
         let pty = Arc::new(PtyManager::new());
         let spec = |command: &str| SessionSpec {
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -1823,6 +1866,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,
@@ -1861,6 +1905,7 @@ mod tests {
             let sink = Arc::new(Collect::default());
             pty.spawn(
                 SessionSpec {
+                    purpose: crate::pty::LaunchPurpose::Ordinary,
                     resume_command: None,
                     rerun_on_resume: false,
                     owns_briefing: false,
@@ -1904,6 +1949,7 @@ mod tests {
                     barrier.wait();
                     pty.spawn(
                         SessionSpec {
+                            purpose: crate::pty::LaunchPurpose::Ordinary,
                             resume_command: None,
                             rerun_on_resume: false,
                             owns_briefing: false,
@@ -2032,6 +2078,7 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
                 command: command.into(),
                 cwd: std::env::temp_dir(),
                 env: BTreeMap::from([(crate::agent_hooks::PROVIDER_ENV.into(), "codex".into())]),
+                purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,
@@ -2140,6 +2187,7 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
                 command: "IFS= read -r line; printf 'received:%s' \"$line\"".into(),
                 cwd: std::env::temp_dir(),
                 env: BTreeMap::new(),
+                purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,

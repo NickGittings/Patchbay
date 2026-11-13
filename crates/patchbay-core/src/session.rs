@@ -33,7 +33,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 21 binds agent capabilities to a process generation and rotates them on resume.
 // Protocol 22 resets conversations using the service's retained private launch settings.
 // Protocol 23 adds structurally classified chat resume outcomes.
-pub const PROTOCOL: u32 = 23;
+// Protocol 24 gates Codex chat delivery on a generation-bound bootstrap turn.
+pub const PROTOCOL: u32 = 24;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -1732,6 +1733,10 @@ impl Service {
                 snapshot.running && snapshot.generation == generation,
                 "The session generation changed"
             );
+            anyhow::ensure!(
+                snapshot.chat_startup != Some(crate::status::ChatStartup::Pending),
+                "Lead startup is pending; no message was sent"
+            );
             if !force
                 && !reserved
                 && self
@@ -2524,6 +2529,11 @@ fn restart_context(metadata: &Metadata, spec: &SessionSpec) -> Result<Option<Str
     } else {
         settings
     };
+    let settings = if spec.purpose == crate::pty::LaunchPurpose::Chat {
+        serde_json::to_string(&(settings, spec.purpose))?
+    } else {
+        settings
+    };
     Ok(Some(crate::workspace::session_id("restart", &settings, "")))
 }
 
@@ -2539,6 +2549,7 @@ impl EventSink for Service {
             session_id,
             generation,
             status,
+            ..
         } = &event
             && let Some(agent) = &status.agent
             && agent.authoritative
@@ -3056,6 +3067,7 @@ mod tests {
         let service = Service::load(&dir).unwrap();
         let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
         let spec = SessionSpec {
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -3150,6 +3162,7 @@ mod tests {
                     "other".into(),
                     other,
                     SessionSpec {
+                        purpose: crate::pty::LaunchPurpose::Ordinary,
                         resume_command: None,
                         rerun_on_resume: false,
                         owns_briefing: false,
@@ -3285,6 +3298,7 @@ mod tests {
                         request.into(),
                         metadata,
                         SessionSpec {
+                            purpose: crate::pty::LaunchPurpose::Ordinary,
                             resume_command: None,
                             rerun_on_resume: false,
                             owns_briefing: false,
@@ -3454,6 +3468,7 @@ mod tests {
         private_dir(&dir).unwrap();
         let service = Service::load(&dir).unwrap();
         let spec = SessionSpec {
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -3550,6 +3565,7 @@ mod tests {
         .unwrap();
         assert!(metadata.task_title.is_none());
         let spec = SessionSpec {
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -3617,6 +3633,7 @@ mod tests {
         let service = Service::load(&dir).unwrap();
         let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
         let spec = SessionSpec {
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -3797,6 +3814,7 @@ mod tests {
             command: String::new(),
         };
         let spec = SessionSpec {
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -4146,6 +4164,7 @@ mod tests {
         }))
         .unwrap();
         let spec = SessionSpec {
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -4257,6 +4276,7 @@ mod tests {
                     command: String::new(),
                 };
                 let spec = SessionSpec {
+                    purpose: crate::pty::LaunchPurpose::Ordinary,
                     resume_command: None,
                     rerun_on_resume: false,
                     owns_briefing: false,
@@ -4345,6 +4365,7 @@ mod tests {
             command: String::new(),
         };
         let spec = SessionSpec {
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -4513,6 +4534,7 @@ mod tests {
         }))
         .unwrap();
         let spec = SessionSpec {
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -4604,6 +4626,7 @@ mod tests {
         let spec = SessionSpec {
             id: "s".into(),
             command: "claude --model first".into(),
+            purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
             owns_briefing: false,
@@ -5678,6 +5701,7 @@ mod tests {
     #[test]
     fn restart_uses_the_final_conversation_after_clear_without_waiting_for_capture() {
         let mut snapshot = Snapshot {
+            chat_startup: None,
             launch_directory: None,
             truncated: false,
             data: vec![],
@@ -5855,12 +5879,243 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn codex_chat_bootstraps_before_checked_delivery_once_per_process() {
+        use crate::status::{AgentState, ChatStartup};
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        // This fake Codex emits no startup hook until it receives its CLI prompt.
+        // File barriers let the test try both delivery paths before bootstrap Stop.
+        let script = dir.join("codex");
+        fs::write(
+            &script,
+            r#"#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+root = pathlib.Path.cwd()
+generation = os.environ['PATCHBAY_REPORT_GENERATION']
+args = sys.argv[1:]
+(root / ('argv-' + generation)).write_text(json.dumps(args))
+if not args:
+    while True: time.sleep(.01)
+sequence = 0
+def hook(event, turn=None, reply=None):
+    global sequence
+    sequence += 1
+    record = dict(session=os.environ['PATCHBAY_REPORT_SESSION'], generation=int(generation),
+        provider='codex', sequence=sequence, atMs=int(time.time()*1000), event=event,
+        conversation='12345678-1234-1234-1234-123456789012', turn=turn, reply=reply, source='startup')
+    journal = pathlib.Path(os.environ['PATCHBAY_REPORT_DIR'])
+    pending = journal / 'pending.tmp'
+    pending.write_text(json.dumps(record))
+    pending.rename(journal / ('%020d.json' % sequence))
+hook('SessionStart')
+while not (root / 'work').exists(): time.sleep(.01)
+hook('UserPromptSubmit', 'bootstrap-' + generation)
+while not (root / 'finish').exists(): time.sleep(.01)
+print('Ready', flush=True)
+hook('Stop', 'bootstrap-' + generation, 'Ready')
+for line in sys.stdin:
+    text = line.replace('\x1b[200~', '').replace('\x1b[201~', '').strip()
+    if text:
+        with (root / 'received').open('a') as f: f.write(text + '\n')
+        hook('UserPromptSubmit', 'user-' + str(sequence))
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let history = dir.join("codex-home/sessions");
+        fs::create_dir_all(&history).unwrap();
+        fs::write(
+            history.join("12345678-1234-1234-1234-123456789012.jsonl"),
+            "{}\n",
+        )
+        .unwrap();
+        let service = Service::load(&dir).unwrap();
+        let metadata: Metadata = serde_json::from_value(serde_json::json!({
+            "projectId": "p", "projectName": "P", "projectRoot": dir,
+            "componentId": "@task", "terminalId": "chat", "name": "Codex preset",
+            "kind": "agent", "adapter": "codex",
+            "conversationId": "12345678-1234-1234-1234-123456789012", "conversationPinned": true
+        }))
+        .unwrap();
+        let spec: SessionSpec = serde_json::from_value(serde_json::json!({
+            "id": "ignored", "purpose": "chat",
+            "command": crate::context::quote_argument(&script.display().to_string()),
+            "cwd": dir, "env": { "CODEX_HOME": dir.join("codex-home") }, "ready_when": "", "service": false, "notice": null
+        })).unwrap();
+        let id = service
+            .start("start".into(), metadata.clone(), spec.clone())
+            .unwrap();
+        let wait = |test: &dyn Fn(&Snapshot) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let snapshot = service.snapshot(&id).unwrap();
+                if test(&snapshot) {
+                    return snapshot;
+                }
+                assert!(
+                    snapshot.running,
+                    "fake Codex exited: {}",
+                    String::from_utf8_lossy(&snapshot.data)
+                );
+                assert!(Instant::now() < deadline, "timed out: {snapshot:?}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let snapshot = wait(&|s| s.status.agent.as_ref().is_some_and(|a| a.authoritative));
+        let generation = snapshot.generation;
+        assert_eq!(snapshot.chat_startup, Some(ChatStartup::Pending));
+        let mut launch = service.list()[0].spec.clone();
+        assert!(service.pty.launch_matches(&launch));
+        launch.purpose = crate::pty::LaunchPurpose::Ordinary;
+        assert!(!service.pty.launch_matches(&launch));
+        let args: Vec<String> = serde_json::from_str(
+            &fs::read_to_string(dir.join(format!("argv-{generation}"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(args, vec![crate::context::CHAT_BOOTSTRAP]);
+        // The same service gate protects composer and coordination viewers, including force.
+        for viewer in ["composer", "chat-team-test"] {
+            service.claim("client", id.clone(), viewer.into(), true);
+            for force in [false, true] {
+                let result = service.submit_prompt(
+                    "client",
+                    id.clone(),
+                    viewer.into(),
+                    generation,
+                    "Do not send".into(),
+                    force,
+                );
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("startup is pending")
+                );
+            }
+        }
+        fs::write(dir.join("work"), "").unwrap();
+        wait(&|s| {
+            s.status
+                .agent
+                .as_ref()
+                .is_some_and(|a| a.state == AgentState::Working)
+        });
+        assert!(
+            service
+                .submit_prompt(
+                    "client",
+                    id.clone(),
+                    "chat-team-test".into(),
+                    generation,
+                    "Still pending".into(),
+                    true
+                )
+                .is_err()
+        );
+        fs::write(dir.join("finish"), "").unwrap();
+        let ready = wait(&|s| s.chat_startup == Some(ChatStartup::Ready));
+        assert!(ready.replies.is_empty());
+        assert!(String::from_utf8_lossy(&ready.data).contains("Ready"));
+        service
+            .submit_prompt(
+                "client",
+                id.clone(),
+                "chat-team-test".into(),
+                generation,
+                "Please commit the changes".into(),
+                false,
+            )
+            .unwrap();
+        assert!(
+            service
+                .submit_prompt(
+                    "client",
+                    id.clone(),
+                    "chat-team-test".into(),
+                    generation,
+                    "Please commit the changes".into(),
+                    false
+                )
+                .is_err()
+        );
+        wait(&|s| {
+            s.status
+                .agent
+                .as_ref()
+                .is_some_and(|a| a.state == AgentState::Working)
+        });
+        assert_eq!(
+            fs::read_to_string(dir.join("received")).unwrap(),
+            "Please commit the changes\n"
+        );
+        service.pty.stop_generation(&id, generation).unwrap();
+
+        // Resumes and fresh conversations must each bootstrap again. The persisted
+        // command never accumulates a second prompt.
+        fs::remove_file(dir.join("work")).unwrap();
+        fs::remove_file(dir.join("finish")).unwrap();
+        service.resume(&id, "resume".into()).unwrap();
+        let second = wait(&|s| s.generation != generation && s.status.agent.is_some());
+        assert_eq!(second.chat_startup, Some(ChatStartup::Pending));
+        assert_eq!(
+            service.list()[0].spec.purpose,
+            crate::pty::LaunchPurpose::Chat
+        );
+        let args: Vec<String> = serde_json::from_str(
+            &fs::read_to_string(dir.join(format!("argv-{}", second.generation))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "resume",
+                "12345678-1234-1234-1234-123456789012",
+                crate::context::CHAT_BOOTSTRAP
+            ]
+        );
+        assert!(
+            service
+                .submit_prompt(
+                    "client",
+                    id.clone(),
+                    "chat-team-test".into(),
+                    generation,
+                    "Old generation".into(),
+                    false
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("generation")
+        );
+        service
+            .reset_conversation(&id, "fresh".into(), second.generation)
+            .unwrap();
+        let fresh = wait(&|s| s.generation != second.generation && s.status.agent.is_some());
+        assert_eq!(fresh.chat_startup, Some(ChatStartup::Pending));
+        let args: Vec<String> = serde_json::from_str(
+            &fs::read_to_string(dir.join(format!("argv-{}", fresh.generation))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(args, vec![crate::context::CHAT_BOOTSTRAP]);
+        service.pty.stop_generation(&id, fresh.generation).unwrap();
+        assert_eq!(
+            service.snapshot(&id).unwrap().chat_startup,
+            Some(ChatStartup::Pending)
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn summaries_keep_current_activity_and_only_the_latest_reply_sequence() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
         let service = Service::load(&dir).unwrap();
         let snapshot = serde_json::json!({
+            "chatStartup": "ready",
             "data": "", "end": 0, "generation": 1, "running": false,
             "exitCode": 0, "startedMs": 1, "exitedMs": 2, "truncated": false,
             "status": crate::status::SessionStatus::default(), "notice": null,
@@ -5884,6 +6139,10 @@ mod tests {
         assert_eq!(replies_only.replies.len(), 1);
         let summary = service.summaries().pop().unwrap();
         let current = summary.snapshot.unwrap();
+        assert_eq!(
+            current.chat_startup,
+            Some(crate::status::ChatStartup::Ready)
+        );
         assert_eq!(current.activity.len(), 1);
         assert!(current.replies.is_empty());
         assert_eq!(current.last_reply, Some(4));
@@ -5899,6 +6158,7 @@ mod tests {
     #[test]
     fn history_is_bounded() {
         let snapshot = |generation| Snapshot {
+            chat_startup: None,
             launch_directory: None,
             truncated: false,
             data: vec![b'x'; 16],
@@ -5969,6 +6229,7 @@ mod tests {
                 command: String::new(),
             },
             spec: SessionSpec {
+                purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,

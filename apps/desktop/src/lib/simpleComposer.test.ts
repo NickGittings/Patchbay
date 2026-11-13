@@ -37,6 +37,81 @@ const port = (): SendPort => ({
   release: vi.fn(async () => {}),
   now: () => 2000,
 })
+
+test('Codex bootstrap blocks ready, forced and working startup paths until its Stop', async () => {
+  const session = { ...ready(), chatStartup: 'pending' as 'pending' | 'ready' }
+  expect(promptReady(session)).toBe(false)
+  expect(
+    forceable({
+      ...session,
+      status: { ...session.status!, agent: { ...session.status!.agent!, state: 'working' } },
+    }),
+  ).toBe(false)
+  const p = { ...port(), session: () => session }
+  await expect(deliverPrompt(context, 'User draft', p)).rejects.toThrow('not at a ready prompt')
+  expect(p.write).not.toHaveBeenCalled()
+  let waits = 0
+  await waitForPrompt(context, {
+    ...p,
+    allowWorking: true,
+    wait: async () => {
+      waits++
+      if (waits === 1) session.status!.agent!.state = 'working'
+      else {
+        session.status!.agent!.state = 'review'
+        session.chatStartup = 'ready'
+      }
+    },
+  })
+  expect(waits).toBe(2)
+  await deliverPrompt(context, 'User draft', p)
+  expect(p.write).toHaveBeenCalledExactlyOnceWith('User draft')
+})
+
+test('bootstrap timeout preserves the draft and reports that nothing was sent', async () => {
+  let now = 0
+  const p = { ...port(), session: () => ({ ...ready(), chatStartup: 'pending' as const }) }
+  await expect(
+    waitForPrompt(context, {
+      ...p,
+      allowWorking: true,
+      now: () => now,
+      wait: async () => {
+        now += 10000
+      },
+    }),
+  ).rejects.toThrow('Couldn’t confirm Lead readiness. Your message hasn’t been sent.')
+  expect(p.write).not.toHaveBeenCalled()
+  expect(
+    composerStatus({
+      pending: true,
+      connected: true,
+      provider: 'codex',
+      installed: true,
+      session: p.session(),
+      ready: false,
+    }).label,
+  ).toBe('Starting Lead · Codex…')
+})
+
+test('bootstrap process exit offers reconnect and service loss reports disconnection', () => {
+  const options = {
+    pending: false,
+    connected: true,
+    provider: 'codex' as const,
+    installed: true,
+    ready: false,
+    session: { ...ready(), running: false, chatStartup: 'pending' as const },
+  }
+  expect(composerStatus(options)).toMatchObject({
+    sendable: true,
+    label: 'Send to start or resume',
+  })
+  expect(composerStatus({ ...options, connected: false })).toMatchObject({
+    sendable: false,
+    label: 'Session service disconnected',
+  })
+})
 test('the exact text goes to the service in one write, preserving literal emails, unknown mentions, whitespace, and multiline text', async () => {
   const draft = '  @app mail@site.test @unknown\n  second line  '
   const text = transmittedText(draft, [{ id: 'app', token: '@app', start: 2, end: 6 }])

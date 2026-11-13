@@ -50,8 +50,15 @@
     input(document.querySelector('[aria-label="Message agent"]'), 'delegate-fixture')
     await until('send enabled', () => button('Send') && !button('Send').disabled)
     button('Send').click()
+    await until('bootstrap status', () =>
+      document.querySelector('.simple-composer').textContent.includes('Starting Lead · Codex…'),
+    )
     await until('persistent agent', () => team()?.lead.sessionId)
     const lead = team().lead.sessionId
+    assert(
+      document.querySelector('.chat-recipient').textContent.includes('Talking to Lead · Codex'),
+      'Composer does not identify the durable lead',
+    )
     const jobs = () =>
       smoke.chatTeams
         .getState()
@@ -60,6 +67,15 @@
     await until(
       'isolated workers',
       () => jobs().length === 2 && jobs().every((j) => j.task && j.sessionId),
+    )
+    assert(
+      state().simple.log.filter((e) => e.kind === 'prompt' && e.text === 'delegate-fixture')
+        .length === 1,
+      'First user draft was duplicated',
+    )
+    assert(
+      !state().simple.log.some((e) => e.kind === 'reply' && e.text === 'Ready'),
+      'Internal bootstrap entered chat history',
     )
     const round = smoke.chatTeams.getState().runs[projectId].find((r) => r.chatTeam === team().id)
     for (const control of [

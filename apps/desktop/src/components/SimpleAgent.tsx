@@ -2,7 +2,7 @@ import { useContext } from 'react'
 import { SimpleChangesContext } from './stories/simpleChanges'
 import { simpleKey, useSimpleUi, type SimpleDiff } from '../lib/simpleUi'
 import type { SimpleEntry } from '../lib/simple'
-import { SIMPLE_ROLE_LABEL, recordStage } from '../lib/simple'
+import { useChatIdentity } from '../lib/chatIdentity'
 import { useStore } from '../store'
 import type { SessionRecord } from '../types'
 import Markdown from './findings/Markdown'
@@ -27,24 +27,13 @@ export default function SimpleAgent({
   const changes = useContext(SimpleChangesContext)
   const edited = latest ? changes.bySession.get(sessionId) : undefined
   const busy = working || (session?.running && session.status?.agent?.state === 'working')
-  const role =
-    record?.metadata.componentId === '@map'
-      ? record.metadata.name
-      : record
-        ? SIMPLE_ROLE_LABEL[recordStage(record)]
-        : 'Agent'
-  const provider = record?.metadata.adapter
+  const identity = useChatIdentity(record)
   return (
     <article className="simple-agent" data-session={sessionId}>
       <header>
         <strong>
-          {record?.metadata.name ?? role}
-          {record && ` · ${role}`}
-          {provider
-            ? ` · ${provider === 'claude' ? 'Claude' : 'Codex'}`
-            : record && record.metadata.componentId !== '@map'
-              ? ` · ${record.metadata.name}`
-              : ''}
+          {identity.label}
+          {identity.preset && <span> · Preset: {identity.preset}</span>}
         </strong>
         {latest && <SimpleStatus sessions={[session]} />}
         {record && (
@@ -57,7 +46,7 @@ export default function SimpleAgent({
               })
             }}
           >
-            View terminal
+            View {identity.role} terminal
           </button>
         )}
       </header>

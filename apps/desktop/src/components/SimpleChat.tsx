@@ -1,4 +1,5 @@
 import ChatCoordination from './ChatCoordination'
+import { useChatIdentity } from '../lib/chatIdentity'
 import { useChatTeams, resetLead, controlTeam } from '../lib/chatTeams'
 import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
@@ -164,6 +165,7 @@ export default function SimpleChat({
     ? model.records.find((r) => r.id === ui.terminalSession?.id)
     : recipient
   const drawerShown = ui.terminal !== 'closed' && !!drawerRecord
+  const drawerIdentity = useChatIdentity(drawerRecord)
   const runningReview = useRunningReviewLanes(source?.branch)
   const roleProviders = usePresetProviders(chatRolePresets(s.devices, s.agentRoles))
   const running = model.records.filter((r) => s.sessions[r.id]?.running)
@@ -655,11 +657,10 @@ export default function SimpleChat({
         )}
         {failure && <p role="alert">{failure}</p>}
         {drawerShown && drawerRecord && (
-          <div
-            className="simple-terminal-drawer"
-            aria-label={`${recordStage(drawerRecord)} terminal`}
-          >
-            <p>Live activity · {drawerRecord.metadata.name}</p>
+          <div className="simple-terminal-drawer" aria-label={`${drawerIdentity.role} terminal`}>
+            <p>
+              Live activity · {drawerIdentity.label} · Preset: {drawerIdentity.preset}
+            </p>
             <TerminalPane
               key={drawerRecord.id}
               componentId={drawerRecord.metadata.componentId}

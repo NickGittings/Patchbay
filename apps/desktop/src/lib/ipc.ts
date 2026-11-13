@@ -530,6 +530,7 @@ export const taskRootStart = async (
   resume = false,
   auto?: AutoBrief,
   freshConversation = false,
+  purpose?: 'ordinary' | 'chat',
 ) =>
   invoke<string>('task_root_start', {
     projectId: project.projectId,
@@ -540,6 +541,7 @@ export const taskRootStart = async (
     requestId,
     auto,
     resume,
+    ...(purpose ? { purpose } : {}),
     ...(freshConversation ? { freshConversation } : {}),
     kickoff: kickoff?.kind === 'fixFindings' ? { kind: kickoff.kind } : kickoff,
     reviewSession: kickoff?.kind === 'fixFindings' ? kickoff.reviewSession : undefined,

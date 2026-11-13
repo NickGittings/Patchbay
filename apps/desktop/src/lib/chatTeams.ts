@@ -24,6 +24,7 @@ export interface TeamMessage {
   generation: number | null
 }
 export interface ChatTeam {
+  scopes?: Record<string, { generation: number; components: string[]; paths?: string[] }>
   id: string
   projectId: string
   task: string | null

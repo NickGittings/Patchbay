@@ -542,6 +542,7 @@ export type TerminalEvent = (
   | { type: 'activity'; sessionId: string; generation: number; activity: Activity }
   | {
       type: 'started'
+      chatStartup?: 'pending' | 'ready' | null
       sessionId: string
       generation: number
       startedMs: number
@@ -549,7 +550,13 @@ export type TerminalEvent = (
     }
   | { type: 'output'; sessionId: string; generation: number; seq: number; data: number[] }
   | { type: 'exited'; sessionId: string; generation: number; exitCode: number; exitedMs: number }
-  | { type: 'status'; sessionId: string; generation: number; status: SessionStatus }
+  | {
+      type: 'status'
+      sessionId: string
+      generation: number
+      status: SessionStatus
+      chatStartup?: 'pending' | 'ready' | null
+    }
 ) & { instanceId?: string }
 
 /** `status::AgentState`. */
@@ -602,6 +609,7 @@ export interface PlanText {
 }
 
 export interface TerminalSnapshot {
+  chatStartup?: 'pending' | 'ready' | null
   /** Session lists leave `replies` out and name only the latest one's sequence. */
   replies?: Reply[]
   lastReply?: number | null
@@ -630,6 +638,7 @@ export interface DirEntry {
 }
 
 export interface SessionState {
+  chatStartup?: 'pending' | 'ready' | null
   replies?: Reply[]
   activity?: Activity[]
   /** Process incarnation, available even before the start timestamp is hydrated. */
@@ -788,6 +797,7 @@ export interface SessionRecord {
   interrupted: boolean
   /** `dirs`: folders the agent was given besides `cwd`, checked again before resuming. */
   spec: {
+    purpose?: 'ordinary' | 'chat'
     cwd: string
     command: string
     resume_command?: string | null

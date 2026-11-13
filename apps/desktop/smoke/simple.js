@@ -102,7 +102,8 @@
     await until('planner selected', () => state().simple?.selectedAgent === plannerRecord.id)
     // Adopt the legacy manual session, then release coordination for this workflow fixture.
     await smoke.refreshChatTeams(projectId)
-    click(await until('team stop control', () => button('Stop workers')))
+    document.querySelector('.chat-menu').open = true
+    click(await until('team stop control', () => button('Stop work')))
     await until(
       'coordination stopped for manual workflow',
       () =>
@@ -242,9 +243,9 @@
         )
       }
     }
-    click(button('View Planner terminal'))
+    click(button('View Lead terminal'))
     await until('planner drawer', () =>
-      document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"] .xterm'),
+      document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm'),
     )
     await smoke.report('INFO simple: planner input and repeated reveals passed')
     click(button('Build'))
@@ -291,11 +292,11 @@
     await until(
       'open drawer keeps the selected Planner',
       () =>
-        document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"] .xterm') &&
-        button('Hide Planner terminal'),
+        document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm') &&
+        button('Hide Lead terminal'),
     )
     assert(state().simple.selectedAgent === planner, 'workflow changed selected agent')
-    click(button('Hide Planner terminal'))
+    click(button('Hide Lead terminal'))
     await until('drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
     assert(document.querySelector('details.simple-section:not([open])'), 'earlier plan is expanded')
     const builder = state().simple.log.findLast((e) => e.action === 'implement').sessionId
@@ -440,14 +441,14 @@
     click(
       await until('reviewer terminal button', () => {
         const article = document.querySelector(`[data-session="${reviewer}"]`)
-        return article && button('View terminal', article)
+        return article && button('View Agent terminal', article)
       }),
     )
     await until('reviewer drawer shows its terminal', () =>
-      document.querySelector('.simple-terminal-drawer[aria-label="review terminal"] .xterm'),
+      document.querySelector('.simple-terminal-drawer[aria-label="Agent terminal"] .xterm'),
     )
     assert(state().simple.selectedAgent === planner, 'reviewer View changed selected agent')
-    click(button('Hide Reviewer terminal'))
+    click(button('Hide Agent terminal'))
     await until('reviewer drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
     let flashed = false
     const monitor = new MutationObserver(() => {
@@ -499,19 +500,19 @@
       )
       smoke.revealTerminal({ sid: planner, componentId: '@plan' })
       await until('external planner drawer', () =>
-        document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"] .xterm'),
+        document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm'),
       )
       // Reconciliation reruns inputDrawer after View and used to clear the drawer's target.
       await smoke.reconcileSessions(false)
       await sleep(300)
       assert(
-        document.querySelector('.simple-terminal-drawer[aria-label="plan terminal"] .xterm'),
+        document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm'),
         `View lost external planner after exit ${exitCode}`,
       )
       assert(!state().revealed, 'external planner reveal was not consumed')
       assert(state().activeTask === task, 'external planner View changed chats')
       inChat()
-      click(button('Hide Planner terminal'))
+      click(button('Hide Lead terminal'))
       await until(
         'external planner hidden',
         () => !document.querySelector('.simple-terminal-drawer'),

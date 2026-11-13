@@ -199,6 +199,7 @@ export function listenForTerminals() {
 
 /** Everything a launch needs, read when it is requested, so a tab switch can't redirect it. */
 interface Launch {
+  purpose?: 'ordinary' | 'chat'
   sid: string
   componentId: string
   terminalId: string
@@ -278,6 +279,7 @@ function captureLaunch(
 }
 
 export interface StartTerminalOptions {
+  purpose?: 'ordinary' | 'chat'
   story?: string
   scanRound?: string
   kickoff?: Kickoff
@@ -300,6 +302,7 @@ export function startTerminal(
   let launch: Launch
   try {
     launch = captureLaunch(componentId, terminalId, task, projectId, !!options.auto)
+    launch.purpose = options.purpose
     launch.scanRound = options.scanRound
     launch.kickoff = options.kickoff
     launch.story = options.story
@@ -535,6 +538,14 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
       const resume = !!launch.restart && terminal?.kind === 'agent' && !runtime
       if (componentId === TASK_ROOT_SCOPE) {
         if (!launch.rootTerminal) throw new Error(`Unknown root terminal ${terminalId}`)
+        const purpose =
+          launch.purpose ??
+          useStore.getState().sessionRecords.find((r) => r.id === sid)?.spec?.purpose
+        const conversationOptions: [boolean?, ('ordinary' | 'chat')?] = purpose
+          ? [!!launch.freshConversation, purpose]
+          : launch.freshConversation
+            ? [true]
+            : []
         await taskRootStart(
           project,
           fix ? [] : launch.highlighted,
@@ -544,7 +555,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           kickoff,
           resume,
           auto,
-          ...(launch.freshConversation ? ([true] as const) : []),
+          ...conversationOptions,
         )
         if (fix) fixSessions.add(sid)
       } else if (runtime?.commandId)
@@ -906,6 +917,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
         generation: e.generation,
         running: true,
         startedMs: e.startedMs,
+        chatStartup: e.chatStartup,
         notice: e.notice ?? undefined,
       })
       restoreModes(e.sessionId)
@@ -979,6 +991,7 @@ export function handleTerminalEvent(e: TerminalEvent) {
         generation: e.generation,
         running: newGeneration || (prev?.running ?? true),
         status: e.status,
+        chatStartup: e.chatStartup,
         activity: hydrateActivity(prev, e.generation),
         replies: hydrateReplies(prev, e.generation),
       })
@@ -1074,6 +1087,7 @@ function sameSession(a: SessionState | undefined, b: SessionState) {
   return (
     !!a &&
     a.generation === b.generation &&
+    a.chatStartup === b.chatStartup &&
     a.running === b.running &&
     a.exitCode === b.exitCode &&
     a.startedMs === b.startedMs &&

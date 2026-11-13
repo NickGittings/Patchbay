@@ -16,6 +16,7 @@ export function sessionFromSnapshot(
     record?.snapshot?.generation === snapshot.generation ? record.interrupted : undefined
   return {
     generation: snapshot.generation,
+    chatStartup: snapshot.chatStartup,
     running: snapshot.running,
     exitCode: snapshot.exitCode ?? undefined,
     startedMs: snapshot.startedMs,

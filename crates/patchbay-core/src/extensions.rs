@@ -985,6 +985,7 @@ mod tests {
                 command: String::new(),
             },
             spec: SessionSpec {
+                purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
                 owns_briefing: false,
@@ -1000,6 +1001,7 @@ mod tests {
                 dirs: vec![],
             },
             snapshot: Some(Snapshot {
+                chat_startup: None,
                 launch_directory: None,
                 truncated: false,
                 data: b"http://localhost:3037".to_vec(),

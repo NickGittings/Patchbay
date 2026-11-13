@@ -85,6 +85,7 @@ test('startup is lazy and concurrent calls share one session without consuming t
   expect(second).toBe(first)
   const record = await first
   expect(startTerminal).toHaveBeenCalledTimes(1)
+  expect(vi.mocked(startTerminal).mock.calls[0][4]).toEqual({ purpose: 'chat' })
   expect(reconcileFreshSessions).toHaveBeenCalledTimes(1)
   expect(initializeTeam).toHaveBeenCalledWith('p', null, record)
   expect(useStore.getState().simple?.selectedAgent).toBe(record.id)

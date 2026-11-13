@@ -1777,6 +1777,7 @@ async fn terminal_start(
 #[tauri::command]
 async fn task_root_start(
     request_id: String,
+    purpose: Option<patchbay_core::pty::LaunchPurpose>,
     auto: Option<context::AutoBrief>,
     resume: Option<bool>,
     fresh_conversation: Option<bool>,
@@ -1839,9 +1840,13 @@ async fn task_root_start(
         } else {
             component_ids
         };
-        let (kickoff, handoff) =
+        let purpose = purpose.unwrap_or_default();
+        let (kickoff, handoff) = if purpose == patchbay_core::pty::LaunchPurpose::Chat {
+            (None, Vec::new())
+        } else {
             context::root_handoff(&project, task.as_deref(), &selected, kickoff, fix.as_ref())
-                .map_err(err)?;
+                .map_err(err)?
+        };
         let kickoff = if fresh_conversation.unwrap_or(false) {
             None
         } else {
@@ -1866,15 +1871,26 @@ async fn task_root_start(
             Some(context::Fix::Review(r) | context::Fix::Again(Some(r))) => r.branch,
             _ => None,
         };
-        let mut spec = context::task_root_session_spec(
-            &project,
-            &selected,
-            &terminal,
-            task.as_deref(),
-            &AllowAll,
-            &sections,
-            kickoff,
-        )
+        let mut spec = if purpose == patchbay_core::pty::LaunchPurpose::Chat {
+            context::chat_session_spec(
+                &project,
+                &selected,
+                &terminal,
+                task.as_deref(),
+                &AllowAll,
+                &sections,
+            )
+        } else {
+            context::task_root_session_spec(
+                &project,
+                &selected,
+                &terminal,
+                task.as_deref(),
+                &AllowAll,
+                &sections,
+                kickoff,
+            )
+        }
         .map_err(err)?;
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);

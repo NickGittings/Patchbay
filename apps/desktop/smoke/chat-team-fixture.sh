@@ -47,8 +47,21 @@ def file_arg(data):
     f.close()
     return f.name
 
-report('SessionStart')
 worker = os.environ.get('PATCHBAY_ASSIGNMENT_ID')
+if not worker:
+    bootstrap = 'Reply ‘Ready’ and await the next message. Do not use tools, change files, commit, delegate, or begin previously described work.'
+    # Reproduce Codex: no startup event until the initial CLI prompt is present.
+    if bootstrap not in sys.argv[1:]:
+        while True:
+            time.sleep(.1)
+    assert sys.argv[1:].count(bootstrap) == 1, 'Duplicate bootstrap prompt'
+    report('SessionStart')
+    report('UserPromptSubmit')
+    time.sleep(.4)
+    print('Ready', flush=True)
+    report('Stop', reply='Ready')
+else:
+    report('SessionStart')
 if worker:
     report('UserPromptSubmit')
     time.sleep(4)

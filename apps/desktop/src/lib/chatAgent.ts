@@ -47,7 +47,7 @@ async function launchChatAgent(projectId: string, task: string | null) {
   if (!project) throw new Error('The project is no longer available. Your draft was kept.')
   const workspace = workspaceOf(project, task)
   s.patchTask(projectId, task, { rootTerminals: [...workspace.rootTerminals, terminal] })
-  await startTerminal(TASK_ROOT_SCOPE, terminal.id, task, projectId)
+  await startTerminal(TASK_ROOT_SCOPE, terminal.id, task, projectId, { purpose: 'chat' })
   await reconcileFreshSessions()
   const sid = sessionId(TASK_ROOT_SCOPE, terminal.id, task, projectId)
   const record = useStore.getState().sessionRecords.find((r) => r.id === sid)
