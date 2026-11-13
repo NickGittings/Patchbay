@@ -13,9 +13,14 @@ import {
   type Worktree,
 } from '../types'
 
-vi.mock('./ipc', () => ({ mergeAgentStart: vi.fn(), reviewAgentStart: vi.fn() }))
+vi.mock('./ipc', () => ({
+  mergeAgentStart: vi.fn(),
+  mergeDestinationResolve: vi.fn(),
+  reviewAgentStart: vi.fn(),
+}))
+vi.mock('./tasks', () => ({ refreshTasks: vi.fn(async () => {}) }))
 vi.mock('./sessions', () => ({ listenForTerminals: vi.fn(), reconcileFreshSessions: vi.fn() }))
-const { mergeAgentStart, reviewAgentStart } = await import('./ipc')
+const { mergeAgentStart, mergeDestinationResolve, reviewAgentStart } = await import('./ipc')
 const { listenForTerminals, reconcileFreshSessions } = await import('./sessions')
 const { defaultMergeDestination, mergeDestinations, reviewAgentRecords, startMergeAgent } =
   await import('./reviewAgents')
@@ -41,8 +46,8 @@ test('destinations exclude the source, matching branch, and detached worktrees',
     tree('/detached', undefined),
     tree('/main', 'main', true),
   ]
-  expect(mergeDestinations(source, trees).map((w) => w.path)).toEqual(['/main'])
-  expect(defaultMergeDestination(source, trees)).toBe('/main')
+  expect(mergeDestinations(source, trees).map((d) => d.branch)).toEqual(['main'])
+  expect(defaultMergeDestination(source, trees)).toBe('main')
 })
 
 test('reviewing the open worktree requires an explicit destination choice', () => {
@@ -526,28 +531,107 @@ test('a start still spawning when the backend looked is adopted once the round r
   })
 })
 
-test('Main worktree starts an incoming merge with an explicit source', async () => {
+test('feature in the primary worktree selects itself and local main without a checkout', async () => {
   const { initialMergeSelection } = await import('./reviewAgents')
-  const main = tree('/main', 'trunk', true)
-  expect(initialMergeSelection(main, [main, source])).toEqual({ source: '', destination: '/main' })
-  expect(initialMergeSelection(source, [main, source])).toEqual({
-    source: '/feature',
-    destination: '/main',
+  const open = tree('/project', 'feature', true)
+  const branches = ['feature', 'main', 'master']
+  expect(initialMergeSelection(open, [open], branches)).toEqual({
+    source: '/project',
+    destination: 'main',
   })
-  expect(initialMergeSelection(source, [source])).toEqual({ source: '/feature', destination: '' })
+  expect(mergeDestinations(open, [open], branches)).toEqual([
+    { branch: 'main', worktree: undefined },
+    { branch: 'master', worktree: undefined },
+  ])
+  expect(defaultMergeDestination(open, [open], ['feature', 'master'])).toBe('master')
+  expect(defaultMergeDestination(open, [open], ['feature', 'release'])).toBe('')
+  expect(mergeDestinations(open, [open, tree('/stale', 'main')], [])).toEqual([])
+  const other = tree('/other', 'release', true)
+  expect(defaultMergeDestination(source, [source, other], branches.concat('release'))).toBe(
+    'release',
+  )
 })
 
-test('source changes keep eligible destinations and replace invalid ones safely', async () => {
+test('source changes keep eligible branches and replace invalid ones safely', async () => {
   const { reconcileMergeDestination } = await import('./reviewAgents')
   const main = tree('/main', 'main', true)
   const other = tree('/other', 'other')
   const trees = [main, source, other, tree('/detached', undefined), tree('/same', 'feature')]
-  expect(mergeDestinations(undefined, trees).map((w) => w.path)).not.toContain('/detached')
-  expect(reconcileMergeDestination(source, trees, '/other')).toBe('/other')
-  for (const invalid of ['/feature', '/same', '/detached', '/missing']) {
-    expect(reconcileMergeDestination(source, trees, invalid)).toBe('/main')
+  expect(reconcileMergeDestination(source, trees, 'other')).toBe('other')
+  for (const invalid of ['feature', 'missing']) {
+    expect(reconcileMergeDestination(source, trees, invalid)).toBe('main')
   }
-  expect(reconcileMergeDestination(main, trees, '/main')).toBe('')
-  expect(reconcileMergeDestination(source, [source, other], '/missing')).toBe('')
+  expect(reconcileMergeDestination(main, trees, 'main')).toBe('')
+  expect(reconcileMergeDestination(source, [source, other], 'missing')).toBe('')
   expect(reconcileMergeDestination(source, trees, '')).toBe('')
+  expect(reconcileMergeDestination(source, trees, 'main', ['feature', 'other'])).toBe('')
+})
+
+test('branch merge resolves on submit, refreshes tasks, and launches/tracks the concrete request', async () => {
+  const { startBranchMerge } = await import('./reviewAgents')
+  const { refreshTasks } = await import('./tasks')
+  const project = { projectId: 'p' } as Project
+  const open = tree('/project', 'feature', true)
+  const request = {
+    source: open.path,
+    sourceBranch: 'feature',
+    destination: '/project-main',
+    destinationBranch: 'main',
+  }
+  const device = { id: 'agent', name: 'Agent', command: 'claude' } as DeviceManifest
+  vi.mocked(mergeDestinationResolve).mockResolvedValue(request)
+  vi.mocked(mergeAgentStart).mockResolvedValue('sid')
+  expect(await startBranchMerge(project, open, 'main', device, 'request')).toEqual({
+    request,
+    sid: 'sid',
+  })
+  expect(mergeDestinationResolve).toHaveBeenCalledWith(project, open.path, 'feature', 'main')
+  expect(refreshTasks).toHaveBeenCalledWith('p')
+  expect(mergeAgentStart).toHaveBeenCalledWith(project, request, expect.anything(), 'request')
+  const { cleanupJobs } = await import('./mergeCleanup')
+  expect(cleanupJobs()[0].request).toEqual(request)
+  expect(useStore.getState().activeTask).toBeNull()
+})
+
+test('resolution failure refreshes data and never launches an agent', async () => {
+  const { startBranchMerge } = await import('./reviewAgents')
+  const { refreshTasks } = await import('./tasks')
+  vi.mocked(mergeDestinationResolve).mockRejectedValue(
+    new Error('Destination branch main no longer exists'),
+  )
+  await expect(
+    startBranchMerge(
+      { projectId: 'p' } as Project,
+      source,
+      'main',
+      {} as DeviceManifest,
+      'request',
+    ),
+  ).rejects.toThrow('no longer exists')
+  expect(mergeAgentStart).not.toHaveBeenCalled()
+  expect(refreshTasks).toHaveBeenCalledWith('p')
+})
+
+test('failed launch retries resolution and reuses its destination', async () => {
+  const { startBranchMerge } = await import('./reviewAgents')
+  const request = {
+    source: source.path,
+    sourceBranch: 'feature',
+    destination: '/main',
+    destinationBranch: 'main',
+  }
+  vi.mocked(mergeDestinationResolve).mockResolvedValue(request)
+  vi.mocked(mergeAgentStart)
+    .mockRejectedValueOnce(new Error('launch failed'))
+    .mockResolvedValueOnce('sid')
+  const args = [
+    { projectId: 'p' } as Project,
+    source,
+    'main',
+    {} as DeviceManifest,
+    'request',
+  ] as const
+  await expect(startBranchMerge(...args)).rejects.toThrow('launch failed')
+  expect((await startBranchMerge(...args)).request).toEqual(request)
+  expect(mergeDestinationResolve).toHaveBeenCalledTimes(2)
 })

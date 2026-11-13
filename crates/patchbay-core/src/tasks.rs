@@ -329,6 +329,24 @@ fn free_path(main: &Path, branch: &str) -> Result<PathBuf> {
 /// Fails for an invalid branch or base, or if git refuses (for example when
 /// the branch is checked out elsewhere).
 pub fn create(root: &Path, draft: TaskDraft) -> Result<Task> {
+    create_inner(root, draft, false)
+}
+
+/// Create a normal task worktree, but never recreate a deleted destination branch.
+pub(crate) fn create_existing(root: &Path, branch: &str) -> Result<Task> {
+    create_inner(
+        root,
+        TaskDraft {
+            title: branch.into(),
+            branch: branch.into(),
+            base: None,
+            components: vec![],
+        },
+        true,
+    )
+}
+
+fn create_inner(root: &Path, draft: TaskDraft, require_existing: bool) -> Result<Task> {
     let title = draft.title.trim();
     if title.is_empty() {
         bail!("Give the task a title");
@@ -359,8 +377,14 @@ pub fn create(root: &Path, draft: TaskDraft) -> Result<Task> {
         .filter(|s| !s.command.trim().is_empty())
         .map(|s| crate::worktree_setup::Setup::new(s.command));
     let existing = verifies(&repo, &format!("refs/heads/{branch}"));
+    if require_existing && !existing {
+        bail!("Destination branch {branch} no longer exists; refresh and choose a local branch");
+    }
     let mut cmd = git(&repo);
     cmd.args(["worktree", "add"]);
+    if require_existing {
+        cmd.arg("--no-guess");
+    }
     if !existing && base.is_none() && on_one_remote(&repo, branch) {
         // git checks out a local branch tracking the remote one.
         cmd.arg(&path).arg(branch);

@@ -124,7 +124,7 @@ export default function ReviewView() {
   if (reviewDialogScope && !reviewDialog) setReviewDialogScope(null)
   const mergeDialog = mergeDialogScope === dialogScope
   if (mergeDialogScope && !mergeDialog) setMergeDialogScope(null)
-  const canMerge = !!source?.branch && mergeDestinations(source, worktrees).length > 0
+  const canMerge = !!source?.branch && mergeDestinations(source, worktrees, branches).length > 0
   const findings = useReviewFindings(projectId, source?.branch)
   const base = availableReviewBase(source, tasks, worktrees, branches, findings?.findings?.base)
   const reviewScope = JSON.stringify([
@@ -289,6 +289,7 @@ export default function ReviewView() {
           key={`${projectId}/${source.path}/${source.branch}`}
           source={source}
           worktrees={worktrees}
+          branches={branches}
           close={() => setMergeDialogScope(null)}
           launched={(sid) => {
             if (useStore.getState().project?.id === projectId)
@@ -320,8 +321,8 @@ export default function ReviewView() {
                       disabled={!canMerge}
                       title={
                         canMerge
-                          ? 'Merge the reviewed branch into another worktree'
-                          : 'Choose a branch with another destination worktree'
+                          ? 'Merge the reviewed branch into another local branch'
+                          : 'Merging requires another local branch'
                       }
                       onClick={() => setMergeDialogScope(dialogScope)}
                     >

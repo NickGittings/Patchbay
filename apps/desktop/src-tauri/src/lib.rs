@@ -1888,6 +1888,33 @@ async fn task_root_start(
     .await
 }
 
+/// Reuse or create a checkout of an existing local destination branch, without activating it.
+#[tauri::command]
+async fn merge_destination_resolve(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    mut project: Project,
+    source: String,
+    source_branch: String,
+    destination_branch: String,
+) -> CmdResult<patchbay_core::merges::MergeRequest> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        patchbay_core::merges::resolve_destination(
+            &project,
+            &source,
+            &source_branch,
+            &destination_branch,
+        )
+        .map_err(|error| format!("{error:#}"))
+    })
+    .await
+}
+
 /// Launch a merge agent in an existing destination worktree.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -3022,6 +3049,7 @@ pub fn run() {
                 plan_transfer,
                 plan_transfer_pending,
                 task_root_start,
+                merge_destination_resolve,
                 merge_agent_start,
                 map_agent_start,
                 stack_agent_start,

@@ -110,10 +110,8 @@
       window.fetch = originalFetch
     }
     click(visible('.review-refresh'))
-    await until('clean source review', () =>
-      document
-        .querySelector('.diff-view .review-empty')
-        ?.textContent.includes('No uncommitted changes.'),
+    await until('source diff loaded against main', () =>
+      visible('.diff-view .diff-file-path')?.textContent.includes('shared.txt'),
     )
     click(visible('.review-findings-button'))
     const emptyFindings = await until('unreviewed branch named in findings', () => {
@@ -135,7 +133,7 @@
     const destinations = () => {
       if (!dialog()) click(visible('.review-merge-button'))
       return [
-        ...(dialog()?.querySelectorAll('select[aria-label="Destination worktree"] option') ?? []),
+        ...(dialog()?.querySelectorAll('select[aria-label="Destination branch"] option') ?? []),
       ].map((o) => o.textContent)
     }
     const openDialog = () =>
@@ -156,7 +154,7 @@
       'loaded preset did not enable Start',
     )
     assert(
-      form.querySelector('select[aria-label="Destination worktree"]').value === opened.project.root,
+      form.querySelector('select[aria-label="Destination branch"]').value === 'main',
       'destination did not default to the open worktree',
     )
     // Review runs alongside ordinary terminals, and findings survive view/session recovery.
@@ -383,7 +381,7 @@
     )
     await smoke.terminalWrite(shell, 'rm merge-smoke-untracked; printf "CLEAN-MERGE-FIXTURE\\n"\r')
     await until('dirty file removed', () => text(shell).includes('\nCLEAN-MERGE-FIXTURE\n'))
-    choose(form.querySelector('select[aria-label="Destination worktree"]'), `${parent}/integration`)
+    choose(form.querySelector('select[aria-label="Destination branch"]'), 'integration')
     submit()
     submit() // Repeated submit must produce a single launch.
     await until('merge terminal', () => visible('[aria-label="Merge agent terminal"]'))
@@ -487,7 +485,7 @@
     )
     assert(state().activeTask === task.id, 'launch switched the reviewed source')
     form = await openDialog()
-    choose(form.querySelector('select[aria-label="Destination worktree"]'), `${parent}/integration`)
+    choose(form.querySelector('select[aria-label="Destination branch"]'), 'integration')
     await until(
       'running destination blocked',
       () => dialog()?.querySelector('button[type="submit"]').disabled,
@@ -556,7 +554,7 @@
     )
     click([...dialog().querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
     form = await openDialog()
-    choose(form.querySelector('select[aria-label="Destination worktree"]'), `${parent}/integration`)
+    choose(form.querySelector('select[aria-label="Destination branch"]'), 'integration')
     await until('stopped destination available again', () => {
       // A branch refresh may close the old source scope while this dialog is opening.
       if (!dialog()) {
@@ -564,8 +562,8 @@
         return false
       }
       form = dialog()
-      const select = form.querySelector('select[aria-label="Destination worktree"]')
-      if (select.value !== `${parent}/integration`) choose(select, `${parent}/integration`)
+      const select = form.querySelector('select[aria-label="Destination branch"]')
+      if (select.value !== 'integration') choose(select, 'integration')
       return !form.querySelector('button[type="submit"]').disabled
     })
     // A clean but still-running terminal must not share the merge destination.
@@ -586,11 +584,12 @@
     await until('Main worktree Review rendered', () => !visible('.review-banner'))
     form = await openDialog()
     const sourceSelect = () => form.querySelector('select[aria-label="Source worktree"]')
-    const destinationSelect = () => form.querySelector('select[aria-label="Destination worktree"]')
-    assert(sourceSelect().value === '', 'Main worktree did not require a source choice')
-    assert(destinationSelect().value === opened.project.root, 'main destination not preselected')
+    const destinationSelect = () => form.querySelector('select[aria-label="Destination branch"]')
+    assert(sourceSelect().value === opened.project.root, 'reviewed source was not preselected')
+    assert(destinationSelect().value === '', 'nonstandard destination was selected automatically')
     assert(form.querySelector('button[type="submit"]').disabled, 'missing source allowed launch')
     choose(sourceSelect(), `${parent}/feature`)
+    choose(destinationSelect(), 'main')
     await until(
       'incoming merge ready with feature findings',
       () =>
@@ -599,19 +598,16 @@
           .querySelector('[aria-label="Source review status"]')
           ?.textContent.includes('changed since review'),
     )
+    assert(destinationSelect().value === 'main', 'source choice changed main destination')
     assert(
-      destinationSelect().value === opened.project.root,
-      'source choice changed main destination',
-    )
-    assert(
-      ![...destinationSelect().options].some((o) => o.value === `${parent}/feature`),
+      ![...destinationSelect().options].some((o) => o.value === 'feature'),
       'source was offered as a destination',
     )
     choose(sourceSelect(), opened.project.root)
     assert(destinationSelect().value === '', 'invalid destination survived source change')
     assert(form.querySelector('button[type="submit"]').disabled, 'same worktree allowed launch')
     choose(sourceSelect(), `${parent}/feature`)
-    choose(destinationSelect(), opened.project.root)
+    choose(destinationSelect(), 'main')
     submit()
     await until('conflict destination terminal', () => {
       const el = visible('.review-merge-terminal')

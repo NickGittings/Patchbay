@@ -628,6 +628,21 @@ export const taskActivities = (projectId: string) =>
 export const syncAgentProject = (project: Project) =>
   invoke<void>('sync_agent_project', { projectId: project.projectId, project })
 
+/** Resolve/create a local destination checkout without activating it. */
+export const mergeDestinationResolve = (
+  project: Project,
+  source: string,
+  sourceBranch: string,
+  destinationBranch: string,
+) =>
+  invoke<import('../types').MergeRequest>('merge_destination_resolve', {
+    projectId: project.projectId,
+    project,
+    source,
+    sourceBranch,
+    destinationBranch,
+  })
+
 /** Launch a dedicated merge session; validates the worktrees immediately before starting. */
 export const mergeAgentStart = (
   project: Project,

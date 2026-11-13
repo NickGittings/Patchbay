@@ -1,5 +1,5 @@
-//! Validate local merge jobs and prepare a dedicated agent briefing. Git mutations belong to
-//! the launched agent; preparing a job never commits, checks out, or merges anything.
+//! Resolve local merge destinations and prepare a dedicated agent briefing. Resolving may create
+//! a task worktree; preparing a job never commits, checks out, or merges anything.
 use crate::context;
 use crate::git::{self, Worktree};
 use crate::model::{MERGE_SCOPE, Project, TerminalSpec};
@@ -19,6 +19,63 @@ pub struct MergeRequest {
     pub source_branch: String,
     pub destination: String,
     pub destination_branch: String,
+}
+
+/// Resolve a local branch to a destination checkout only when a user starts a merge.
+/// A newly created checkout persists if the subsequent agent launch fails.
+///
+/// # Errors
+/// Fails for stale source state, missing local branches, dirty/busy worktrees, or creation errors.
+pub fn resolve_destination(
+    project: &Project,
+    source_path: &str,
+    source_branch: &str,
+    destination_branch: &str,
+) -> Result<MergeRequest> {
+    // Concurrent dialogs in this process must adopt the same checkout and task.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let root = Path::new(&project.root);
+    ensure!(
+        source_branch != destination_branch,
+        "Choose a different destination branch"
+    );
+    let trees = git::worktrees(root);
+    let mut source = checked_tree(&trees, source_path, "source")?;
+    let common = git::common_dir(root)?.canonicalize()?;
+    clean(&mut source, source_branch, "source", &common)?;
+    ensure!(
+        git::branches(root)?.iter().any(|b| b == destination_branch),
+        "Destination branch {destination_branch} no longer exists; refresh and choose a local branch"
+    );
+    let find_destination = || {
+        git::worktrees(root)
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some(destination_branch))
+    };
+    let mut destination = if let Some(tree) = find_destination() {
+        tree
+    } else {
+        match crate::tasks::create_existing(root, destination_branch) {
+            Ok(task) => checked_tree(&git::worktrees(root), &task.worktree, "destination")?,
+            // Another process may have checked the branch out since the first read.
+            Err(error) => find_destination()
+                .ok_or(error)
+                .with_context(|| format!("Couldn't create a worktree for {destination_branch}"))?,
+        }
+    };
+    clean(&mut destination, destination_branch, "destination", &common)?;
+    // Creation can take time: do not launch if the source changed during it.
+    clean(&mut source, source_branch, "source", &common)?;
+    Ok(MergeRequest {
+        expected_source_head: None,
+        source: source.path,
+        source_branch: source_branch.into(),
+        destination: destination.path,
+        destination_branch: destination_branch.into(),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,6 +508,158 @@ mod tests {
         request = f.request.clone();
         request.source_branch = "renamed".into();
         assert!(check_cleanup(&f.project, &request).is_err());
+    }
+
+    #[test]
+    fn destination_resolution_reuses_existing_checkout_without_creating_tasks() {
+        let f = Fixture::new();
+        let request =
+            resolve_destination(&f.project, &f.request.source, "feature", "main").unwrap();
+        assert_eq!(request.destination, f.project.root);
+        assert!(
+            crate::tasks::list(Path::new(&f.project.root))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(git::worktrees(Path::new(&f.project.root)).len(), 2);
+    }
+
+    #[test]
+    fn primary_feature_creates_persistent_main_checkout_and_retries_reuse_it() {
+        let f = Fixture::new();
+        let root = Path::new(&f.project.root);
+        git::run(git::git(root).args(["worktree", "remove", &f.request.source])).unwrap();
+        git::run(git::git(root).args(["checkout", "feature"])).unwrap();
+        let before = git::run(git::git(root).args(["rev-parse", "HEAD"])).unwrap();
+        let request = resolve_destination(&f.project, &f.project.root, "feature", "main").unwrap();
+        assert_eq!(request.source, f.project.root);
+        assert_ne!(request.destination, f.project.root);
+        assert_eq!(
+            Path::new(&request.destination).file_name().unwrap(),
+            "main-main"
+        );
+        assert_eq!(
+            git::run(git::git(root).args(["branch", "--show-current"])).unwrap(),
+            "feature"
+        );
+        assert_eq!(
+            git::run(git::git(root).args(["rev-parse", "HEAD"])).unwrap(),
+            before
+        );
+        let trees = git::worktrees(root);
+        assert!(
+            trees
+                .iter()
+                .find(|w| w.path == request.source)
+                .unwrap()
+                .current
+        );
+        assert!(
+            !trees
+                .iter()
+                .find(|w| w.path == request.destination)
+                .unwrap()
+                .current
+        );
+        let tasks = crate::tasks::list(root).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].worktree, request.destination);
+        assert!(!tasks[0].current);
+        // Even after a rejected launch, the destination survives as a normal task.
+        let mut invalid = Fixture::terminal("claude");
+        invalid.kind = TerminalKind::Shell;
+        assert!(prepare(&f.project, &request, &invalid, &AllowAll, None).is_err());
+        let retry = resolve_destination(&f.project, &f.project.root, "feature", "main").unwrap();
+        assert_eq!(retry.destination, request.destination);
+        assert_eq!(crate::tasks::list(root).unwrap().len(), 1);
+        let job = prepare(
+            &f.project,
+            &retry,
+            &Fixture::terminal("claude"),
+            &AllowAll,
+            None,
+        )
+        .unwrap();
+        assert_eq!(job.spec.cwd, Path::new(&request.destination));
+        context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
+    }
+
+    #[test]
+    fn resolver_rejects_stale_same_missing_dirty_and_busy_branches() {
+        let f = Fixture::new();
+        let resolve = |source, destination| {
+            resolve_destination(&f.project, &f.request.source, source, destination)
+        };
+        assert!(
+            resolve("feature", "feature")
+                .unwrap_err()
+                .to_string()
+                .contains("different destination")
+        );
+        assert!(
+            resolve("renamed", "main")
+                .unwrap_err()
+                .to_string()
+                .contains("source branch changed")
+        );
+        assert!(
+            resolve("feature", "deleted")
+                .unwrap_err()
+                .to_string()
+                .contains("no longer exists")
+        );
+        git::run(git::git(Path::new(&f.project.root)).args(["branch", "-m", "renamed-main"]))
+            .unwrap();
+        assert!(
+            resolve("feature", "main")
+                .unwrap_err()
+                .to_string()
+                .contains("no longer exists")
+        );
+        fs::write(Path::new(&f.request.source).join("dirty"), "work").unwrap();
+        assert!(
+            resolve("feature", "renamed-main")
+                .unwrap_err()
+                .to_string()
+                .contains("uncommitted")
+        );
+        fs::remove_file(Path::new(&f.request.source).join("dirty")).unwrap();
+        let dirs = git_dirs(Path::new(&f.request.source)).unwrap();
+        fs::write(dirs[0].join("MERGE_HEAD"), "pending").unwrap();
+        assert!(
+            resolve("feature", "renamed-main")
+                .unwrap_err()
+                .to_string()
+                .contains("operation in progress")
+        );
+        assert_eq!(git::worktrees(Path::new(&f.project.root)).len(), 2);
+    }
+
+    #[test]
+    fn creation_failure_preserves_source_and_does_not_recreate_deleted_branches() {
+        let f = Fixture::new();
+        let root = Path::new(&f.project.root);
+        git::run(git::git(root).args(["branch", "destination"])).unwrap();
+        // Force task-store failure before worktree creation.
+        let store = crate::tasks::store_dir(root).unwrap();
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("tasks.json"), "invalid").unwrap();
+        assert!(
+            resolve_destination(&f.project, &f.request.source, "feature", "destination").is_err()
+        );
+        assert_eq!(git::worktrees(root).len(), 2);
+        assert_eq!(
+            git::run(git::git(Path::new(&f.request.source)).args(["branch", "--show-current"]))
+                .unwrap(),
+            "feature"
+        );
+        fs::remove_file(store.join("tasks.json")).unwrap();
+        assert!(crate::tasks::create_existing(root, "deleted").is_err());
+        assert!(
+            !git::branches(root)
+                .unwrap()
+                .contains(&"deleted".to_string())
+        );
     }
 
     impl Fixture {

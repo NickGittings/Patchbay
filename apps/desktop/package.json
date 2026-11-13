@@ -24,7 +24,7 @@
     "smoke:all": "node scripts/smoke-all.mjs",
     "smoke:stories": "node scripts/smoke-all.mjs stories",
     "smoke:views": "node scripts/smoke-all.mjs views",
-    "smoke:merge": "node scripts/smoke-all.mjs merge",
+    "smoke:merge": "node scripts/smoke-all.mjs merge merge-branches-chat merge-branches-review",
     "smoke:git": "node scripts/smoke-all.mjs git",
     "smoke:actions": "node scripts/smoke-all.mjs actions",
     "smoke:stack": "node scripts/smoke-all.mjs stack",

@@ -110,6 +110,16 @@ const SCRIPTS = {
     },
     'merge-fixture.sh',
   ),
+  'merge-branches-chat': smoke(
+    'merge-branches.js',
+    { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-merge/chat-primary') },
+    'merge-branches-fixture.sh',
+  ),
+  'merge-branches-review': smoke(
+    'merge-branches.js',
+    { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-merge/review-primary') },
+    'merge-branches-fixture.sh',
+  ),
   git: smoke('git.js'),
   actions: smoke(
     'actions.js',

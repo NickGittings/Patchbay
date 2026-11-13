@@ -35,6 +35,7 @@ interface Artifacts {
   review: Review
   base?: string
   worktrees: Worktree[]
+  branches: string[]
   outcome?: MergeOutcome
   /** Why the merge status couldn't be read; the other artifacts still show. */
   outcomeError?: string
@@ -131,6 +132,7 @@ export function useSimpleData(visible: boolean) {
             proposal,
             review,
             worktrees,
+            branches,
             base,
             outcome,
             outcomeError,
@@ -218,6 +220,9 @@ export function useSimpleData(visible: boolean) {
   const files = useMemo(() => changeRefs(groups), [groups])
   return {
     data: current,
+    // Branch metadata remains usable while artifacts reload for a newly saved review base.
+    worktrees: sourceData?.worktrees ?? [],
+    branches: sourceData?.branches ?? [],
     base: current?.base,
     source,
     scope,

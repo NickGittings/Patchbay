@@ -14,38 +14,63 @@ import {
   type TerminalSpec,
   type Worktree,
 } from '../types'
-import { mergeAgentStart, reviewAgentStart } from './ipc'
+import { mergeAgentStart, mergeDestinationResolve, reviewAgentStart } from './ipc'
+import { refreshTasks } from './tasks'
 import { useStore } from '../store'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
 import { sessionLive, sessionTimeMs } from './sessionList'
 import { reviewerBusy } from './review'
 
-export function mergeDestinations(source: Worktree | undefined, worktrees: Worktree[]) {
-  return worktrees.filter((w) => w.branch && w.path !== source?.path && w.branch !== source?.branch)
+/** Existing local branches, with a checkout when one is already available. */
+export function mergeDestinations(
+  source: Worktree | undefined,
+  worktrees: Worktree[],
+  branches?: string[],
+) {
+  return [...new Set(branches ?? worktrees.flatMap((w) => (w.branch ? [w.branch] : [])))]
+    .filter((branch) => branch !== source?.branch)
+    .map((branch) => ({
+      branch,
+      worktree: worktrees.find((w) => w.branch === branch && w.path !== source?.path),
+    }))
 }
 
-/** Main worktree starts an incoming merge; task worktrees retain their outgoing defaults. */
-export function initialMergeSelection(active: Worktree, worktrees: Worktree[]) {
-  return active.current
-    ? { source: '', destination: active.path }
-    : { source: active.path, destination: defaultMergeDestination(active, worktrees) }
+/** Always start with the branch being reviewed, including the primary checkout. */
+export function initialMergeSelection(
+  active: Worktree,
+  worktrees: Worktree[],
+  branches?: string[],
+) {
+  return { source: active.path, destination: defaultMergeDestination(active, worktrees, branches) }
 }
 
-/** Keep a valid destination, otherwise prefer the project's open worktree. */
+/** Keep an eligible branch selection while worktree metadata refreshes. */
 export function reconcileMergeDestination(
   source: Worktree | undefined,
   worktrees: Worktree[],
   destination: string,
+  branches?: string[],
 ) {
-  const destinations = mergeDestinations(source, worktrees)
-  return !destination || destinations.some((w) => w.path === destination)
+  const destinations = mergeDestinations(source, worktrees, branches)
+  return !destination || destinations.some((d) => d.branch === destination)
     ? destination
-    : (destinations.find((w) => w.current)?.path ?? '')
+    : source
+      ? defaultMergeDestination(source, worktrees, branches)
+      : ''
 }
 
-/** Only the project's open worktree is an automatic default. */
-export function defaultMergeDestination(source: Worktree, worktrees: Worktree[]) {
-  return mergeDestinations(source, worktrees).find((w) => w.current)?.path ?? ''
+/** Prefer the open checkout, then local main/master; otherwise require a choice. */
+export function defaultMergeDestination(
+  source: Worktree,
+  worktrees: Worktree[],
+  branches?: string[],
+) {
+  const destinations = mergeDestinations(source, worktrees, branches)
+  return (
+    destinations.find((d) => d.worktree?.current)?.branch ??
+    DEFAULT_BRANCHES.find((branch) => destinations.some((d) => d.branch === branch)) ??
+    ''
+  )
 }
 
 /** Live events take precedence over an older session-list snapshot after Stop. */
@@ -188,6 +213,24 @@ function launchJob<R>(
     requestId,
     ...(auto ? [auto] : []),
   )
+}
+
+/** Resolve only on submit; keep the destination available even when launch fails. */
+export async function startBranchMerge(
+  project: Project,
+  source: Worktree,
+  destinationBranch: string,
+  device: DeviceManifest,
+  requestId: string,
+) {
+  let request: MergeRequest
+  try {
+    request = await mergeDestinationResolve(project, source.path, source.branch!, destinationBranch)
+  } finally {
+    await refreshTasks(project.projectId).catch(() => {})
+  }
+  const sid = await startMergeAgent(project, request, device, requestId)
+  return { request, sid }
 }
 
 export const startMergeAgent = (

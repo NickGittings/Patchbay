@@ -83,7 +83,16 @@ export default function SimpleChat({
       revealed: s.revealed,
     })),
   )
-  const { data, source, scope: worktree, files: changed, error, findings } = reader
+  const {
+    data,
+    source,
+    worktrees,
+    branches,
+    scope: worktree,
+    files: changed,
+    error,
+    findings,
+  } = reader
   const key = simpleKey(s.project?.id, s.activeTask)
   const team = useChatTeams((state) =>
     state.teams[s.project?.id ?? '']?.find((t) => t.task === s.activeTask),
@@ -114,18 +123,16 @@ export default function SimpleChat({
   const model = thread(snapshot, worktree)
   const launch = pendingLaunch(snapshot, model.records)
   const now = useExpiredDeadline(launch ? launch.atMs + LAUNCH_RECORD_GRACE_MS : undefined)
-  const target = data?.worktrees.find(
-    (w) => w.path === (source && defaultMergeDestination(source, data.worktrees)),
+  const target = worktrees.find(
+    (w) => w.branch === (source && defaultMergeDestination(source, worktrees, branches)),
   )
   const merging = model.records.filter((r) => recordStage(r) === 'merge').at(-1)
   const mergeBase =
     model.stage === 'merge'
-      ? data?.worktrees.find((w) => w.path === merging?.spec.cwd)?.branch
+      ? worktrees.find((w) => w.path === merging?.spec.cwd)?.branch
       : undefined
   const base =
-    mergeBase ??
-    target?.branch ??
-    (source && defaultReviewBase(source, s.tasks, data?.worktrees ?? [], []))
+    mergeBase ?? target?.branch ?? (source && defaultReviewBase(source, s.tasks, worktrees, []))
   const reviewBase = findings?.findings?.base || base
   const checkKey = JSON.stringify([key, source?.head, target?.head])
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
@@ -317,6 +324,8 @@ export default function SimpleChat({
           throw new Error('The merge worktrees changed. Choose a destination again.')
         const paths = await mergeConflicts(projectId, from.head, to.head)
         setCheck({ key: JSON.stringify([key, from.head, to.head]), paths })
+      } else if (action === 'merge' && !target?.branch) {
+        setDialog('merge')
       } else if (action === 'merge' && source?.branch && target?.branch) {
         const request = {
           source: source.path,
@@ -507,7 +516,7 @@ export default function SimpleChat({
           restartSettled
           initialBase={reviewBase || undefined}
           source={source}
-          worktrees={data?.worktrees ?? []}
+          worktrees={worktrees}
           close={() => setDialog(undefined)}
           started={(reviewers) => void logReviewers(reviewers)}
           launched={() => setDialog(undefined)}
@@ -517,7 +526,8 @@ export default function SimpleChat({
         <MergeAgentDialog
           compact
           source={source}
-          worktrees={data?.worktrees ?? []}
+          worktrees={worktrees}
+          branches={branches}
           close={() => setDialog(undefined)}
           onRequest={(request, sid, requestId) => void logMerge(request, sid, requestId)}
           launched={() => setDialog(undefined)}

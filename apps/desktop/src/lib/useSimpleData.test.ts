@@ -153,3 +153,28 @@ test('a project outside Git still loads plans and changes from its component rep
   expect(reader.data?.review.changes.app).toHaveLength(1)
   expect(ipc.gitBranches).not.toHaveBeenCalled()
 })
+
+test('branch metadata remains available while a newly saved review base reloads artifacts', async () => {
+  render()
+  const loaded = await settle()
+  expect(loaded.branches).toEqual(['feature', 'main', 'release'])
+  let finish!: (plan: { text: string; cut: boolean; savedMs: number }) => void
+  vi.mocked(ipc.planRead).mockReturnValue(new Promise((resolve) => (finish = resolve)))
+  h.savedBase = 'main'
+  const pending = render()
+  expect(pending.data).toBeUndefined()
+  expect(pending.source?.branch).toBe('feature')
+  expect(pending.worktrees).toEqual(loaded.worktrees)
+  expect(pending.branches).toEqual(loaded.branches)
+  const { initialMergeSelection } = await import('./reviewAgents')
+  expect(initialMergeSelection(pending.source!, pending.worktrees, pending.branches)).toEqual({
+    source: '/repo',
+    destination: 'main',
+  })
+  finish({ text: 'plan', cut: false, savedMs: 1 })
+  await settle()
+  // Switching chats never exposes the previous chat's branch metadata.
+  useStore.setState({ activeTask: 'other' })
+  expect(render().worktrees).toEqual([])
+  expect(render().branches).toEqual([])
+})

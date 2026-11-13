@@ -5,7 +5,7 @@ import {
   mergeDestinations,
   mergeDestinationRunning,
   reviewState,
-  startMergeAgent,
+  startBranchMerge,
 } from '../lib/reviewAgents'
 import { useReviewFindings } from '../lib/useReviewFindings'
 import { useStore } from '../store'
@@ -15,6 +15,7 @@ import AgentJobDialog from './AgentJobDialog'
 export default function MergeAgentDialog({
   source: active,
   worktrees,
+  branches,
   close,
   launched,
   onRequest,
@@ -25,22 +26,25 @@ export default function MergeAgentDialog({
   onRequest?: (request: import('../types').MergeRequest, sid: string, requestId: string) => void
   source: Worktree
   worktrees: Worktree[]
+  branches: string[]
   close: () => void
   launched: (sid: string) => void
 }) {
   // Capture this dialog's project so switching tabs cannot redirect a pending launch.
   const [project] = useState(() => useStore.getState().toProject())
-  const [selection, setSelection] = useState(() => initialMergeSelection(active, worktrees))
+  const [selection, setSelection] = useState(() =>
+    initialMergeSelection(active, worktrees, branches),
+  )
   const source = worktrees.find((w) => w.path === selection.source && w.branch)
-  const destination = reconcileMergeDestination(source, worktrees, selection.destination)
+  const destination = reconcileMergeDestination(source, worktrees, selection.destination, branches)
   // Drop invalid destinations immediately so a later source change cannot restore an old choice.
   if (destination !== selection.destination) setSelection({ ...selection, destination })
   const loaded = useReviewFindings(project.projectId, source?.branch)
   const status = reviewState(loaded?.findings, source)
   const records = useStore((s) => s.sessionRecords)
   const sessions = useStore((s) => s.sessions)
-  const destinations = mergeDestinations(source, worktrees)
-  const target = destinations.find((w) => w.path === destination)
+  const destinations = mergeDestinations(source, worktrees, branches)
+  const target = destinations.find((d) => d.branch === destination)
   return (
     <AgentJobDialog
       role="merge"
@@ -73,35 +77,21 @@ export default function MergeAgentDialog({
         </label>
       )}
       ready={!!source?.branch && !!target?.branch}
-      running={mergeDestinationRunning(records, sessions, destination)}
+      running={mergeDestinationRunning(records, sessions, target?.worktree?.path ?? '')}
       runningText="A merge agent is already running in this destination."
       offlineText="Reconnect before starting a merge agent."
       hint="Merges the whole committed branch, resolves conflicts, and runs relevant checks before completing the local merge. Both worktrees must be clean. Leaves pushing to you."
-      launch={([device]) => {
+      launch={async ([device]) => {
         const requestId = crypto.randomUUID()
-        return startMergeAgent(
+        const { request, sid } = await startBranchMerge(
           project,
-          {
-            source: source!.path,
-            sourceBranch: source!.branch!,
-            destination: target!.path,
-            destinationBranch: target!.branch!,
-          },
+          source!,
+          target!.branch,
           device,
           requestId,
-        ).then((sid) => {
-          onRequest?.(
-            {
-              source: source!.path,
-              sourceBranch: source!.branch!,
-              destination: target!.path,
-              destinationBranch: target!.branch!,
-            },
-            sid,
-            requestId,
-          )
-          return sid
-        })
+        )
+        onRequest?.(request, sid, requestId)
+        return sid
       }}
       close={close}
       launched={launched}
@@ -124,9 +114,9 @@ export default function MergeAgentDialog({
             </p>
           )}
           <label>
-            Destination worktree
+            Destination branch
             <select
-              aria-label="Destination worktree"
+              aria-label="Destination branch"
               disabled={busy}
               value={destination}
               onChange={(e) => {
@@ -135,10 +125,10 @@ export default function MergeAgentDialog({
               }}
             >
               <option value="">Choose a destination…</option>
-              {destinations.map((w) => (
-                <option key={w.path} value={w.path}>
-                  {w.branch} · {w.path}
-                  {w.current ? ' (open worktree)' : ''}
+              {destinations.map(({ branch, worktree }) => (
+                <option key={branch} value={branch}>
+                  {branch} · {worktree ? worktree.path : 'Create worktree'}
+                  {worktree?.current ? ' (open worktree)' : ''}
                 </option>
               ))}
             </select>
