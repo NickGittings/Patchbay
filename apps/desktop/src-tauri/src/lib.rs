@@ -1375,6 +1375,43 @@ async fn git_branches(project_id: String, state: State<'_, AppState>) -> CmdResu
     .await
 }
 
+/// Branch management is scoped to registered worktrees of the project repository.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn git_branch_action(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    expected_head: String,
+    expected_branch: Option<String>,
+    action: patchbay_core::branches::BranchAction,
+    worktree: Option<String>,
+    stop_sessions: Option<bool>,
+) -> CmdResult<patchbay_core::branches::BranchResult> {
+    main_only(&window)?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    let bridge = state.service.clone();
+    blocking(move || {
+        let trees = git::worktrees(&root);
+        let target = trees
+            .iter()
+            .find(|t| worktree.as_ref().map_or(t.current, |path| &t.path == path))
+            .ok_or("Choose a registered worktree of this repository")?;
+        let root = PathBuf::from(&target.path);
+
+        patchbay_core::branches::apply_with_sessions(
+            &root,
+            &expected_head,
+            expected_branch.as_deref(),
+            &action,
+            stop_sessions.unwrap_or(false),
+            &mut |request| bridge.call(request).map_err(anyhow::Error::msg),
+        )
+        .map_err(err)
+    })
+    .await
+}
+
 /// The diff of one of a component's changed files, `path` (and a rename's
 /// `old_path`) relative to the root, in `worktree` (one `git_worktrees`
 /// listed) or the open one.
@@ -2125,6 +2162,23 @@ async fn merge_outcome(
     .await
 }
 
+#[tauri::command]
+async fn merge_cleanup_preview(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    mut project: Project,
+    request: patchbay_core::merges::MergeRequest,
+) -> CmdResult<patchbay_core::merges::CleanupPreview> {
+    main_only(&window)?;
+    let access = state.project(&project_id)?.access.snapshot();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        patchbay_core::merges::cleanup_preview(&project, &request).map_err(err)
+    })
+    .await
+}
+
 /// Cleanup is restricted to the main window and registered repository.
 #[tauri::command]
 async fn merge_cleanup(
@@ -2137,37 +2191,42 @@ async fn merge_cleanup(
     main_only(&window)?;
     let (root, scoped) = task_repo(&state, &project_id)?;
     let access = scoped.access.snapshot();
+    access.trust(&mut project).map_err(err)?;
+    let preview = patchbay_core::merges::cleanup_preview(&project, &request).map_err(err)?;
     for scoped in state.projects.read().unwrap().values() {
         if scoped.access.snapshot().root().is_some_and(|p| {
-            p.canonicalize().ok() == Path::new(&request.source).canonicalize().ok()
+            p.to_string_lossy() == preview.removed_worktree
+                || p.canonicalize()
+                    .is_ok_and(|p| p.to_string_lossy() == preview.removed_worktree)
         }) {
-            return Err("The source worktree is open as a project".into());
+            return Err("The worktree to remove is open as a project".into());
         }
     }
     let bridge = state.service.clone();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
         project.root = root.to_string_lossy().into_owned();
-        patchbay_core::merges::check_cleanup(&project, &request).map_err(err)?;
+        let preview = patchbay_core::merges::cleanup_preview(&project, &request).map_err(err)?;
         stories::complete_merge(&root, Path::new(&request.source)).map_err(err)?;
         let task = tasks::list(&root)
             .map_err(err)?
             .into_iter()
-            .find(|t| t.worktree == request.source);
+            .find(|t| t.worktree == preview.removed_worktree);
         if let Some(task) = &task {
             tasks::TaskSessions::end_task(&*bridge, &task.id, false).map_err(err)?;
         }
         // Sessions can belong to a different project or have no task metadata.
         let records: Vec<patchbay_core::session::Record> =
             bridge.call(patchbay_core::session::Request::List)?;
-        let source = Path::new(&request.source).canonicalize().map_err(err)?;
+        let source = PathBuf::from(&request.source);
+        let removed = PathBuf::from(&preview.removed_worktree);
         let owned: Vec<_> = records
             .into_iter()
             .filter(|r| {
-                r.spec
-                    .cwd
-                    .canonicalize()
-                    .is_ok_and(|p| p.starts_with(&source))
+                r.spec.cwd.canonicalize().map_or_else(
+                    |_| r.spec.cwd.starts_with(&removed),
+                    |p| p.starts_with(&removed) || (preview.restore && p.starts_with(&source)),
+                )
             })
             .collect();
         for record in &owned {
@@ -2178,10 +2237,13 @@ async fn merge_cleanup(
         let cleanup = patchbay_core::merges::cleanup(&project, &request).map_err(err);
         // Even if branch deletion failed, retire sessions and task metadata once
         // the worktree is gone. Preserve the partial-failure message for the user.
-        if Path::new(&request.source).exists() {
+        if removed.exists() {
             return cleanup;
         }
-        for record in owned {
+        for record in owned
+            .into_iter()
+            .filter(|r| r.spec.cwd.starts_with(&removed))
+        {
             let _ = bridge.call::<serde_json::Value>(patchbay_core::session::Request::Forget {
                 id: record.id,
             });
@@ -3048,6 +3110,7 @@ pub fn run() {
                 git_review,
                 git_worktrees,
                 git_branches,
+                git_branch_action,
                 chat_teams::chat_teams,
                 chat_teams::chat_team_initialize,
                 chat_teams::chat_team_delegate_shared,
@@ -3071,6 +3134,7 @@ pub fn run() {
                 stack_agent_start,
                 merge_outcome,
                 merge_cleanup,
+                merge_cleanup_preview,
                 merge_conflicts,
                 review_agent_start,
                 review_read,

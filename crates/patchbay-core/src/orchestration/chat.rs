@@ -2256,6 +2256,7 @@ pub fn replace_lead(
                 id: next.id.clone(),
                 request_id: reset.id.clone(),
                 generation: generation(next)?,
+                purpose: Some(crate::pty::LaunchPurpose::Chat),
             }
         };
         // The next ready prompt receives recovery; the launch never pastes into a busy turn.
@@ -3776,10 +3777,12 @@ mod tests {
                         id,
                         request_id,
                         generation,
+                        purpose,
                     } if !new_preset => {
                         assert_eq!(id, "replacement");
                         assert_eq!(request_id, "replacement-request");
                         assert_eq!(generation, 1);
+                        assert_eq!(purpose, Some(crate::pty::LaunchPurpose::Chat));
                     }
                     _ => panic!("unexpected request"),
                 }
@@ -4386,9 +4389,11 @@ mod tests {
                     id,
                     request_id,
                     generation,
+                    purpose,
                 } => {
                     assert_eq!(id, lead.id);
                     assert_eq!(generation, 1);
+                    assert_eq!(purpose, Some(crate::pty::LaunchPurpose::Chat));
                     launches += 1;
                     lead.request_ids.push(request_id);
                     lead.snapshot.as_mut().unwrap().generation = 2;

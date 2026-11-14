@@ -795,3 +795,35 @@ export const gitHistory = <T>(
 
 export const mergeCleanup = (project: Project, request: import('../types').MergeRequest) =>
   invoke<void>('merge_cleanup', { projectId: project.projectId, project, request })
+
+export interface MergeCleanupPreview {
+  restore: boolean
+  retry: boolean
+  removedWorktree: string
+}
+
+export const mergeCleanupPreview = (project: Project, request: import('../types').MergeRequest) =>
+  invoke<MergeCleanupPreview>('merge_cleanup_preview', {
+    projectId: project.projectId,
+    project,
+    request,
+  })
+
+export type BranchAction = { kind: 'switch' | 'rename' | 'delete'; branch: string }
+
+export const gitBranchAction = (
+  projectId: string,
+  expectedHead: string,
+  expectedBranch: string | undefined,
+  action: BranchAction,
+  worktree?: string,
+  stopSessions = false,
+) =>
+  invoke<'applied' | 'needsStop'>('git_branch_action', {
+    projectId,
+    expectedHead,
+    expectedBranch: expectedBranch ?? null,
+    action,
+    worktree,
+    stopSessions,
+  })

@@ -13,6 +13,7 @@ for name in chat-primary review-primary; do
   printf '%s\n' '{"schemaVersion":4,"name":"Primary feature merge","components":[],"links":[]}' > "$dir/$name/patchbay.json"
   git -C "$dir/$name" add .
   git -C "$dir/$name" commit -qm base
+  git -C "$dir/$name" branch unused
   git -C "$dir/$name" checkout -qb feature
   printf 'feature\n' > "$dir/$name/shared.txt"
   git -C "$dir/$name" commit -qam feature

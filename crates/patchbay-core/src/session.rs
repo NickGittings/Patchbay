@@ -34,7 +34,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 22 resets conversations using the service's retained private launch settings.
 // Protocol 23 adds structurally classified chat resume outcomes.
 // Protocol 24 gates Codex chat delivery on a generation-bound bootstrap turn.
-pub const PROTOCOL: u32 = 24;
+// Protocol 25 applies chat startup to retained legacy leads on resume and recovery.
+pub const PROTOCOL: u32 = 25;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -363,6 +364,8 @@ pub enum Request {
         id: String,
         request_id: String,
         generation: u64,
+        #[serde(default)]
+        purpose: Option<crate::pty::LaunchPurpose>,
     },
     /// A restart may continue only when the newly prepared settings and briefing match.
     Restart {
@@ -1504,6 +1507,7 @@ impl Service {
         id: &str,
         request: String,
         generation: u64,
+        purpose: Option<crate::pty::LaunchPurpose>,
     ) -> Result<String> {
         let (metadata, mut spec, backup) = {
             let records = self.records.lock().unwrap();
@@ -1512,6 +1516,9 @@ impl Service {
                 return Ok(id.into());
             }
             let mut spec = r.spec.clone();
+            if let Some(purpose) = purpose {
+                spec.purpose = purpose;
+            }
             // A resumed process's command includes its conversation ID. Restore the
             // original launch before choosing its fresh, non-kickoff resume template.
             if !r.launch_command.is_empty() {
@@ -1682,6 +1689,14 @@ impl Service {
         }
     }
     fn resume(self: &Arc<Self>, id: &str, request_id: String) -> Result<String> {
+        self.resume_with_purpose(id, request_id, None)
+    }
+    fn resume_with_purpose(
+        self: &Arc<Self>,
+        id: &str,
+        request_id: String,
+        purpose: Option<crate::pty::LaunchPurpose>,
+    ) -> Result<String> {
         let (metadata, mut spec, launch_command, restart_context, briefing_backup) = {
             let records = self.records.lock().unwrap();
             let r = records.get(id).context("Unknown session")?;
@@ -1696,6 +1711,9 @@ impl Service {
                 r.briefing_backup.clone(),
             )
         };
+        if let Some(purpose) = purpose {
+            spec.purpose = purpose;
+        }
         crate::context::restore_briefing(&spec, briefing_backup.as_deref())?;
         let original = prepare_resume(&metadata, &mut spec, &launch_command)?;
         // Keep the original launch command for later resumes; context environment persists.
@@ -1875,7 +1893,10 @@ impl Service {
                 id,
                 request_id,
                 generation,
-            } => serde_json::to_value(self.reset_conversation(&id, request_id, generation)?)?,
+                purpose,
+            } => serde_json::to_value(
+                self.reset_conversation(&id, request_id, generation, purpose)?,
+            )?,
             Request::Restart {
                 request_id,
                 metadata,
@@ -2058,7 +2079,11 @@ impl Service {
                 serde_json::to_value(text)?
             }
             Request::ChatResume { id, request_id } => {
-                let outcome = match self.resume(&id, request_id) {
+                let outcome = match self.resume_with_purpose(
+                    &id,
+                    request_id,
+                    Some(crate::pty::LaunchPurpose::Chat),
+                ) {
                     Ok(_) => ChatResume::Resumed,
                     Err(e) if e.is::<crate::adapters::HistoryUnavailable>() => {
                         ChatResume::HistoryUnavailable {
@@ -4985,6 +5010,7 @@ mod tests {
             id: id.clone(),
             request_id: "reset".into(),
             generation,
+            purpose: None,
         };
         assert_eq!(service.handle("test", reset()).unwrap(), id);
         let snapshot = wait_for_exit(&service, &id);
@@ -5012,6 +5038,7 @@ mod tests {
                         id: id.clone(),
                         request_id: "stale".into(),
                         generation,
+                        purpose: None,
                     }
                 )
                 .is_err()
@@ -6091,8 +6118,25 @@ for line in sys.stdin:
                 .to_string()
                 .contains("generation")
         );
+        // A retained legacy lead with unavailable history is recovered through reset.
         service
-            .reset_conversation(&id, "fresh".into(), second.generation)
+            .records
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .spec
+            .purpose = crate::pty::LaunchPurpose::Ordinary;
+        service
+            .handle(
+                "client",
+                Request::ResetConversation {
+                    id: id.clone(),
+                    request_id: "fresh".into(),
+                    generation: second.generation,
+                    purpose: Some(crate::pty::LaunchPurpose::Chat),
+                },
+            )
             .unwrap();
         let fresh = wait(&|s| s.generation != second.generation && s.status.agent.is_some());
         assert_eq!(fresh.chat_startup, Some(ChatStartup::Pending));
@@ -6106,6 +6150,57 @@ for line in sys.stdin:
             service.snapshot(&id).unwrap().chat_startup,
             Some(ChatStartup::Pending)
         );
+
+        // Leads selected before chat launch purposes existed retain an ordinary spec.
+        // Reconnecting them through Chat must still run the readiness exchange.
+        {
+            let mut records = service.records.lock().unwrap();
+            let record = records.get_mut(&id).unwrap();
+            record.spec.purpose = crate::pty::LaunchPurpose::Ordinary;
+            record.metadata.conversation_id = Some("12345678-1234-1234-1234-123456789012".into());
+            record.metadata.conversation_pinned = true;
+        }
+        let outcome = service
+            .handle(
+                "client",
+                Request::ChatResume {
+                    id: id.clone(),
+                    request_id: "legacy-chat-resume".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(outcome["kind"], "resumed");
+        let legacy = service.snapshot(&id).unwrap();
+        assert_eq!(
+            legacy.chat_startup,
+            Some(ChatStartup::Pending),
+            "legacy Lead cannot report a ready prompt without the bootstrap"
+        );
+        fs::write(dir.join("work"), "").unwrap();
+        fs::write(dir.join("finish"), "").unwrap();
+        wait(&|s| s.chat_startup == Some(ChatStartup::Ready));
+        service.claim("client", id.clone(), "composer".into(), true);
+        service
+            .submit_prompt(
+                "client",
+                id.clone(),
+                "composer".into(),
+                legacy.generation,
+                "Continue the conversation".into(),
+                false,
+            )
+            .unwrap();
+        wait(&|s| {
+            s.status
+                .agent
+                .as_ref()
+                .is_some_and(|a| a.state == AgentState::Working)
+        });
+        assert_eq!(
+            fs::read_to_string(dir.join("received")).unwrap(),
+            "Please commit the changes\nContinue the conversation\n"
+        );
+        service.pty.stop_generation(&id, legacy.generation).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
 

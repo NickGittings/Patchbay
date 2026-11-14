@@ -49,6 +49,11 @@ events carry readiness to the UI. Composer readiness, forced sends, coordinator 
 session service's final prompt gate all wait for startup to finish. The 30-second composer timeout
 reports that readiness could not be confirmed and leaves the user's message unsent.
 
+Protocol 25 promotes retained legacy leads to the Chat launch purpose when Chat resumes them
+or reconstructs a conversation after missing history. Both paths run the same startup exchange;
+ordinary session resumes keep their original purpose. A running legacy lead without readiness
+must be stopped once, then reconnected by sending again. Its saved history remains available.
+
 Chat identities use durable team membership: Lead for the team's lead, Builder for its workers
 and adopted scopes, otherwise Agent. Provider and preset labels remain separate. Opening a
 Builder terminal changes the drawer identity while the composer continues to address its recipient.

@@ -1,10 +1,14 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import { cleanupJobs, handledCleanup, readyCleanup, trackMergeCleanup } from './mergeCleanup'
-import { mergeOutcome } from './ipc'
+import { mergeCleanupPreview, mergeOutcome } from './ipc'
 import type { Project } from '../types'
 
-vi.mock('./ipc', () => ({ mergeOutcome: vi.fn(), mergeCleanup: vi.fn() }))
+vi.mock('./ipc', () => ({
+  mergeOutcome: vi.fn(),
+  mergeCleanup: vi.fn(),
+  mergeCleanupPreview: vi.fn(),
+}))
 vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn() }))
 vi.mock('./tasks', () => ({ refreshTasks: vi.fn() }))
 vi.mock('./git', () => ({ requestGitRefresh: vi.fn() }))
@@ -28,6 +32,9 @@ beforeEach(() => {
   useStore.setState(useStore.getInitialState())
   useStore.getState().loadProject(project)
   useStore.setState({ workspaceSettings: {}, sessions: {}, sessionRecords: [] })
+  vi.mocked(mergeCleanupPreview)
+    .mockReset()
+    .mockResolvedValue({ restore: false, retry: false, removedWorktree: '/feature' })
   vi.mocked(mergeOutcome).mockReset().mockResolvedValue('merged')
 })
 
@@ -98,4 +105,15 @@ test('a newer merge replaces an older pending prompt for the same branch pair', 
   trackMergeCleanup(project, request, 'old-session', 'old', 'ask', false)
   trackMergeCleanup(project, request, 'new-session', 'new', 'ask', false)
   expect(cleanupJobs().map((j) => j.id)).toEqual(['new'])
+})
+
+test('partial restoration remains available after its merge session was retired', async () => {
+  trackMergeCleanup(project, request, 'retired-session', 'merge', 'ask', false)
+  expect(await readyCleanup(cleanupJobs()[0])).toBe(false)
+  vi.mocked(mergeCleanupPreview).mockResolvedValue({
+    restore: true,
+    retry: true,
+    removedWorktree: '/generated-main',
+  })
+  expect(await readyCleanup(cleanupJobs()[0])).toBe(true)
 })

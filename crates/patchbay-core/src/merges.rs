@@ -59,7 +59,17 @@ pub fn resolve_destination(
         tree
     } else {
         match crate::tasks::create_existing(root, destination_branch) {
-            Ok(task) => checked_tree(&git::worktrees(root), &task.worktree, "destination")?,
+            Ok(task) => {
+                let record = Restoration {
+                    source: source.path.clone(),
+                    source_branch: source_branch.into(),
+                    destination: task.worktree.clone(),
+                    destination_branch: destination_branch.into(),
+                    heads: None,
+                };
+                save_restoration(root, &record)?;
+                checked_tree(&git::worktrees(root), &task.worktree, "destination")?
+            }
             // Another process may have checked the branch out since the first read.
             Err(error) => find_destination()
                 .ok_or(error)
@@ -76,6 +86,193 @@ pub fn resolve_destination(
         destination: destination.path,
         destination_branch: destination_branch.into(),
     })
+}
+
+/// Backend-derived cleanup operation; never accepted as execution authority.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupPreview {
+    pub restore: bool,
+    pub retry: bool,
+    pub removed_worktree: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Restoration {
+    source: String,
+    source_branch: String,
+    destination: String,
+    destination_branch: String,
+    // Pinned before the first destructive step, retained for safe retries.
+    heads: Option<(String, String)>,
+}
+
+fn restoration_file(root: &Path, destination: &str) -> Result<PathBuf> {
+    Ok(crate::tasks::store_dir(root)?.join(format!(
+        "merge-{}.json",
+        crate::workspace::session_id(destination, "cleanup", "ownership")
+    )))
+}
+
+fn save_restoration(root: &Path, record: &Restoration) -> Result<()> {
+    crate::workspace::atomic_write(
+        &restoration_file(root, &record.destination)?,
+        &serde_json::to_vec(record)?,
+    )
+}
+
+fn restoration(root: &Path, request: &MergeRequest) -> Result<Option<Restoration>> {
+    let text = match std::fs::read(restoration_file(root, &request.destination)?) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let record: Restoration = serde_json::from_slice(&text)?;
+    Ok((record.source == request.source
+        && record.source_branch == request.source_branch
+        && record.destination == request.destination
+        && record.destination_branch == request.destination_branch)
+        .then_some(record))
+}
+
+fn branch_head(root: &Path, branch: &str) -> Result<String> {
+    git::run(git::git(root).args([
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        &format!("refs/heads/{branch}^{{commit}}"),
+    ]))
+}
+
+fn validate_restoration(
+    project: &Project,
+    request: &MergeRequest,
+    record: &Restoration,
+) -> Result<()> {
+    let root = Path::new(&project.root);
+    let trees = git::worktrees(root);
+    let mut source = checked_tree(&trees, &request.source, "source")?;
+    ensure!(
+        source.main || source.current,
+        "Restoration requires the primary or open worktree"
+    );
+    let common = git::common_dir(root)?.canonicalize()?;
+    let source_branch = if record.heads.is_some()
+        && source.branch.as_deref() == Some(&request.destination_branch)
+    {
+        &request.destination_branch
+    } else {
+        &request.source_branch
+    };
+    clean(&mut source, source_branch, "source", &common)?;
+    if let Some((source_head, destination_head)) = &record.heads {
+        ensure!(
+            branch_head(root, &request.destination_branch)? == *destination_head,
+            "Destination branch changed during cleanup; original folder preserved"
+        );
+        let branches = git::branches(root)?;
+        if branches.contains(&request.source_branch) {
+            ensure!(
+                branch_head(root, &request.source_branch)? == *source_head,
+                "Source branch changed during cleanup"
+            );
+        } else {
+            ensure!(
+                source_branch == &request.destination_branch,
+                "Source branch disappeared during cleanup"
+            );
+        }
+    } else {
+        ensure!(
+            matches!(
+                outcome(project, request)?,
+                MergeOutcome::Merged | MergeOutcome::AlreadyIntegrated
+            ),
+            "The source branch is not clean and fully integrated"
+        );
+    }
+    ensure!(
+        !trees
+            .iter()
+            .any(|t| t.path != source.path && t.branch.as_deref() == Some(&request.source_branch)),
+        "The source branch is checked out elsewhere"
+    );
+    if trees.iter().any(|t| t.path == request.destination) {
+        let mut destination = checked_tree(&trees, &request.destination, "destination")?;
+        ensure!(
+            !destination.main && !destination.current,
+            "Cannot remove the primary or open destination"
+        );
+        clean(
+            &mut destination,
+            &request.destination_branch,
+            "destination",
+            &common,
+        )?;
+    } else {
+        ensure!(
+            record.heads.is_some() && !Path::new(&request.destination).exists(),
+            "Destination worktree disappeared or was replaced"
+        );
+    }
+    ensure!(
+        !trees.iter().any(|t| t.path != source.path
+            && t.path != request.destination
+            && t.branch.as_deref() == Some(&request.destination_branch)),
+        "Destination branch is checked out elsewhere"
+    );
+    Ok(())
+}
+
+/// Validate and describe the cleanup using live repository state.
+pub fn cleanup_preview(project: &Project, request: &MergeRequest) -> Result<CleanupPreview> {
+    let root = Path::new(&project.root);
+    let trees = git::worktrees(root);
+    let source = checked_tree(&trees, &request.source, "source")?;
+    if source.main || source.current {
+        let record = restoration(root, request)?.context(
+            "Cannot restore this checkout automatically: destination ownership was not recorded. Release the destination branch and switch the original folder manually.")?;
+        validate_restoration(project, request, &record)?;
+        Ok(CleanupPreview {
+            restore: true,
+            retry: record.heads.is_some(),
+            removed_worktree: request.destination.clone(),
+        })
+    } else {
+        check_cleanup(project, request)?;
+        Ok(CleanupPreview {
+            restore: false,
+            retry: false,
+            removed_worktree: request.source.clone(),
+        })
+    }
+}
+
+fn restore_original(project: &Project, request: &MergeRequest) -> Result<()> {
+    let root = Path::new(&project.root);
+    let mut record = restoration(root, request)?.context("Destination ownership is missing")?;
+    validate_restoration(project, request, &record)?;
+    if record.heads.is_none() {
+        record.heads = Some((
+            branch_head(root, &request.source_branch)?,
+            branch_head(root, &request.destination_branch)?,
+        ));
+        save_restoration(root, &record)?;
+    }
+    if git::worktrees(root)
+        .iter()
+        .any(|t| t.path == request.destination)
+    {
+        git::run(git::git(root).args(["worktree", "remove", "--", &request.destination]))?;
+    }
+    git::run(git::git(Path::new(&request.source)).args(["switch", "--", &request.destination_branch]))
+        .context("Destination worktree removed; retry cleanup to return the original folder to the destination branch")?;
+    if git::branches(root)?.contains(&request.source_branch) {
+        git::run(git::git(root).args(["branch", "-d", "--", &request.source_branch])).context(
+            "Original folder restored; retry cleanup to delete the merged feature branch",
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +302,12 @@ const OPERATION_MARKERS: [&str; 6] = [
 /// # Errors
 /// Fails for foreign, missing or changed worktrees, or Git errors.
 pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome> {
+    if let Some(record) = restoration(Path::new(&project.root), request)?
+        && record.heads.is_some()
+    {
+        validate_restoration(project, request, &record)?;
+        return Ok(MergeOutcome::AlreadyIntegrated);
+    }
     let trees = git::worktrees(Path::new(&project.root));
     let mut source = checked_tree(&trees, &request.source, "source")?;
     let mut destination = checked_tree(&trees, &request.destination, "destination")?;
@@ -183,6 +386,9 @@ pub fn check_cleanup(project: &Project, request: &MergeRequest) -> Result<()> {
 
 /// Remove a validated worktree, then its merged local branch. Never forces deletion.
 pub fn cleanup(project: &Project, request: &MergeRequest) -> Result<()> {
+    if cleanup_preview(project, request)?.restore {
+        return restore_original(project, request);
+    }
     check_cleanup(project, request)?;
     git::run(git::git(Path::new(&request.destination)).args([
         "worktree",
@@ -474,6 +680,105 @@ mod tests {
                 .unwrap()
                 .success()
         );
+    }
+
+    fn primary_request() -> (Fixture, MergeRequest) {
+        let f = Fixture::new();
+        let root = Path::new(&f.project.root);
+        git::run(git::git(root).args(["worktree", "remove", &f.request.source])).unwrap();
+        git::run(git::git(root).args(["checkout", "feature"])).unwrap();
+        fs::write(root.join("file.txt"), "feature change").unwrap();
+        git::run(git::git(root).args(["commit", "-qam", "feature change"])).unwrap();
+        let request = resolve_destination(&f.project, &f.project.root, "feature", "main").unwrap();
+        (f, request)
+    }
+
+    fn integrate(request: &MergeRequest) {
+        git::run(git::git(Path::new(&request.destination)).args([
+            "merge",
+            "--no-ff",
+            "-qm",
+            "merge feature",
+            &request.source_branch,
+        ]))
+        .unwrap();
+    }
+
+    #[test]
+    fn restoration_preserves_dirty_busy_unmerged_and_unowned_worktrees() {
+        let (f, request) = primary_request();
+        assert!(cleanup(&f.project, &request).is_err());
+        integrate(&request);
+        for path in [&request.source, &request.destination] {
+            let dirty = Path::new(path).join("untracked.txt");
+            fs::write(&dirty, "keep").unwrap();
+            assert!(cleanup(&f.project, &request).is_err());
+            assert!(Path::new(&request.destination).exists());
+            fs::remove_file(dirty).unwrap();
+            let dirs = git_dirs(Path::new(path)).unwrap();
+            let marker = dirs[0].join("CHERRY_PICK_HEAD");
+            fs::write(&marker, "busy").unwrap();
+            assert!(cleanup(&f.project, &request).is_err());
+            fs::remove_file(marker).unwrap();
+        }
+        fs::remove_file(
+            restoration_file(Path::new(&f.project.root), &request.destination).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            cleanup(&f.project, &request)
+                .unwrap_err()
+                .to_string()
+                .contains("ownership")
+        );
+        assert!(Path::new(&request.source).exists());
+        assert!(Path::new(&request.destination).exists());
+    }
+
+    #[test]
+    fn restoration_retries_after_removal_and_rejects_moved_refs() {
+        for move_ref in [false, true] {
+            let (f, request) = primary_request();
+            integrate(&request);
+            let root = Path::new(&f.project.root);
+            let mut record = restoration(root, &request).unwrap().unwrap();
+            record.heads = Some((
+                branch_head(root, "feature").unwrap(),
+                branch_head(root, "main").unwrap(),
+            ));
+            save_restoration(root, &record).unwrap();
+            git::run(git::git(root).args(["worktree", "remove", &request.destination])).unwrap();
+            assert_eq!(
+                outcome(&f.project, &request).unwrap(),
+                MergeOutcome::AlreadyIntegrated
+            );
+            if move_ref {
+                fs::write(root.join("file.txt"), "new change").unwrap();
+                git::run(git::git(root).args(["commit", "-qam", "changed feature"])).unwrap();
+                assert!(cleanup(&f.project, &request).is_err());
+            } else {
+                cleanup(&f.project, &request).unwrap();
+                assert_eq!(
+                    git::run(git::git(root).args(["branch", "--show-current"])).unwrap(),
+                    "main"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cleanup_returns_primary_feature_to_main() {
+        let (f, request) = primary_request();
+        let root = Path::new(&f.project.root);
+        integrate(&request);
+        cleanup(&f.project, &request).unwrap();
+        assert_eq!(
+            git::run(git::git(root).args(["branch", "--show-current"])).unwrap(),
+            "main"
+        );
+        assert!(!Path::new(&request.destination).exists());
+        assert!(!git::branches(root).unwrap().contains(&"feature".into()));
+        cleanup(&f.project, &request).unwrap();
     }
 
     #[test]

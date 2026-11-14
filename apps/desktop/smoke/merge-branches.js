@@ -23,6 +23,7 @@
   const smoke = await until('smoke hooks', () => window.__patchbaySmoke)
   if (new URLSearchParams(location.search).has('component')) return
   const state = () => smoke.store.getState()
+  const originalConfirm = window.confirm
   try {
     smoke.acceptOpened(await smoke.openProject())
     await smoke.resizeWindow(1440, 900)
@@ -219,12 +220,141 @@
       )
     }
     await smoke.terminalStop(record.id)
+    await smoke.reconcileSessions()
+    const cleanup = await until('restore original worktree offered', () =>
+      button('Return to main and delete feature branch'),
+    )
+    assert(!cleanup.disabled, 'restoration cleanup is disabled')
+    cleanup.click()
+    await until('original folder restored and generated worktree removed', async () => {
+      const after = await smoke.gitWorktrees(project.projectId)
+      return after.length === 1 && after[0].path === root && after[0].branch === 'main'
+    })
+    await until(
+      'generated task retired',
+      () => !state().tasks.some((t) => t.worktree === record.spec.cwd),
+    )
+    assert(state().activeTask === null, 'cleanup changed the active project')
+    smoke.selectPanel('worktree')
+    const branchButton = await until('source branch controls', () => button('Branches'))
+    branchButton.click()
+    const region = await until('source branch list', () => {
+      const el = document.querySelector('[aria-label="Source branches"]')
+      return el?.querySelector('option[value="unused"]') && el
+    })
+    const choose = (label, value) => {
+      const select = region.querySelector(`[aria-label="${label}"]`)
+      select.value = value
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+    const waitBranch = (branch) =>
+      until(`source on ${branch}`, async () => {
+        const current = (await smoke.gitWorktrees(project.projectId)).find((t) => t.current)
+        return (
+          current?.branch === branch &&
+          region.querySelector('code')?.textContent === branch &&
+          !region.querySelector('select').disabled
+        )
+      })
+    const shell = smoke.sessionId('@task', 'shell', null)
+    const agentTerminal = state().addRootTerminal({
+      id: 'branch-agent',
+      name: 'Branch agent',
+      command: 'cat',
+      kind: 'agent',
+    })
+    const agent = smoke.sessionId('@task', agentTerminal, null)
+    const startWriters = async () => {
+      await smoke.startTerminal('@task', 'shell', null)
+      await smoke.startTerminal('@task', agentTerminal, null)
+      await until(
+        'branch writers running',
+        async () =>
+          (await smoke.terminalSnapshot(shell))?.running &&
+          (await smoke.terminalSnapshot(agent))?.running,
+      )
+    }
+    await startWriters()
+    let approveStop = false
+    const prompts = []
+    window.confirm = (message) => {
+      prompts.push(message)
+      return approveStop
+    }
+    const footerSwitch = document.querySelector('.workspace-context [aria-label="Switch branch"]')
+    assert(footerSwitch, 'footer branch selector missing')
+    footerSwitch.click()
+    const unusedChoice = await until('footer unused branch choice', () =>
+      [...document.querySelectorAll('[role="menuitemradio"]')].find((el) =>
+        el.textContent.trim().startsWith('unused'),
+      ),
+    )
+    unusedChoice.click()
+    await until('stop confirmation cancelled', () => prompts.length === 1)
+    await waitBranch('main')
+    assert(
+      (await smoke.terminalSnapshot(shell))?.running &&
+        (await smoke.terminalSnapshot(agent))?.running,
+      'cancelling a branch switch stopped running work',
+    )
+    assert(prompts[0].includes('unused') && prompts[0].includes(root), 'wrong switch prompt')
+    approveStop = true
+    footerSwitch.click()
+    const retryChoice = await until('footer switch retry', () =>
+      [...document.querySelectorAll('[role="menuitemradio"]')].find((el) =>
+        el.textContent.trim().startsWith('unused'),
+      ),
+    )
+    retryChoice.click()
+    await waitBranch('unused')
+    assert(
+      !(await smoke.terminalSnapshot(shell))?.running &&
+        !(await smoke.terminalSnapshot(agent))?.running,
+      'confirmed footer switch left writers running',
+    )
+    const renameInput = region.querySelector('[aria-label="New source branch name"]')
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(
+      renameInput,
+      'finished',
+    )
+    renameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    button('Rename branch', region).click()
+    await waitBranch('finished')
+    await startWriters()
+    choose('Switch source branch', 'main')
+    button('Switch branch', region).click()
+    await waitBranch('main')
+    assert(prompts.length === 3, 'both branch controls must prompt for running writers')
+    assert(
+      !(await smoke.terminalSnapshot(shell))?.running &&
+        !(await smoke.terminalSnapshot(agent))?.running,
+      'confirmed source switch left writers running',
+    )
+    choose('Delete local branch', 'finished')
+    button('Delete branch', region).click()
+    const confirmDelete = await until('branch deletion confirmation', () =>
+      button('Confirm delete branch', region),
+    )
+    confirmDelete.click()
+    await until(
+      'unused local branch deleted',
+      () =>
+        !region.querySelector('option[value="finished"]') &&
+        !region.querySelector('select').disabled,
+    )
+    assert(
+      region.getBoundingClientRect().width <=
+        region.parentElement.getBoundingClientRect().width + 1,
+      'source branch panel overflows its worktree card',
+    )
     await smoke.report(
-      `PASS merge-branches-${chat ? 'chat' : 'review'}: primary feature source, local main destination creation, isolated agent launch, task refresh, source/chat preservation`,
+      `PASS merge-branches-${chat ? 'chat' : 'review'}: primary feature source, local main destination creation, isolated agent launch, task refresh, source/chat preservation, cleanup restoration, source branch switch/rename/delete, footer and source switches confirm stopping writers, cancellation preserves running work`,
     )
   } catch (error) {
     await smoke.report(
       `FAIL merge-branches: ${error?.message ?? error} ${error?.stack ?? ''}; message=${state().message}; step=${visible('.simple-step')?.textContent}; chat=${visible('.simple-chat')?.textContent.slice(-1600)}`,
     )
+  } finally {
+    window.confirm = originalConfirm
   }
 })()

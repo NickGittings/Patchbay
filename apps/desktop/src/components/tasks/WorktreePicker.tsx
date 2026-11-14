@@ -1,4 +1,5 @@
 import PanelSection from '../PanelSection'
+import SourceBranches from './SourceBranches'
 import Menu, { MenuItem } from '../Menu'
 import RailIcon from '../RailIcon'
 import {
@@ -339,6 +340,9 @@ function WorktreeRow({
           </Menu>
         )}
       </header>
+      {projectId && (task?.current || (!task && branch)) && (
+        <SourceBranches projectId={projectId} />
+      )}
       {task && rename && (
         <form
           className="row"

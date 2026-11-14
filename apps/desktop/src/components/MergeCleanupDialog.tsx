@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Dialog from './Dialog'
-import { useStore } from '../store'
+import { projectOf, useStore } from '../store'
+import { mergeCleanupPreview, type MergeCleanupPreview } from '../lib/ipc'
 import {
   cleanupJobs,
   deleteMergedWork,
@@ -12,6 +13,7 @@ import {
 /** Mounted once in the main window, independent of the selected project or view. */
 export default function MergeCleanupDialog() {
   const [job, setJob] = useState<CleanupJob>()
+  const [preview, setPreview] = useState<MergeCleanupPreview>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   useEffect(() => {
@@ -27,21 +29,43 @@ export default function MergeCleanupDialog() {
           if (disposed) break
           if (next.choice === 'ask') {
             setError(undefined)
+            setPreview(undefined)
+            const project = projectOf(next.projectId)
+            if (project) {
+              try {
+                setPreview(await mergeCleanupPreview(project, next.request))
+              } catch (e) {
+                setError(String(e))
+              }
+            }
             setJob(next)
             break
           }
+          if (next.choice === 'delete') {
+            try {
+              await deleteMergedWork(next)
+            } catch (e) {
+              // Leave a persisted prompt so partial cleanup can be retried after a reload.
+              useStore.setState((s) => ({
+                workspaceSettings: {
+                  ...s.workspaceSettings,
+                  mergeCleanupJobs: cleanupJobs().map((j) =>
+                    j.id === next.id ? { ...j, choice: 'ask' } : j,
+                  ),
+                },
+              }))
+              setError(String(e))
+              const project = projectOf(next.projectId)
+              setPreview(
+                project
+                  ? await mergeCleanupPreview(project, next.request).catch(() => undefined)
+                  : undefined,
+              )
+              setJob(next)
+              break
+            }
+          }
           handledCleanup(next.id)
-          if (next.choice === 'delete')
-            await deleteMergedWork(next).catch((e) =>
-              useStore
-                .getState()
-                .setMessage(
-                  `Merge completed. Cleanup failed: ${String(e)}`,
-                  undefined,
-                  undefined,
-                  'warning',
-                ),
-            )
         }
       } finally {
         checking = false
@@ -71,7 +95,7 @@ export default function MergeCleanupDialog() {
           </button>
           <button
             className="danger"
-            disabled={busy}
+            disabled={busy || !preview}
             onClick={() => {
               setBusy(true)
               setError(undefined)
@@ -84,7 +108,11 @@ export default function MergeCleanupDialog() {
                 .finally(() => setBusy(false))
             }}
           >
-            {busy ? 'Deleting…' : 'Delete worktree and branch'}
+            {busy
+              ? 'Cleaning up…'
+              : preview?.restore
+                ? `Return to ${job.request.destinationBranch} and delete feature branch`
+                : 'Delete worktree and branch'}
           </button>
         </>
       }
@@ -93,11 +121,19 @@ export default function MergeCleanupDialog() {
         Merged <code>{job.request.sourceBranch}</code> into{' '}
         <code>{job.request.destinationBranch}</code>.
       </p>
-      <p>Keep this worktree and branch, or delete them?</p>
       <p>
-        <code>{job.request.source}</code>
+        {preview?.restore
+          ? `Return the original folder to ${job.request.destinationBranch} and delete the merged feature branch?`
+          : 'Keep this worktree and branch, or delete them?'}
       </p>
-      <p>Deletion removes the local branch and worktree. Remote branches are kept.</p>
+      <p>
+        <code>{preview?.removedWorktree ?? job.request.source}</code>
+      </p>
+      <p>
+        {preview?.restore
+          ? 'Cleanup preserves the original project folder and removes the generated destination worktree. Affected terminals will stop. Remote branches are kept.'
+          : 'Deletion removes the local branch and worktree. Remote branches are kept.'}
+      </p>
       {error && <p role="alert">{error}</p>}
     </Dialog>
   )

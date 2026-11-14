@@ -1,6 +1,6 @@
 import { projectOf, useStore } from '../store'
 import type { MergeCleanup, MergeRequest, Project } from '../types'
-import { mergeCleanup, mergeOutcome } from './ipc'
+import { mergeCleanup, mergeCleanupPreview, mergeOutcome } from './ipc'
 import { autoRuns } from './autoState'
 import { reviewerBusy } from './review'
 import { sessionLive } from './sessionList'
@@ -77,7 +77,10 @@ export async function readyCleanup(job: CleanupJob) {
   if (!project) return false
   const record = s.sessionRecords.find((r) => r.id === job.sessionId)
   const session = s.sessions[job.sessionId]
-  if (!record && !session) return false
+  if (!record && !session) {
+    // A partial restoration may already have retired the destination's merge session.
+    return (await mergeCleanupPreview(project, job.request).catch(() => null))?.retry ?? false
+  }
   if (reviewerBusy(session, session?.running ?? (record ? sessionLive(record) : false)))
     return false
   if (job.auto) {

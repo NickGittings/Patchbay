@@ -1,4 +1,4 @@
-import RailIcon from './RailIcon'
+import FooterBranchPicker from './tasks/FooterBranchPicker'
 import { useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { ensureMainWorktree, useMainWorktree } from '../lib/mainWorktree'
@@ -127,16 +127,18 @@ export default function WorkspaceContext({ actions }: { actions: WorkspaceAction
         onClick={() => togglePanel('worktree')}
       >
         <span className="workspace-context-name">{name}</span>
-        {branch && (
-          <span className="workspace-context-branch" title={`Branch: ${branch}`}>
-            <RailIcon name="branch" />
-            <span>{branch}</span>
-          </span>
-        )}
         <span className="workspace-context-caret" aria-hidden="true">
           ▾
         </span>
       </button>
+      {(branch || main?.git) && (
+        <FooterBranchPicker
+          key={`${project.id}:${task?.id ?? ''}`}
+          projectId={project.id}
+          branch={branch}
+          worktree={task?.worktree}
+        />
+      )}
       {popup}
     </nav>
   )
