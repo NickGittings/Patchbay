@@ -25,6 +25,10 @@ pub enum BranchResult {
 
 /// Validate before asking to stop work, then stop only this worktree's writers on confirmation.
 /// Recheck Git and session state after stopping; retained terminal history is preserved.
+///
+/// # Errors
+/// Fails if checkout or branch validation fails, Git or session requests fail,
+/// sessions do not stop in time, or new writers start while existing ones stop.
 pub fn apply_with_sessions(
     root: &Path,
     expected_head: &str,
@@ -93,6 +97,10 @@ fn running_sessions(
 /// Change the open checkout or delete an integrated, unused local branch.
 /// The caller must stop concurrent writers before switching or renaming.
 /// Never forces a checkout, branch deletion, or rename.
+///
+/// # Errors
+/// Fails for stale checkout state, invalid or unavailable branches, active Git
+/// operations, unsafe switches or deletions, or Git errors.
 pub fn apply(
     root: &Path,
     expected_head: &str,

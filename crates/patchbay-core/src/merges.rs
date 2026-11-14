@@ -97,6 +97,23 @@ pub struct CleanupPreview {
     pub removed_worktree: String,
 }
 
+impl CleanupPreview {
+    /// Whether cleanup must stop a session in `cwd`. Registered nested worktrees
+    /// keep their sessions when the original checkout is restored.
+    #[must_use]
+    pub fn owns_session(&self, request: &MergeRequest, trees: &[Worktree], cwd: &Path) -> bool {
+        let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let removed = Path::new(&self.removed_worktree);
+        cwd.starts_with(removed)
+            || (self.restore
+                && trees
+                    .iter()
+                    .filter(|tree| cwd.starts_with(&tree.path))
+                    .max_by_key(|tree| Path::new(&tree.path).components().count())
+                    .is_some_and(|tree| tree.path == request.source))
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Restoration {
     source: String,
@@ -225,6 +242,10 @@ fn validate_restoration(
 }
 
 /// Validate and describe the cleanup using live repository state.
+///
+/// # Errors
+/// Fails for missing or changed worktrees, dirty or unmerged work, missing
+/// restoration ownership, changed branch heads, or Git and filesystem errors.
 pub fn cleanup_preview(project: &Project, request: &MergeRequest) -> Result<CleanupPreview> {
     let root = Path::new(&project.root);
     let trees = git::worktrees(root);
@@ -361,6 +382,10 @@ pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome
 }
 
 /// Validate cleanup immediately before stopping source sessions or removing files.
+///
+/// # Errors
+/// Fails for primary, open, missing, or changed source worktrees, unintegrated
+/// or dirty work, a source branch checked out elsewhere, or Git errors.
 pub fn check_cleanup(project: &Project, request: &MergeRequest) -> Result<()> {
     let trees = git::worktrees(Path::new(&project.root));
     let source = checked_tree(&trees, &request.source, "source")?;
@@ -385,6 +410,11 @@ pub fn check_cleanup(project: &Project, request: &MergeRequest) -> Result<()> {
 }
 
 /// Remove a validated worktree, then its merged local branch. Never forces deletion.
+///
+/// # Errors
+/// Fails when cleanup validation fails, ownership cannot be saved, or Git cannot
+/// remove the worktree, restore the original checkout, or delete the merged branch.
+/// Earlier cleanup steps may already have completed when a later step fails.
 pub fn cleanup(project: &Project, request: &MergeRequest) -> Result<()> {
     if cleanup_preview(project, request)?.restore {
         return restore_original(project, request);
@@ -779,6 +809,38 @@ mod tests {
         assert!(!Path::new(&request.destination).exists());
         assert!(!git::branches(root).unwrap().contains(&"feature".into()));
         cleanup(&f.project, &request).unwrap();
+    }
+
+    #[test]
+    fn restoration_sessions_exclude_nested_worktrees_and_include_missing_components() {
+        let (f, request) = primary_request();
+        let root = Path::new(&f.project.root);
+        let nested = root.join("independent");
+        git::run(git::git(root).args([
+            "worktree",
+            "add",
+            "-qb",
+            "independent",
+            nested.to_str().unwrap(),
+        ]))
+        .unwrap();
+        fs::write(root.join(".git/info/exclude"), "independent/\n").unwrap();
+        let component = root.join("component");
+        fs::create_dir(&component).unwrap();
+        let nested_component = nested.join("component");
+        fs::create_dir(&nested_component).unwrap();
+        integrate(&request);
+        let preview = cleanup_preview(&f.project, &request).unwrap();
+        let trees = git::worktrees(root);
+        assert!(preview.owns_session(&request, &trees, root));
+        assert!(preview.owns_session(&request, &trees, &component));
+        assert!(preview.owns_session(&request, &trees, Path::new(&request.destination)));
+        assert!(!preview.owns_session(&request, &trees, &nested));
+        assert!(!preview.owns_session(&request, &trees, &nested_component));
+        assert!(!preview.owns_session(&request, &trees, &f.dir.join("unrelated")));
+        // Retained sessions can refer to component directories that no longer exist.
+        assert!(preview.owns_session(&request, &trees, &component.join("gone")));
+        assert!(!preview.owns_session(&request, &trees, &nested_component.join("gone")));
     }
 
     #[test]

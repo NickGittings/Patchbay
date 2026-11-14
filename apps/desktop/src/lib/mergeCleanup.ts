@@ -7,6 +7,7 @@ import { sessionLive } from './sessionList'
 import { reconcileFreshSessions } from './sessions'
 import { refreshTasks } from './tasks'
 import { requestGitRefresh } from './git'
+import { refreshMainWorktree } from './mainWorktree'
 
 export interface CleanupJob {
   id: string
@@ -104,6 +105,7 @@ export async function deleteMergedWork(job: CleanupJob) {
     if (!project) throw new Error('Project is no longer open')
     await mergeCleanup(project, job.request)
   } finally {
+    refreshMainWorktree(job.projectId)
     await refreshTasks(job.projectId).catch(() => {})
     await reconcileFreshSessions().catch(() => {})
     await requestGitRefresh(job.projectId).catch(() => {})

@@ -2191,22 +2191,26 @@ async fn merge_cleanup(
     main_only(&window)?;
     let (root, scoped) = task_repo(&state, &project_id)?;
     let access = scoped.access.snapshot();
-    access.trust(&mut project).map_err(err)?;
-    let preview = patchbay_core::merges::cleanup_preview(&project, &request).map_err(err)?;
-    for scoped in state.projects.read().unwrap().values() {
-        if scoped.access.snapshot().root().is_some_and(|p| {
-            p.to_string_lossy() == preview.removed_worktree
-                || p.canonicalize()
-                    .is_ok_and(|p| p.to_string_lossy() == preview.removed_worktree)
-        }) {
-            return Err("The worktree to remove is open as a project".into());
-        }
-    }
+    let open_roots: Vec<_> = state
+        .projects
+        .read()
+        .unwrap()
+        .values()
+        .filter_map(|scoped| scoped.access.snapshot().root())
+        .collect();
     let bridge = state.service.clone();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
         project.root = root.to_string_lossy().into_owned();
         let preview = patchbay_core::merges::cleanup_preview(&project, &request).map_err(err)?;
+        if open_roots.iter().any(|path| {
+            path.to_string_lossy() == preview.removed_worktree
+                || path
+                    .canonicalize()
+                    .is_ok_and(|p| p.to_string_lossy() == preview.removed_worktree)
+        }) {
+            return Err("The worktree to remove is open as a project".into());
+        }
         stories::complete_merge(&root, Path::new(&request.source)).map_err(err)?;
         let task = tasks::list(&root)
             .map_err(err)?
@@ -2218,16 +2222,11 @@ async fn merge_cleanup(
         // Sessions can belong to a different project or have no task metadata.
         let records: Vec<patchbay_core::session::Record> =
             bridge.call(patchbay_core::session::Request::List)?;
-        let source = PathBuf::from(&request.source);
         let removed = PathBuf::from(&preview.removed_worktree);
+        let trees = git::worktrees(&root);
         let owned: Vec<_> = records
             .into_iter()
-            .filter(|r| {
-                r.spec.cwd.canonicalize().map_or_else(
-                    |_| r.spec.cwd.starts_with(&removed),
-                    |p| p.starts_with(&removed) || (preview.restore && p.starts_with(&source)),
-                )
-            })
+            .filter(|r| preview.owns_session(&request, &trees, &r.spec.cwd))
             .collect();
         for record in &owned {
             bridge.call::<serde_json::Value>(patchbay_core::session::Request::Stop {

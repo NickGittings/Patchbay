@@ -1,17 +1,25 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
-import { cleanupJobs, handledCleanup, readyCleanup, trackMergeCleanup } from './mergeCleanup'
-import { mergeCleanupPreview, mergeOutcome } from './ipc'
+import {
+  cleanupJobs,
+  deleteMergedWork,
+  handledCleanup,
+  readyCleanup,
+  trackMergeCleanup,
+} from './mergeCleanup'
+import { gitWorktrees, mergeCleanup, mergeCleanupPreview, mergeOutcome } from './ipc'
+import { forgetMainWorktree, refreshMainWorktree, useMainWorktree } from './mainWorktree'
 import type { Project } from '../types'
 
 vi.mock('./ipc', () => ({
   mergeOutcome: vi.fn(),
   mergeCleanup: vi.fn(),
   mergeCleanupPreview: vi.fn(),
+  gitWorktrees: vi.fn(),
 }))
-vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn() }))
-vi.mock('./tasks', () => ({ refreshTasks: vi.fn() }))
-vi.mock('./git', () => ({ requestGitRefresh: vi.fn() }))
+vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('./tasks', () => ({ refreshTasks: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('./git', () => ({ requestGitRefresh: vi.fn().mockResolvedValue(undefined) }))
 
 const project: Project = {
   schemaVersion: 4,
@@ -29,6 +37,8 @@ const request = {
   destinationBranch: 'main',
 }
 beforeEach(() => {
+  forgetMainWorktree('p')
+  vi.mocked(gitWorktrees).mockReset()
   useStore.setState(useStore.getInitialState())
   useStore.getState().loadProject(project)
   useStore.setState({ workspaceSettings: {}, sessions: {}, sessionRecords: [] })
@@ -37,6 +47,28 @@ beforeEach(() => {
     .mockResolvedValue({ restore: false, retry: false, removedWorktree: '/feature' })
   vi.mocked(mergeOutcome).mockReset().mockResolvedValue('merged')
 })
+
+test.each([false, true])(
+  'restoration refreshes the cached branch, including partial failure (%s)',
+  async (partialFailure) => {
+    const tree = (branch: string) => [
+      { path: project.root, branch, head: 'head', current: true, main: true },
+    ]
+    vi.mocked(gitWorktrees)
+      .mockResolvedValueOnce(tree('feature'))
+      .mockResolvedValueOnce(tree('main'))
+    refreshMainWorktree('p')
+    await vi.waitFor(() => expect(useMainWorktree.getState().p?.branch).toBe('feature'))
+    trackMergeCleanup(project, request, 'session', 'merge', 'ask', false)
+    const failure = new Error('Original folder restored; branch deletion failed')
+    if (partialFailure) vi.mocked(mergeCleanup).mockRejectedValueOnce(failure)
+    else vi.mocked(mergeCleanup).mockResolvedValueOnce(undefined)
+    const cleanup = deleteMergedWork(cleanupJobs()[0])
+    if (partialFailure) await expect(cleanup).rejects.toThrow(failure.message)
+    else await cleanup
+    await vi.waitFor(() => expect(useMainWorktree.getState().p?.branch).toBe('main'))
+  },
+)
 
 test('tracks cleanup independently of the visible view and remembers dismissal', () => {
   trackMergeCleanup(project, request, 'session', 'merge', 'ask', false)

@@ -235,6 +235,15 @@
       () => !state().tasks.some((t) => t.worktree === record.spec.cwd),
     )
     assert(state().activeTask === null, 'cleanup changed the active project')
+    await until(
+      'footer branch refreshed after restoration',
+      () =>
+        document
+          .querySelector(
+            '.workspace-context [aria-label="Switch branch"] .workspace-context-branch',
+          )
+          ?.textContent.trim() === 'main',
+    )
     smoke.selectPanel('worktree')
     const branchButton = await until('source branch controls', () => button('Branches'))
     branchButton.click()
