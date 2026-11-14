@@ -150,3 +150,27 @@ and adds a small notice. Team membership reconciles before delivery; pending use
 recovery/inbox delivery and a later ready prompt. Service-level submission reservations serialize pastes
 and prevent two clients from consuming the same ready prompt. Explicit pause/stop decisions survive
 recovery. Intentional agent switching and conversation clearing remain separate actions.
+
+### Finishing a task
+
+The Chat menu's **Finish task…** stops and archives the current project/worktree's
+agent cycle, preserving ordinary shell/task terminals and the checkout. It never merges,
+switches branches, or removes worktrees. **Reset agent conversation** retains the old
+provider-conversation reset behavior and handoff tooltip; it does not finish a task.
+
+`work_cycles.rs` persists the finish journal and task history under the machine-local
+`work-cycles/` directory. `Request::FinishCycle` (session protocol 28) records intent
+under the service launch lock, retires coordination under the shared orchestration file
+lock, confirms all owned agents stopped, captures artifacts and session references,
+then advances the cycle. Stop/archive errors retain the journal and active workspace
+for retry. The receipt reconciles a crash between completion and the UI workspace save.
+`orchestration::retire_cycle` preserves teams and provider runs before removing their
+active ownership. Agent-command scope locks serialize authenticated commands with
+cleanup; archived sessions cannot issue active task commands.
+
+`lib/workCycles.ts` owns IPC, receipt reconciliation and the fresh workspace reset;
+`TaskHistory` displays saved chat, plan/proposal/review artifacts, Auto/coordination
+records and retained session references. Late receipts and team polls cannot restore
+retired state. Archived sessions retain output and explicit Resume, with a current-files
+notice, and remain separate from automatic Chat/canvas recovery. Provider history must
+still exist to resume a native conversation. See [finish validation](../finish-task-validation.md).

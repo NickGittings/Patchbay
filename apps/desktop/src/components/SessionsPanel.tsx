@@ -100,6 +100,7 @@ function SessionList({
     ),
   )
   const [loadedTasks, setLoadedTasks] = useState<Record<string, Task[]>>({})
+  const [archivedResume, setArchivedResume] = useState<string>()
   // New records carry their own title. Only older records need a read-only Tauri lookup.
   const legacyIds = groups
     .filter(
@@ -133,6 +134,28 @@ function SessionList({
   }, [legacyIds])
   return (
     <>
+      {archivedResume && (
+        <section role="alertdialog" aria-label="Resume archived agent">
+          <p>
+            This archived agent runs against the worktree’s current files and stays separate from
+            the active task.
+          </p>
+          <button
+            disabled={busy || !connected}
+            onClick={() =>
+              void perform(async () => {
+                await sessionResume(archivedResume)
+                setArchivedResume(undefined)
+              })
+            }
+          >
+            Resume archived agent
+          </button>
+          <button disabled={busy} onClick={() => setArchivedResume(undefined)}>
+            Cancel
+          </button>
+        </section>
+      )}
       {!records.length && <p>No retained sessions.</p>}
       <div className="panel-section-head">
         {' '}
@@ -239,6 +262,7 @@ function SessionList({
                         <div className="session-row panel-list-row" key={r.id} title={r.spec.cwd}>
                           <div>
                             <SessionTitle metadata={r.metadata} />
+                            {r.archived && <small> · Finished task</small>}
                           </div>
                           <span
                             className={`status-dot health-${live ? 'running' : 'idle'}`}
@@ -259,7 +283,7 @@ function SessionList({
                             disabled={unavailable || starting}
                             onClick={() => void perform(() => onSelect(r, live))}
                           >
-                            {live ? 'Reconnect' : 'View output'}
+                            {live && !r.archived ? 'Reconnect' : 'View output'}
                           </button>
                           <Menu
                             label="⋯"
@@ -282,12 +306,16 @@ function SessionList({
                             {!live && r.metadata.adapter && (
                               <MenuItem
                                 disabled={unavailable}
-                                onClick={() => void perform(() => sessionResume(r.id))}
+                                onClick={() =>
+                                  r.archived
+                                    ? setArchivedResume(r.id)
+                                    : void perform(() => sessionResume(r.id))
+                                }
                               >
                                 Resume
                               </MenuItem>
                             )}
-                            {!live && (
+                            {!live && !r.archived && (
                               <MenuItem disabled={reopen.disabled} onClick={reopen.onClick}>
                                 {reopen.label}
                               </MenuItem>

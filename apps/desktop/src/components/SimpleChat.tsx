@@ -1,3 +1,5 @@
+import TaskHistory from './TaskHistory'
+import { finishTask, refreshTaskCycle } from '../lib/workCycles'
 import ChatCoordination from './ChatCoordination'
 import { useChatIdentity } from '../lib/chatIdentity'
 import { useChatTeams, resetLead, controlTeam } from '../lib/chatTeams'
@@ -78,6 +80,8 @@ export default function SimpleChat({
       sessionRecords: s.sessionRecords,
       sessions: s.sessions,
       simple: s.simple,
+      finishingTask: s.finishingTask,
+      workCycle: s.workCycle,
       auto: s.auto,
       devices: s.devices,
       agentRoles: s.agentRoles,
@@ -106,12 +110,20 @@ export default function SimpleChat({
   const setFailure = (text: string) => setFailureResult({ key, text })
   const [dialog, setDialog] = useState<'review' | 'merge'>()
   const [check, setCheck] = useState<{ key: string; paths: string[] }>()
+  const [finishKey, setFinishKey] = useState<string>()
+  const [historyKey, setHistoryKey] = useState<string>()
   const [clearKey, setClearKey] = useState<string>()
   if (clearKey !== undefined && clearKey !== key) setClearKey(undefined)
   const threadRef = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const projectId = s.project?.id ?? '',
     task = s.activeTask
+  useEffect(() => {
+    if (projectId)
+      void refreshTaskCycle(projectId, task).catch((e) =>
+        setFailureResult({ key, text: String(e) }),
+      )
+  }, [projectId, task, key])
   const snapshot = {
     records: s.sessionRecords,
     sessions: s.sessions,
@@ -410,6 +422,10 @@ export default function SimpleChat({
         <details className="chat-menu">
           <summary aria-label="Chat menu">•••</summary>
           <div className="chat-menu-items">
+            <button disabled={!!pending} onClick={() => setFinishKey(key)}>
+              Finish task…
+            </button>
+            <button onClick={() => setHistoryKey(key)}>Task history</button>
             {team && (
               <div>
                 <button
@@ -458,7 +474,7 @@ export default function SimpleChat({
                   })
                 }
               >
-                Clear conversation
+                Reset agent conversation
               </button>
             )}
             <button
@@ -479,6 +495,48 @@ export default function SimpleChat({
           ×
         </button>
       </header>
+      {historyKey === key && (
+        <TaskHistory
+          key={key}
+          projectId={projectId}
+          task={task}
+          close={() => setHistoryKey(undefined)}
+        />
+      )}
+      {(finishKey === key || s.finishingTask) && (
+        <div
+          className="simple-clear-confirm"
+          role="alertdialog"
+          aria-label="Finish task confirmation"
+        >
+          <p>
+            Finish this task? All agents in this worktree will stop. Their conversations, chat,
+            plan, and review results will remain available in task history. Shell terminals will
+            stay open.
+          </p>
+          <button
+            disabled={!!pending}
+            onClick={() =>
+              void run('finish', async () => {
+                await finishTask(projectId, task)
+                setFinishKey(undefined)
+              })
+            }
+          >
+            {s.finishingTask ? 'Retry Finish task' : 'Finish task'}
+          </button>
+          {!s.finishingTask && (
+            <button disabled={!!pending} onClick={() => setFinishKey(undefined)}>
+              Cancel
+            </button>
+          )}
+        </div>
+      )}
+      {!s.simple?.log.length && (
+        <p>
+          Ready for the next task. <button onClick={() => setHistoryKey(key)}>Task history</button>
+        </p>
+      )}
       {clearKey === key && (
         <div className="simple-clear-confirm" role="group" aria-label="Clear chat confirmation">
           <span>Clear this worktree’s chat history? Agents keep their context.</span>
@@ -728,6 +786,7 @@ export default function SimpleChat({
         </section>
       )}
       <SimpleComposer
+        key={`${key}:${s.workCycle ?? ''}`}
         scopeKey={key}
         stage={model.stage}
         records={model.records}

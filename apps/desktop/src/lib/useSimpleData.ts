@@ -48,7 +48,8 @@ export function useSimpleData(visible: boolean) {
   const task = useStore((s) => s.activeTask)
   const worktree = useStore(activeWorktree)
   const revision = useStore((s) => s.gitChanges)
-  const selectionKey = JSON.stringify([projectId, task, worktree])
+  const cycle = useStore((s) => s.workCycle)
+  const selectionKey = JSON.stringify([projectId, task, worktree, cycle])
   const [data, setData] = useState<Artifacts>()
   const sourceData = data?.selectionKey === selectionKey ? data : undefined
   const source = sourceData?.worktrees.find((w) => (worktree ? w.path === worktree : w.current))
@@ -101,6 +102,7 @@ export function useSimpleData(visible: boolean) {
             .reverse()
             .find(
               (r) =>
+                !r.archived &&
                 r.metadata.projectId === projectId &&
                 r.metadata.componentId === '@merge' &&
                 r.spec.merge_source === source,

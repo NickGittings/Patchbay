@@ -884,6 +884,7 @@ async fn plan_context(
 #[tauri::command]
 async fn plan_start(
     request_id: String,
+    work_cycle: Option<String>,
     auto: Option<context::AutoBrief>,
     resume: Option<bool>,
     fresh_conversation: Option<bool>,
@@ -1016,9 +1017,14 @@ async fn plan_start(
             agent_commands::inject(agent_server, &project_id, artifact_task, &mut spec);
         }
         let id = if fresh_conversation.unwrap_or(false) {
-            bridge.new_conversation(spec, metadata, request_id)?
+            bridge.new_conversation(cycle_spec(spec, work_cycle.clone()), metadata, request_id)?
         } else {
-            bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?
+            bridge.launch(
+                cycle_spec(spec, work_cycle),
+                metadata,
+                request_id,
+                resume.unwrap_or(false),
+            )?
         };
         Ok(id)
     })
@@ -1734,6 +1740,7 @@ fn save_device(device: DeviceManifest) -> CmdResult<String> {
 #[tauri::command]
 async fn terminal_start(
     request_id: String,
+    work_cycle: Option<String>,
     resume: Option<bool>,
     fresh_conversation: Option<bool>,
     project_id: String,
@@ -1800,9 +1807,14 @@ async fn terminal_start(
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
         let id = if fresh_conversation.unwrap_or(false) {
-            bridge.new_conversation(spec, metadata, request_id)?
+            bridge.new_conversation(cycle_spec(spec, work_cycle.clone()), metadata, request_id)?
         } else {
-            bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))?
+            bridge.launch(
+                cycle_spec(spec, work_cycle),
+                metadata,
+                request_id,
+                resume.unwrap_or(false),
+            )?
         };
         Ok(id)
     })
@@ -1814,6 +1826,7 @@ async fn terminal_start(
 #[tauri::command]
 async fn task_root_start(
     request_id: String,
+    work_cycle: Option<String>,
     purpose: Option<patchbay_core::pty::LaunchPurpose>,
     auto: Option<context::AutoBrief>,
     resume: Option<bool>,
@@ -1933,9 +1946,14 @@ async fn task_root_start(
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
         if fresh_conversation.unwrap_or(false) {
-            bridge.new_conversation(spec, metadata, request_id)
+            bridge.new_conversation(cycle_spec(spec, work_cycle.clone()), metadata, request_id)
         } else {
-            bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+            bridge.launch(
+                cycle_spec(spec, work_cycle),
+                metadata,
+                request_id,
+                resume.unwrap_or(false),
+            )
         }
     })
     .await
@@ -1979,6 +1997,7 @@ async fn merge_agent_start(
     request: patchbay_core::merges::MergeRequest,
     terminal: TerminalSpec,
     request_id: String,
+    work_cycle: Option<String>,
     auto: Option<context::AutoBrief>,
 ) -> CmdResult<String> {
     main_only(&window)?;
@@ -1991,13 +2010,14 @@ async fn merge_agent_start(
             patchbay_core::merges::prepare(&project, &request, &terminal, &AllowAll, auto.as_ref())
                 .map_err(err)?;
         let metadata = service::metadata(&project_id, &project, model::MERGE_SCOPE, &job.terminal);
-        bridge.start(job.spec, metadata, request_id)
+        bridge.start(cycle_spec(job.spec, work_cycle), metadata, request_id)
     })
     .await
 }
 
 /// Launch the agent that proposes dependencies between the map's components,
 /// at the project root. `terminal` is the chosen agent preset.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn map_agent_start(
     window: WebviewWindow,
@@ -2006,6 +2026,7 @@ async fn map_agent_start(
     project: Project,
     terminal: TerminalSpec,
     request_id: String,
+    work_cycle: Option<String>,
     resume: Option<bool>,
 ) -> CmdResult<String> {
     main_only(&window)?;
@@ -2021,7 +2042,12 @@ async fn map_agent_start(
         // The preset, so a restart launches the same agent.
         metadata.lane = Some(terminal.id);
         agent_commands::inject(agent_server, &project_id, None, &mut spec);
-        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+        bridge.launch(
+            cycle_spec(spec, work_cycle),
+            metadata,
+            request_id,
+            resume.unwrap_or(false),
+        )
     })
     .await
 }
@@ -2037,6 +2063,7 @@ async fn stack_agent_start(
     project: Project,
     terminal: TerminalSpec,
     request_id: String,
+    work_cycle: Option<String>,
     resume: Option<bool>,
     mut stack_id: Option<String>,
     new_detection: Option<bool>,
@@ -2070,7 +2097,12 @@ async fn stack_agent_start(
         // The preset, so a restart launches the same agent.
         metadata.lane = Some(terminal.id);
         agent_commands::inject(agent_server, &project_id, None, &mut spec);
-        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+        bridge.launch(
+            cycle_spec(spec, work_cycle),
+            metadata,
+            request_id,
+            resume.unwrap_or(false),
+        )
     })
     .await
 }
@@ -2084,6 +2116,7 @@ async fn validation_agent_start(
     project: Project,
     terminal: TerminalSpec,
     request_id: String,
+    work_cycle: Option<String>,
     resume: Option<bool>,
     mut component_ids: Vec<String>,
 ) -> CmdResult<String> {
@@ -2117,7 +2150,12 @@ async fn validation_agent_start(
         // The preset, so a restart launches the same agent.
         metadata.lane = Some(terminal.id);
         agent_commands::inject(agent_server, &project_id, None, &mut spec);
-        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
+        bridge.launch(
+            cycle_spec(spec, work_cycle),
+            metadata,
+            request_id,
+            resume.unwrap_or(false),
+        )
     })
     .await
 }
@@ -2269,6 +2307,7 @@ async fn review_agent_start(
     request: patchbay_core::reviews::ReviewRequest,
     terminal: TerminalSpec,
     request_id: String,
+    work_cycle: Option<String>,
     auto: Option<context::AutoBrief>,
 ) -> CmdResult<String> {
     main_only(&window)?;
@@ -2296,7 +2335,7 @@ async fn review_agent_start(
                 service::metadata(&project_id, &project, model::REVIEW_SCOPE, &job.terminal);
             metadata.branch = Some(request.branch);
             metadata.lane = request.lane.filter(|lane| !lane.is_empty());
-            bridge.start_reporting(job.spec, metadata, request_id)
+            bridge.start_reporting(cycle_spec(job.spec, work_cycle), metadata, request_id)
         })
     })
     .await
@@ -2660,7 +2699,12 @@ async fn session_resume(
             )
             .map_err(err)?
         } else {
-            match &record.metadata.task {
+            match record
+                .metadata
+                .task
+                .as_deref()
+                .and_then(|task| patchbay_core::planning::checkout_task(Some(task)))
+            {
                 Some(task) => {
                     let root = root.as_deref().ok_or("No project is open")?;
                     let worktree = tasks::stored(root, task).map_err(err)?.worktree;
@@ -2677,7 +2721,8 @@ async fn session_resume(
             extensions.get().allowed(extension_id, None).map_err(err)?;
         }
         // Interactive reviewers may update their attempt; Codex follow-ups retain saved findings.
-        if record.metadata.component_id == model::REVIEW_SCOPE
+        if !record.archived
+            && record.metadata.component_id == model::REVIEW_SCOPE
             && let Some(attempt) =
                 patchbay_core::reviews::resume_attempt(
                     root.as_deref().ok_or("No project is open")?,
@@ -3178,6 +3223,8 @@ pub fn run() {
                 window_panels,
                 workspace_load,
                 workspace_save,
+                task_cycle_state,
+                task_cycle_finish,
                 project_relink,
                 graph_action_plan,
                 graph_action_run,
@@ -4141,4 +4188,59 @@ mod window_label_tests {
             "component-5b-22-70-22-2c-22-61-5c-22-2f-fc-1f600-22-5d"
         );
     }
+}
+
+fn cycle_spec(
+    mut spec: patchbay_core::pty::SessionSpec,
+    cycle: Option<String>,
+) -> patchbay_core::pty::SessionSpec {
+    spec.env.insert(
+        patchbay_core::work_cycles::CYCLE_ENV.into(),
+        cycle.unwrap_or_default(),
+    );
+    spec
+}
+
+#[tauri::command]
+async fn task_cycle_state(
+    window: WebviewWindow,
+    project_id: String,
+    task: Option<String>,
+    state: State<'_, AppState>,
+) -> CmdResult<patchbay_core::work_cycles::CycleState> {
+    main_only(&window)?;
+    task_repo(&state, &project_id)?;
+    blocking(move || patchbay_core::work_cycles::read(&project_id, task.as_deref()).map_err(err))
+        .await
+}
+
+#[tauri::command]
+async fn task_cycle_finish(
+    window: WebviewWindow,
+    project_id: String,
+    task: Option<String>,
+    cycle: String,
+    workspace: serde_json::Value,
+    state: State<'_, AppState>,
+) -> CmdResult<patchbay_core::work_cycles::CycleState> {
+    main_only(&window)?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    let bridge = state.service.clone();
+    blocking(move || {
+        let target = match &task {
+            Some(id) => PathBuf::from(patchbay_core::tasks::find(&root, id).map_err(err)?.worktree),
+            None => patchbay_core::git::repo_root(&root).unwrap_or_else(|| root.clone()),
+        };
+        bridge.call(Request::FinishCycle {
+            scope: patchbay_core::work_cycles::Scope {
+                project_id,
+                task,
+                root,
+                target,
+            },
+            cycle,
+            workspace,
+        })
+    })
+    .await
 }

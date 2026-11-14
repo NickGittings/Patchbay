@@ -424,7 +424,11 @@ export function relatedSession(
   generation = record.snapshot?.generation,
   simple?: SimpleState | null,
 ) {
-  if (record.metadata.projectId !== worktree.projectId || record.metadata.kind !== 'agent')
+  if (
+    record.archived ||
+    record.metadata.projectId !== worktree.projectId ||
+    record.metadata.kind !== 'agent'
+  )
     return false
   if (record.metadata.componentId === '@map')
     return agentChatTask(record, generation) === worktree.task

@@ -62,6 +62,11 @@ export function claimAgentChat(
 export function selectChatAgent(projectId: string, task: string | null, sessionId: string) {
   const state = projectStateOf(projectId)
   if (!state) throw new Error('The project was closed. Open it before choosing an agent.')
+  if (
+    workspaceOf(state, task).finishingTask ||
+    useStore.getState().sessionRecords.some((r) => r.id === sessionId && r.archived)
+  )
+    return
   const simple = workspaceOf(state, task).simple ?? { startedMs: Date.now(), log: [] }
   useStore.getState().patchTask(projectId, task, {
     simple: { ...simple, selectedAgent: sessionId },

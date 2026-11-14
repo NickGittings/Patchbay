@@ -36,3 +36,18 @@ Additional topic interfaces belong to this same mirror contract:
 - `service_retire` ↔ `lib/ipc.ts::serviceRetire`; preserve the service's `Hello` / `Shutdown` retirement wire format. See [data flow](data-flow.md).
 
 Changing a model field or command means updating both sides.
+
+- `work_cycles::{CycleState, Archive, SessionReference, Artifact}` ↔
+  `lib/workCycles.ts::{TaskCycleState, FinishedTask}` and their inline session/artifact
+  records; `task_cycle_state` / `task_cycle_finish` ↔ `refreshTaskCycle` / `finishTask`.
+  `TaskWorkspace.workCycle` / `finishingTask` are saved layout fields.
+  `session::Record.{archived, work_cycle}` ↔ `SessionRecord.{archived, workCycle}`;
+  `chat::Team.work_cycle` ↔ `ChatTeam.workCycle` (missing defaults to the initial cycle).
+  `work_cycles::session_id` qualifies an agent terminal key with U+001E followed by
+  `cycle:<cycle-id>` before task scoping and hashing; `types.ts::sessionId` mirrors it.
+  Empty initial cycles and shell identities preserve the previous hash byte for byte.
+  The cycled hash is pinned in Rust `work_cycles` tests and `lib/workCycles.test.ts`.
+  Launch IPC captures the expected cycle before authentication/extension awaits;
+  the service checks it under its launch lock. Explicit archived resumes preserve
+  their recorded identity. Component task broadcasts also carry the active cycle and
+  finish flag so pop-outs follow the same identity boundary.

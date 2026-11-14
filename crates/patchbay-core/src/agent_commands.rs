@@ -306,6 +306,9 @@ fn planner_root(
 /// # Errors
 /// Fails for unavailable projects, invalid actions or service errors.
 pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Result<Value> {
+    let cycle_lock = crate::work_cycles::command_lock(&launch.project_id, launch.task.as_deref())?;
+    cycle_lock.lock()?;
+    crate::work_cycles::ensure_available(&launch.project_id, launch.task.as_deref())?;
     let state = app;
     let scoped = state.project(&launch.project_id)?;
     anyhow::ensure!(

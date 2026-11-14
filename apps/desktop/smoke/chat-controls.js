@@ -234,8 +234,58 @@
     state().setView('navigation')
     state().setSimpleMode(true)
     await until('chat restored to Navigation', () => document.querySelector('.simple-chat'))
+    // Finishing is user initiated and keeps a shell in the same worktree alive.
+    await smoke.startTerminal('@task', 'shell', null, projectId)
+    const shell = smoke.sessionId('@task', 'shell', null, projectId)
+    await until('shell before finish', async () => {
+      await smoke.reconcileSessions()
+      return state().sessions[shell]?.running
+    })
+    state().patchTask(projectId, null, {
+      simple: {
+        startedMs: Date.now(),
+        log: [
+          {
+            id: 'finish-smoke-request',
+            kind: 'prompt',
+            stage: 'build',
+            atMs: Date.now(),
+            text: 'Finish smoke task',
+            mentions: [],
+          },
+        ],
+      },
+    })
+    click(button('Finish task…'))
+    await until('finish confirmation', () =>
+      document.querySelector('[aria-label="Finish task confirmation"]'),
+    )
+    assert(
+      document
+        .querySelector('[aria-label="Finish task confirmation"]')
+        .textContent.includes('Shell terminals will stay open'),
+      'finish did not explain shell preservation',
+    )
+    click(button('Finish task', document.querySelector('[aria-label="Finish task confirmation"]')))
+    await until(
+      'fresh chat after finish',
+      () => state().workCycle && !state().finishingTask && !state().simple?.log.length,
+    )
+    assert(state().sessions[shell]?.running, 'finish stopped the shell')
+    click(button('Task history'))
+    await until('history dialog', () => document.querySelector('[aria-label="Task history"]'))
+    click(
+      button('Finish smoke task', document.querySelector('[aria-label="Task history"]')) ||
+        document.querySelector('.task-history-item'),
+    )
+    await until('saved chat in history', () =>
+      document.querySelector('.task-history')?.textContent.includes('Finish smoke task'),
+    )
+    click(button('Close', document.querySelector('[aria-label="Task history"]')))
+    assert(!state().simple?.selectedAgent, 'finish retained the old chat recipient')
+    await smoke.terminalStop(shell)
     await smoke.report(
-      'PASS chat controls: resize/hide/show, remembered widths, Inspector isolation, minimum width, Chat entry and project tabs from every Full view',
+      'PASS chat controls: finish task confirmation, empty Chat and persisted task history with a live shell, resize/hide/show, remembered widths, Inspector isolation, minimum width, Chat entry and project tabs from every Full view',
     )
   } catch (e) {
     await smoke.report(

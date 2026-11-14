@@ -161,6 +161,7 @@ export function attentionItems(s: Snapshot, now = Date.now()): AttentionItem[] {
     ]),
     // Review and merge jobs are recovered from records, never registered as component runtimes.
     ...(s.sessionRecords ?? [])
+      .filter((r) => !r.archived)
       .filter(
         (r) =>
           r.metadata.projectId === useStore.getState().project?.id &&

@@ -47,6 +47,7 @@ test('taskRootStart sends each kickoff field in its backend location only', asyn
   for (const [kickoff, wireKickoff, reviewSession] of cases) {
     await taskRootStart(project, [], terminal, undefined, 'request', kickoff)
     expect(invoke).toHaveBeenLastCalledWith('task_root_start', {
+      workCycle: '',
       projectId: 'p',
       project,
       componentIds: [],

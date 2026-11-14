@@ -63,6 +63,8 @@ export function workspaceDocument(): WorkspaceDocument {
         draft: p.conflict ?? (state?.dirty && state.project ? projectFromState(state) : null),
         layout: state
           ? {
+              workCycle: state.workCycle,
+              finishingTask: state.finishingTask,
               selectedId: state.selectedId,
               selectedEdgeId: state.selectedEdgeId,
               activeSession: state.activeSession,
@@ -121,6 +123,8 @@ export function restoredLayout(
   nested = false,
 ): Partial<ProjectState> {
   const out: Partial<ProjectState> = {}
+  out.workCycle = typeof layout.workCycle === 'string' ? layout.workCycle : undefined
+  out.finishingTask = layout.finishingTask === true
   out.auto = restoredAuto(layout.auto)
   out.simple = restoredSimple(layout.simple)
   out.planStory = typeof layout.planStory === 'string' ? layout.planStory : null
@@ -371,6 +375,8 @@ export function initializeWorkspace() {
       }
       if (document.activeProject && useStore.getState().projects[document.activeProject])
         useStore.getState().activateProject(document.activeProject)
+      const { restoreTaskCycles } = await import('./workCycles')
+      await restoreTaskCycles()
       // The service may still be starting; the periodic reconcile catches up later.
       await reconcileSessions().catch(() => {})
       useStore.setState({ restoring: false })
@@ -403,6 +409,8 @@ export function initializeWorkspace() {
           s.view === prev.view &&
           s.simpleMode === prev.simpleMode &&
           s.simple === prev.simple &&
+          s.workCycle === prev.workCycle &&
+          s.finishingTask === prev.finishingTask &&
           s.highlighted === prev.highlighted &&
           s.implementationComponents === prev.implementationComponents &&
           s.planActive === prev.planActive &&

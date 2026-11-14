@@ -1,3 +1,4 @@
+import { finishTask, refreshTaskCycle, useTaskCycles } from './workCycles'
 import { useChatTeams, refreshChatTeams } from './chatTeams'
 import { useSimpleUi, simpleKey } from './simpleUi'
 import { startTaskAgent } from './implement'
@@ -253,6 +254,9 @@ const hooks = {
       invoke<import('../types').OpenedProject>('open_project', { second: true }),
     ),
   store: useStore,
+  finishTask,
+  refreshTaskCycle,
+  taskCycles: useTaskCycles,
   runGraphAction,
   stopGroup,
   graphActionPlan,

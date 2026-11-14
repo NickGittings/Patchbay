@@ -4,9 +4,13 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import TerminalControl from './TerminalControl'
 import type { SessionState } from '../types'
 
-const state = vi.hoisted(() => ({ connected: true }))
+const state = vi.hoisted(() => ({ connected: true, archived: false }))
 vi.mock('../store', () => {
-  const getState = () => ({ serviceConnected: state.connected, project: undefined })
+  const getState = () => ({
+    serviceConnected: state.connected,
+    project: undefined,
+    sessionRecords: [{ id: 'session', archived: state.archived }],
+  })
   return {
     useStore: Object.assign(
       (select: (s: ReturnType<typeof getState>) => unknown) => select(getState()),
@@ -23,6 +27,7 @@ vi.mock('../lib/sessions', () => ({
 
 beforeEach(() => {
   state.connected = true
+  state.archived = false
 })
 const render = (componentId = 'web', session?: SessionState, kind: 'agent' | 'task' = 'agent') =>
   renderToStaticMarkup(
@@ -76,4 +81,13 @@ test('context renders unavailable explicitly and preserves fractional percentage
   session.status!.context!.compaction = 'idle'
   session.status!.context!.lastCompactionMs = 900
   expect(render('web', session)).toContain('Last compacted')
+})
+
+test('archived output cannot start or reset an agent in the active task', () => {
+  state.archived = true
+  const ended = render('web', { running: false })
+  expect(ended).not.toContain('New conversation')
+  expect(ended).not.toContain('Restart')
+  expect(ended).not.toContain('Start')
+  expect(render('web', { running: true })).toContain('Stop')
 })

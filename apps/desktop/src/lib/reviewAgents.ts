@@ -82,6 +82,7 @@ function jobRunning(
 ) {
   return records.some(
     (r) =>
+      !r.archived &&
       r.metadata.componentId === scope &&
       r.spec.cwd === cwd &&
       (sessions[r.id]?.running ?? sessionLive(r)),
@@ -115,6 +116,7 @@ export const reviewWorktreeBusy = (
 ) =>
   records.some(
     (r) =>
+      !r.archived &&
       r.metadata.componentId === REVIEW_SCOPE &&
       r.spec.cwd === worktree &&
       reviewerBusy(sessions[r.id], sessions[r.id]?.running ?? sessionLive(r)),
@@ -135,6 +137,7 @@ export const runningReviewLanes = (
     .filter(
       (r) =>
         r.metadata.projectId === projectId &&
+        !r.archived &&
         r.metadata.componentId === REVIEW_SCOPE &&
         !!branch &&
         r.metadata.branch === branch &&
@@ -166,8 +169,8 @@ export function currentReviewAgentRecord(
   selected: string | undefined,
 ) {
   return (
-    records.find((r) => r.id === selected) ??
-    records.find((r) => sessions[r.id]?.running ?? sessionLive(r))
+    records.find((r) => !r.archived && r.id === selected) ??
+    records.find((r) => !r.archived && (sessions[r.id]?.running ?? sessionLive(r)))
   )
 }
 

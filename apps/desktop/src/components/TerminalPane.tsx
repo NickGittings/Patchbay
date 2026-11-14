@@ -31,6 +31,7 @@ export default function TerminalPane({
   /** Show this exact session (e.g. from the Sessions panel) instead of deriving its id. */
   existingSessionId?: string
 }) {
+  useStore((s) => s.workCycle)
   const activeTask = useStore((s) => s.activeTask)
   const task = taskProp === undefined ? activeTask : taskProp
   const sid = existingSessionId ?? sessionId(componentId, terminal.id, task)

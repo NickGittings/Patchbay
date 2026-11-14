@@ -37,7 +37,7 @@ pub use briefing::with_pending_briefing;
 // Protocol 25 applies chat startup to retained legacy leads on resume and recovery.
 // Protocol 26 serializes branch mutations with terminal launches.
 // Protocol 27 serializes merge cleanup and restoration with terminal launches.
-pub const PROTOCOL: u32 = 27;
+pub const PROTOCOL: u32 = 28;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -272,6 +272,10 @@ pub struct Metadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Record {
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub work_cycle: Option<String>,
     pub id: String,
     pub metadata: Metadata,
     pub spec: SessionSpec,
@@ -322,6 +326,7 @@ pub struct PlannerScanOptions {
 enum StartMode {
     Normal,
     Managed,
+    ExplicitResume,
     NewConversation { generation: Option<u64> },
 }
 impl StartMode {
@@ -334,6 +339,11 @@ impl StartMode {
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum Request {
     List,
+    FinishCycle {
+        scope: crate::work_cycles::Scope,
+        cycle: String,
+        workspace: serde_json::Value,
+    },
     /// Recheck writers and change Git while holding the service launch lock.
     BranchApply {
         root: PathBuf,
@@ -669,6 +679,7 @@ impl Client {
             // Validators and readiness gates take as long as they take.
             Request::ActionRun { .. } => None,
             Request::Start { .. }
+            | Request::FinishCycle { .. }
             | Request::BranchApply { .. }
             | Request::MergeCleanup { .. }
             | Request::Restart { .. }
@@ -1092,6 +1103,8 @@ impl Service {
                 spec.resume_command = None;
                 spec.command.clone_from(&r.metadata.command);
                 Record {
+                    archived: r.archived || crate::work_cycles::archived(r),
+                    work_cycle: r.spec.env.get(crate::work_cycles::CYCLE_ENV).cloned(),
                     id: r.id.clone(),
                     metadata: r.metadata.clone(),
                     spec,
@@ -1333,12 +1346,7 @@ impl Service {
         restart_context: Option<String>,
     ) -> Result<String> {
         anyhow::ensure!(!request.is_empty(), "Launch request ID required");
-        let id = crate::model::task_session_id(
-            &metadata.project_id,
-            &metadata.component_id,
-            &metadata.terminal_id,
-            metadata.task.as_deref(),
-        );
+        let id = crate::work_cycles::session_id(&metadata, &spec);
         spec.id.clone_from(&id);
         if let Some(adapter) = metadata.adapter {
             spec.env.insert(
@@ -1351,6 +1359,7 @@ impl Service {
             );
         }
         let _operation = self.operation.lock().unwrap();
+        crate::work_cycles::check_launch(&metadata, &spec, mode == StartMode::ExplicitResume)?;
         anyhow::ensure!(
             !self.stopping.load(Ordering::Acquire),
             "Sessions are stopping; retry after they finish"
@@ -1467,6 +1476,8 @@ impl Service {
         records.insert(
             id.clone(),
             Record {
+                archived: false,
+                work_cycle: spec.env.get(crate::work_cycles::CYCLE_ENV).cloned(),
                 id: id.clone(),
                 metadata,
                 spec: spec.clone(),
@@ -1601,12 +1612,7 @@ impl Service {
         spec: SessionSpec,
     ) -> Result<String> {
         let _pending = briefing::PendingBriefing::new(&spec);
-        let id = crate::model::task_session_id(
-            &metadata.project_id,
-            &metadata.component_id,
-            &metadata.terminal_id,
-            metadata.task.as_deref(),
-        );
+        let id = crate::work_cycles::session_id(&metadata, &spec);
         // Read only what Restart needs; records also carry earlier runs' output.
         let known = self.records.lock().unwrap().get(&id).map(|r| {
             (
@@ -1738,7 +1744,7 @@ impl Service {
             metadata,
             spec,
             Some(original),
-            StartMode::Normal,
+            StartMode::ExplicitResume,
             restart_context,
         )
     }
@@ -1752,6 +1758,9 @@ impl Service {
         force: bool,
     ) -> Result<()> {
         let _operation = self.operation.lock().unwrap();
+        if let Some(record) = self.records.lock().unwrap().get(&id) {
+            crate::work_cycles::check_launch(&record.metadata, &record.spec, true)?;
+        }
         // Force accepts a confirmed working turn as well as a ready prompt; authority,
         // generation and the absence of a pending approval gate both writes.
         let check = |reserved: bool| -> Result<()> {
@@ -1823,6 +1832,75 @@ impl Service {
     }
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
+            Request::FinishCycle {
+                scope,
+                cycle,
+                workspace,
+            } => {
+                let finish_lock = crate::work_cycles::finish_lock(&scope)?;
+                finish_lock.lock()?;
+                let state = {
+                    let _operation = self.operation.lock().unwrap();
+                    crate::work_cycles::begin(&scope, &cycle, workspace)?
+                };
+                if state.history.iter().any(|a| a.cycle == cycle) {
+                    return Ok(serde_json::to_value(state)?);
+                }
+                let command_lock =
+                    crate::work_cycles::command_lock(&scope.project_id, scope.task.as_deref())?;
+                command_lock.lock()?;
+                // Coordination may hold its own lock while awaiting a launch, so never
+                // hold operation while retiring it. The persisted marker rejects new starts.
+                crate::orchestration::retire_cycle(&scope)?;
+                let _operation = self.operation.lock().unwrap();
+                let records = self.list();
+                let ids: Vec<_> = records
+                    .iter()
+                    .filter(|r| crate::work_cycles::belongs(r, &scope))
+                    .map(|r| r.id.clone())
+                    .collect();
+                // Assign legacy delegated workers to their original cycle before cleanup.
+                // Their process identity stays intact; future resumes retain this ownership.
+                for r in self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .values_mut()
+                    .filter(|r| ids.contains(&r.id))
+                {
+                    if !crate::work_cycles::archived(r) {
+                        r.spec
+                            .env
+                            .entry(crate::work_cycles::TASK_ENV.into())
+                            .or_insert_with(|| scope.task.clone().unwrap_or_default());
+                        r.spec
+                            .env
+                            .entry(crate::work_cycles::CYCLE_ENV.into())
+                            .or_insert_with(|| cycle.clone());
+                    }
+                }
+                let runs = self.pty.begin_stop(|id| ids.iter().any(|i| i == id));
+                self.pty.finish_stop_all(&runs)?;
+                self.dirty.store(true, Ordering::Release);
+                self.persist()?;
+                let completed = crate::work_cycles::complete(&scope, &self.list())?;
+                let ids: std::collections::HashSet<_> = completed
+                    .history
+                    .iter()
+                    .flat_map(|a| a.sessions.iter().map(|r| r.id.as_str()))
+                    .collect();
+                for record in self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .values_mut()
+                    .filter(|r| ids.contains(r.id.as_str()))
+                {
+                    record.archived = true;
+                }
+                self.persist()?;
+                serde_json::to_value(completed)?
+            }
             Request::List => serde_json::to_value(self.summaries())?,
             Request::BranchApply {
                 root,
@@ -1894,6 +1972,8 @@ impl Service {
                     .find(|r| {
                         !token.is_empty()
                             && r.spec.env.get(crate::agent_bridge::TOKEN_ENV) == Some(&token)
+                            && !crate::work_cycles::archived(r)
+                            && crate::work_cycles::check_launch(&r.metadata, &r.spec, false).is_ok()
                     })
                     .and_then(|r| {
                         let snapshot = self.pty.snapshot_with(&r.id, 0)?;
@@ -2793,6 +2873,163 @@ fn serve_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn finish_cycle_stops_every_role_preserves_shells_and_isolates_worktrees() {
+        use crate::work_cycles::{self, Scope};
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let root = dir.join("repo");
+        let other_tree = dir.join("other");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&other_tree).unwrap();
+        crate::git::run(crate::git::git(&root).args(["init", "-q"])).unwrap();
+        let service = Service::load(&dir.join("service")).unwrap();
+        let project = uuid::Uuid::new_v4().to_string();
+        let launch = |role: &str, kind: &str, task: Option<&str>, project: &str| {
+            let cwd = if task.is_some() { &other_tree } else { &root };
+            let metadata: Metadata = serde_json::from_value(serde_json::json!({
+                "projectId":project, "projectName":"P", "projectRoot":root,
+                "componentId":role, "terminalId":role, "task":task, "name":role, "kind":kind,
+                "conversationId":"saved-provider-id"
+            }))
+            .unwrap();
+            let spec: SessionSpec = serde_json::from_value(serde_json::json!({
+                "id":"pending", "rerun_on_resume":true, "command":"sleep 30", "cwd":cwd, "env":{}, "ready_when":"", "service":false, "dirs":[]
+            })).unwrap();
+            let id = service
+                .start(
+                    uuid::Uuid::new_v4().to_string(),
+                    metadata.clone(),
+                    spec.clone(),
+                )
+                .unwrap();
+            (id, metadata, spec)
+        };
+        let roles = [
+            "@task",
+            "@worker",
+            "@coordinator",
+            "@scan",
+            "@plan",
+            "@review",
+            "@merge",
+            "web",
+        ];
+        let agents: Vec<_> = roles
+            .iter()
+            .map(|role| launch(role, "agent", None, &project))
+            .collect();
+        let shell = launch("shell", "shell", None, &project).0;
+        let separate = launch("worker", "agent", Some("other"), &project).0;
+        let foreign = launch("foreign", "agent", None, "another-project").0;
+        let scope = Scope {
+            project_id: project.clone(),
+            task: None,
+            root: root.clone(),
+            target: root.clone(),
+        };
+        let request = || Request::FinishCycle {
+            scope: scope.clone(),
+            cycle: String::new(),
+            workspace: serde_json::json!({ "simple": { "log": [{ "kind":"prompt", "text":"A task" }] } }),
+        };
+        let in_flight = work_cycles::command_lock(&project, None).unwrap();
+        in_flight.lock().unwrap();
+        let first = service.clone();
+        let first_request = request();
+        let thread = std::thread::spawn(move || first.handle("test", first_request).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while work_cycles::read(&project, None)
+            .unwrap()
+            .finishing
+            .is_none()
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            service
+                .start(
+                    "in-flight-old-launch".into(),
+                    agents[0].1.clone(),
+                    agents[0].2.clone()
+                )
+                .is_err()
+        );
+        let second_service = service.clone();
+        let second_request = request();
+        let second_thread =
+            std::thread::spawn(move || second_service.handle("test", second_request).unwrap());
+        drop(in_flight);
+        let second = second_thread.join().unwrap();
+        assert_eq!(thread.join().unwrap()["cycle"], second["cycle"]);
+        for (id, _, _) in &agents {
+            assert!(!service.snapshot(id).unwrap().running, "{id}");
+        }
+        assert!(service.snapshot(&shell).unwrap().running);
+        assert!(service.snapshot(&separate).unwrap().running);
+        assert!(service.snapshot(&foreign).unwrap().running);
+        let (_, metadata, stale) = &agents[0];
+        assert!(
+            service
+                .start("stale-launch".into(), metadata.clone(), stale.clone())
+                .is_err()
+        );
+        let mut fresh = stale.clone();
+        work_cycles::prepare(&project, None, &mut fresh).unwrap();
+        let next = service
+            .start("fresh-launch".into(), metadata.clone(), fresh)
+            .unwrap();
+        assert_ne!(next, agents[0].0);
+        let resumed = service
+            .resume(&agents[0].0, "explicit-archived-resume".into())
+            .unwrap();
+        assert_eq!(resumed, agents[0].0);
+        assert!(service.snapshot(&resumed).unwrap().running);
+        assert!(service.snapshot(&next).unwrap().running);
+        assert_eq!(
+            work_cycles::read(&project, None).unwrap().cycle,
+            second["cycle"].as_str().unwrap()
+        );
+        assert!(
+            service
+                .summaries()
+                .iter()
+                .filter(|r| agents.iter().any(|a| a.0 == r.id))
+                .all(|r| r.archived)
+        );
+        let other_scope = Scope {
+            task: Some("other".into()),
+            target: other_tree,
+            ..scope
+        };
+        service
+            .handle(
+                "test",
+                Request::FinishCycle {
+                    scope: other_scope,
+                    cycle: String::new(),
+                    workspace: serde_json::Value::Null,
+                },
+            )
+            .unwrap();
+        assert!(!service.snapshot(&separate).unwrap().running);
+        assert!(service.snapshot(&next).unwrap().running);
+        assert!(service.snapshot(&shell).unwrap().running);
+        let runs = service.pty.begin_stop(|_| true);
+        service.pty.finish_stop_all(&runs).unwrap();
+        service.persist().unwrap();
+        let restored = Service::load(&dir.join("service")).unwrap();
+        assert!(
+            restored
+                .summaries()
+                .iter()
+                .any(|r| r.id == agents[0].0 && r.archived)
+        );
+        assert_eq!(work_cycles::read(&project, None).unwrap().history.len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
     #[test]
     fn rejects_unbounded_or_malformed_protocol_frames() {
         assert!(read_frame::<Request>(&mut &u32::MAX.to_be_bytes()[..]).is_err());
@@ -6473,6 +6710,8 @@ for line in sys.stdin:
         std::fs::create_dir_all(&project).unwrap();
         std::fs::create_dir_all(&external).unwrap();
         let record = Record {
+            archived: false,
+            work_cycle: None,
             briefing_backup: None,
             id: "s".into(),
             metadata: Metadata {

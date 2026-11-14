@@ -6,9 +6,42 @@ import { Channel, invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { projectStateOf, useStore, workspaceOf } from '../store'
 import type { OpenedProject, PlanText, SessionRecord, WorkspaceDocument } from '../types'
 function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
-  const projectId = useStore.getState().project?.id
+  const projectId = (args.projectId as string | undefined) ?? useStore.getState().project?.id
+  const state = projectId ? projectStateOf(projectId) : undefined
+  const planning = args.planningScope as { task?: string | null } | undefined
+  const request = args.request as { worktree?: string; source?: string } | undefined
+  const path = request?.source ?? request?.worktree
+  const task = path
+    ? (state?.tasks.find((t) => t.worktree === path)?.id ?? null)
+    : command.includes('map_agent') ||
+        command.includes('stack_agent') ||
+        command.includes('validation_agent')
+      ? null
+      : planning
+        ? (planning.task ?? null)
+        : ((args.task as string | null | undefined) ?? state?.activeTask ?? null)
+  const workspace = state ? workspaceOf(state, task) : undefined
+  const workCycle = workspace?.workCycle ?? ''
+  const launches = [
+    'plan_start',
+    'terminal_start',
+    'task_root_start',
+    'review_agent_start',
+    'merge_agent_start',
+    'map_agent_start',
+    'stack_agent_start',
+    'validation_agent_start',
+  ]
+  if (launches.includes(command) && workspace?.finishingTask)
+    return Promise.reject(
+      new Error('This task is finishing; retry Finish task before starting agents'),
+    )
   return authenticateInvocation(command, args).then(() =>
-    tauriInvoke<T>(command, { projectId, ...args }),
+    tauriInvoke<T>(command, {
+      projectId,
+      ...(launches.includes(command) ? { workCycle } : {}),
+      ...args,
+    }),
   )
 }
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -273,6 +306,7 @@ export const planStart = async (
   invoke<string>('plan_start', {
     project,
     projectId: project.projectId,
+    workCycle: expectedCycle(project.projectId, task),
     componentIds,
     terminal,
     requestId,
@@ -337,6 +371,7 @@ export const terminalStart = async (
   return invoke<string>('terminal_start', {
     project,
     projectId: project.projectId,
+    workCycle: expectedCycle(project.projectId, task),
     componentId,
     terminalId,
     requestId,
@@ -534,6 +569,7 @@ export const taskRootStart = async (
 ) =>
   invoke<string>('task_root_start', {
     projectId: project.projectId,
+    workCycle: expectedCycle(project.projectId, task),
     project,
     componentIds,
     terminal,
@@ -827,3 +863,8 @@ export const gitBranchAction = (
     worktree,
     stopSessions,
   })
+
+function expectedCycle(projectId: string | undefined, task: string | null | undefined) {
+  const state = projectId ? projectStateOf(projectId) : undefined
+  return state ? (workspaceOf(state, task ?? null).workCycle ?? '') : ''
+}

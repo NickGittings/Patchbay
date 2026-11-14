@@ -111,8 +111,17 @@ impl Bridge {
     /// Fails when the service is disconnected, refuses the request or its reply is lost.
     pub fn call_reporting<T: DeserializeOwned>(
         &self,
-        request: Request,
+        mut request: Request,
     ) -> Result<T, (String, bool)> {
+        if let Request::Start { metadata, spec, .. }
+        | Request::Restart { metadata, spec, .. }
+        | Request::NewConversation { metadata, spec, .. } = &mut request
+            && metadata.kind == patchbay_core::TerminalKind::Agent
+        {
+            let task = patchbay_core::work_cycles::session_task(metadata, spec);
+            patchbay_core::work_cycles::prepare(&metadata.project_id, task.as_deref(), spec)
+                .map_err(|e| (e.to_string(), false))?;
+        }
         session::with_pending_briefing(request, |request| {
             let instance = self
                 .instance

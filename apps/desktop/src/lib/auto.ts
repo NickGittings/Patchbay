@@ -11,7 +11,7 @@ import {
 import { profileHookProvider, commandProfile } from './agentProfiles'
 import { refreshUsage, usageBlock, usageWarnings } from './usage'
 import { shallow } from 'zustand/shallow'
-import { projectOf, projectStateOf, useStore } from '../store'
+import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
 import {
   AGENT_ROLES,
   PLAN_SCOPE,
@@ -545,7 +545,7 @@ export async function autoSnapshot(
   ])
   const records = useStore
     .getState()
-    .sessionRecords.filter((r) => r.metadata.projectId === projectId)
+    .sessionRecords.filter((r) => !r.archived && r.metadata.projectId === projectId)
   const turn = plannerOwner(projectId, task)
   const relevant = records.filter(
     (r) =>
@@ -768,6 +768,17 @@ function release(controller: AutoController) {
     controllers.delete(key)
 }
 export async function startAuto(projectId: string, task: string | null, settings: AutoSettings) {
+  const origin = projectStateOf(projectId)
+  const cycle = origin && workspaceOf(origin, task).workCycle
+  const currentCycle = () => {
+    const current = projectStateOf(projectId)
+    return (
+      !!current &&
+      !workspaceOf(current, task).finishingTask &&
+      workspaceOf(current, task).workCycle === cycle
+    )
+  }
+  if (!currentCycle()) throw new Error('This task is finishing')
   snapshotReadEpoch++
   const controller = controllerFor(projectId, task)
   if (controller.starting) throw new Error('Auto is already starting in this worktree')
@@ -816,7 +827,12 @@ export async function startAuto(projectId: string, task: string | null, settings
     if ((settings.stage ?? decision.stage) === 'plan' && !run.goal.trim())
       throw new Error('Describe the task first')
     if (!driveable(projectId, task, run)) throw new Error('The task changed')
+    if (!currentCycle()) throw new Error('This task has finished')
     await autoOwnership(projectId, task, true, run.ownershipId)
+    if (!currentCycle()) {
+      await autoOwnership(projectId, task, false, run.ownershipId)
+      throw new Error('This task has finished')
+    }
     const reviewedHead = mergeableHead(snapshot, run)
     // Starting at Merge skips the gate, so a branch not reviewed clean still waits for approval.
     useStore.getState().patchTask(projectId, task, {

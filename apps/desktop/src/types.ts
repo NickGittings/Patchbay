@@ -703,7 +703,7 @@ class VersionedMap<K, V extends object> extends Map<K, V> {
 export const sessionMetadata = new VersionedMap<string, SessionIdentity>()
 
 /**
- * Mirrors `model::task_session_id`: the opaque id of a terminal of a project's component, run
+ * Mirrors `work_cycles::session_id` / `model::task_session_id`: the opaque id of a terminal of a project's component, run
  * for `task` when given, so the same terminal can run in several worktrees and projects at once.
  */
 export function sessionId(
@@ -713,7 +713,9 @@ export function sessionId(
   projectId = activeProjectId,
 ) {
   if (componentId === PLAN_SCOPE) task = planningTask(task)
-  const terminal = task ? `${terminalId}${TASK_SEPARATOR}${task}` : terminalId
+  const cycle = cycleResolver?.(projectId, componentId, terminalId, task ?? null)
+  const scopedTerminal = cycle ? `${terminalId}\x1ecycle:${cycle}` : terminalId
+  const terminal = task ? `${scopedTerminal}${TASK_SEPARATOR}${task}` : scopedTerminal
   const key = JSON.stringify([projectId, componentId, terminal])
   const known = hashed.get(key)
   if (known) return known
@@ -765,6 +767,8 @@ export function retask(sid: string, task: string | null): string {
 }
 
 export interface SessionRecord {
+  archived?: boolean
+  workCycle?: string | null
   id: string
   /** Launch request identities retained by the session service. */
   requestIds?: string[]
@@ -1137,3 +1141,15 @@ export type StoryPatch = Partial<
 > & { parent?: string; task?: string; autoRunId?: string; reopen?: boolean }
 
 export type MergeCleanup = 'ask' | 'keep' | 'delete'
+
+let cycleResolver:
+  | ((
+      projectId: string,
+      componentId: string,
+      terminalId: string,
+      task: string | null,
+    ) => string | undefined)
+  | undefined
+export function setCycleResolver(resolver: NonNullable<typeof cycleResolver>) {
+  cycleResolver = resolver
+}
