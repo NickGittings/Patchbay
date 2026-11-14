@@ -15,6 +15,7 @@ export default function MergeCleanupDialog() {
   const [job, setJob] = useState<CleanupJob>()
   const [preview, setPreview] = useState<MergeCleanupPreview>()
   const [busy, setBusy] = useState(false)
+  const [checkingPreview, setCheckingPreview] = useState(false)
   const [error, setError] = useState<string>()
   useEffect(() => {
     let disposed = false
@@ -79,9 +80,23 @@ export default function MergeCleanupDialog() {
     }
   }, [job])
   const keep = () => {
-    if (busy || !job) return
+    if (busy || checkingPreview || !job) return
     handledCleanup(job.id)
     setJob(undefined)
+  }
+  const retryPreview = async () => {
+    if (!job) return
+    setCheckingPreview(true)
+    setError(undefined)
+    try {
+      const project = projectOf(job.projectId)
+      if (!project) throw new Error('Project is no longer open')
+      setPreview(await mergeCleanupPreview(project, job.request))
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setCheckingPreview(false)
+    }
   }
   if (!job) return null
   return (
@@ -90,9 +105,14 @@ export default function MergeCleanupDialog() {
       onClose={keep}
       footer={
         <>
-          <button autoFocus disabled={busy} onClick={keep}>
+          <button autoFocus disabled={busy || checkingPreview} onClick={keep}>
             Keep
           </button>
+          {!preview && (
+            <button disabled={busy || checkingPreview} onClick={() => void retryPreview()}>
+              {checkingPreview ? 'Validating…' : 'Retry validation'}
+            </button>
+          )}
           <button
             className="danger"
             disabled={busy || !preview}

@@ -50,6 +50,8 @@ assert git(destination, 'diff', '--check').returncode == 0
 assert git(destination, 'commit', '-qm', 'Merge smoke feature').returncode == 0
 assert git(destination, 'merge-base', '--is-ancestor', field('Source HEAD'), 'HEAD').returncode == 0
 assert not git(destination, 'status', '--porcelain').stdout.strip()
+if os.environ.get('PATCHBAY_SMOKE_CLEANUP_ARTIFACT'):
+    pathlib.Path(destination, 'cleanup-artifact.txt').write_text('test artifact\n')
 print('merge-verified:' + destination, flush=True)
 # Keep the terminal running to exercise duplicate prevention, recovery, and Stop.
 input()

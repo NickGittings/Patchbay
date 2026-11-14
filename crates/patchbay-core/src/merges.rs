@@ -106,10 +106,7 @@ impl CleanupPreview {
         let removed = Path::new(&self.removed_worktree);
         cwd.starts_with(removed)
             || (self.restore
-                && trees
-                    .iter()
-                    .filter(|tree| cwd.starts_with(&tree.path))
-                    .max_by_key(|tree| Path::new(&tree.path).components().count())
+                && git::owning_worktree(trees, &cwd)
                     .is_some_and(|tree| tree.path == request.source))
     }
 }

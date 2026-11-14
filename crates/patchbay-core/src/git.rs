@@ -981,6 +981,18 @@ struct RawWorktree {
     bare: bool,
 }
 
+/// Find the deepest registered worktree owning a session's launch directory.
+/// A retained session may outlive its component directory, so keep its recorded path
+/// when canonicalization is no longer possible.
+#[must_use]
+pub fn owning_worktree<'a>(trees: &'a [Worktree], cwd: &Path) -> Option<&'a Worktree> {
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    trees
+        .iter()
+        .filter(|tree| cwd.starts_with(&tree.path))
+        .max_by_key(|tree| Path::new(&tree.path).components().count())
+}
+
 /// Local branch names of the repo containing `root`, sorted.
 ///
 /// # Errors

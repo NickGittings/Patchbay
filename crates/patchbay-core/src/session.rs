@@ -35,7 +35,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 23 adds structurally classified chat resume outcomes.
 // Protocol 24 gates Codex chat delivery on a generation-bound bootstrap turn.
 // Protocol 25 applies chat startup to retained legacy leads on resume and recovery.
-pub const PROTOCOL: u32 = 25;
+// Protocol 26 serializes branch mutations with terminal launches.
+pub const PROTOCOL: u32 = 26;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -332,6 +333,13 @@ impl StartMode {
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum Request {
     List,
+    /// Recheck writers and change Git while holding the service launch lock.
+    BranchApply {
+        root: PathBuf,
+        expected_head: String,
+        expected_branch: Option<String>,
+        action: crate::branches::BranchAction,
+    },
     PlannerScanOptions {
         id: String,
     },
@@ -655,6 +663,7 @@ impl Client {
             // Validators and readiness gates take as long as they take.
             Request::ActionRun { .. } => None,
             Request::Start { .. }
+            | Request::BranchApply { .. }
             | Request::Restart { .. }
             | Request::NewConversation { .. }
             | Request::ResetConversation { .. }
@@ -1808,6 +1817,21 @@ impl Service {
     fn handle(self: &Arc<Self>, client: &str, request: Request) -> Result<serde_json::Value> {
         let result = match request {
             Request::List => serde_json::to_value(self.summaries())?,
+            Request::BranchApply {
+                root,
+                expected_head,
+                expected_branch,
+                action,
+            } => {
+                let _operation = self.operation.lock().unwrap();
+                serde_json::to_value(crate::branches::apply_if_idle(
+                    &root,
+                    &expected_head,
+                    expected_branch.as_deref(),
+                    &action,
+                    &self.summaries(),
+                )?)?
+            }
             Request::StackSelection { id } => {
                 let records = self.records.lock().unwrap();
                 let target = records
@@ -4270,6 +4294,107 @@ mod tests {
         service.pty.stop(&replacement);
         service.pty.stop(&other_id);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn branch_mutation_excludes_launches_until_checkout_finishes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let repo = dir.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let repo = repo.canonicalize().unwrap();
+        for args in [
+            vec!["init", "-qb", "main"],
+            vec!["config", "user.name", "Test"],
+            vec!["config", "user.email", "test@invalid"],
+            vec![
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "base",
+            ],
+            vec!["branch", "feature"],
+        ] {
+            crate::git::run(crate::git::git(&repo).args(args)).unwrap();
+        }
+        let hook = repo.join(".git/hooks/post-checkout");
+        std::fs::write(&hook, "#!/bin/sh\ncd \"$(dirname \"$0\")\"\ntouch entered\nwhile [ ! -f release ]; do sleep 0.01; done\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let service = Service::load(&dir).unwrap();
+        let head = crate::git::run(crate::git::git(&repo).args(["rev-parse", "HEAD"])).unwrap();
+        let branch_service = service.clone();
+        let branch_repo = repo.clone();
+        let checkout = std::thread::spawn(move || {
+            branch_service.handle(
+                "desktop",
+                Request::BranchApply {
+                    root: branch_repo,
+                    expected_head: head,
+                    expected_branch: Some("main".into()),
+                    action: crate::branches::BranchAction::Switch {
+                        branch: "feature".into(),
+                    },
+                },
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !repo.join(".git/hooks/entered").exists() {
+            if checkout.is_finished() {
+                panic!(
+                    "checkout ended before its hook: {:?}",
+                    checkout.join().unwrap()
+                );
+            }
+            assert!(Instant::now() < deadline, "checkout hook did not run");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The hook holds Git inside the mutation. A launch must wait for that mutation,
+        // even though the worktree currently has no running terminals.
+        let launch_service = service.clone();
+        let launch_repo = repo.clone();
+        let (started, waiting) = std::sync::mpsc::channel();
+        let (finished, result) = std::sync::mpsc::channel();
+        let launch = std::thread::spawn(move || {
+            let metadata: Metadata = serde_json::from_value(serde_json::json!({
+                "projectId":"p", "projectName":"P", "projectRoot":launch_repo,
+                "componentId":"root", "terminalId":"shell", "name":"Shell", "kind":"shell"
+            }))
+            .unwrap();
+            let spec: SessionSpec = serde_json::from_value(serde_json::json!({
+                "id":"ignored", "command":"cat", "cwd":launch_repo, "env":{},
+                "ready_when":"", "service":false, "notice":null
+            }))
+            .unwrap();
+            started.send(()).unwrap();
+            finished
+                .send(launch_service.start("after-checkout".into(), metadata, spec))
+                .unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let premature = result.recv_timeout(Duration::from_millis(100));
+        // Always release the hook before assertions, so a regression cannot leave Git hanging.
+        std::fs::write(repo.join(".git/hooks/release"), "").unwrap();
+        assert_eq!(checkout.join().unwrap().unwrap(), "applied");
+        let id = premature.as_ref().map_or_else(
+            |_| {
+                result
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap()
+            },
+            |id| id.as_ref().unwrap().clone(),
+        );
+        launch.join().unwrap();
+        service.pty.stop(&id);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "launch completed during checkout"
+        );
     }
 
     #[cfg(unix)]

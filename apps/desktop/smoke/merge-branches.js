@@ -37,7 +37,7 @@
       kind: 'agent',
       category: 'agent',
       source: 'builtin',
-      command: `python3 '${parent}/agent.py'`,
+      command: `PATCHBAY_SMOKE_CLEANUP_ARTIFACT=1 python3 '${parent}/agent.py'`,
     }
     const review = {
       ...merge,
@@ -221,6 +221,22 @@
     }
     await smoke.terminalStop(record.id)
     await smoke.reconcileSessions()
+    const retry = await until('cleanup validation retry', () => button('Retry validation'))
+    const blockedCleanup = button('Delete worktree and branch')
+    assert(blockedCleanup?.disabled, 'dirty destination must block cleanup')
+    const removeArtifact = state().addRootTerminal({
+      id: 'remove-cleanup-artifact',
+      name: 'Remove test artifact',
+      command: `rm -- '${record.spec.cwd}/cleanup-artifact.txt'`,
+      kind: 'task',
+    })
+    await smoke.startTerminal('@task', removeArtifact, null)
+    const removeSession = smoke.sessionId('@task', removeArtifact, null)
+    await until('test artifact removed', async () => {
+      const snapshot = await smoke.terminalSnapshot(removeSession)
+      return snapshot && !snapshot.running && snapshot.exitCode === 0
+    })
+    retry.click()
     const cleanup = await until('restore original worktree offered', () =>
       button('Return to main and delete feature branch'),
     )

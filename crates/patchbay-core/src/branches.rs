@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum BranchAction {
     Switch { branch: String },
@@ -16,7 +16,7 @@ pub enum BranchAction {
     Delete { branch: String },
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BranchResult {
     Applied,
@@ -65,33 +65,53 @@ pub fn apply_with_sessions(
             }
         }
     }
-    apply(root, expected_head, expected_branch, action)?;
-    Ok(BranchResult::Applied)
+    // The service checks for new writers and mutates Git under its launch lock.
+    serde_json::from_value(call(Request::BranchApply {
+        root: root.to_path_buf(),
+        expected_head: expected_head.into(),
+        expected_branch: expected_branch.map(Into::into),
+        action: action.clone(),
+    })?)
+    .map_err(Into::into)
 }
 
 fn running_sessions(
     root: &Path,
     call: &mut impl FnMut(Request) -> Result<serde_json::Value>,
 ) -> Result<Vec<String>> {
+    let records: Vec<Record> = serde_json::from_value(call(Request::List)?)?;
+    running_in_worktree(root, &records)
+}
+
+fn running_in_worktree(root: &Path, records: &[Record]) -> Result<Vec<String>> {
     let root = root.canonicalize()?;
     let trees = git::worktrees(&root);
-    let records: Vec<Record> = serde_json::from_value(call(Request::List)?)?;
     Ok(records
-        .into_iter()
+        .iter()
         .filter(|r| r.snapshot.as_ref().is_some_and(|s| s.running))
         .filter(|r| {
-            r.spec.cwd.canonicalize().is_ok_and(|cwd| {
-                // A linked worktree can live inside the source folder. Assign a session to
-                // the deepest matching worktree so switching source leaves that work alone.
-                trees
-                    .iter()
-                    .filter(|t| cwd.starts_with(&t.path))
-                    .max_by_key(|t| Path::new(&t.path).components().count())
-                    .is_some_and(|t| Path::new(&t.path) == root)
-            })
+            git::owning_worktree(&trees, &r.spec.cwd)
+                .is_some_and(|tree| Path::new(&tree.path) == root)
         })
-        .map(|r| r.id)
+        .map(|r| r.id.clone())
         .collect())
+}
+
+/// Called only while the session service excludes launches through the Git mutation.
+pub(crate) fn apply_if_idle(
+    root: &Path,
+    expected_head: &str,
+    expected_branch: Option<&str>,
+    action: &BranchAction,
+    records: &[Record],
+) -> Result<BranchResult> {
+    if !matches!(action, BranchAction::Delete { .. })
+        && !running_in_worktree(root, records)?.is_empty()
+    {
+        return Ok(BranchResult::NeedsStop);
+    }
+    apply(root, expected_head, expected_branch, action)?;
+    Ok(BranchResult::Applied)
 }
 
 /// Change the open checkout or delete an integrated, unused local branch.
@@ -285,8 +305,79 @@ mod tests {
                 branch: "feature".into(),
             },
             stop,
-            call,
+            &mut |request| match request {
+                Request::BranchApply {
+                    root,
+                    expected_head,
+                    expected_branch,
+                    action,
+                } => serde_json::to_value(apply_if_idle(
+                    &root,
+                    &expected_head,
+                    expected_branch.as_deref(),
+                    &action,
+                    &[],
+                )?)
+                .map_err(Into::into),
+                request => call(request),
+            },
         )
+    }
+
+    #[test]
+    fn missing_component_directory_still_requires_writer_confirmation() {
+        let f = Fixture::new();
+        let component = f.0.join("component");
+        fs::create_dir(&component).unwrap();
+        let records = vec![record("shell", &component, "shell", true)];
+        fs::remove_dir(&component).unwrap();
+        let result = apply_sessions(&f, false, &mut |request| {
+            assert!(matches!(request, Request::List));
+            Ok(serde_json::to_value(&records)?)
+        })
+        .unwrap();
+        assert_eq!(result, BranchResult::NeedsStop);
+        assert_eq!(
+            git::run(git::git(&f.0).args(["branch", "--show-current"])).unwrap(),
+            "main"
+        );
+    }
+
+    #[test]
+    fn writer_starting_after_the_last_list_prevents_the_branch_change() {
+        let f = Fixture::new();
+        let head = git::run(git::git(&f.0).args(["rev-parse", "HEAD"])).unwrap();
+        let action = BranchAction::Switch {
+            branch: "feature".into(),
+        };
+        let result =
+            apply_with_sessions(&f.0, &head, Some("main"), &action, false, &mut |request| {
+                match request {
+                    Request::List => Ok(serde_json::json!([])),
+                    Request::BranchApply {
+                        root,
+                        expected_head,
+                        expected_branch,
+                        action,
+                    } => {
+                        let writer = record("late-writer", &f.0, "agent", true);
+                        Ok(serde_json::to_value(apply_if_idle(
+                            &root,
+                            &expected_head,
+                            expected_branch.as_deref(),
+                            &action,
+                            &[writer],
+                        )?)?)
+                    }
+                    _ => panic!("unexpected session request"),
+                }
+            })
+            .unwrap();
+        assert_eq!(result, BranchResult::NeedsStop);
+        assert_eq!(
+            git::run(git::git(&f.0).args(["branch", "--show-current"])).unwrap(),
+            "main"
+        );
     }
 
     #[test]
