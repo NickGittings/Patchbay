@@ -433,6 +433,24 @@ pub fn cleanup(project: &Project, request: &MergeRequest) -> Result<()> {
     Ok(())
 }
 
+/// Called while the session service excludes launches through the cleanup mutation.
+pub(crate) fn cleanup_if_idle(
+    project: &Project,
+    request: &MergeRequest,
+    records: &[crate::session::Record],
+) -> Result<()> {
+    let preview = cleanup_preview(project, request)?;
+    let trees = git::worktrees(Path::new(&project.root));
+    ensure!(
+        !records.iter().any(|record| {
+            record.snapshot.as_ref().is_some_and(|s| s.running)
+                && preview.owns_session(request, &trees, &record.spec.cwd)
+        }),
+        "A terminal or agent is running in a worktree affected by cleanup; stop it and retry cleanup"
+    );
+    cleanup(project, request)
+}
+
 /// Report conflicting paths without checking out or reading any of those paths.
 ///
 /// # Errors
@@ -729,6 +747,44 @@ mod tests {
             &request.source_branch,
         ]))
         .unwrap();
+    }
+
+    #[test]
+    fn restoration_refuses_writers_started_after_the_stop_snapshot() {
+        let (f, request) = primary_request();
+        integrate(&request);
+        for cwd in [&request.source, &request.destination] {
+            let record = serde_json::from_value(serde_json::json!({
+                "id":"late-writer",
+                "metadata": {
+                    "projectId":"p", "projectName":"P", "projectRoot":request.source,
+                    "componentId":"root", "terminalId":"shell", "name":"Shell", "kind":"shell"
+                },
+                "spec": {
+                    "id":"late-writer", "command":"cat", "cwd":cwd, "env":{},
+                    "ready_when":"", "service":false, "notice":null
+                },
+                "snapshot": {
+                    "data":"", "end":0, "generation":1, "running":true, "startedMs":1,
+                    "status":{"active":false,"ready":false,"stopped":false}
+                },
+                "history":[], "interrupted":false, "requestIds":[]
+            }))
+            .unwrap();
+            assert!(
+                cleanup_if_idle(&f.project, &request, &[record])
+                    .unwrap_err()
+                    .to_string()
+                    .contains("running")
+            );
+            assert!(Path::new(&request.destination).exists());
+            assert_eq!(
+                git::run(git::git(Path::new(&request.source)).args(["branch", "--show-current"]))
+                    .unwrap(),
+                "feature"
+            );
+        }
+        cleanup_if_idle(&f.project, &request, &[]).unwrap();
     }
 
     #[test]

@@ -2233,7 +2233,10 @@ async fn merge_cleanup(
                 id: record.id.clone(),
             })?;
         }
-        let cleanup = patchbay_core::merges::cleanup(&project, &request).map_err(err);
+        let cleanup = bridge.call::<()>(patchbay_core::session::Request::MergeCleanup {
+            project: Box::new(project),
+            request,
+        });
         // Even if branch deletion failed, retire sessions and task metadata once
         // the worktree is gone. Preserve the partial-failure message for the user.
         if removed.exists() {

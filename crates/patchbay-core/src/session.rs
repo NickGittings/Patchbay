@@ -36,7 +36,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 24 gates Codex chat delivery on a generation-bound bootstrap turn.
 // Protocol 25 applies chat startup to retained legacy leads on resume and recovery.
 // Protocol 26 serializes branch mutations with terminal launches.
-pub const PROTOCOL: u32 = 26;
+// Protocol 27 serializes merge cleanup and restoration with terminal launches.
+pub const PROTOCOL: u32 = 27;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -339,6 +340,11 @@ pub enum Request {
         expected_head: String,
         expected_branch: Option<String>,
         action: crate::branches::BranchAction,
+    },
+    /// Recheck affected writers and clean up while holding the service launch lock.
+    MergeCleanup {
+        project: Box<crate::model::Project>,
+        request: crate::merges::MergeRequest,
     },
     PlannerScanOptions {
         id: String,
@@ -664,6 +670,7 @@ impl Client {
             Request::ActionRun { .. } => None,
             Request::Start { .. }
             | Request::BranchApply { .. }
+            | Request::MergeCleanup { .. }
             | Request::Restart { .. }
             | Request::NewConversation { .. }
             | Request::ResetConversation { .. }
@@ -1831,6 +1838,11 @@ impl Service {
                     &action,
                     &self.summaries(),
                 )?)?
+            }
+            Request::MergeCleanup { project, request } => {
+                let _operation = self.operation.lock().unwrap();
+                crate::merges::cleanup_if_idle(&project, &request, &self.summaries())?;
+                serde_json::Value::Null
             }
             Request::StackSelection { id } => {
                 let records = self.records.lock().unwrap();
@@ -4299,6 +4311,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn branch_mutation_excludes_launches_until_checkout_finishes() {
+        mutation_excludes_launches_until_checkout_finishes(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restoration_excludes_launches_until_checkout_finishes() {
+        mutation_excludes_launches_until_checkout_finishes(true);
+    }
+
+    #[cfg(unix)]
+    fn mutation_excludes_launches_until_checkout_finishes(restoration: bool) {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         private_dir(&dir).unwrap();
@@ -4321,6 +4344,13 @@ mod tests {
         ] {
             crate::git::run(crate::git::git(&repo).args(args)).unwrap();
         }
+        let project: crate::model::Project = serde_json::from_value(serde_json::json!({
+            "schemaVersion":4, "name":"P", "root":repo, "components":[], "links":[]
+        }))
+        .unwrap();
+        let merge = restoration.then(|| {
+            crate::merges::resolve_destination(&project, &project.root, "main", "feature").unwrap()
+        });
         let hook = repo.join(".git/hooks/post-checkout");
         std::fs::write(&hook, "#!/bin/sh\ncd \"$(dirname \"$0\")\"\ntouch entered\nwhile [ ! -f release ]; do sleep 0.01; done\n").unwrap();
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -4329,6 +4359,15 @@ mod tests {
         let branch_service = service.clone();
         let branch_repo = repo.clone();
         let checkout = std::thread::spawn(move || {
+            if let Some(request) = merge {
+                return branch_service.handle(
+                    "desktop",
+                    Request::MergeCleanup {
+                        project: Box::new(project),
+                        request,
+                    },
+                );
+            }
             branch_service.handle(
                 "desktop",
                 Request::BranchApply {
@@ -4378,7 +4417,15 @@ mod tests {
         let premature = result.recv_timeout(Duration::from_millis(100));
         // Always release the hook before assertions, so a regression cannot leave Git hanging.
         std::fs::write(repo.join(".git/hooks/release"), "").unwrap();
-        assert_eq!(checkout.join().unwrap().unwrap(), "applied");
+        let checkout_result = checkout.join().unwrap().unwrap();
+        assert_eq!(
+            checkout_result,
+            if restoration {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!("applied")
+            }
+        );
         let id = premature.as_ref().map_or_else(
             |_| {
                 result
