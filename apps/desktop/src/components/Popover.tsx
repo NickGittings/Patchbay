@@ -27,6 +27,8 @@ export type PopoverProps = {
    * dialog the list stays in that dialog, so assistive tech doesn't treat it as inert.
    */
   portal?: boolean
+  /** Open the same popup at a context-menu pointer position whenever this object changes. */
+  contextRequest?: { x: number; y: number }
   children: ReactNode
 }
 
@@ -66,6 +68,7 @@ export default function Popover({
   caret = true,
   keepMounted = false,
   portal = false,
+  contextRequest,
   role = 'dialog',
   initialFocus,
   onOpenKeyDown,
@@ -84,7 +87,9 @@ export default function Popover({
   ) => void
 }) {
   // `keyboard`: opened with Enter/Space/ArrowDown.
-  const [open, setOpen] = useState<false | { keyboard: boolean }>(false)
+  const [open, setOpen] = useState<false | { keyboard: boolean; at?: { x: number; y: number } }>(
+    false,
+  )
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const list = useRef<HTMLDivElement>(null)
@@ -116,12 +121,18 @@ export default function Popover({
           Math.max(
             8,
             Math.min(
-              align === 'right' ? anchor.right - popup.width : anchor.left,
+              open.at ? open.at.x : align === 'right' ? anchor.right - popup.width : anchor.left,
               window.innerWidth - popup.width - 8,
             ),
           ) - originX
         const top =
-          Math.max(8, Math.min(anchor.bottom + 4, window.innerHeight - popup.height - 8)) - originY
+          Math.max(
+            8,
+            Math.min(
+              open.at ? open.at.y : anchor.bottom + 4,
+              window.innerHeight - popup.height - 8,
+            ),
+          ) - originY
         setPosition((old) => (old.left === left && old.top === top ? old : { left, top }))
       }
       frame = requestAnimationFrame(place)
@@ -144,6 +155,23 @@ export default function Popover({
     setOpen({ keyboard })
     setOpens((n) => n + 1)
   }
+
+  const [handledContext, setHandledContext] = useState(contextRequest)
+  if (contextRequest !== handledContext) {
+    setHandledContext(contextRequest)
+    if (contextRequest) {
+      setOpen({ keyboard: false, at: contextRequest })
+      setOpens((n) => n + 1)
+    }
+  }
+  useLayoutEffect(() => {
+    if (!open || !open.at || previous.current) return
+    const active = document.activeElement
+    previous.current =
+      active instanceof HTMLElement && active !== document.body && !contains(active)
+        ? active
+        : trigger.current
+  }, [open])
 
   /** Close, handing focus back if it is still inside the popup (or nowhere). */
   const close = (restore: boolean) => {

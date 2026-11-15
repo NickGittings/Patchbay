@@ -41,6 +41,122 @@
     const scope = { projectId, task: null }
     const originalText = (await smoke.readTextFile(scope, path)).text
     state().select('navigation')
+    // Inspector controls run real sessions without opening their configuration.
+    const inspector = await until('component inspector', () => document.querySelector('.inspector'))
+    const disclosure = () =>
+      [...inspector.querySelectorAll('.inspector-terminal-disclosure')].at(-1)
+    const settings = () => [...inspector.querySelectorAll('.inspector-terminal-settings')].at(-1)
+    const summary = (title) =>
+      [...inspector.querySelectorAll('summary')].find((s) => s.textContent === title)
+    assert(disclosure()?.getAttribute('aria-expanded') === 'false', 'terminal settings start open')
+    assert(!summary('Component settings').parentElement.open, 'component settings start open')
+    assert(!summary('Details').parentElement.open, 'details start open')
+    assert(!disclosure().querySelector('button'), 'terminal action nested in disclosure')
+    const scratchId = state().addTerminal(
+      'navigation',
+      {
+        id: 'inspector-shell',
+        name: 'Inspector shell',
+        kind: 'shell',
+        command: '',
+      },
+      false,
+    )
+    await until('scratch terminal', () =>
+      inspector.querySelector('[aria-label="Start Inspector shell"]'),
+    )
+    inspector.querySelector('[aria-label="Start Inspector shell"]').click()
+    const inspectorSid = smoke.sessionId('navigation', scratchId)
+    await until('inspector starts shell', () => state().sessions[inspectorSid]?.running)
+    assert(disclosure().getAttribute('aria-expanded') === 'false', 'Start opened settings')
+    disclosure().click()
+    await until('terminal settings expanded', () => !settings().hidden)
+    assert(settings().querySelector('button').disabled, 'running terminal can be removed')
+    inspector.querySelector('[aria-label="Stop Inspector shell"]').click()
+    await until('inspector stops shell', () => !state().sessions[inspectorSid]?.running)
+    await until('stopped terminal removable', () => !settings().querySelector('button').disabled)
+    const setInput = (input, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    setInput(settings().querySelector('input'), 'Renamed shell')
+    await until(
+      'terminal name saved',
+      () =>
+        state().nodes[0].data.terminals.find((t) => t.id === scratchId)?.name === 'Renamed shell',
+    )
+    settings().querySelector('button').click()
+    await until(
+      'terminal removed',
+      () => !state().nodes[0].data.terminals.some((t) => t.id === scratchId),
+    )
+    disclosure().click()
+    summary('Component settings').click()
+    summary('Details').click()
+    state().select(null)
+    smoke.store.setState({ inspector: true })
+    await until('project overview', () => inspector.textContent.includes('Project overview'))
+    state().select('navigation')
+    await until('component reselected', () => disclosure())
+    assert(
+      disclosure().getAttribute('aria-expanded') === 'false',
+      'terminal disclosure leaked across selection',
+    )
+    assert(
+      !summary('Component settings').parentElement.open,
+      'component disclosure leaked across selection',
+    )
+    assert(!summary('Details').parentElement.open, 'details disclosure leaked across selection')
+    assert(
+      inspector.querySelector('.inspector-path').title === opened.project.root,
+      'header lost full path',
+    )
+
+    const trigger = inspector.querySelector('[aria-label="Component actions"]')
+    const menu = () => document.querySelector('[role="menu"][aria-label="Component actions"]')
+    const menuKey = (target, key) =>
+      target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+    trigger.focus()
+    menuKey(trigger, 'ArrowDown')
+    await until('keyboard component menu', menu)
+    assert(
+      document.activeElement === menu().querySelector('[role="menuitem"]'),
+      'menu did not focus first action',
+    )
+    menuKey(document.activeElement, 'ArrowDown')
+    assert(document.activeElement.textContent === 'Open in window', 'menu arrow navigation failed')
+    menuKey(document.activeElement, 'Escape')
+    await until('menu dismissed with Escape', () => !menu())
+    assert(document.activeElement === trigger, 'Escape did not restore trigger focus')
+    const header = inspector.querySelector('.inspector-header')
+    const bounds = header.getBoundingClientRect()
+    const at = { x: bounds.left + 24, y: bounds.bottom - 4 }
+    header.dispatchEvent(
+      new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: at.x,
+        clientY: at.y,
+      }),
+    )
+    await until('header context menu positioned at pointer', () => {
+      const rect = menu()?.getBoundingClientRect()
+      return rect && Math.abs(rect.left - at.x) < 2 && Math.abs(rect.top - at.y) < 2
+    })
+    assert(menu().textContent.includes('Validate affected'), 'context menu missing validation')
+    menuKey(menu(), 'ArrowDown')
+    menuKey(document.activeElement, 'Tab')
+    await until('context menu dismissed with Tab', () => !menu())
+    assert(document.activeElement === trigger, 'context menu did not restore focus')
+    // Let WebKit finish the Tab focus change before the next interaction.
+    await sleep(50)
+    trigger.click()
+    await until('ellipsis reopens after context menu', menu)
+    assert(menu().textContent.includes('Open in window'), 'ellipsis menu lost actions')
+    inspector
+      .querySelector('.inspector-toolbar button')
+      .dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    await until('outside press dismisses menu', () => !menu())
     const filesTab = await until('Inspector Files tab', () =>
       [...document.querySelectorAll('.inspector .tabs button')].find(
         (button) => button.textContent.trim() === 'Files',
@@ -417,7 +533,7 @@
     await smoke.editorSavePreferences(previous)
     smoke.resetSessions(await smoke.terminalReset())
     await smoke.report(
-      'PASS navigation: single-click docked file tabs, save and close guards, safe argv, ignored/tracked files, denied symlink, generation/cwd checks, selection and modifier links, file search, keyboard tree navigation, windowed large diffs and editor setup',
+      'PASS navigation: inspector disclosures, terminal controls, header menus and focus, single-click docked file tabs, save and close guards, safe argv, ignored/tracked files, denied symlink, generation/cwd checks, selection and modifier links, file search, keyboard tree navigation, windowed large diffs and editor setup',
     )
   } catch (e) {
     if (previous) await smoke.editorSavePreferences(previous).catch(() => {})

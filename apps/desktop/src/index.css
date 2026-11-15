@@ -556,20 +556,6 @@ input[type='radio'] {
   color: var(--muted);
 }
 
-/* Inspector */
-.inspector {
-  padding: 0 14px 20px;
-}
-.inspector .panel-title {
-  padding-left: 0;
-  padding-right: 0;
-}
-.inspector-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.inspector-close,
 .toast .toast-close {
   padding: 0 6px;
   border-color: transparent;
@@ -578,18 +564,229 @@ input[type='radio'] {
   font-size: 16px;
   line-height: 1;
 }
-.inspector-close:hover:not(:disabled),
 .toast .toast-close:hover:not(:disabled) {
   color: inherit;
   border-color: transparent;
+}
+
+/* Inspector */
+.inspector {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.inspector-header {
+  flex: none;
+  padding: 12px;
+}
+.inspector-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.inspector-title h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.inspector-path {
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.inspector .inspector-actions-trigger,
+.inspector .inspector-close {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  flex: none;
+}
+.inspector .inspector-actions-trigger[aria-expanded='true'] {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.inspector .tabs {
+  padding: 0 12px;
+  background: transparent;
+}
+.inspector .tabs button {
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: inset 0 -2px 0 transparent;
+}
+.inspector .tabs button.active {
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.inspector-toolbar {
+  flex: none;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.inspector-toolbar button {
+  width: 100%;
+  text-align: left;
+  color: var(--accent-text);
+  font-size: 12px;
+}
+.inspector-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  padding: 16px 12px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.inspector-body > :is(.rail-section, .rail-details) + :is(.rail-section, .rail-details) {
+  margin-top: 16px;
 }
 .inspector label {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-bottom: 10px;
+  margin: 0;
   color: var(--muted);
   font-size: 12px;
+  min-width: 0;
+}
+.inspector :is(input, select, textarea) {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.inspector .row {
+  flex-wrap: wrap;
+}
+.inspector .row input {
+  flex: 1 1 120px;
+}
+.inspector-terminal {
+  border-bottom: 1px solid var(--border);
+}
+.inspector-terminal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.inspector-terminal-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 2px;
+  border: 0;
+  text-align: left;
+}
+.inspector-chevron {
+  flex: none;
+  color: var(--muted);
+  font-size: 16px;
+  transition: transform 120ms ease-out;
+}
+.inspector-terminal-disclosure[aria-expanded='true'] .inspector-chevron {
+  transform: rotate(90deg);
+}
+.inspector-terminal-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.inspector-terminal-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+}
+.inspector-terminal-meta {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.inspector-terminal-action {
+  flex: none;
+  padding: 4px 8px;
+  color: var(--accent-text);
+  font-size: 11px;
+}
+.inspector-terminal-settings:not([hidden]) {
+  display: grid;
+  gap: 10px;
+  padding: 6px 0 12px;
+}
+.inspector-terminal-settings > button {
+  justify-self: start;
+  color: var(--muted);
+  font-size: 11px;
+}
+.inspector .add-terminal {
+  margin-top: 10px;
+  border-style: solid;
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent-text);
+  font-size: 12px;
+}
+.inspector .add-terminal:hover {
+  background: var(--hover);
+}
+.inspector .maintenance-origin {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.inspector .context {
+  margin-top: 0;
+}
+.inspector :is(button, select, summary):active:not(:disabled) {
+  background: var(--accent-soft);
+  transition: none;
+}
+.inspector :is(button, select, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+.inspector .map-issue:first-child {
+  margin-top: 0;
+}
+.inspector .extension-webview {
+  display: block;
+  height: 100%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .inspector :is(button, select, .inspector-chevron) {
+    transition: none;
+  }
+  .inspector .status-dot {
+    animation: none;
+  }
 }
 .terminal-row {
   display: flex;
@@ -938,9 +1135,6 @@ input[type='radio'] {
   color: var(--muted);
   background: transparent;
   border-color: transparent;
-}
-.inspector-popout {
-  margin-bottom: 12px;
 }
 .component-window {
   display: flex;

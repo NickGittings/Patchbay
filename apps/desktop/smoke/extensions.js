@@ -59,6 +59,30 @@
       briefing.includes('## Services') && briefing.includes('services:'),
       'file contribution missing from context',
     )
+    const actions = await until('Inspector component actions', () =>
+      document.querySelector('.inspector [aria-label="Component actions"]'),
+    )
+    actions.click()
+    const contributed = () =>
+      document.querySelector(
+        '[role="menu"][aria-label="Component actions"] [data-extension-command="acme.docker.up"]',
+      )
+    await until('extension action in ellipsis menu', contributed)
+    contributed().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await until('ellipsis dismissed', () => !contributed())
+    document.querySelector('.inspector-header').dispatchEvent(
+      new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 100,
+        clientY: 80,
+      }),
+    )
+    click(await until('same extension action in header context menu', contributed))
+    await until(
+      'header extension command ran',
+      () => state().sessions[smoke.sessionId(component.id, 'ext-acme.docker.up')],
+    )
     document.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'P', ctrlKey: true, shiftKey: true, bubbles: true }),
     )
@@ -137,7 +161,7 @@
     )
     await smoke.terminalReset()
     await smoke.report(
-      'PASS extensions: manifest, device, detector, palette session, context, badge, Inspector view, IPC sandbox, forged IPC, run reuse',
+      'PASS extensions: manifest, device, detector, palette session, context, badge, Inspector menus and view, IPC sandbox, forged IPC, run reuse',
     )
   } catch (error) {
     await smoke.report(`FAIL extensions: ${error.message}; app: ${state().message}`)
