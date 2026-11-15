@@ -4083,3 +4083,75 @@ kbd {
   background: transparent;
   border-color: transparent;
 }
+
+.file-editor.extension-overlay {
+  padding: 6vh 24px;
+}
+.file-editor .extensions-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+  overflow: hidden;
+  width: min(1200px, 94vw);
+  max-width: 94vw;
+  height: 88vh;
+}
+.file-editor .dialog-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.file-editor-tabs {
+  display: flex;
+  overflow-x: auto;
+  flex-shrink: 0;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+.file-editor-tab {
+  display: flex;
+  flex-shrink: 0;
+}
+.file-editor-tab [aria-selected='true'] {
+  font-weight: 700;
+  text-decoration: underline;
+}
+.file-editor-code {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+}
+.file-editor-code pre,
+.file-editor-code textarea {
+  margin: 0;
+  padding: 12px;
+  font: 12px / 20px var(--mono);
+  tab-size: 4;
+}
+.file-editor-code pre {
+  flex-shrink: 0;
+  text-align: right;
+  opacity: 0.5;
+  overflow: hidden;
+  user-select: none;
+}
+.file-editor-code textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  white-space: pre;
+}
+.file-editor-prompt {
+  padding: 12px;
+  border: 1px solid var(--border);
+}
+.file-editor-prompt button {
+  margin-right: 8px;
+}

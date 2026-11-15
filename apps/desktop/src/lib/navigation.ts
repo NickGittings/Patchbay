@@ -1,5 +1,7 @@
 import { isMac } from './platform'
-import { editorOpen, terminalOpenReference } from './ipc'
+import { editorOpen, editorPreferences, terminalOpenReference } from './ipc'
+import { invoke } from '@tauri-apps/api/core'
+import { FILE_EDITOR_EVENT, type FileRequest } from './fileEditor'
 import { useStore } from '../store'
 import { sessionMetadata, type EditorTarget } from '../types'
 
@@ -50,7 +52,21 @@ export async function openInEditor(
   if (!projectId) return
   const task = scope ? scope.task : s.activeTask
   try {
-    await editorOpen(target, projectId, task, scope?.worktree)
+    const prefs = await editorPreferences()
+    const resolved = await invoke<{ path: string; isDir: boolean }>('editor_resolve_target', {
+      projectId,
+      task,
+      worktree: scope?.worktree,
+      path: target.path,
+    })
+    if (prefs.fileOpenMode !== 'external' && !resolved.isDir) {
+      target = { ...target, path: resolved.path }
+      window.dispatchEvent(
+        new CustomEvent<FileRequest>(FILE_EDITOR_EVENT, {
+          detail: { target, projectId, task, worktree: scope?.worktree },
+        }),
+      )
+    } else await editorOpen(target, projectId, task, scope?.worktree)
   } catch (e) {
     if (useStore.getState().project?.id === projectId && useStore.getState().activeTask === task)
       navigationError(e)
@@ -62,7 +78,16 @@ export async function openTerminalReference(sid: string, reference: string, gene
   const projectId = origin?.projectId ?? useStore.getState().project?.id
   const task = origin?.task ?? null
   try {
-    await terminalOpenReference(sid, generation, reference)
+    const prefs = await editorPreferences()
+    if (prefs.fileOpenMode !== 'external') {
+      const resolved = await invoke<FileRequest>('terminal_open_reference', {
+        sessionId: sid,
+        generation,
+        reference,
+        resolveOnly: true,
+      })
+      window.dispatchEvent(new CustomEvent(FILE_EDITOR_EVENT, { detail: resolved }))
+    } else await terminalOpenReference(sid, generation, reference)
   } catch (e) {
     const current = useStore.getState()
     if (current.project?.id === projectId && current.activeTask === task) navigationError(e)

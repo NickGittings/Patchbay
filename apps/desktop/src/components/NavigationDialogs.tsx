@@ -1,3 +1,4 @@
+import FileEditor from './FileEditor'
 import { isMac, titleBarMouseDown } from '../lib/platform'
 import UnifiedSearch from './UnifiedSearch'
 import SettingsDialog, { SettingsFeedback } from './SettingsDialog'
@@ -87,7 +88,22 @@ function PreferredEditorDialog() {
       {preferences && (
         <>
           <label className="settings-field">
-            Editor
+            Open files in
+            <select
+              value={preferences.fileOpenMode ?? 'patchbay'}
+              onChange={(e) =>
+                setPreferences({
+                  ...preferences,
+                  fileOpenMode: e.target.value as 'patchbay' | 'external',
+                })
+              }
+            >
+              <option value="patchbay">Patchbay</option>
+              <option value="external">External editor</option>
+            </select>
+          </label>
+          <label className="settings-field">
+            External editor
             <select
               value={preferences.editor}
               onChange={(e) =>
@@ -150,6 +166,7 @@ export default function NavigationDialogs({ settingsOnly = false }: { settingsOn
         </div>
       )}
       <PreferredEditorDialog />
+      <FileEditor />
     </>
   )
 }

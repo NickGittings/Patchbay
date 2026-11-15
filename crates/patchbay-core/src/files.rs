@@ -1,4 +1,4 @@
-//! Read-only directory listings contained within a project's folders: the
+//! Directory listings and bounded text editing contained within a project's folders: the
 //! project root plus any repos on the map that live outside it.
 
 use crate::model::{plain_path, relative_path};
@@ -147,6 +147,59 @@ mod tests {
     }
 
     #[test]
+    fn text_save_preserves_line_endings_and_rejects_conflicts() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("text.txt");
+        fs::write(&path, "first\r\nsecond\r\n").unwrap();
+        let file = read_text(fixture.roots(), &path).unwrap();
+        assert_eq!(file.text, "first\r\nsecond\r\n");
+        let saved = save_text(fixture.roots(), &path, "new\r\n", &file.fingerprint).unwrap();
+        assert_eq!(saved.text, "new\r\n");
+        fs::write(&path, "external").unwrap();
+        assert!(save_text(fixture.roots(), &path, "draft", &saved.fingerprint).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+    }
+
+    #[test]
+    fn text_reads_reject_unsupported_content_and_escapes() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("text.txt");
+        for bytes in [
+            vec![0],
+            vec![0xff],
+            vec![b'x'; usize::try_from(MAX_TEXT_BYTES).unwrap() + 1],
+        ] {
+            fs::write(&path, bytes).unwrap();
+            assert!(read_text(fixture.roots(), &path).is_err());
+        }
+        assert!(read_text(fixture.roots(), Path::new("../outside.txt")).is_err());
+        assert!(read_text(fixture.roots(), &fixture.0).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn text_save_preserves_permissions_and_rejects_symlink_escapes() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let fixture = Fixture::new();
+        let outside = Fixture::new();
+        let path = fixture.0.join("script");
+        fs::write(&path, "original").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let file = read_text(fixture.roots(), &path).unwrap();
+        save_text(fixture.roots(), &path, "updated", &file.fingerprint).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let external = outside.0.join("secret");
+        fs::write(&external, "secret").unwrap();
+        symlink(&external, fixture.0.join("escape")).unwrap();
+        assert!(read_text(fixture.roots(), Path::new("escape")).is_err());
+        assert!(save_text(fixture.roots(), Path::new("escape"), "draft", "anything").is_err());
+        assert_eq!(fs::read_to_string(&external).unwrap(), "secret");
+    }
+
+    #[test]
     fn sorts_directories_first_and_names_case_insensitively() {
         let fixture = Fixture::new();
         for name in ["Zoo", "alpha"] {
@@ -278,4 +331,100 @@ mod tests {
         assert_eq!(roots.len(), 2);
         assert_eq!(roots[1], billing);
     }
+}
+
+/// Maximum editable text size; never return a truncated document.
+pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextFile {
+    pub path: String,
+    pub text: String,
+    pub fingerprint: String,
+}
+
+fn text_fingerprint(bytes: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hash);
+    format!("{:016x}", hash.finish())
+}
+
+/// Read a complete bounded UTF-8 file inside the granted roots.
+/// # Errors
+/// Rejects directories, binary text, oversized files and paths outside the roots.
+pub fn read_text(roots: &[PathBuf], path: &Path) -> Result<TextFile> {
+    use std::io::Read;
+    let path = resolve(roots, path)?;
+    let file = std::fs::File::open(&path)?;
+    anyhow::ensure!(
+        file.metadata()?.is_file(),
+        "This is a folder; open it in an external editor"
+    );
+    let mut bytes = Vec::new();
+    file.take(MAX_TEXT_BYTES + 1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() as u64 <= MAX_TEXT_BYTES,
+        "Files larger than 2 MiB must be opened externally"
+    );
+    anyhow::ensure!(
+        !bytes.contains(&0),
+        "Binary files must be opened externally"
+    );
+    let fingerprint = text_fingerprint(&bytes);
+    let text = String::from_utf8(bytes)
+        .map_err(|_| anyhow::anyhow!("Only UTF-8 text can be edited here"))?;
+    Ok(TextFile {
+        path: plain_path(&path.to_string_lossy()),
+        text,
+        fingerprint,
+    })
+}
+
+/// Save a draft only while the file still matches its read fingerprint.
+/// # Errors
+/// Fails on conflicts, invalid paths, oversized drafts or filesystem errors.
+pub fn save_text(roots: &[PathBuf], path: &Path, text: &str, expected: &str) -> Result<TextFile> {
+    use std::io::Write;
+    static SAVES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _save = SAVES
+        .lock()
+        .map_err(|_| anyhow::anyhow!("File save lock unavailable"))?;
+    anyhow::ensure!(
+        text.len() as u64 <= MAX_TEXT_BYTES && !text.contains('\0'),
+        "Draft is too large or contains binary data"
+    );
+    let current = read_text(roots, path)?;
+    anyhow::ensure!(
+        current.fingerprint == expected,
+        "File changed on disk. Reload before saving to avoid overwriting changes."
+    );
+    let path = resolve(roots, path)?;
+    let permissions = std::fs::metadata(&path)?.permissions();
+    anyhow::ensure!(!permissions.readonly(), "File is read-only");
+    let temporary = path.with_file_name(format!(".patchbay-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.set_permissions(permissions)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        anyhow::ensure!(
+            read_text(roots, &path)?.fingerprint == expected,
+            "File changed on disk. Reload before saving."
+        );
+        std::fs::rename(&temporary, &path)?;
+        read_text(roots, &path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }

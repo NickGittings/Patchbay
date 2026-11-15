@@ -1054,6 +1054,7 @@ export interface AgentIntegration {
 /** Machine-local editor preference; never serialized into patchbay.json. */
 export type EditorKind = 'vsCode' | 'cursor' | 'zed' | 'custom'
 export interface EditorPreferences {
+  fileOpenMode?: 'patchbay' | 'external'
   editor: EditorKind
   executable: string
   arguments: string[]

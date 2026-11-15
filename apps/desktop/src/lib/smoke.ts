@@ -1,3 +1,5 @@
+import { openInEditor } from './navigation'
+import { readTextFile, guardEditorClose } from './fileEditor'
 import { useChatTeams, refreshChatTeams } from './chatTeams'
 import { useSimpleUi, simpleKey } from './simpleUi'
 import { startTaskAgent } from './implement'
@@ -221,6 +223,9 @@ const hooks = {
   releaseMapEdit,
   syncRoots,
   sessionId,
+  openInEditor,
+  readTextFile,
+  guardEditorClose,
   editorOpen,
   editorPreferences,
   editorSavePreferences,

@@ -2847,6 +2847,59 @@ async fn editor_open(
     .await
 }
 #[tauri::command]
+async fn editor_resolve_target(
+    state: State<'_, AppState>,
+    project_id: String,
+    task: Option<String>,
+    worktree: Option<String>,
+    path: String,
+) -> CmdResult<serde_json::Value> {
+    let scoped = state.project(&project_id)?;
+    blocking(move || {
+        let (roots, _) = navigation_roots(&scoped, task.as_deref(), worktree.as_deref())?;
+        let resolved = files::resolve(&roots, std::path::Path::new(&path)).map_err(err)?;
+        Ok(serde_json::json!({ "path": resolved.to_string_lossy(), "isDir": resolved.is_dir() }))
+    })
+    .await
+}
+#[tauri::command]
+async fn text_file_read(
+    state: State<'_, AppState>,
+    project_id: String,
+    task: Option<String>,
+    worktree: Option<String>,
+    path: String,
+) -> CmdResult<files::TextFile> {
+    let scoped = state.project(&project_id)?;
+    blocking(move || {
+        let (roots, _) = navigation_roots(&scoped, task.as_deref(), worktree.as_deref())?;
+        files::read_text(&roots, std::path::Path::new(&path)).map_err(err)
+    })
+    .await
+}
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri injects app/state alongside the scoped save arguments.
+async fn text_file_save(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    task: Option<String>,
+    worktree: Option<String>,
+    path: String,
+    text: String,
+    expected: String,
+) -> CmdResult<files::TextFile> {
+    let scoped = state.project(&project_id)?;
+    let result = blocking(move || {
+        let (roots, _) = navigation_roots(&scoped, task.as_deref(), worktree.as_deref())?;
+        files::save_text(&roots, std::path::Path::new(&path), &text, &expected).map_err(err)
+    })
+    .await?;
+    let _ = app.emit(FILE_ACCESS_EVENT, ());
+    let _ = app.emit(GIT_DIRTY_EVENT, ());
+    Ok(result)
+}
+#[tauri::command]
 async fn file_search(
     project_id: String,
     state: State<'_, AppState>,
@@ -2878,7 +2931,8 @@ async fn terminal_open_reference(
     session_id: String,
     generation: u64,
     reference: String,
-) -> CmdResult<()> {
+    resolve_only: Option<bool>,
+) -> CmdResult<Option<serde_json::Value>> {
     let bridge = state.service.clone();
     let projects = state.projects.read().unwrap().clone();
     blocking(move || {
@@ -2916,7 +2970,11 @@ async fn terminal_open_reference(
                 )
             })?;
         target.path = resolved.to_string_lossy().into_owned();
-        navigation::open(&navigation::preferences().map_err(err)?, &roots, &target).map_err(err)
+        if resolve_only.unwrap_or(false) {
+            return Ok(Some(serde_json::json!({"target": target, "projectId": record.metadata.project_id, "task": record.metadata.task})));
+        }
+        navigation::open(&navigation::preferences().map_err(err)?, &roots, &target).map_err(err)?;
+        Ok(None)
     })
     .await
 }
@@ -2972,14 +3030,14 @@ pub fn run() {
                 WindowEvent::Focused(true) => {
                     let _ = window.app_handle().emit_to("main", GIT_DIRTY_EVENT, ());
                 }
-                WindowEvent::CloseRequested { .. } if window.label() == "main" => {
-                    for (label, popout) in window.app_handle().webview_windows() {
-                        if label.starts_with("component-") {
-                            let _ = popout.close();
+                WindowEvent::Destroyed => {
+                    if window.label() == "main" {
+                        for (label, popout) in window.app_handle().webview_windows() {
+                            if label.starts_with("component-") {
+                                let _ = popout.destroy();
+                            }
                         }
                     }
-                }
-                WindowEvent::Destroyed => {
                     window
                         .state::<AppState>()
                         .provider_auth
@@ -3199,6 +3257,9 @@ pub fn run() {
                 editor_save_preferences,
                 editor_discover,
                 editor_open,
+                editor_resolve_target,
+                text_file_read,
+                text_file_save,
                 file_search,
                 terminal_open_reference,
                 list_extensions,

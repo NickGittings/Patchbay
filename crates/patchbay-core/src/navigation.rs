@@ -16,9 +16,18 @@ pub enum EditorKind {
     Zed,
     Custom,
 }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FileOpenMode {
+    #[default]
+    Patchbay,
+    External,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorPreferences {
+    #[serde(default)]
+    pub file_open_mode: FileOpenMode,
     pub editor: EditorKind,
     #[serde(default)]
     pub executable: String,
@@ -28,6 +37,7 @@ pub struct EditorPreferences {
 impl Default for EditorPreferences {
     fn default() -> Self {
         Self {
+            file_open_mode: FileOpenMode::Patchbay,
             editor: EditorKind::VsCode,
             executable: String::new(),
             arguments: vec!["{file}".into()],
@@ -609,6 +619,18 @@ mod tests {
     }
 
     #[test]
+    fn legacy_editor_preferences_default_to_patchbay() {
+        let prefs: EditorPreferences = serde_json::from_str(
+            r#"{"editor":"custom","executable":"launcher","arguments":["{file}"]}"#,
+        )
+        .unwrap();
+        assert!(matches!(prefs.file_open_mode, FileOpenMode::Patchbay));
+        assert_eq!(prefs.executable, "launcher");
+        let json = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(json["fileOpenMode"], "patchbay");
+    }
+
+    #[test]
     fn indexed_search_preserves_order_and_skips_missing_top_candidates() {
         let fixture = Fixture::new();
         let roots = vec![fixture.0.clone()];
@@ -725,6 +747,7 @@ mod tests {
         let path = f.0.join("a {line} ' $().rs");
         std::fs::write(&path, "").unwrap();
         let prefs = EditorPreferences {
+            file_open_mode: FileOpenMode::Patchbay,
             editor: EditorKind::Custom,
             executable: "/bin/echo".into(),
             arguments: vec![
@@ -762,6 +785,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
         let prefs = EditorPreferences {
+            file_open_mode: FileOpenMode::Patchbay,
             editor: EditorKind::Custom,
             executable: launcher.display().to_string(),
             arguments: vec![
@@ -802,6 +826,7 @@ mod tests {
     fn missing_launcher_reports_actionable_configuration_error() {
         let f = Fixture::new();
         let prefs = EditorPreferences {
+            file_open_mode: FileOpenMode::Patchbay,
             editor: EditorKind::Custom,
             executable: f.0.join("missing editor").display().to_string(),
             arguments: vec!["{file}".into()],
@@ -919,6 +944,7 @@ mod tests {
         assert!(search(f.roots(), outside.roots(), "").is_err());
         assert!(search(f.roots(), f.roots(), "").unwrap().is_empty());
         let prefs = EditorPreferences {
+            file_open_mode: FileOpenMode::Patchbay,
             editor: EditorKind::Custom,
             executable: "/bin/echo".into(),
             arguments: vec!["{file}".into()],

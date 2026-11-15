@@ -1,3 +1,4 @@
+import { guardAllEditorWindows } from './fileEditor'
 import { mergeRestoredUsage, restoredUsage } from './usageSettings'
 import {
   mergeRestoredNotifications,
@@ -267,12 +268,14 @@ export function initializeWorkspace() {
     // Listen before restoring: the backend defers every quit to this listener, so a slow
     // restore must not swallow Cmd+Q. Flushing is a no-op until restore finishes.
     await listen('patchbay://quit-request', async () => {
+      if (!(await guardAllEditorWindows())) return
       await flushMapSaves()
       await flushWorkspace()
       await quitPatchbay()
     })
     await getCurrentWindow().onCloseRequested(async (event) => {
       event.preventDefault()
+      if (!(await guardAllEditorWindows())) return
       await flushMapSaves()
       await flushWorkspace()
       await getCurrentWindow().destroy()

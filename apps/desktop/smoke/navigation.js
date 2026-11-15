@@ -37,7 +37,53 @@
       'filename ranking',
     )
     previous = await smoke.editorPreferences()
+    await smoke.editorSavePreferences({ ...previous, fileOpenMode: 'patchbay' })
+    const scope = { projectId, task: null }
+    const originalText = (await smoke.readTextFile(scope, path)).text
+    await smoke.openInEditor({ path, line: 1 }, scope)
+    const editor = await until('built-in editor', () =>
+      document.querySelector('.file-editor textarea'),
+    )
+    await smoke.openInEditor({ path, line: 2 }, scope)
+    assert(
+      document.querySelectorAll('.file-editor [role="tab"]').length === 1,
+      'duplicate editor tab',
+    )
+    const edit = (text) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+      setter.call(editor, text)
+      editor.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const action = (label) =>
+      [...document.querySelectorAll('.file-editor button')].find(
+        (button) => button.textContent.trim() === label,
+      )
+    edit('saved from Patchbay\n')
+    await until('dirty editor', () => action('Save') && !action('Save').disabled)
+    editor.dispatchEvent(new KeyboardEvent('keydown', { key: 's', metaKey: true, bubbles: true }))
+    await until(
+      'saved file',
+      async () => (await smoke.readTextFile(scope, path)).text === 'saved from Patchbay\n',
+    )
+    await until('save completed', () => !action('Reload').disabled)
+    edit('unsaved draft')
+    document.querySelector('button[aria-label="Close File editor"]').click()
+    await until('unsaved prompt', () => document.querySelector('[role="alertdialog"]'))
+    action('Cancel').click()
+    await until('cancel keeps editor', () => !document.querySelector('[role="alertdialog"]'))
+    assert(editor.value === 'unsaved draft', 'cancel lost the draft')
+    edit(originalText)
+    await until('restore enabled', () => !action('Save').disabled)
+    action('Save').click()
+    await until(
+      'original restored',
+      async () => (await smoke.readTextFile(scope, path)).text === originalText,
+    )
+    await until('restore completed', () => !action('Reload').disabled)
+    document.querySelector('button[aria-label="Close File editor"]').click()
+    await until('editor closed', () => !document.querySelector('.file-editor'))
     await smoke.editorSavePreferences({
+      fileOpenMode: 'external',
       editor: 'custom',
       executable: `${opened.project.root}/editor launcher`,
       arguments: ['{file}', '--line={line}', '--column={column}'],

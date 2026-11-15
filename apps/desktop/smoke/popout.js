@@ -119,6 +119,43 @@
     }
     if (!document.querySelector('.component-window .terminal-tile'))
       throw new Error('Changes tab hides the terminals')
+    const preferences = await smoke.editorPreferences()
+    try {
+      await smoke.editorSavePreferences({ ...preferences, fileOpenMode: 'patchbay' })
+      const projectId = smoke.store.getState().project.id
+      const files = await smoke.fileSearch('', projectId, null)
+      const file = files.find((entry) => /\.(json|md|toml|txt|rs|ts|js)$/.test(entry.path))
+      if (!file) throw new Error('fixture has no text file')
+      await smoke.openInEditor({ path: file.path }, { projectId, task: null })
+      const editor = await until('pop-out editor', () =>
+        document.querySelector('.file-editor textarea'),
+      )
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+      setter.call(editor, `${editor.value}\nunsaved smoke draft`)
+      editor.dispatchEvent(new Event('input', { bubbles: true }))
+      await until('dirty pop-out draft', () =>
+        document.querySelector('.file-editor [role="tab"]').textContent.includes('•'),
+      )
+      const closing = smoke.guardEditorClose()
+      const prompt = await until('pop-out close guard', () =>
+        document.querySelector('[role="alertdialog"]'),
+      )
+      ;[...prompt.querySelectorAll('button')]
+        .find((button) => button.textContent === 'Cancel')
+        .click()
+      if (await closing) throw new Error('cancel allowed pop-out closure')
+      await until('cancel prompt dismissed', () => !document.querySelector('[role="alertdialog"]'))
+      document.querySelector('button[aria-label="Close File editor"]').click()
+      const discard = await until('discard draft', () =>
+        document.querySelector('[role="alertdialog"]'),
+      )
+      ;[...discard.querySelectorAll('button')]
+        .find((button) => button.textContent === 'Discard')
+        .click()
+      await until('pop-out editor closed', () => !document.querySelector('.file-editor'))
+    } finally {
+      await smoke.editorSavePreferences(preferences)
+    }
     await smoke.report(
       `PASS ${node.data.name}: maximized pop-out, backlog replayed, live input, hidden authority release, file tree, tiles, changes`,
     )
