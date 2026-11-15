@@ -16,7 +16,7 @@ import {
 } from '../types'
 import { mergeAgentStart, mergeDestinationResolve, reviewAgentStart } from './ipc'
 import { refreshTasks } from './tasks'
-import { useStore } from '../store'
+import { projectStateOf, workspaceOf, useStore } from '../store'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
 import { sessionLive, sessionTimeMs } from './sessionList'
 import { reviewerBusy } from './review'
@@ -255,10 +255,20 @@ async function launchMerge(
   cleanup: import('../types').MergeCleanup,
   autoOwnershipId?: string,
 ) {
+  const state = project.projectId ? projectStateOf(project.projectId) : undefined
+  const task = state?.tasks.find((t) => t.worktree === request.source)?.id ?? null
+  const cycle = state ? (workspaceOf(state, task).workCycle ?? '') : ''
   await listenForTerminals()
+  const current = project.projectId ? projectStateOf(project.projectId) : undefined
+  if (
+    current &&
+    (workspaceOf(current, task).finishingTask ||
+      (workspaceOf(current, task).workCycle ?? '') !== cycle)
+  )
+    throw new Error('This task has finished')
   const sid = await launchJob(mergeAgentStart, project, request, device, requestId, auto)
   // Retain cleanup even if refreshing the successfully launched session fails.
-  trackMergeCleanup(project, request, sid, requestId, cleanup, !!auto, autoOwnershipId)
+  trackMergeCleanup(project, request, sid, requestId, cleanup, !!auto, autoOwnershipId, cycle)
   await reconcileFreshSessions()
   return sid
 }

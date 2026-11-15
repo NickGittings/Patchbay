@@ -2,6 +2,8 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import {
   cleanupJobs,
+  cleanupCurrent,
+  retireTaskCleanup,
   deleteMergedWork,
   handledCleanup,
   readyCleanup,
@@ -148,4 +150,68 @@ test('partial restoration remains available after its merge session was retired'
     removedWorktree: '/generated-main',
   })
   expect(await readyCleanup(cleanupJobs()[0])).toBe(true)
+})
+
+test('finish cancels only cleanup from the matching worktree and cycle', () => {
+  useStore.setState({ tasks: [{ id: 'other', worktree: '/other' }] as never })
+  trackMergeCleanup(project, request, 'old-session', 'old', 'delete', false)
+  trackMergeCleanup(
+    project,
+    { ...request, source: '/other' },
+    'other-session',
+    'other',
+    'ask',
+    false,
+  )
+  trackMergeCleanup(
+    { ...project, projectId: 'q' },
+    request,
+    'foreign-session',
+    'foreign',
+    'ask',
+    false,
+  )
+  expect(retireTaskCleanup('p', null, '').map((j) => j.id)).toEqual(['old'])
+  expect(cleanupCurrent(cleanupJobs().find((j) => j.id === 'old')!)).toBe(false)
+  expect(cleanupJobs().find((j) => j.id === 'other')?.handled).not.toBe(true)
+  expect(cleanupJobs().find((j) => j.id === 'foreign')?.handled).not.toBe(true)
+  useStore.getState().patchTask('p', null, { workCycle: 'next' })
+  trackMergeCleanup(project, request, 'new-session', 'new', 'ask', false)
+  retireTaskCleanup('p', null, '')
+  expect(cleanupCurrent(cleanupJobs().find((j) => j.id === 'new')!)).toBe(true)
+})
+
+test('an in-flight cleanup readiness result cannot authorize deletion after Finish', async () => {
+  let resolve!: (value: 'merged') => void
+  vi.mocked(mergeCleanup).mockClear()
+  vi.mocked(mergeOutcome).mockImplementation(
+    () =>
+      new Promise((r) => {
+        resolve = r
+      }),
+  )
+  trackMergeCleanup(project, request, 'session', 'old', 'delete', false)
+  useStore.setState({ sessions: { session: { running: false } } as never })
+  const job = cleanupJobs()[0]
+  const pending = readyCleanup(job)
+  retireTaskCleanup('p', null, '')
+  resolve('merged')
+  expect(await pending).toBe(false)
+  await expect(deleteMergedWork(job)).rejects.toThrow('cancelled')
+  expect(mergeCleanup).not.toHaveBeenCalled()
+})
+
+test('an unresolved legacy cleanup source is not retired as the main worktree', () => {
+  const legacy = {
+    id: 'legacy',
+    projectId: 'p',
+    request,
+    sessionId: 'old',
+    choice: 'delete',
+    auto: false,
+  }
+  useStore.setState({ workspaceSettings: { mergeCleanupJobs: [legacy] } })
+  expect(retireTaskCleanup('p', null, '')).toEqual([])
+  expect(cleanupJobs()[0].handled).not.toBe(true)
+  expect(cleanupCurrent(cleanupJobs()[0])).toBe(false)
 })

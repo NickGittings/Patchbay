@@ -353,6 +353,8 @@ pub enum Request {
     },
     /// Recheck affected writers and clean up while holding the service launch lock.
     MergeCleanup {
+        project_id: String,
+        cycle: crate::work_cycles::Binding,
         project: Box<crate::model::Project>,
         request: crate::merges::MergeRequest,
     },
@@ -1928,8 +1930,19 @@ impl Service {
                     &self.summaries(),
                 )?)?
             }
-            Request::MergeCleanup { project, request } => {
+            Request::MergeCleanup {
+                project_id,
+                cycle,
+                project,
+                request,
+            } => {
                 let _operation = self.operation.lock().unwrap();
+                crate::work_cycles::ensure_available(&project_id, cycle.task.as_deref())?;
+                anyhow::ensure!(
+                    crate::work_cycles::read(&project_id, cycle.task.as_deref())?.cycle
+                        == cycle.cycle,
+                    "This task has finished; merge cleanup was cancelled"
+                );
                 crate::merges::cleanup_if_idle(&project, &request, &self.summaries())?;
                 serde_json::Value::Null
             }
@@ -3031,6 +3044,20 @@ mod tests {
                 .start("stale-launch".into(), metadata.clone(), stale.clone())
                 .is_err()
         );
+        let cleanup = Request::MergeCleanup {
+            project_id: project.clone(),
+            cycle: work_cycles::Binding { cycle: String::new(), task: None },
+            project: Box::new(serde_json::from_value(serde_json::json!({"schemaVersion":4, "name":"P", "root":root, "components":[], "links":[]})).unwrap()),
+            request: crate::merges::MergeRequest { expected_source_head: None, source: root.display().to_string(), source_branch: "feature".into(), destination: root.display().to_string(), destination_branch: "main".into() },
+        };
+        assert!(
+            service
+                .handle("test", cleanup)
+                .unwrap_err()
+                .to_string()
+                .contains("cleanup was cancelled")
+        );
+        assert!(root.is_dir());
         let mut fresh = stale.clone();
         work_cycles::prepare(&project, None, &mut fresh).unwrap();
         let next = service
@@ -4655,6 +4682,11 @@ mod tests {
                 return branch_service.handle(
                     "desktop",
                     Request::MergeCleanup {
+                        project_id: "p".into(),
+                        cycle: crate::work_cycles::Binding {
+                            cycle: String::new(),
+                            task: None,
+                        },
                         project: Box::new(project),
                         request,
                     },

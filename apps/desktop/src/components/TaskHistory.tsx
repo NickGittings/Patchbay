@@ -98,7 +98,7 @@ export default function TaskHistory({
             ))}
             <details>
               <summary>Auto and workspace state</summary>
-              <pre>{JSON.stringify(selected.workspace.auto, null, 2)}</pre>
+              <pre>{JSON.stringify(selected.workspace, null, 2)}</pre>
             </details>
             <details>
               <summary>Coordination records and results</summary>

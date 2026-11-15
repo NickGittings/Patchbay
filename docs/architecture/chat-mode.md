@@ -182,3 +182,8 @@ Finish archives all branch review lane Markdown and attempt JSON files, includin
 failed attempts. Archived resume remaps plan/review outputs, directory grants and retained
 briefing/command references into a private per-session output directory; repeated resume and
 briefing recovery preserve that mapping instead of updating active review findings.
+
+Finish also retires the cycle's persisted merge-cleanup jobs before stopping agents, keeping
+cleanup choices in the task archive. Cleanup polling and dialogs reject retired/archived
+jobs and recheck readiness after async Git reads. A service-side cycle check fences delayed
+cleanup requests so stopping a merge agent at Finish cannot authorize branch/worktree removal.

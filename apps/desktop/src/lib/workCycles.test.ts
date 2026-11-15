@@ -160,3 +160,39 @@ test('a delayed pre-finish receipt cannot restore the old cycle or erase a new t
   expect(useStore.getState().workCycle).toBe('second')
   expect(useStore.getState().simple?.startedMs).toBe(20)
 })
+
+test('Finish retires pending merge cleanup before sending its core request', async () => {
+  useStore.setState({
+    workspaceSettings: {
+      mergeCleanupJobs: [
+        {
+          id: 'old-cleanup',
+          projectId: 'p',
+          sessionId: 'old-agent',
+          choice: 'delete',
+          auto: false,
+          request: {
+            source: '/p',
+            sourceBranch: 'feature',
+            destination: '/main',
+            destinationBranch: 'main',
+          },
+        },
+      ],
+    },
+  })
+  vi.mocked(invoke).mockResolvedValue(receipt())
+  const finishing = finishTask('p', null)
+  expect(useStore.getState().workspaceSettings.mergeCleanupJobs).toEqual([
+    expect.objectContaining({ handled: true }),
+  ])
+  await finishing
+  expect(invoke).toHaveBeenCalledWith(
+    'task_cycle_finish',
+    expect.objectContaining({
+      workspace: expect.objectContaining({
+        cleanupJobs: [expect.objectContaining({ id: 'old-cleanup' })],
+      }),
+    }),
+  )
+})

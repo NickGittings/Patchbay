@@ -829,8 +829,20 @@ export const gitHistory = <T>(
   path?: string,
 ) => invoke<T>('git_history', { components, query: { worktree, repo, limit, commit, path } })
 
-export const mergeCleanup = (project: Project, request: import('../types').MergeRequest) =>
-  invoke<void>('merge_cleanup', { projectId: project.projectId, project, request })
+export const mergeCleanup = (
+  project: Project,
+  request: import('../types').MergeRequest,
+  workCycle?: string,
+) => {
+  const state = project.projectId ? projectStateOf(project.projectId) : undefined
+  const task = state?.tasks.find((t) => t.worktree === request.source)?.id ?? null
+  return invoke<void>('merge_cleanup', {
+    projectId: project.projectId,
+    project,
+    request,
+    workCycle: workCycle ?? expectedCycle(project.projectId, task),
+  })
+}
 
 export interface MergeCleanupPreview {
   restore: boolean

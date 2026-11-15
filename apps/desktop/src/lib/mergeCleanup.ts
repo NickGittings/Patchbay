@@ -1,4 +1,4 @@
-import { projectOf, useStore } from '../store'
+import { projectOf, projectStateOf, workspaceOf, useStore } from '../store'
 import type { MergeCleanup, MergeRequest, Project } from '../types'
 import { mergeCleanup, mergeCleanupPreview, mergeOutcome } from './ipc'
 import { autoRuns } from './autoState'
@@ -11,6 +11,8 @@ import { refreshMainWorktree } from './mainWorktree'
 
 export interface CleanupJob {
   id: string
+  workCycle?: string
+  task?: string | null
   projectId: string
   request: MergeRequest
   sessionId: string
@@ -25,6 +27,48 @@ export function cleanupJobs(): CleanupJob[] {
   return (useStore.getState().workspaceSettings.mergeCleanupJobs as CleanupJob[] | undefined) ?? []
 }
 
+function jobTask(job: Pick<CleanupJob, 'projectId' | 'request' | 'task'>) {
+  if (job.task !== undefined) return job.task
+  const state = projectStateOf(job.projectId)
+  const task = state?.tasks.find((t) => t.worktree === job.request.source)
+  if (task) return task.id
+  return job.request.source === state?.project?.root ? null : undefined
+}
+export function cleanupCurrent(job: CleanupJob) {
+  if (job.handled || !cleanupJobs().some((j) => j.id === job.id && !j.handled)) return false
+  const state = projectStateOf(job.projectId)
+  if (!state) return false
+  const task = jobTask(job)
+  // Older saved jobs need the task list before an unknown source can be scoped safely.
+  if (task === undefined) return false
+  const workspace = workspaceOf(state, task)
+  return (
+    !workspace.finishingTask &&
+    (workspace.workCycle ?? '') === (job.workCycle ?? '') &&
+    !useStore.getState().sessionRecords.some((r) => r.id === job.sessionId && r.archived)
+  )
+}
+/** Cancel pending cleanup at the task boundary, including polls already awaiting Git. */
+export function retireTaskCleanup(projectId: string, task: string | null, cycle: string) {
+  const retiring = cleanupJobs().filter(
+    (j) =>
+      !j.handled &&
+      j.projectId === projectId &&
+      jobTask(j) === task &&
+      (j.workCycle ?? '') === cycle,
+  )
+  if (retiring.length)
+    useStore.setState((s) => ({
+      workspaceSettings: {
+        ...s.workspaceSettings,
+        mergeCleanupJobs: cleanupJobs().map((j) =>
+          retiring.some((old) => old.id === j.id) ? { ...j, handled: true } : j,
+        ),
+      },
+    }))
+  return retiring
+}
+
 export function trackMergeCleanup(
   project: Project,
   request: MergeRequest,
@@ -33,8 +77,15 @@ export function trackMergeCleanup(
   choice: MergeCleanup,
   auto: boolean,
   autoOwnershipId?: string,
+  workCycle?: string,
 ) {
   if (!project.projectId) return
+  const state = projectStateOf(project.projectId)
+  const task = state?.tasks.find((t) => t.worktree === request.source)?.id ?? null
+  const workspace = state && workspaceOf(state, task)
+  const record = useStore.getState().sessionRecords.find((r) => r.id === sessionId)
+  const cycle = workCycle ?? (record ? (record.workCycle ?? '') : (workspace?.workCycle ?? ''))
+  if (record?.archived || workspace?.finishingTask || cycle !== (workspace?.workCycle ?? '')) return
   useStore.setState((s) => ({
     workspaceSettings: {
       ...s.workspaceSettings,
@@ -50,6 +101,8 @@ export function trackMergeCleanup(
         ),
         {
           id,
+          task,
+          workCycle: cycle,
           projectId: project.projectId!,
           request,
           sessionId,
@@ -73,6 +126,7 @@ export function handledCleanup(id: string) {
 
 /** Only confirmed integration and a finished merge turn can offer cleanup. */
 export async function readyCleanup(job: CleanupJob) {
+  if (!cleanupCurrent(job)) return false
   const s = useStore.getState()
   const project = projectOf(job.projectId)
   if (!project) return false
@@ -80,7 +134,8 @@ export async function readyCleanup(job: CleanupJob) {
   const session = s.sessions[job.sessionId]
   if (!record && !session) {
     // A partial restoration may already have retired the destination's merge session.
-    return (await mergeCleanupPreview(project, job.request).catch(() => null))?.retry ?? false
+    const preview = await mergeCleanupPreview(project, job.request).catch(() => null)
+    return cleanupCurrent(job) && (preview?.retry ?? false)
   }
   if (reviewerBusy(session, session?.running ?? (record ? sessionLive(record) : false)))
     return false
@@ -96,14 +151,15 @@ export async function readyCleanup(job: CleanupJob) {
     if (!run || run.status !== 'done') return false
   }
   const result = await mergeOutcome(project, job.request)
-  return result === 'merged' || result === 'alreadyIntegrated'
+  return cleanupCurrent(job) && (result === 'merged' || result === 'alreadyIntegrated')
 }
 
 export async function deleteMergedWork(job: CleanupJob) {
+  if (!cleanupCurrent(job)) throw new Error('This task cleanup was cancelled')
   try {
     const project = projectOf(job.projectId)
     if (!project) throw new Error('Project is no longer open')
-    await mergeCleanup(project, job.request)
+    await mergeCleanup(project, job.request, job.workCycle ?? '')
   } finally {
     refreshMainWorktree(job.projectId)
     await refreshTasks(job.projectId).catch(() => {})

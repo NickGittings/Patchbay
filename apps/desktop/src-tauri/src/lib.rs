@@ -2218,11 +2218,13 @@ async fn merge_cleanup_preview(
 }
 
 /// Cleanup is restricted to the main window and registered repository.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn merge_cleanup(
     window: WebviewWindow,
     state: State<'_, AppState>,
     project_id: String,
+    work_cycle: Option<String>,
     mut project: Project,
     request: patchbay_core::merges::MergeRequest,
 ) -> CmdResult<()> {
@@ -2239,6 +2241,27 @@ async fn merge_cleanup(
     let bridge = state.service.clone();
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
+        let cycle = patchbay_core::work_cycles::Binding {
+            cycle: work_cycle.unwrap_or_default(),
+            task: tasks::list(&root)
+                .map_err(err)?
+                .into_iter()
+                .find(|t| t.worktree == request.source)
+                .map(|t| t.id),
+        };
+        let cycle_lock =
+            patchbay_core::work_cycles::command_lock(&project_id, cycle.task.as_deref())
+                .map_err(err)?;
+        cycle_lock.lock().map_err(err)?;
+        patchbay_core::work_cycles::ensure_available(&project_id, cycle.task.as_deref())
+            .map_err(err)?;
+        if patchbay_core::work_cycles::read(&project_id, cycle.task.as_deref())
+            .map_err(err)?
+            .cycle
+            != cycle.cycle
+        {
+            return Err("This task has finished; merge cleanup was cancelled".into());
+        }
         project.root = root.to_string_lossy().into_owned();
         let preview = patchbay_core::merges::cleanup_preview(&project, &request).map_err(err)?;
         if open_roots.iter().any(|path| {
@@ -2272,6 +2295,8 @@ async fn merge_cleanup(
             })?;
         }
         let cleanup = bridge.call::<()>(patchbay_core::session::Request::MergeCleanup {
+            project_id,
+            cycle,
             project: Box::new(project),
             request,
         });

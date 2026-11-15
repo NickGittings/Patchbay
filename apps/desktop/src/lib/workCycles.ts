@@ -1,3 +1,4 @@
+import { retireTaskCleanup } from './mergeCleanup'
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
 import {
@@ -72,6 +73,7 @@ function apply(projectId: string, task: string | null, result: TaskCycleState) {
     autoDrafts.delete(autoDraftKey(projectId, task))
   } else useStore.getState().patchTask(projectId, task, { finishingTask: !!result.finishing })
   useTaskCycles.setState((s) => ({ scopes: { ...s.scopes, [key]: result } }))
+  for (const archive of result.history) retireTaskCleanup(projectId, task, archive.cycle)
   const retired = new Set(result.history.flatMap((a) => a.sessions.map((r) => r.id)))
   useStore.setState((s) => ({
     sessionRecords: s.sessionRecords.map((r) => (retired.has(r.id) ? { ...r, archived: true } : r)),
@@ -127,6 +129,7 @@ async function finish(projectId: string, task: string | null) {
   if (!state) throw new Error('Project is unavailable')
   const workspace = taskWorkspace(workspaceOf(state, task))
   const key = simpleKey(projectId, task)
+  const cleanupJobs = retireTaskCleanup(projectId, task, workspace.workCycle ?? '')
   useStore.getState().patchTask(projectId, task, {
     finishingTask: true,
     ...(workspace.auto
@@ -148,7 +151,7 @@ async function finish(projectId: string, task: string | null) {
       projectId,
       task,
       cycle: workspace.workCycle ?? '',
-      workspace: { ...workspace, chatUi: useSimpleUi.getState().worktrees[key] },
+      workspace: { ...workspace, cleanupJobs, chatUi: useSimpleUi.getState().worktrees[key] },
     })
     apply(projectId, task, result)
     await flushWorkspace(true)
