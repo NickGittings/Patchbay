@@ -413,6 +413,8 @@ pub struct ReviewRequest {
     pub worktree: String,
     pub branch: String,
     pub base: String,
+    #[serde(default)]
+    pub focus: Option<String>,
     /// The reviewer (its preset id) when several review the branch at once, each in its
     /// own session and findings file; `None` for a single reviewer.
     #[serde(default)]
@@ -874,6 +876,10 @@ pub fn prepare(
          {report} Start the report with exactly Verdict: clean or Verdict: issues. The second line must be Counts: {{\"critical\":0,\"high\":0,\"medium\":0,\"low\":0}}, with nonnegative integer totals for ALL open findings at each severity. Include all four keys exactly once, no other keys, and no Markdown around these two lines. Use clean only when all counts are zero; use issues otherwise. These counts control automatic merging, so verify them against every finding before finishing. Tag each finding [critical], [high], [medium] or [low]. If there are no findings, say so explicitly. {file_rule}\n",
         project.name, request.worktree, request.branch, request.base,
     );
+    if let Some(focus) = &request.focus {
+        ensure!(focus.len() <= 8000, "Review focus is too long");
+        text.push_str(&format!("\nReview focus requested by the lead: {focus}\n"));
+    }
     if let Some(auto) = auto {
         text.push_str(&auto.markdown("review"));
     }
@@ -2430,6 +2436,7 @@ mod tests {
                 groups: vec![],
             };
             let request = ReviewRequest {
+                focus: None,
                 worktree: project.root.clone(),
                 branch: "feature/a".into(),
                 base: "main".into(),
@@ -2497,6 +2504,7 @@ mod tests {
         ]))
         .unwrap();
         let request = ReviewRequest {
+            focus: None,
             worktree: worktree.display().to_string(),
             branch: "main".into(),
             base: f.request.branch.clone(),

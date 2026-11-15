@@ -112,6 +112,10 @@ pub struct WorkflowRequest {
     pub settings: serde_json::Value,
     pub state: String,
     pub result: Option<String>,
+    #[serde(default)]
+    pub council: Option<(CouncilSettings, Vec<TerminalSpec>)>,
+    #[serde(default)]
+    pub council_run: Option<serde_json::Value>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,6 +127,51 @@ pub struct InformationRequest {
     pub response: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CouncilSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub members: Vec<String>,
+    #[serde(default = "council_limit")]
+    pub concurrency: usize,
+}
+fn council_limit() -> usize {
+    2
+}
+impl Default for CouncilSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            members: vec![],
+            concurrency: 2,
+        }
+    }
+}
+impl CouncilSettings {
+    fn validate(&self, presets: &[TerminalSpec]) -> Result<()> {
+        ensure!(
+            (1..=8).contains(&self.concurrency),
+            "Council concurrency must be 1–8"
+        );
+        if self.enabled {
+            let unique: std::collections::BTreeSet<_> = self.members.iter().collect();
+            ensure!(
+                unique.len() >= 2 && unique.len() == self.members.len(),
+                "Choose at least two distinct council presets"
+            );
+            ensure!(
+                self.members
+                    .iter()
+                    .all(|id| presets.iter().any(|p| &p.id == id)),
+                "Council preset is unavailable"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +188,8 @@ pub struct Team {
     pub presets: Vec<TerminalSpec>,
     #[serde(default)]
     pub agent_roles: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub council: CouncilSettings,
     pub limit: usize,
     pub rounds: Vec<String>,
     #[serde(default)]
@@ -239,6 +290,11 @@ pub enum Control {
         presets: Vec<TerminalSpec>,
         #[serde(default)]
         roles: BTreeMap<String, Vec<String>>,
+        #[serde(default)]
+        council: CouncilSettings,
+    },
+    RetryCouncil {
+        id: String,
     },
     RequestState {
         id: String,
@@ -465,6 +521,7 @@ pub fn initialize(
             workers: vec![preset],
             presets: vec![],
             agent_roles: BTreeMap::new(),
+            council: CouncilSettings::default(),
             limit: 2,
             rounds: vec![],
             requests: vec![],
@@ -750,7 +807,8 @@ pub fn command(
                         "pauseAuto",
                         "resumeAuto",
                         "stopAuto",
-                        "startAgent"
+                        "startAgent",
+                        "startCouncilReview"
                     ]
                     .contains(&action.as_str()),
                     "Unknown workflow action"
@@ -765,8 +823,31 @@ pub fn command(
                         "Request ID already used"
                     );
                 } else {
+                    if action == "startCouncilReview" {
+                        ensure!(t.council.enabled, "Review council is disabled");
+                        t.council.validate(&t.presets)?;
+                        ensure!(
+                            !t.requests.iter().any(|r| r.action == action
+                                && ["queued", "starting", "running", "waiting"]
+                                    .contains(&r.state.as_str())),
+                            "A council review is already active"
+                        );
+                        ensure!(settings.is_object(), "Council settings must be an object");
+                        // Store immutable launch inputs separately from the caller's settings.
+                    }
                     t.requests.push(WorkflowRequest {
                         id,
+                        council_run: None,
+                        council: (action == "startCouncilReview").then(|| {
+                            (
+                                t.council.clone(),
+                                t.presets
+                                    .iter()
+                                    .filter(|p| t.council.members.contains(&p.id))
+                                    .cloned()
+                                    .collect(),
+                            )
+                        }),
                         action,
                         settings,
                         state: "queued".into(),
@@ -1265,6 +1346,48 @@ pub(super) fn reserve_check(s: &Store, project: &str, run: &str, job: &str) -> R
     Ok(())
 }
 
+/// Preserve settled council reports before a later round reuses their lane files.
+fn archive_council(root: &Path, id: &str, run: &mut serde_json::Value) -> Result<()> {
+    let Some(branch) = run["branch"].as_str() else {
+        return Ok(());
+    };
+    let folder = crate::reviews::dir(root)?
+        .join("councils")
+        .join(crate::workspace::session_id(
+            id,
+            crate::model::REVIEW_SCOPE,
+            "council",
+        ));
+    std::fs::create_dir_all(&folder)?;
+    for (index, member) in run["members"].as_array().into_iter().flatten().enumerate() {
+        if !["done", "failed"].contains(&member["state"].as_str().unwrap_or("")) {
+            continue;
+        }
+        let Some(lane) = member["preset"]["id"].as_str() else {
+            continue;
+        };
+        let source = crate::reviews::lane_file(root, branch, Some(lane))?;
+        let stamp = source.with_extension("json");
+        let recorded: serde_json::Value = std::fs::read(&stamp)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        if recorded["round"] != run["round"] {
+            continue;
+        }
+        for (from, to) in [
+            (source, folder.join(format!("{index}.md"))),
+            (stamp, folder.join(format!("{index}.json"))),
+        ] {
+            if from.is_file() && !to.exists() {
+                std::fs::copy(from, to)?;
+            }
+        }
+    }
+    run["archive"] = folder.display().to_string().into();
+    Ok(())
+}
+
 pub fn control(
     root: &Path,
     project: &str,
@@ -1275,14 +1398,57 @@ pub fn control(
     modify(root, |s| {
         let mut t = team(s, project, id)?.clone();
         match control {
-            Control::Catalog { presets, roles } => {
+            Control::Catalog {
+                presets,
+                roles,
+                council,
+            } => {
                 ensure!(presets.iter().all(supported), "Unsupported agent preset");
+                council.validate(&presets)?;
+                t.council = council;
                 t.presets = presets;
                 t.agent_roles = roles;
             }
-            Control::RequestState { id, state, result } => {
+            Control::RetryCouncil { id } => {
+                ensure!(t.council.enabled, "Review council is disabled");
                 ensure!(
-                    ["starting", "waiting", "completed", "failed"].contains(&state.as_str()),
+                    !t.requests.iter().any(|r| r.action == "startCouncilReview"
+                        && ["queued", "starting", "running", "waiting"]
+                            .contains(&r.state.as_str())),
+                    "A council review is already active"
+                );
+                let previous = t
+                    .requests
+                    .iter()
+                    .find(|r| r.id == id && r.action == "startCouncilReview" && r.state == "failed")
+                    .ok_or_else(|| anyhow!("No failed council to retry"))?;
+                let settings = previous.settings.clone();
+                t.council.validate(&t.presets)?;
+                t.requests.push(WorkflowRequest {
+                    id: new_id(),
+                    action: "startCouncilReview".into(),
+                    settings,
+                    state: "queued".into(),
+                    result: None,
+                    council_run: None,
+                    council: Some((
+                        t.council.clone(),
+                        t.presets
+                            .iter()
+                            .filter(|p| t.council.members.contains(&p.id))
+                            .cloned()
+                            .collect(),
+                    )),
+                });
+            }
+            Control::RequestState {
+                id,
+                state,
+                mut result,
+            } => {
+                ensure!(
+                    ["starting", "running", "waiting", "completed", "failed"]
+                        .contains(&state.as_str()),
                     "Invalid request state"
                 );
                 let request = t
@@ -1293,7 +1459,9 @@ pub fn control(
                 ensure!(
                     request.state == "queued"
                         || request.state == "waiting"
-                        || (request.state == "starting" && state != "starting"),
+                        || (request.state == "starting" && state != "starting")
+                        || (request.state == "running"
+                            && ["running", "completed", "failed"].contains(&state.as_str())),
                     "Request already claimed or finished"
                 );
                 ensure!(
@@ -1302,9 +1470,26 @@ pub fn control(
                         .is_none_or(|text| text.len() <= MESSAGE_LIMIT),
                     "Result too large"
                 );
+                if state == "running" && request.action == "startCouncilReview" {
+                    let mut run =
+                        serde_json::from_str(result.as_deref().context("Missing council state")?)?;
+                    archive_council(root, &id, &mut run)?;
+                    request.council_run = Some(run);
+                }
+                if ["completed", "failed"].contains(&state.as_str())
+                    && let Some(archive) = request
+                        .council_run
+                        .as_ref()
+                        .and_then(|r| r["archive"].as_str())
+                {
+                    result = Some(format!(
+                        "{}\nFull council reports: {archive}",
+                        result.unwrap_or_default()
+                    ));
+                }
                 request.state = state.clone();
                 request.result = result.clone();
-                if state != "starting" && state != "waiting" {
+                if state != "starting" && state != "waiting" && state != "running" {
                     append(
                         &mut t,
                         format!("workflow-{id}"),
@@ -1550,7 +1735,7 @@ pub fn side_message(
         Ok(t.clone())
     })
 }
-const INSTRUCTIONS: &str = "You are this worktree's persistent Patchbay lead. Remain available while agents and Auto run. Use agent team-request --id <id> --action <startAgent|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json> to control existing workflows. startAgent settings are {preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}; role-to-preset mappings are in team.agentRoles; presets are listed in team.presets (or team.workers until the catalog loads). startAuto accepts goal, effort (light/standard/thorough), device, agents, reviewers, workers, merge ({mode: ask, destinationBranch}), and stage; omit fields to use app defaults. Never automatically enable merge approval bypass. Use agent team-delegate-shared --id <id> --file <assignments-json> to start configured agents in this existing worktree without new worktrees. Inspect active sessions first, split independent scopes, record an existing agent's agreed components with agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...], and contact busy agents before overlapping edits. Wait for an explicit scope handoff; silence is not permission. Serialize Git mutations and preserve all local edits. Shared workers finish with team-report, without commits or integration. You may automatically delegate investigation, review and code work to Patchbay-managed workers. Do not use provider-native subagents. Before delegating and after integration, save a durable checkpoint with $PATCHBAY_CLI agent team-checkpoint --file <json> (goal, constraints, decisions, remaining, validation). Inspect authoritative state with agent team; create a round with agent team-delegate --id <unique-round-id> --file <json-array> where assignments have globally unique id, instructions, components, dependencies, preset, resultKind (report or code). Use only configured worker presets. Report workers inspect the committed baseline; compare their findings with local edits. Legacy isolated code delegation (team-delegate) requires a clean Git checkpoint: when local changes exist, explain the constraint and continue locally; never automatically commit or stash user changes. While code workers run, keep target edits under coordinator control. Gather progress, blockers, findings and validation from EXISTING agents before launching more work: use agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>. Requests and responses are durable in team.informationRequests. Busy agents receive questions at their next ready prompt; follow up with team-send, never launch a duplicate to replace a delayed reply. Agents respond with agent team-reply --id <request-id> --text <response>. Track every outstanding request, distinguish reported from verified results, and route dependencies yourself. Present coherent updates and final answers in this lead conversation; the user should never relay worker messages. Route dependencies and messages with agent team-send --id <unique-id> --to <assignment-id> --text <message>. Workers contact only you. Integrate code SERIALly using agent team-integrate <assignment-id>, verify the result, checkpoint, then agent team-finish --validation <checks-and-results>. Process exit is never success. After native compaction or a new conversation inspect agent team before acting; checkpoint, assignments, messages, commits and integration facts are authoritative. Preserve workers and worktrees. Continue locally when authentication, status hooks or repository layout prevent delegation.";
+const INSTRUCTIONS: &str = "You are this worktree's persistent Patchbay lead. Remain available while agents and Auto run. Use agent team-request --id <id> --action <startAgent|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json> to control existing workflows. When team.council.enabled, you may convene independent reviewers with startCouncilReview settings {base: branch-name, focus: optional-review-focus}; use only this workflow for a council, and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges. startAgent settings are {preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}; role-to-preset mappings are in team.agentRoles; presets are listed in team.presets (or team.workers until the catalog loads). startAuto accepts goal, effort (light/standard/thorough), device, agents, reviewers, workers, merge ({mode: ask, destinationBranch}), and stage; omit fields to use app defaults. Never automatically enable merge approval bypass. Use agent team-delegate-shared --id <id> --file <assignments-json> to start configured agents in this existing worktree without new worktrees. Inspect active sessions first, split independent scopes, record an existing agent's agreed components with agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...], and contact busy agents before overlapping edits. Wait for an explicit scope handoff; silence is not permission. Serialize Git mutations and preserve all local edits. Shared workers finish with team-report, without commits or integration. You may automatically delegate investigation, review and code work to Patchbay-managed workers. Do not use provider-native subagents. Before delegating and after integration, save a durable checkpoint with $PATCHBAY_CLI agent team-checkpoint --file <json> (goal, constraints, decisions, remaining, validation). Inspect authoritative state with agent team; create a round with agent team-delegate --id <unique-round-id> --file <json-array> where assignments have globally unique id, instructions, components, dependencies, preset, resultKind (report or code). Use only configured worker presets. Report workers inspect the committed baseline; compare their findings with local edits. Legacy isolated code delegation (team-delegate) requires a clean Git checkpoint: when local changes exist, explain the constraint and continue locally; never automatically commit or stash user changes. While code workers run, keep target edits under coordinator control. Gather progress, blockers, findings and validation from EXISTING agents before launching more work: use agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>. Requests and responses are durable in team.informationRequests. Busy agents receive questions at their next ready prompt; follow up with team-send, never launch a duplicate to replace a delayed reply. Agents respond with agent team-reply --id <request-id> --text <response>. Track every outstanding request, distinguish reported from verified results, and route dependencies yourself. Present coherent updates and final answers in this lead conversation; the user should never relay worker messages. Route dependencies and messages with agent team-send --id <unique-id> --to <assignment-id> --text <message>. Workers contact only you. Integrate code SERIALly using agent team-integrate <assignment-id>, verify the result, checkpoint, then agent team-finish --validation <checks-and-results>. Process exit is never success. After native compaction or a new conversation inspect agent team before acting; checkpoint, assignments, messages, commits and integration facts are authoritative. Preserve workers and worktrees. Continue locally when authentication, status hooks or repository layout prevent delegation.";
 fn excerpt(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.into();
@@ -2844,6 +3029,84 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn council_archives_full_reports_before_lanes_are_reused() {
+        let f = Fixture::new();
+        let file = crate::reviews::lane_file(&f.dir, "main", Some("codex")).unwrap();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let report = "Complete evidence.\n".repeat(10000);
+        std::fs::write(&file, &report).unwrap();
+        std::fs::write(
+            file.with_extension("json"),
+            r#"{"round":"round-one","head":"original"}"#,
+        )
+        .unwrap();
+        let mut run = serde_json::json!({"round":"round-one","branch":"main","members":[{"state":"done","preset":{"id":"codex"}}]});
+        archive_council(&f.dir, "request-one", &mut run).unwrap();
+        let archived = Path::new(run["archive"].as_str().unwrap()).join("0.md");
+        assert_eq!(std::fs::read_to_string(&archived).unwrap(), report);
+        std::fs::write(file, "new report").unwrap();
+        archive_council(&f.dir, "request-one", &mut run).unwrap();
+        assert_eq!(std::fs::read_to_string(archived).unwrap(), report);
+    }
+
+    #[test]
+    fn councils_require_opt_in_snapshot_presets_and_reject_overlapping_requests() {
+        let f = Fixture::new();
+        let request = |id: &str| Command::Request {
+            id: id.into(),
+            action: "startCouncilReview".into(),
+            settings: serde_json::json!({"base":"main"}),
+        };
+        assert!(f.cmd(request("one")).is_err());
+        let mut second = preset();
+        second.id = "other-model".into();
+        second.command = "codex --model other".into();
+        let settings = CouncilSettings {
+            enabled: true,
+            members: vec!["codex".into(), second.id.clone()],
+            concurrency: 1,
+        };
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Catalog {
+                presets: vec![preset(), second],
+                roles: BTreeMap::new(),
+                council: settings,
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        f.cmd(request("one")).unwrap();
+        f.cmd(request("one")).unwrap();
+        assert!(f.cmd(request("two")).is_err());
+        let saved = f.state();
+        let (settings, presets) = saved.requests[0].council.as_ref().unwrap();
+        assert_eq!(settings.concurrency, 1);
+        assert_eq!(presets[1].command, "codex --model other");
+        assert_eq!(saved.requests.len(), 1);
+    }
+
+    #[test]
+    fn council_configuration_rejects_duplicates_missing_presets_and_bad_limits() {
+        let mut settings = CouncilSettings {
+            enabled: true,
+            members: vec!["codex".into(), "codex".into()],
+            concurrency: 2,
+        };
+        assert!(settings.validate(&[preset()]).is_err());
+        settings.members[1] = "missing".into();
+        assert!(settings.validate(&[preset()]).is_err());
+        settings.enabled = false;
+        settings.concurrency = 0;
+        assert!(settings.validate(&[]).is_err());
+        let defaults: CouncilSettings = serde_json::from_str("{}").unwrap();
+        assert!(!defaults.enabled);
+        assert_eq!(defaults.concurrency, 2);
+    }
+
     #[test]
     fn workflow_requests_are_idempotent_and_claimed_once() {
         let f = Fixture::new();

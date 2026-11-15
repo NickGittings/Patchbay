@@ -992,6 +992,7 @@ mod tests {
         let prepared = crate::reviews::prepare(
             &project(&root),
             &crate::reviews::ReviewRequest {
+                focus: None,
                 worktree: task.worktree.clone(),
                 branch: "feature/review".into(),
                 base: "main".into(),

@@ -50,13 +50,52 @@ export async function startSimpleReview(
   )
   if (reviewWorktreeBusy(records, initial.sessions, request.worktree))
     throw new Error('Wait for the current review to finish before reviewing again.')
+  await retireReviewSlots(
+    project.projectId!,
+    request.worktree,
+    devices.length === 1 ? [request.lane || null] : devices.map((d) => d.id),
+    current,
+  )
+  current()
+  const result = await startReviewAgents(project, request, devices)
+  // Reconciliation can fail after a successful launch. Never leave the settled generation
+  // in the store, or startup idle will look like a finished review.
+  await Promise.all(
+    result.started.map(async ({ sessionId }) => {
+      const snapshot = await terminalSnapshot(sessionId, 0).catch(() => null)
+      const known = useStore.getState().sessions[sessionId]
+      const previous =
+        initial.sessions[sessionId] ?? records.find((r) => r.id === sessionId)?.snapshot
+      if (snapshot && (snapshot.generation ?? 0) > (known?.generation ?? 0)) {
+        const record = useStore.getState().sessionRecords.find((r) => r.id === sessionId)
+        useStore.getState().setSession(sessionId, sessionFromSnapshot(known, snapshot, record))
+      } else if (!snapshot && known?.generation === previous?.generation) {
+        useStore.getState().setSession(sessionId, { running: true })
+      }
+    }),
+  )
+  return result
+}
+
+/** Retire only settled generations in the exact review lanes being reused. */
+export async function retireReviewSlots(
+  projectId: string,
+  worktree: string,
+  lanes: (string | null)[],
+  current: () => unknown = () => undefined,
+) {
+  const initial = useStore.getState()
+  const records = initial.sessionRecords.filter(
+    (r) =>
+      r.metadata.projectId === projectId &&
+      r.metadata.componentId === REVIEW_SCOPE &&
+      r.spec.cwd === worktree &&
+      lanes.includes(r.metadata.lane ?? null),
+  )
+  if (reviewWorktreeBusy(records, initial.sessions, worktree))
+    throw new Error('Wait for the current review to finish before reviewing again.')
   for (const record of records) {
-    // A single review uses the shared slot; parallel reviews use one slot per preset.
-    const lane = record.metadata.lane ?? null
-    if (
-      devices.length === 1 ? lane !== (request.lane || null) : !devices.some((d) => d.id === lane)
-    )
-      continue
+    if (!lanes.includes(record.metadata.lane ?? null)) continue
     current()
     const previous = initial.sessions[record.id] ?? record.snapshot
     const snapshot = await terminalSnapshot(record.id, 0)
@@ -83,23 +122,4 @@ export async function startSimpleReview(
       },
     )
   }
-  current()
-  const result = await startReviewAgents(project, request, devices)
-  // Reconciliation can fail after a successful launch. Never leave the settled generation
-  // in the store, or startup idle will look like a finished review.
-  await Promise.all(
-    result.started.map(async ({ sessionId }) => {
-      const snapshot = await terminalSnapshot(sessionId, 0).catch(() => null)
-      const known = useStore.getState().sessions[sessionId]
-      const previous =
-        initial.sessions[sessionId] ?? records.find((r) => r.id === sessionId)?.snapshot
-      if (snapshot && (snapshot.generation ?? 0) > (known?.generation ?? 0)) {
-        const record = useStore.getState().sessionRecords.find((r) => r.id === sessionId)
-        useStore.getState().setSession(sessionId, sessionFromSnapshot(known, snapshot, record))
-      } else if (!snapshot && known?.generation === previous?.generation) {
-        useStore.getState().setSession(sessionId, { running: true })
-      }
-    }),
-  )
-  return result
 }

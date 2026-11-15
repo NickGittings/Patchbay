@@ -1,3 +1,4 @@
+import { councilSettings, driveCouncil, type CouncilSettings } from './council'
 import { planTerminals } from './plan'
 import { checkHooks, hooksUsable } from './agentHooks'
 import { ProviderSetupRequired, requireProviderAuth } from './providerAuth'
@@ -39,6 +40,7 @@ export interface ChatTeam {
   workers: TerminalSpec[]
   presets?: TerminalSpec[]
   agentRoles?: Record<string, string[]>
+  council?: CouncilSettings
   limit: number
   rounds: string[]
   requests?: {
@@ -47,6 +49,8 @@ export interface ChatTeam {
     settings: Record<string, unknown>
     state: string
     result: string | null
+    councilRun?: import('./council').CouncilRun
+    council?: [CouncilSettings, TerminalSpec[]]
   }[]
   checkpoint: {
     goal: string
@@ -83,7 +87,13 @@ export interface ChatTeam {
   error: string | null
 }
 export type TeamControl =
-  | { kind: 'catalog'; presets: TerminalSpec[]; roles: Record<string, string[]> }
+  | { kind: 'retryCouncil'; id: string }
+  | {
+      kind: 'catalog'
+      presets: TerminalSpec[]
+      roles: Record<string, string[]>
+      council?: CouncilSettings
+    }
   | { kind: 'requestState'; id: string; state: string; result: string | null }
   | { kind: 'pause' | 'resume' | 'stop' | 'historyBoundary' }
   | { kind: 'block'; reason: string }
@@ -411,6 +421,14 @@ export async function refreshChatTeams(projectId: string) {
     const available = planTerminals(useStore.getState().devices).filter(
       (t) => !!(profileHookProvider(t.command) ?? t.adapter),
     )
+    const council = councilSettings(
+      useStore.getState().workspaceSettings.reviewCouncil,
+      useStore.getState().agentRoles.review,
+    )
+    // An unavailable preset must disable new councils without blocking team reconciliation.
+    council.enabled &&=
+      council.members.length >= 2 &&
+      council.members.every((id) => available.some((p) => p.id === id))
     const roles = useStore.getState().agentRoles
     const rolesChanged = [
       ...new Set([...Object.keys(roles), ...Object.keys(team.agentRoles ?? {})]),
@@ -420,6 +438,7 @@ export async function refreshChatTeams(projectId: string) {
         JSON.stringify(team.agentRoles?.[role] ?? []),
     )
     if (
+      JSON.stringify(team.council) !== JSON.stringify(council) ||
       rolesChanged ||
       (team.presets ?? []).length !== available.length ||
       available.some(
@@ -433,7 +452,13 @@ export async function refreshChatTeams(projectId: string) {
           ),
       )
     ) {
-      const updated = await controlTeam(team, { kind: 'catalog', presets: available, roles })
+      const updated = await controlTeam(team, {
+        kind: 'catalog',
+        presets: available,
+        roles,
+        council,
+      })
+      team.council = updated.council
       team.presets = updated.presets
       team.agentRoles = updated.agentRoles
     }
@@ -487,6 +512,22 @@ export function autoOwnership(
 async function driveLeadRequests(team: ChatTeam) {
   if (team.state !== 'running' || team.reset) return
   for (const request of team.requests ?? []) {
+    if (
+      request.action === 'startCouncilReview' &&
+      ['running', 'starting'].includes(request.state)
+    ) {
+      try {
+        await driveCouncil(team, request)
+      } catch (error) {
+        await controlTeam(team, {
+          kind: 'requestState',
+          id: request.id,
+          state: 'failed',
+          result: String(error),
+        })
+      }
+      continue
+    }
     if (!['queued', 'waiting'].includes(request.state)) continue
     try {
       await controlTeam(team, {
@@ -499,6 +540,10 @@ async function driveLeadRequests(team: ChatTeam) {
       continue
     }
     try {
+      if (request.action === 'startCouncilReview') {
+        await driveCouncil(team, request)
+        continue
+      }
       const auto = await import('./auto')
       if (request.action === 'startAgent') {
         const project = projectOf(team.projectId)

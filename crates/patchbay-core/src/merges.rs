@@ -1393,6 +1393,7 @@ mod tests {
         let review = crate::reviews::prepare(
             &f.project,
             &crate::reviews::ReviewRequest {
+                focus: None,
                 worktree: f.request.source.clone(),
                 branch: "feature".into(),
                 base: "main".into(),
@@ -1452,6 +1453,7 @@ mod tests {
                 let review = crate::reviews::prepare(
                     &f.project,
                     &crate::reviews::ReviewRequest {
+                        focus: None,
                         worktree: f.request.source.clone(),
                         branch: "feature".into(),
                         base: "main".into(),

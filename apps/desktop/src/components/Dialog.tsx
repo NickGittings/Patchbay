@@ -17,10 +17,11 @@ export default function Dialog({
 }) {
   const heading = useId()
   const card = useRef<HTMLDivElement>(null)
+  // Capture before child autoFocus runs during the mount commit.
+  const previous = useRef(document.activeElement as HTMLElement | null)
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null
     card.current?.focus()
-    return () => previous?.focus()
+    return () => previous.current?.focus()
   }, [])
   return (
     <div className={`extension-overlay ${className}`} onClick={onClose}>
