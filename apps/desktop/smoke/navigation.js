@@ -290,14 +290,16 @@
 
     // Overflow must affect only the tab strip, never the active terminal's controls.
     const crowdedIds = []
+    const longServiceUrl = `http://localhost:3000/${'long-service-path/'.repeat(50)}`
     for (let i = 0; i < 9; i++) {
       const id = state().addTerminal(
         'navigation',
         {
           id: `overflow-${i}`,
           name: `Terminal ${i} with a deliberately long label to exercise ellipsis and scrolling`,
-          kind: 'shell',
-          command: '',
+          kind: i === 8 ? 'task' : 'shell',
+          command: i === 8 ? `printf 'Service ready at ${longServiceUrl}\\n'; sleep 600` : '',
+          readyWhen: i === 8 ? 'Service ready' : undefined,
         },
         false,
       )
@@ -343,6 +345,8 @@
     state().setActiveSession(lastSid)
     await until('last programmatic tab visible', activeVisible)
     assert(controlsVisible(), 'dock actions clipped by overflowing tabs')
+    await until('long service URL in dock', () => actions()?.querySelector('.status-url'))
+    assert(controlsVisible(), 'long service URL clipped dock controls')
     assert(
       strip().querySelector('.active').title.includes('deliberately long label'),
       'full tab label lost',
@@ -510,16 +514,27 @@
     const utilityHandle = document.querySelector('.utility-resize')
     const utilityWidth = Number(utilityHandle.getAttribute('aria-valuenow'))
     utilityHandle.focus()
-    utilityHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    const resizeStep = utilityWidth >= 260 ? -20 : 20
+    utilityHandle.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: resizeStep < 0 ? 'ArrowLeft' : 'ArrowRight',
+        bubbles: true,
+      }),
+    )
     await until(
       'utility keyboard resize',
-      () => Number(utilityHandle.getAttribute('aria-valuenow')) === utilityWidth - 20,
+      () => Number(utilityHandle.getAttribute('aria-valuenow')) === utilityWidth + resizeStep,
     )
     assert(
-      Number(localStorage.getItem('patchbay.utilityPanelWidth')) === utilityWidth - 20,
+      Number(localStorage.getItem('patchbay.utilityPanelWidth')) === utilityWidth + resizeStep,
       'utility width not persisted',
     )
-    utilityHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    utilityHandle.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: resizeStep < 0 ? 'ArrowRight' : 'ArrowLeft',
+        bubbles: true,
+      }),
+    )
     smoke.selectPanel(null)
 
     const generation = smoke.sessionGeneration(sid)
