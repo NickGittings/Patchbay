@@ -72,6 +72,7 @@ export interface MergeRequest {
   destinationBranch: string
 }
 export interface ReviewRequest {
+  focus?: string
   worktree: string
   branch: string
   base: string

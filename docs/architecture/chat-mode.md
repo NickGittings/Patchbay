@@ -159,3 +159,28 @@ and adds a small notice. Team membership reconciles before delivery; pending use
 recovery/inbox delivery and a later ready prompt. Service-level submission reservations serialize pastes
 and prevent two clients from consuming the same ready prompt. Explicit pause/stop decisions survive
 recovery. Intentional agent switching and conversation clearing remain separate actions.
+
+### Lead review councils
+
+Agent roles settings persist `settings.reviewCouncil` independently of Review assignments:
+`{ enabled, members: presetIds[], concurrency }` (off by default, concurrency 2, range 1–8).
+An enabled council needs at least two available distinct presets. Each preset retains its own
+provider, model and authentication. The settings explain the additional model usage.
+
+Catalog synchronization exposes effective council settings to the persistent lead; missing
+presets disable new councils without blocking other team workflows. The lead requests
+`startCouncilReview` with `{ base: branchName, focus?: reviewFocus }`. Core validates opt-in, deduplicates request IDs,
+rejects overlapping council requests and snapshots the selected presets and settings in the
+durable workflow request. Desktop drives the existing review sessions with one shared round
+and a lane per preset, limiting simultaneous reviewers. It saves launch intent and request IDs
+before launching, reconciles lost replies, and never relaunches uncertain members on restart.
+Queued members interrupted by restart become explicit failures requiring a fresh council.
+
+`WorkflowRequest.councilRun` retains member progress after the final `result` becomes the
+lead-facing report. Completion is delivered through the existing durable team inbox. The lead
+consolidates duplicates with attribution and explains disagreements. Missing verdicts, failed
+members, newer review rounds, changed HEAD/worktree contents, uncovered files and truncated
+reports prevent a complete council result. Council results authorize neither fixes nor merges.
+Settings show progress and allow cancellation or an explicit fresh full council after failure;
+individual reports remain available in Review. Settled reports and their HEAD/coverage sidecars are also archived under the originating request before lanes are reused; the final inbox result points to that archive. Council scheduling runs while desktop team
+reconciliation runs, like other lead workflow requests.

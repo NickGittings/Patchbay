@@ -1,3 +1,4 @@
+import CouncilSettings from './CouncilSettings'
 import ChatWorkerSettings from './ChatWorkerSettings'
 import { useRail } from '../lib/rail'
 import SettingsDialog, { SettingsSection } from './SettingsDialog'
@@ -83,6 +84,7 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
         </label>
       </SettingsSection>
       <ChatWorkerSettings />
+      <CouncilSettings />
       <SettingsSection title="Role defaults">
         {AGENT_ROLES.map((role) => {
           if (role === 'review') return reviewers
