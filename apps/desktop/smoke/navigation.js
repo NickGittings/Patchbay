@@ -112,6 +112,9 @@
       'header lost full path',
     )
 
+    // Finish terminal teardown before testing focus: a late dock mount can focus xterm.
+    smoke.resetSessions(await smoke.terminalReset())
+    await until('terminal dock cleared', () => !document.querySelector('.terminal-dock .xterm'))
     const trigger = inspector.querySelector('[aria-label="Component actions"]')
     const menu = () => document.querySelector('[role="menu"][aria-label="Component actions"]')
     const menuKey = (target, key) =>
@@ -131,23 +134,30 @@
     const header = inspector.querySelector('.inspector-header')
     const bounds = header.getBoundingClientRect()
     const at = { x: bounds.left + 24, y: bounds.bottom - 4 }
-    header.dispatchEvent(
-      new MouseEvent('contextmenu', {
-        bubbles: true,
-        cancelable: true,
-        clientX: at.x,
-        clientY: at.y,
-      }),
-    )
-    await until('header context menu positioned at pointer', () => {
-      const rect = menu()?.getBoundingClientRect()
-      return rect && Math.abs(rect.left - at.x) < 2 && Math.abs(rect.top - at.y) < 2
-    })
+    const openContextMenu = async () => {
+      header.dispatchEvent(
+        new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: at.x,
+          clientY: at.y,
+        }),
+      )
+      await until('header context menu positioned at pointer', () => {
+        const rect = menu()?.getBoundingClientRect()
+        return rect && Math.abs(rect.left - at.x) < 2 && Math.abs(rect.top - at.y) < 2
+      })
+    }
+    await openContextMenu()
     assert(menu().textContent.includes('Validate affected'), 'context menu missing validation')
+    menuKey(menu(), 'ArrowDown')
+    menuKey(document.activeElement, 'Escape')
+    await until('context menu dismissed with Escape', () => !menu())
+    assert(document.activeElement === trigger, 'context menu did not restore focus')
+    await openContextMenu()
     menuKey(menu(), 'ArrowDown')
     menuKey(document.activeElement, 'Tab')
     await until('context menu dismissed with Tab', () => !menu())
-    assert(document.activeElement === trigger, 'context menu did not restore focus')
     // Let WebKit finish the Tab focus change before the next interaction.
     await sleep(50)
     trigger.click()

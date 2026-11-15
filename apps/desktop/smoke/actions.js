@@ -78,12 +78,15 @@
       state().select(id)
       await until(
         `inspector for ${id}`,
-        () => document.querySelector('.inspector input')?.value === id.toUpperCase(),
+        () => document.querySelector('.inspector-header h2')?.textContent === id.toUpperCase(),
       )
-      const rows = document.querySelectorAll('.inspector .terminal-row')
+      const rows = document.querySelectorAll('.inspector .inspector-terminal')
       for (const [index, role] of ['development', 'validation'].entries()) {
-        rows[index].open = true
-        const select = Array.from(rows[index].querySelectorAll('select')).find((el) =>
+        rows[index].querySelector('.inspector-terminal-disclosure').click()
+        const settings = await until(`${id} terminal settings`, () =>
+          rows[index].querySelector('.inspector-terminal-settings:not([hidden])'),
+        )
+        const select = Array.from(settings.querySelectorAll('select')).find((el) =>
           Array.from(el.options).some((option) => option.value === 'development'),
         )
         assert(select, 'graph action selector missing')
@@ -183,9 +186,13 @@
     state().select('lib')
     await until(
       'library inspector',
-      () => document.querySelector('.inspector input')?.value === 'LIB',
+      () => document.querySelector('.inspector-header h2')?.textContent === 'LIB',
     )
-    button(document.querySelector('.inspector'), 'Validate affected').click()
+    document.querySelector('.inspector [aria-label="Component actions"]').click()
+    const componentMenu = await until('component actions menu', () =>
+      document.querySelector('[role="menu"][aria-label="Component actions"]'),
+    )
+    button(componentMenu, 'Validate affected').click()
     await until(
       'validation results',
       () =>
