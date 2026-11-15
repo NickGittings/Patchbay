@@ -16,7 +16,7 @@ import {
 } from '../types'
 import { mergeAgentStart, mergeDestinationResolve, reviewAgentStart } from './ipc'
 import { refreshTasks } from './tasks'
-import { projectStateOf, workspaceOf, useStore } from '../store'
+import { useStore } from '../store'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
 import { sessionLive, sessionTimeMs } from './sessionList'
 import { reviewerBusy } from './review'
@@ -82,7 +82,6 @@ function jobRunning(
 ) {
   return records.some(
     (r) =>
-      !r.archived &&
       r.metadata.componentId === scope &&
       r.spec.cwd === cwd &&
       (sessions[r.id]?.running ?? sessionLive(r)),
@@ -116,7 +115,6 @@ export const reviewWorktreeBusy = (
 ) =>
   records.some(
     (r) =>
-      !r.archived &&
       r.metadata.componentId === REVIEW_SCOPE &&
       r.spec.cwd === worktree &&
       reviewerBusy(sessions[r.id], sessions[r.id]?.running ?? sessionLive(r)),
@@ -137,7 +135,6 @@ export const runningReviewLanes = (
     .filter(
       (r) =>
         r.metadata.projectId === projectId &&
-        !r.archived &&
         r.metadata.componentId === REVIEW_SCOPE &&
         !!branch &&
         r.metadata.branch === branch &&
@@ -169,8 +166,8 @@ export function currentReviewAgentRecord(
   selected: string | undefined,
 ) {
   return (
-    records.find((r) => !r.archived && r.id === selected) ??
-    records.find((r) => !r.archived && (sessions[r.id]?.running ?? sessionLive(r)))
+    records.find((r) => r.id === selected) ??
+    records.find((r) => sessions[r.id]?.running ?? sessionLive(r))
   )
 }
 
@@ -255,20 +252,10 @@ async function launchMerge(
   cleanup: import('../types').MergeCleanup,
   autoOwnershipId?: string,
 ) {
-  const state = project.projectId ? projectStateOf(project.projectId) : undefined
-  const task = state?.tasks.find((t) => t.worktree === request.source)?.id ?? null
-  const cycle = state ? (workspaceOf(state, task).workCycle ?? '') : ''
   await listenForTerminals()
-  const current = project.projectId ? projectStateOf(project.projectId) : undefined
-  if (
-    current &&
-    (workspaceOf(current, task).finishingTask ||
-      (workspaceOf(current, task).workCycle ?? '') !== cycle)
-  )
-    throw new Error('This task has finished')
   const sid = await launchJob(mergeAgentStart, project, request, device, requestId, auto)
   // Retain cleanup even if refreshing the successfully launched session fails.
-  trackMergeCleanup(project, request, sid, requestId, cleanup, !!auto, autoOwnershipId, cycle)
+  trackMergeCleanup(project, request, sid, requestId, cleanup, !!auto, autoOwnershipId)
   await reconcileFreshSessions()
   return sid
 }

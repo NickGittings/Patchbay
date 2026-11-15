@@ -1,7 +1,4 @@
 import { beforeEach, expect, test, vi } from 'vitest'
-vi.mock('./workCycles', () => ({
-  refreshTaskCycle: vi.fn(async () => ({ cycle: '', finishing: null, history: [] })),
-}))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn(), reconcileFreshSessions: vi.fn() }))
 vi.mock('./chatTeams', () => ({ initializeTeam: vi.fn(), newLead: vi.fn(), teamFor: vi.fn() }))
 vi.mock('./terminals', () => ({ hasVisibleTerminal: () => false }))

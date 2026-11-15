@@ -4,7 +4,7 @@ import {
   type Notice,
   type NoticeKind,
 } from './lib/notificationHistory'
-import { PROJECT_DRAFT, PLAN_SCOPE, MAP_SCOPE, plannerChatTask, setCycleResolver } from './types'
+import { PROJECT_DRAFT } from './types'
 import {
   addEdge,
   applyEdgeChanges,
@@ -108,8 +108,6 @@ export interface TaskComponentTerminal {
 
 /** Saved per task. Processes and output remain service-owned. */
 export interface TaskWorkspace {
-  workCycle?: string
-  finishingTask?: boolean
   planStory: string | null
   planStoryTerminal: string | null
   simple: import('./lib/simple').SimpleState | null
@@ -129,8 +127,6 @@ export interface TaskWorkspace {
 }
 export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
   return {
-    workCycle: undefined,
-    finishingTask: false,
     planStory: null,
     planStoryTerminal: null,
     simple: null,
@@ -150,8 +146,6 @@ export function emptyTaskWorkspace(components: string[] = []): TaskWorkspace {
 }
 export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
   const {
-    workCycle,
-    finishingTask,
     planStory,
     planStoryTerminal,
     simple,
@@ -169,8 +163,6 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
     graphActionReport,
   } = s
   return {
-    workCycle,
-    finishingTask,
     planStory,
     planStoryTerminal,
     simple,
@@ -190,8 +182,6 @@ export function taskWorkspace(s: TaskWorkspace): TaskWorkspace {
 }
 
 export interface ProjectState {
-  workCycle?: string
-  finishingTask?: boolean
   taskWorkspaces: Record<string, TaskWorkspace>
   rootTerminals: TerminalSpec[]
   componentTerminals: TaskComponentTerminal[]
@@ -255,8 +245,6 @@ export interface ProjectEntry {
   unavailableLayout?: Record<string, unknown>
 }
 interface State {
-  workCycle?: string
-  finishingTask?: boolean
   workspaceSettings: Record<string, unknown>
   notificationHistory: Notice[]
   messageKind: NoticeKind
@@ -889,8 +877,6 @@ const createState: StateCreator<State> = (set, get) => ({
   stories: [],
   tasks: [],
   activeTask: null,
-  workCycle: undefined,
-  finishingTask: false,
   setTasks: (tasks) => set((s) => reconcileTaskList(s, tasks)),
   setActiveTask: (id, exact) => set((s) => switchTaskWorkspace(s, id, exact)),
   newTask: null,
@@ -1383,8 +1369,6 @@ function emptyProjectState(): ProjectState {
     stories: [],
     tasks: [],
     activeTask: null,
-    workCycle: undefined,
-    finishingTask: false,
   }
 }
 function projectState(s: State): ProjectState {
@@ -1430,8 +1414,6 @@ function projectState(s: State): ProjectState {
     maximizedTerminal,
   } = s
   return {
-    workCycle: s.workCycle,
-    finishingTask: s.finishingTask,
     project,
     nodes,
     edges,
@@ -1475,27 +1457,3 @@ function projectState(s: State): ProjectState {
 }
 
 useStore.subscribe((s) => setProjectIdentity(s.project?.id ?? s.activeProjectId ?? ''))
-
-setCycleResolver((projectId, componentId, terminalId, task) => {
-  const state = projectStateOf(projectId)
-  if (!state) return undefined
-  const workspace = workspaceOf(state, componentId === MAP_SCOPE ? null : plannerChatTask(task))
-  const terminal =
-    componentId === TASK_ROOT_SCOPE
-      ? workspace.rootTerminals.find((t) => t.id === terminalId)
-      : state.nodes
-          .find((n) => n.id === componentId)
-          ?.data.terminals.find((t) => t.id === terminalId)
-  const agent =
-    componentId === PLAN_SCOPE ||
-    componentId === MAP_SCOPE ||
-    terminal?.kind === 'agent' ||
-    Object.values(useStore.getState().runtimeTerminals).some(
-      (t) =>
-        t.projectId === projectId &&
-        t.componentId === componentId &&
-        t.terminal.id === terminalId &&
-        t.terminal.kind === 'agent',
-    )
-  return agent ? workspace.workCycle : undefined
-})

@@ -24,7 +24,6 @@ export interface TeamMessage {
   generation: number | null
 }
 export interface ChatTeam {
-  workCycle?: string
   scopes?: Record<string, { generation: number; components: string[]; paths?: string[] }>
   id: string
   projectId: string
@@ -98,17 +97,10 @@ export const useChatTeams = create<{
   teams: Record<string, ChatTeam[]>
   runs: Record<string, ProviderRun[]>
 }>(() => ({ teams: {}, runs: {} }))
-export function teamCurrent(team: ChatTeam) {
-  const state = projectStateOf(team.projectId)
-  if (!state) return false
-  const workspace = workspaceOf(state, team.task)
-  return !workspace.finishingTask && (workspace.workCycle ?? '') === (team.workCycle ?? '')
-}
 export function teamFor(projectId: string, task: string | null) {
   return useChatTeams.getState().teams[projectId]?.find((t) => t.task === task)
 }
 export function cacheTeam(team: ChatTeam) {
-  if (!teamCurrent(team)) return team
   useSimpleUi
     .getState()
     .patch(simpleKey(team.projectId, team.task), { coordinationReset: !!team.reset })
@@ -343,7 +335,7 @@ export async function sendWorkerMessage(team: ChatTeam, assignment: string, text
 export async function applyTeamHandoff(team: ChatTeam) {
   const handoff = team.handoff
   const state = projectStateOf(team.projectId)
-  if (!handoff || !state || !teamCurrent(team)) return
+  if (!handoff || !state) return
   let simple = workspaceOf(state, team.task).simple ?? { startedMs: Date.now(), log: [] }
   if (simple.coordinationHandoff !== handoff.id) {
     if (handoff.clearHistory) {
@@ -413,12 +405,9 @@ export async function refreshChatTeams(projectId: string) {
       ),
     )
   }
-  const teams = (await invoke<ChatTeam[]>('chat_teams', { projectId })).filter(teamCurrent)
+  const teams = await invoke<ChatTeam[]>('chat_teams', { projectId })
   useChatTeams.setState((s) => ({ teams: { ...s.teams, [projectId]: teams } }))
   for (const team of teams) {
-    const workspace = projectStateOf(projectId)
-    if (!teamCurrent(team) || (workspace && workspaceOf(workspace, team.task).finishingTask))
-      continue
     const available = planTerminals(useStore.getState().devices).filter(
       (t) => !!(profileHookProvider(t.command) ?? t.adapter),
     )
@@ -470,7 +459,6 @@ export async function refreshChatTeams(projectId: string) {
   for (const [key, workspace] of workspaces) {
     const task = key || null
     if (
-      workspace.finishingTask ||
       !workspace.simple?.selectedAgent ||
       teams.some((t) => t.task === task) ||
       (workspace.auto && !['done', 'stopped'].includes(workspace.auto.status))
@@ -479,8 +467,7 @@ export async function refreshChatTeams(projectId: string) {
     const record = useStore
       .getState()
       .sessionRecords.find((r) => r.id === workspace.simple?.selectedAgent)
-    if (record && !record.archived)
-      await initializeTeam(projectId, task, record, true).catch(() => {})
+    if (record) await initializeTeam(projectId, task, record, true).catch(() => {})
   }
 }
 export function autoOwnership(
@@ -513,7 +500,6 @@ async function driveLeadRequests(team: ChatTeam) {
     }
     try {
       const auto = await import('./auto')
-      if (!teamCurrent(team)) return
       if (request.action === 'startAgent') {
         const project = projectOf(team.projectId)
         if (!project) throw new Error('Project is unavailable')

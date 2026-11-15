@@ -478,7 +478,23 @@
     await until('merged', () => workflowText().includes('Merged into main.'))
     inChat()
     // Release the merge agent's exclusive destination before starting another planner there.
-    const merger = state().simple.log.findLast((e) => e.action === 'merge').sessionId
+    const merger = [...(state().simple.retainedWorkflow ?? []), ...state().simple.log].findLast(
+      (e) => e.action === 'merge',
+    ).sessionId
+    const leadBeforeClear = state().sessions[planner]
+    await until(
+      'Chat cleared after merging into main',
+      () => state().simple.clearBoundary && !state().simple.log.length,
+    )
+    assert(
+      !chatText().includes('I planned the fixture feature'),
+      'merged Chat still shows old replies',
+    )
+    assert(
+      state().sessions[planner]?.generation === leadBeforeClear.generation &&
+        state().sessions[planner]?.running === leadBeforeClear.running,
+      'clearing merged Chat changed the lead terminal',
+    )
     await smoke.terminalStop(merger)
     await until('merge agent stopped', () => !state().sessions[merger]?.running)
     // Runs launched outside Chat have no block to scroll to. View must keep their output open
@@ -571,16 +587,21 @@
     await until('stopped agent question closes', () => !document.querySelector('.chat-question'))
     const saved = smoke.workspaceDocument().projects.find((p) => p.id === projectId).layout
     assert(
-      saved.taskWorkspaces[task].simple.log.some((e) => e.kind === 'reply'),
-      'reply missing from saved workspace',
+      saved.taskWorkspaces[task].simple.clearBoundary &&
+        !saved.taskWorkspaces[task].simple.log.some(
+          (e) => e.kind === 'reply' && e.text.includes('I planned the fixture feature'),
+        ),
+      'merged Chat clear missing from saved workspace',
     )
     state().setSimpleMode(false)
     state().setSimpleMode(true)
-    await until('replies survive remount', () =>
-      chatText().includes('I planned the fixture feature'),
+    await sleep(300)
+    assert(
+      !chatText().includes('I planned the fixture feature'),
+      'old replies returned after remount',
     )
     await smoke.report(
-      'PASS simple: chat resize/hide/show and worktree widths, Enter queues and delivers, Changes tab/Map, collapsed history, no Fix flash, one conversation, plan/build/review/fix/merge, drawer input waits and persisted log',
+      'PASS simple: chat resize/hide/show and worktree widths, Enter queues and delivers, Changes tab/Map, collapsed history, no Fix flash, one conversation, plan/build/review/fix/merge, automatic Chat cleanup without terminal reset, drawer input waits and persisted clear',
     )
   } catch (e) {
     await smoke.report(

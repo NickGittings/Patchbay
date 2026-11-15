@@ -20,6 +20,15 @@ Plan cards use the saved plan or submitted proposal timestamp. Conversation grou
 
 **Clear visible history** confirms inline for its selected worktree and rechecks pending send/workflow actions before clearing. `SimpleState.clearBoundary` retains a timestamp and per-session generation/sequence watermarks. `retainedWorkflow` contains text-free launch, prompt and workflow facts used by ownership, planning boundaries, merge routing and available actions. Restoration, bounded history, rendering, ingestion, reconciliation and draft handoff honor that boundary, so snapshots cannot replay removed text. Drafts, queued prompts, terminals, running agents and provider context, Auto, files and plans are preserved. Provider transcripts and terminal history remain accessible.
 
+A successful merge into `main` automatically clears the source worktree's visible Chat history
+using the same boundary. The global merge-cleanup watcher waits for confirmed Git integration
+and a finished merge turn, including completed Auto runs. A persisted `chatCleared` marker keeps
+polling and restart recovery from clearing later messages. Other projects and worktrees are
+unaffected. Terminal sessions, provider conversations, drafts and the checkout remain intact.
+The existing **Merge complete** confirmation still controls branch/worktree deletion and
+returning the original checkout to the destination branch. Chat clears whether the merged
+branch/worktree is kept or deleted. Merges into other destination branches leave Chat history intact.
+
 The composer subscribes to provider usage and the shared clock. It shows every unexpired window at or above 100% for its recipient’s provider, falling back to the selected worktree planner before launch. Each warning names the provider, window, reset time and countdown. Warnings expire at reset and do not depend on notification preferences or Auto thresholds, and do not disable Send or terminal access. Missing data stays unknown.
 
 ### Persistent lead and coordinated workers
@@ -150,40 +159,3 @@ and adds a small notice. Team membership reconciles before delivery; pending use
 recovery/inbox delivery and a later ready prompt. Service-level submission reservations serialize pastes
 and prevent two clients from consuming the same ready prompt. Explicit pause/stop decisions survive
 recovery. Intentional agent switching and conversation clearing remain separate actions.
-
-### Finishing a task
-
-The Chat menu's **Finish task…** stops and archives the current project/worktree's
-agent cycle, preserving ordinary shell/task terminals and the checkout. It never merges,
-switches branches, or removes worktrees. **Reset agent conversation** retains the old
-provider-conversation reset behavior and handoff tooltip; it does not finish a task.
-
-`work_cycles.rs` persists the finish journal and task history under the machine-local
-`work-cycles/` directory. `Request::FinishCycle` (session protocol 28) records intent
-under the service launch lock, retires coordination under the shared orchestration file
-lock, confirms all owned agents stopped, captures artifacts and session references,
-then advances the cycle. Stop/archive errors retain the journal and active workspace
-for retry. The receipt reconciles a crash between completion and the UI workspace save.
-`orchestration::retire_cycle` preserves teams and provider runs before removing their
-active ownership. Agent-command scope locks serialize authenticated commands with
-cleanup; archived sessions cannot issue active task commands.
-
-`lib/workCycles.ts` owns IPC, receipt reconciliation and the fresh workspace reset;
-`TaskHistory` displays saved chat, plan/proposal/review artifacts, Auto/coordination
-records and retained session references. Late receipts and team polls cannot restore
-retired state. Archived sessions retain output and explicit Resume, with a current-files
-notice, and remain separate from automatic Chat/canvas recovery. Provider history must
-still exist to resume a native conversation. See [finish validation](../finish-task-validation.md).
-
-Authentication also binds each command to its source cycle and owning worktree, including
-legacy isolated workers. Dispatch acquires that owner's command lock and rechecks both the
-cycle and finish intent, so a request authenticated before Finish cannot execute afterward.
-Finish archives all branch review lane Markdown and attempt JSON files, including orphaned
-failed attempts. Archived resume remaps plan/review outputs, directory grants and retained
-briefing/command references into a private per-session output directory; repeated resume and
-briefing recovery preserve that mapping instead of updating active review findings.
-
-Finish also retires the cycle's persisted merge-cleanup jobs before stopping agents, keeping
-cleanup choices in the task archive. Cleanup polling and dialogs reject retired/archived
-jobs and recheck readiness after async Git reads. A service-side cycle check fences delayed
-cleanup requests so stopping a merge agent at Finish cannot authorize branch/worktree removal.

@@ -889,60 +889,11 @@
       !document.querySelector('.session-preview .terminal-overlay button'),
       'preview has a second Start action in its terminal pane',
     )
-    state().activateProject(one.id)
-    state().setActiveTask(zebra.id, true)
-    const archivedTerminal = state().addRootTerminal({
-      id: 'finish-session-smoke',
-      name: 'Finish session smoke',
-      kind: 'agent',
-      command: 'echo archived-agent-output; sleep 600',
-    })
-    const archivedSpec = state().rootTerminals.find((t) => t.id === archivedTerminal)
-    await smoke.startTerminal('@task', archivedTerminal, zebra.id, one.id)
-    const archivedSid = smoke.sessionId('@task', archivedTerminal, zebra.id, one.id)
-    await until('agent before finishing worktree', async () => {
-      await smoke.reconcileSessions()
-      return state().sessions[archivedSid]?.running
-    })
-    await smoke.finishTask(one.id, zebra.id)
-    await until(
-      'agent archived in sessions',
-      () => state().sessionRecords.find((r) => r.id === archivedSid)?.archived,
-    )
-    assert(!state().sessions[archivedSid]?.running, 'finished agent kept running')
-    assert(state().sessions[zebraSid]?.running, 'finish stopped a worktree shell')
-    await choose(first, 0, 'closed')
-    await until('archived session row', () => row(first, 'Finish session smoke'))
-    await click(() => row(first, 'Finish session smoke'), 'View output')
-    await until('archived output preview', () => document.querySelector('.session-preview'))
-    assert(
-      ![...document.querySelectorAll('.session-preview button')].some((b) =>
-        ['New conversation', '▶ Restart', '▶ Start'].includes(b.textContent.trim()),
-      ),
-      'archived output offered a new active conversation',
-    )
-    const restoredHistory = await smoke.refreshTaskCycle(one.id, zebra.id)
-    assert(
-      restoredHistory.history.some((a) => a.sessions.some((r) => r.id === archivedSid)),
-      'archived session reference was not persisted',
-    )
-    state().patchTask(one.id, zebra.id, { rootTerminals: [...state().rootTerminals, archivedSpec] })
-    await smoke.startTerminal('@task', archivedTerminal, zebra.id, one.id)
-    const freshSid = smoke.sessionId('@task', archivedTerminal, zebra.id, one.id)
-    assert(freshSid !== archivedSid, 'new task reused the archived session identity')
-    await until('fresh agent alongside archived output', async () => {
-      await smoke.reconcileSessions()
-      return state().sessions[freshSid]?.running
-    })
-    assert(
-      state().sessionRecords.find((r) => r.id === archivedSid)?.archived,
-      'fresh agent replaced the archive',
-    )
     await click(panel, 'Stop all work')
     await click(() => panel().querySelector('[role="alertdialog"]'), 'Stop every project')
     await until('worktree cleanup completed', () => !globalStop()?.disabled)
     result =
-      'PASS sessions: finished-task agents retain output and history while worktree shells stay running, repo/worktree/terminal hierarchy, inactive project labels, worktree filtering and actions, shared filtering and sorting, activity tooltips, reopening, empty groups, output previews, workspace reconnect with unchanged generation, closed-project fallback, Reconnect/View/Stop/Start/Forget, compact agent menus, keyboard and pointer access, run history selection, detached running work, global stop across filters, stopping Starting rows, new work after global stop'
+      'PASS sessions: repo/worktree/terminal hierarchy, inactive project labels, worktree filtering and actions, shared filtering and sorting, activity tooltips, reopening, empty groups, output previews, workspace reconnect with unchanged generation, closed-project fallback, Reconnect/View/Stop/Start/Forget, compact agent menus, keyboard and pointer access, run history selection, detached running work, global stop across filters, stopping Starting rows, new work after global stop'
   } catch (error) {
     failure = error.message ?? String(error)
   } finally {

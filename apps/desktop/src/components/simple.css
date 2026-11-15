@@ -459,27 +459,3 @@
   border-radius: 8px;
   background: var(--panel);
 }
-
-.task-history {
-  width: min(900px, 90vw);
-  max-height: 90vh;
-  overflow: auto;
-}
-.task-history-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  margin-block: 8px;
-}
-.task-history-item strong {
-  display: block;
-  white-space: pre-wrap;
-}
-.task-history pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.task-history-output {
-  height: 360px;
-  position: relative;
-}

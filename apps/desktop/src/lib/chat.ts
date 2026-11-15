@@ -3,7 +3,7 @@ import type { SimpleState } from './simple'
 
 /** Selection never follows a workflow stage or another agent's input wait. */
 export function chatRecipient(records: readonly SessionRecord[], selected?: string) {
-  return records.find((r) => !r.archived && r.id === selected && r.metadata.kind === 'agent')
+  return records.find((r) => r.id === selected && r.metadata.kind === 'agent')
 }
 
 export function chatAutoActive(status: string | undefined) {

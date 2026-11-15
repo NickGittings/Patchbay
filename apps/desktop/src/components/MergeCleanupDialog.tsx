@@ -4,10 +4,9 @@ import { projectOf, useStore } from '../store'
 import { mergeCleanupPreview, type MergeCleanupPreview } from '../lib/ipc'
 import {
   cleanupJobs,
-  cleanupCurrent,
   deleteMergedWork,
   handledCleanup,
-  readyCleanup,
+  completeMergeChat,
   type CleanupJob,
 } from '../lib/mergeCleanup'
 
@@ -18,7 +17,6 @@ export default function MergeCleanupDialog() {
   const [busy, setBusy] = useState(false)
   const [checkingPreview, setCheckingPreview] = useState(false)
   const [error, setError] = useState<string>()
-  const current = useStore(() => !job || cleanupCurrent(job))
   useEffect(() => {
     let disposed = false
     let checking = false
@@ -28,9 +26,8 @@ export default function MergeCleanupDialog() {
       try {
         for (const next of cleanupJobs().filter((j) => !j.handled)) {
           if (disposed) break
-          if (!(await readyCleanup(next).catch(() => false))) continue
+          if (!(await completeMergeChat(next).catch(() => false))) continue
           if (disposed) break
-          if (!cleanupCurrent(next)) continue
           if (next.choice === 'ask') {
             setError(undefined)
             setPreview(undefined)
@@ -42,7 +39,6 @@ export default function MergeCleanupDialog() {
                 setError(String(e))
               }
             }
-            if (!cleanupCurrent(next)) continue
             setJob(next)
             break
           }
@@ -50,7 +46,6 @@ export default function MergeCleanupDialog() {
             try {
               await deleteMergedWork(next)
             } catch (e) {
-              if (!cleanupCurrent(next)) continue
               // Leave a persisted prompt so partial cleanup can be retried after a reload.
               useStore.setState((s) => ({
                 workspaceSettings: {
@@ -103,12 +98,7 @@ export default function MergeCleanupDialog() {
       setCheckingPreview(false)
     }
   }
-  if (job && !current && !busy) {
-    setJob(undefined)
-    setPreview(undefined)
-    setError(undefined)
-  }
-  if (!job || !current) return null
+  if (!job) return null
   return (
     <Dialog
       title="Merge complete"

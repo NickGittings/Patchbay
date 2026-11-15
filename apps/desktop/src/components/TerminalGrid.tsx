@@ -28,7 +28,6 @@ export default function TerminalGrid({
   onClose?: (terminalId: string) => Promise<boolean>
   emptyMessage?: string
 }) {
-  useStore((s) => s.workCycle)
   const sessions = useStore((s) => s.sessions)
   const task = useStore((s) => s.activeTask)
   const [local, setLocal] = useState<string | null>(null)

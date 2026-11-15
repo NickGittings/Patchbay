@@ -17,12 +17,7 @@ function replyScopes(sid: string, generation: number, record?: SessionRecord) {
   const state = projectStateOf(metadata.projectId)
   if (!state?.project) return
   const r = record ?? useStore.getState().sessionRecords.find((r) => r.id === sid)
-  if (
-    !r ||
-    r.archived ||
-    useStore.getState().sessionRecords.some((current) => current.id === sid && current.archived)
-  )
-    return
+  if (!r) return
   const all = new Map(
     Object.entries(state.taskWorkspaces).map(([task, w]) => [task || null, w.simple]),
   )

@@ -1,4 +1,4 @@
-import { projectOf, projectStateOf, workspaceOf, useStore } from '../store'
+import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
 import type { MergeCleanup, MergeRequest, Project } from '../types'
 import { mergeCleanup, mergeCleanupPreview, mergeOutcome } from './ipc'
 import { autoRuns } from './autoState'
@@ -8,11 +8,10 @@ import { reconcileFreshSessions } from './sessions'
 import { refreshTasks } from './tasks'
 import { requestGitRefresh } from './git'
 import { refreshMainWorktree } from './mainWorktree'
+import { clearedSimple } from './simple'
 
 export interface CleanupJob {
   id: string
-  workCycle?: string
-  task?: string | null
   projectId: string
   request: MergeRequest
   sessionId: string
@@ -20,50 +19,12 @@ export interface CleanupJob {
   auto: boolean
   /** The run's stable ownership identity, preserved across controller resumes. */
   autoOwnershipId?: string
+  chatCleared?: boolean
   handled?: boolean
 }
 
 export function cleanupJobs(): CleanupJob[] {
   return (useStore.getState().workspaceSettings.mergeCleanupJobs as CleanupJob[] | undefined) ?? []
-}
-
-function jobTask(job: Pick<CleanupJob, 'projectId' | 'request' | 'task'>) {
-  if (job.task !== undefined) return job.task
-  const state = projectStateOf(job.projectId)
-  const task = state?.tasks.find((t) => t.worktree === job.request.source)
-  if (task) return task.id
-  return job.request.source === state?.project?.root ? null : undefined
-}
-export function cleanupCurrent(job: CleanupJob) {
-  if (job.handled || !cleanupJobs().some((j) => j.id === job.id && !j.handled)) return false
-  const state = projectStateOf(job.projectId)
-  if (!state) return false
-  const task = jobTask(job)
-  // Older saved jobs need the task list before an unknown source can be scoped safely.
-  if (task === undefined) return false
-  const workspace = workspaceOf(state, task)
-  return (
-    !workspace.finishingTask &&
-    (workspace.workCycle ?? '') === (job.workCycle ?? '') &&
-    !useStore.getState().sessionRecords.some((r) => r.id === job.sessionId && r.archived)
-  )
-}
-/** Cancel pending cleanup at the task boundary, including polls already awaiting Git. */
-export function retireTaskCleanup(projectId: string, task: string | null, cycle: string) {
-  const retiring = cleanupJobs().filter(
-    (j) => j.projectId === projectId && jobTask(j) === task && (j.workCycle ?? '') === cycle,
-  )
-  // Retain choices on retry even when a prior attempt failed before creating the journal.
-  if (retiring.some((j) => !j.handled))
-    useStore.setState((s) => ({
-      workspaceSettings: {
-        ...s.workspaceSettings,
-        mergeCleanupJobs: cleanupJobs().map((j) =>
-          retiring.some((old) => old.id === j.id) ? { ...j, handled: true } : j,
-        ),
-      },
-    }))
-  return retiring
 }
 
 export function trackMergeCleanup(
@@ -74,15 +35,8 @@ export function trackMergeCleanup(
   choice: MergeCleanup,
   auto: boolean,
   autoOwnershipId?: string,
-  workCycle?: string,
 ) {
   if (!project.projectId) return
-  const state = projectStateOf(project.projectId)
-  const task = state?.tasks.find((t) => t.worktree === request.source)?.id ?? null
-  const workspace = state && workspaceOf(state, task)
-  const record = useStore.getState().sessionRecords.find((r) => r.id === sessionId)
-  const cycle = workCycle ?? (record ? (record.workCycle ?? '') : (workspace?.workCycle ?? ''))
-  if (record?.archived || workspace?.finishingTask || cycle !== (workspace?.workCycle ?? '')) return
   useStore.setState((s) => ({
     workspaceSettings: {
       ...s.workspaceSettings,
@@ -98,8 +52,6 @@ export function trackMergeCleanup(
         ),
         {
           id,
-          task,
-          workCycle: cycle,
           projectId: project.projectId!,
           request,
           sessionId,
@@ -123,7 +75,6 @@ export function handledCleanup(id: string) {
 
 /** Only confirmed integration and a finished merge turn can offer cleanup. */
 export async function readyCleanup(job: CleanupJob) {
-  if (!cleanupCurrent(job)) return false
   const s = useStore.getState()
   const project = projectOf(job.projectId)
   if (!project) return false
@@ -131,8 +82,7 @@ export async function readyCleanup(job: CleanupJob) {
   const session = s.sessions[job.sessionId]
   if (!record && !session) {
     // A partial restoration may already have retired the destination's merge session.
-    const preview = await mergeCleanupPreview(project, job.request).catch(() => null)
-    return cleanupCurrent(job) && (preview?.retry ?? false)
+    return (await mergeCleanupPreview(project, job.request).catch(() => null))?.retry ?? false
   }
   if (reviewerBusy(session, session?.running ?? (record ? sessionLive(record) : false)))
     return false
@@ -148,15 +98,42 @@ export async function readyCleanup(job: CleanupJob) {
     if (!run || run.status !== 'done') return false
   }
   const result = await mergeOutcome(project, job.request)
-  return cleanupCurrent(job) && (result === 'merged' || result === 'alreadyIntegrated')
+  return result === 'merged' || result === 'alreadyIntegrated'
+}
+
+/** Clear the source worktree's Chat once Git and the merge agent confirm completion. */
+export async function completeMergeChat(job: CleanupJob) {
+  if (!(await readyCleanup(job))) return false
+  // A newer merge or a dismissed prompt may have replaced this job during the Git read.
+  const current = cleanupJobs().find((j) => j.id === job.id && !j.handled)
+  if (!current) return false
+  if (current.chatCleared || job.request.destinationBranch !== 'main') return true
+  const state = projectStateOf(job.projectId)
+  if (!state) return false
+  const source = state.tasks.find((t) => t.worktree === job.request.source)
+  if (!source && job.request.source !== state.project?.root) return false
+  const task = source?.id ?? null
+  const now = Date.now()
+  const simple = workspaceOf(state, task).simple ?? { startedMs: now, log: [] }
+  useStore.getState().patchTask(job.projectId, task, {
+    simple: clearedSimple(simple, useStore.getState().sessions, now),
+  })
+  useStore.setState((s) => ({
+    workspaceSettings: {
+      ...s.workspaceSettings,
+      mergeCleanupJobs: cleanupJobs().map((j) =>
+        j.id === job.id ? { ...j, chatCleared: true } : j,
+      ),
+    },
+  }))
+  return true
 }
 
 export async function deleteMergedWork(job: CleanupJob) {
-  if (!cleanupCurrent(job)) throw new Error('This task cleanup was cancelled')
   try {
     const project = projectOf(job.projectId)
     if (!project) throw new Error('Project is no longer open')
-    await mergeCleanup(project, job.request, job.workCycle ?? '')
+    await mergeCleanup(project, job.request)
   } finally {
     refreshMainWorktree(job.projectId)
     await refreshTasks(job.projectId).catch(() => {})

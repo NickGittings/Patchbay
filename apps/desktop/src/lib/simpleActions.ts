@@ -79,8 +79,6 @@ export async function logLaunch(
   requestId: string | undefined,
   options?: { atRunStart?: boolean },
 ) {
-  const initial = projectStateOf(projectId)
-  const cycle = initial && workspaceOf(initial, task).workCycle
   const sid = entry.sessionId
   const run: Run =
     entry.generation !== undefined
@@ -88,8 +86,6 @@ export async function logLaunch(
       : sid && requestId
         ? await launchedRun(sid, requestId)
         : undefined
-  const current = projectStateOf(projectId)
-  if (!current || workspaceOf(current, task).workCycle !== cycle) return
   logSimple(projectId, task, {
     ...entry,
     generation: run?.generation,
@@ -101,11 +97,6 @@ export async function logLaunch(
 export function logSimple(projectId: string, task: string | null, entry: Entry) {
   const state = projectStateOf(projectId)
   if (!state) return
-  const workspace = workspaceOf(state, task)
-  const record =
-    entry.sessionId && useStore.getState().sessionRecords.find((r) => r.id === entry.sessionId)
-  if (record && (record.archived || (record.workCycle ?? '') !== (workspace.workCycle ?? '')))
-    return
   const simple = (state.activeTask === task
     ? state.simple
     : state.taskWorkspaces[task ?? '']?.simple) ?? { startedMs: entry.atMs ?? Date.now(), log: [] }

@@ -2,8 +2,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import {
   cleanupJobs,
-  cleanupCurrent,
-  retireTaskCleanup,
+  completeMergeChat,
   deleteMergedWork,
   handledCleanup,
   readyCleanup,
@@ -11,7 +10,9 @@ import {
 } from './mergeCleanup'
 import { gitWorktrees, mergeCleanup, mergeCleanupPreview, mergeOutcome } from './ipc'
 import { forgetMainWorktree, refreshMainWorktree, useMainWorktree } from './mainWorktree'
-import type { Project } from '../types'
+import type { Project, SessionRecord, SessionState } from '../types'
+import { restoredSimple, visibleReply, type SimpleState } from './simple'
+import { simpleKey, useSimpleUi } from './simpleUi'
 
 vi.mock('./ipc', () => ({
   mergeOutcome: vi.fn(),
@@ -152,66 +153,162 @@ test('partial restoration remains available after its merge session was retired'
   expect(await readyCleanup(cleanupJobs()[0])).toBe(true)
 })
 
-test('finish cancels only cleanup from the matching worktree and cycle', () => {
-  useStore.setState({ tasks: [{ id: 'other', worktree: '/other' }] as never })
-  trackMergeCleanup(project, request, 'old-session', 'old', 'delete', false)
-  trackMergeCleanup(
-    project,
-    { ...request, source: '/other' },
-    'other-session',
-    'other',
-    'ask',
-    false,
-  )
-  trackMergeCleanup(
-    { ...project, projectId: 'q' },
-    request,
-    'foreign-session',
-    'foreign',
-    'ask',
-    false,
-  )
-  expect(retireTaskCleanup('p', null, '').map((j) => j.id)).toEqual(['old'])
-  expect(cleanupCurrent(cleanupJobs().find((j) => j.id === 'old')!)).toBe(false)
-  expect(cleanupJobs().find((j) => j.id === 'other')?.handled).not.toBe(true)
-  expect(cleanupJobs().find((j) => j.id === 'foreign')?.handled).not.toBe(true)
-  useStore.getState().patchTask('p', null, { workCycle: 'next' })
-  trackMergeCleanup(project, request, 'new-session', 'new', 'ask', false)
-  retireTaskCleanup('p', null, '')
-  expect(cleanupCurrent(cleanupJobs().find((j) => j.id === 'new')!)).toBe(true)
+const chat = (): SimpleState => ({
+  startedMs: 1,
+  selectedAgent: 'lead',
+  log: [
+    {
+      id: 'request',
+      kind: 'prompt',
+      stage: 'build',
+      atMs: 10,
+      text: 'Build the feature',
+      mentions: [],
+    },
+    {
+      id: 'reply',
+      kind: 'reply',
+      stage: 'build',
+      sessionId: 'lead',
+      generation: 1,
+      sequence: 1,
+      atMs: 20,
+      text: 'Feature built',
+    },
+  ],
+})
+const rootMerge = { ...request, source: '/p', destination: '/generated-main' }
+function prepareChatMerge(choice: 'ask' | 'keep' | 'delete' = 'ask') {
+  useStore.setState({
+    simple: chat(),
+    sessions: {
+      session: { running: false },
+      lead: { running: true, generation: 1 },
+      shell: { running: true, generation: 1 },
+    } as Record<string, SessionState>,
+    sessionRecords: [{ id: 'lead' }, { id: 'shell' }] as SessionRecord[],
+  })
+  trackMergeCleanup(project, rootMerge, 'session', 'merge', choice, false)
+  return cleanupJobs()[0]
+}
+
+test.each(['ask', 'keep', 'delete'] as const)(
+  'a confirmed merge into main clears Chat with %s cleanup and preserves terminals',
+  async (choice) => {
+    const job = prepareChatMerge(choice)
+    const { sessions, sessionRecords, rootTerminals, componentTerminals } = useStore.getState()
+    const key = simpleKey('p', null)
+    useSimpleUi.getState().patch(key, { draft: 'Next request', terminal: 'user' })
+    const ui = useSimpleUi.getState().worktrees[key]
+    expect(await completeMergeChat(job)).toBe(true)
+    const state = useStore.getState()
+    expect(state.simple?.log).toEqual([])
+    expect(state.simple?.selectedAgent).toBe('lead')
+    expect(state.sessions).toBe(sessions)
+    expect(state.sessionRecords).toBe(sessionRecords)
+    expect(state.rootTerminals).toBe(rootTerminals)
+    expect(state.componentTerminals).toBe(componentTerminals)
+    expect(useSimpleUi.getState().worktrees[key]).toBe(ui)
+    expect(cleanupJobs()[0]).toMatchObject({ choice, chatCleared: true })
+    expect(cleanupJobs()[0].handled).not.toBe(true)
+    const restored = restoredSimple(JSON.parse(JSON.stringify(state.simple)))!
+    expect(restored.log).toEqual([])
+    expect(visibleReply(restored, 'lead', 1, { atMs: 20, sequence: 1 })).toBe(false)
+  },
+)
+
+test.each(['notMerged', 'inProgress', 'dirty'] as const)(
+  'Chat stays intact while Git reports %s',
+  async (outcome) => {
+    const job = prepareChatMerge()
+    const simple = useStore.getState().simple
+    vi.mocked(mergeOutcome).mockResolvedValue(outcome)
+    expect(await completeMergeChat(job)).toBe(false)
+    expect(useStore.getState().simple).toBe(simple)
+    expect(cleanupJobs()[0].chatCleared).toBeUndefined()
+  },
+)
+
+test('Chat waits for the merge agent and a failed Git read preserves history', async () => {
+  const job = prepareChatMerge()
+  const simple = useStore.getState().simple
+  useStore.getState().setSession('session', { running: true })
+  expect(await completeMergeChat(job)).toBe(false)
+  expect(mergeOutcome).not.toHaveBeenCalled()
+  useStore.getState().setSession('session', { running: false })
+  vi.mocked(mergeOutcome).mockRejectedValue(new Error('Git unavailable'))
+  await expect(completeMergeChat(job)).rejects.toThrow('Git unavailable')
+  expect(useStore.getState().simple).toBe(simple)
 })
 
-test('an in-flight cleanup readiness result cannot authorize deletion after Finish', async () => {
+test('a merge before Chat was opened still prevents old snapshot replies from appearing', async () => {
+  const job = prepareChatMerge()
+  useStore.setState({ simple: null })
+  expect(await completeMergeChat(job)).toBe(true)
+  const simple = useStore.getState().simple!
+  expect(simple.log).toEqual([])
+  expect(visibleReply(simple, 'lead', 1, { atMs: 20, sequence: 1 })).toBe(false)
+})
+
+test('a merge into another branch preserves Chat', async () => {
+  prepareChatMerge()
+  trackMergeCleanup(
+    project,
+    { ...rootMerge, destinationBranch: 'integration' },
+    'session',
+    'integration',
+    'ask',
+    false,
+  )
+  const simple = useStore.getState().simple
+  expect(await completeMergeChat(cleanupJobs().find((j) => j.id === 'integration')!)).toBe(true)
+  expect(useStore.getState().simple).toBe(simple)
+})
+
+test('repeated completion after restoring saved state preserves the next conversation', async () => {
+  const job = prepareChatMerge()
+  vi.mocked(mergeOutcome).mockResolvedValue('alreadyIntegrated')
+  expect(await completeMergeChat(job)).toBe(true)
+  // Restore the persisted completion marker, then start another conversation in the same folder.
+  useStore.setState({
+    workspaceSettings: JSON.parse(JSON.stringify(useStore.getState().workspaceSettings)),
+  })
+  const next = { ...useStore.getState().simple!, log: chat().log }
+  useStore.setState({ simple: next })
+  expect(await completeMergeChat(job)).toBe(true)
+  expect(useStore.getState().simple).toBe(next)
+})
+
+test('completion clears only its source Chat after switching worktrees or projects', async () => {
+  prepareChatMerge()
+  useStore.setState({ tasks: [{ id: 'feature', worktree: '/feature' }] as never })
+  useStore.getState().patchTask('p', 'feature', { simple: chat() })
+  const rootChat = useStore.getState().simple
+  trackMergeCleanup(project, request, 'session', 'feature-merge', 'ask', false)
+  const job = cleanupJobs().find((j) => j.id === 'feature-merge')!
+  useStore.getState().loadProject({ ...project, projectId: 'q', root: '/q' })
+  useStore.setState({ simple: chat() })
+  const otherChat = useStore.getState().simple
+  expect(await completeMergeChat(job)).toBe(true)
+  const saved = useStore.getState().captureProjects().p.state!
+  expect(saved.taskWorkspaces.feature.simple?.log).toEqual([])
+  expect(saved.simple).toBe(rootChat)
+  expect(useStore.getState().simple).toBe(otherChat)
+})
+
+test('a superseded merge cannot clear Chat after its Git read completes', async () => {
+  const job = prepareChatMerge()
+  const simple = useStore.getState().simple
   let resolve!: (value: 'merged') => void
-  vi.mocked(mergeCleanup).mockClear()
-  vi.mocked(mergeOutcome).mockImplementation(
+  vi.mocked(mergeOutcome).mockImplementationOnce(
     () =>
       new Promise((r) => {
         resolve = r
       }),
   )
-  trackMergeCleanup(project, request, 'session', 'old', 'delete', false)
-  useStore.setState({ sessions: { session: { running: false } } as never })
-  const job = cleanupJobs()[0]
-  const pending = readyCleanup(job)
-  retireTaskCleanup('p', null, '')
+  const pending = completeMergeChat(job)
+  trackMergeCleanup(project, rootMerge, 'new-session', 'new-merge', 'ask', false)
   resolve('merged')
   expect(await pending).toBe(false)
-  await expect(deleteMergedWork(job)).rejects.toThrow('cancelled')
-  expect(mergeCleanup).not.toHaveBeenCalled()
-})
-
-test('an unresolved legacy cleanup source is not retired as the main worktree', () => {
-  const legacy = {
-    id: 'legacy',
-    projectId: 'p',
-    request,
-    sessionId: 'old',
-    choice: 'delete',
-    auto: false,
-  }
-  useStore.setState({ workspaceSettings: { mergeCleanupJobs: [legacy] } })
-  expect(retireTaskCleanup('p', null, '')).toEqual([])
-  expect(cleanupJobs()[0].handled).not.toBe(true)
-  expect(cleanupCurrent(cleanupJobs()[0])).toBe(false)
+  expect(useStore.getState().simple).toBe(simple)
 })

@@ -94,7 +94,7 @@
     const originalGeneration = team().lead.generation
     ;(
       await until('clear conversation enabled', () => {
-        const b = button('Reset agent conversation')
+        const b = button('Clear conversation')
         return b && !b.disabled && b
       })
     ).click()

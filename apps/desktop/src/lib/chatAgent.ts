@@ -1,4 +1,3 @@
-import { refreshTaskCycle } from './workCycles'
 import { projectStateOf, useStore, workspaceOf } from '../store'
 import { TASK_ROOT_SCOPE, sessionId, type AgentRoles, type DeviceManifest } from '../types'
 import { agentDevices, planTerminals } from './plan'
@@ -35,8 +34,6 @@ export function startChatAgent(projectId: string, task: string | null) {
   return launch
 }
 async function launchChatAgent(projectId: string, task: string | null) {
-  const cycle = await refreshTaskCycle(projectId, task)
-  if (cycle.finishing) throw new Error('This task is finishing; retry Finish task first')
   if (teamFor(projectId, task))
     throw new Error(
       'Reconnect the existing lead before starting another agent. Your draft was kept.',
@@ -54,13 +51,7 @@ async function launchChatAgent(projectId: string, task: string | null) {
   await reconcileFreshSessions()
   const sid = sessionId(TASK_ROOT_SCOPE, terminal.id, task, projectId)
   const record = useStore.getState().sessionRecords.find((r) => r.id === sid)
-  if (
-    !record ||
-    record.archived ||
-    workspaceOf(projectStateOf(projectId)!, task).workCycle !== workspace.workCycle ||
-    workspaceOf(projectStateOf(projectId)!, task).finishingTask ||
-    !useStore.getState().sessions[sid]?.running
-  )
+  if (!record || !useStore.getState().sessions[sid]?.running)
     throw new Error('The agent did not start. Your draft was kept; check its terminal and retry.')
   // Keep a successfully launched session available even if coordination is unavailable.
   selectChatAgent(projectId, task, sid)

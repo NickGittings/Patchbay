@@ -35,8 +35,6 @@ export const GIT_EVENT = 'patchbay://git'
  */
 export const TASKS_EVENT = 'patchbay://tasks'
 export interface TasksPayload {
-  workCycle?: string
-  finishingTask?: boolean
   tasks: Task[]
   activeTask: string | null
   highlighted: string[]
@@ -155,8 +153,6 @@ export function syncComponentWindows(): () => void {
       tasks: {
         tasks: state.tasks,
         activeTask: state.activeTask,
-        workCycle: state.workCycle,
-        finishingTask: state.finishingTask,
         highlighted: state.highlighted,
       } as TasksPayload,
     }
@@ -206,8 +202,6 @@ export function syncComponentWindows(): () => void {
       s.gitChanges === prev.gitChanges &&
       s.tasks === prev.tasks &&
       s.activeTask === prev.activeTask &&
-      s.workCycle === prev.workCycle &&
-      s.finishingTask === prev.finishingTask &&
       s.highlighted === prev.highlighted
     )
       return

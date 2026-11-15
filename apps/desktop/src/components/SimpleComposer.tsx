@@ -60,7 +60,6 @@ export default function SimpleComposer({
     useShallow((s) => ({
       project: s.project,
       activeTask: s.activeTask,
-      finishingTask: s.finishingTask,
       nodes: s.nodes,
       devices: s.devices,
       agentRoles: s.agentRoles,
@@ -84,9 +83,7 @@ export default function SimpleComposer({
   const identity = useChatIdentity(recipient)
   const terminalIdentity = useChatIdentity(shown)
   const pending =
-    !!s.finishingTask ||
-    !!ui.pendingAction ||
-    (!!ui.coordinationReset && team?.reset?.clearHistory !== false)
+    !!ui.pendingAction || (!!ui.coordinationReset && team?.reset?.clearHistory !== false)
   const [errorResult, setErrorResult] = useState<{
     key: string
     text: string

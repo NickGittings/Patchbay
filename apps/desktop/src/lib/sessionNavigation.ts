@@ -15,7 +15,6 @@ import { refreshSession } from './sessions'
 
 /** Check the open tab's live/saved workspace without activating or reopening a project. */
 export function sessionDestinationAvailable(record: SessionRecord): boolean {
-  if (record.archived) return false
   const s = useStore.getState()
   const { projectId, componentId, terminalId } = record.metadata
   const project = projectStateOf(projectId, s)

@@ -128,8 +128,6 @@ pub struct InformationRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Team {
-    #[serde(default)]
-    pub work_cycle: String,
     pub id: String,
     pub project_id: String,
     pub task: Option<String>,
@@ -276,13 +274,11 @@ pub enum Control {
     },
 }
 fn team<'a>(store: &'a mut Store, project: &str, id: &str) -> Result<&'a mut Team> {
-    let t = store
+    store
         .teams
         .iter_mut()
         .find(|t| t.project_id == project && t.id == id)
-        .ok_or_else(|| anyhow!("Unknown chat team"))?;
-    crate::work_cycles::ensure_available(project, t.task.as_deref())?;
-    Ok(t)
+        .ok_or_else(|| anyhow!("Unknown chat team"))
 }
 fn member<'a>(store: &'a Store, t: &Team, id: &str) -> Option<&'a Job> {
     store
@@ -361,11 +357,6 @@ pub fn auto_ownership(
 ) -> Result<()> {
     modify(root, |s| {
         if acquire {
-            let task = tasks::list(root)?
-                .into_iter()
-                .find(|t| Path::new(&t.worktree) == target)
-                .map(|t| t.id);
-            crate::work_cycles::ensure_available(project, task.as_deref())?;
             if s.owners.iter().any(|o| {
                 o.project_id == project
                     && o.target == target.to_string_lossy()
@@ -441,16 +432,6 @@ pub fn initialize(
         "Chat teams support Claude and Codex presets with status integration"
     );
     modify(root, |s| {
-        ensure!(
-            crate::work_cycles::read(project, task.as_deref())?
-                .finishing
-                .is_none(),
-            "This task is finishing"
-        );
-        ensure!(
-            !crate::work_cycles::archived(r),
-            "Archived agents cannot join the active task"
-        );
         if let Some(t) = s
             .teams
             .iter()
@@ -461,7 +442,6 @@ pub fn initialize(
         ensure_available(s, project, target, true)?;
 
         let t = Team {
-            work_cycle: crate::work_cycles::read(project, task.as_deref())?.cycle,
             id: new_id(),
             project_id: project.into(),
             task,
@@ -520,10 +500,7 @@ pub fn list(root: &Path, project: &str) -> Result<Vec<Team>> {
     modify(root, |s| {
         Ok(s.teams
             .iter()
-            .filter(|t| {
-                t.project_id == project
-                    && crate::work_cycles::ensure_available(project, t.task.as_deref()).is_ok()
-            })
+            .filter(|t| t.project_id == project)
             .cloned()
             .collect())
     })
@@ -1660,10 +1637,7 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
     ))
 }
 pub(super) fn restore(s: &mut Store, project: &str) {
-    for t in s.teams.iter_mut().filter(|t| {
-        t.project_id == project
-            && crate::work_cycles::ensure_available(project, t.task.as_deref()).is_ok()
-    }) {
+    for t in s.teams.iter_mut().filter(|t| t.project_id == project) {
         if t.state == State::Running {
             t.state = State::Paused;
             t.error = Some("Restored after restart — Resume to continue coordination".into());
@@ -1693,9 +1667,7 @@ pub fn reconcile(
     modify(root, |s| {
         for index in 0..s.teams.len() {
             let mut t = s.teams[index].clone();
-            if t.project_id != project
-                || crate::work_cycles::ensure_available(project, t.task.as_deref()).is_err()
-            {
+            if t.project_id != project {
                 continue;
             }
             if restoring {
@@ -1946,10 +1918,7 @@ pub fn reconcile(
         }
         Ok(s.teams
             .iter()
-            .filter(|t| {
-                t.project_id == project
-                    && crate::work_cycles::ensure_available(project, t.task.as_deref()).is_ok()
-            })
+            .filter(|t| t.project_id == project)
             .cloned()
             .collect())
     })
@@ -2002,8 +1971,12 @@ fn prepare_lead(
             "projectId":project_id, "projectName":project.name, "projectRoot":project.root, "componentId":crate::model::TASK_ROOT_SCOPE,
             "terminalId":terminal.id, "task":t.task, "name":terminal.name, "kind":"agent", "adapter":terminal.adapter, "command":terminal.command
         }))?;
-        crate::work_cycles::prepare(project_id, t.task.as_deref(), &mut spec)?;
-        let next_session = crate::work_cycles::session_id(&metadata, &spec);
+        let next_session = crate::model::task_session_id(
+            project_id,
+            crate::model::TASK_ROOT_SCOPE,
+            &terminal.id,
+            t.task.as_deref(),
+        );
         spec.id.clone_from(&next_session);
         if clear_history && t.state == State::Stopped {
             s.owners.push(Owner {
@@ -2520,8 +2493,6 @@ mod tests {
     }
     fn session(root: &Path, sid: &str) -> Record {
         Record {
-                archived: false,
-                work_cycle: None,
             id: sid.into(),
             metadata: serde_json::from_value(serde_json::json!({"projectId":"p", "projectName":"P", "projectRoot":root, "componentId":"@task", "terminalId":sid, "name":"Codex", "kind":"agent", "adapter":"codex"})).unwrap(),
             spec: SessionSpec { purpose: crate::pty::LaunchPurpose::Ordinary, id: sid.into(), command: "codex".into(), resume_command: None, rerun_on_resume: false, owns_briefing: false, exclusive_cwd: false, merge_source: None, cwd: root.into(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: vec![] },
@@ -2564,7 +2535,6 @@ mod tests {
         }
         fn auth(&self) -> LaunchContext {
             LaunchContext {
-                cycle: None,
                 generation: self.lead.snapshot.as_ref().map(|s| s.generation),
                 project_id: "p".into(),
                 task: None,
@@ -2610,7 +2580,6 @@ mod tests {
         }
         fn worker_cmd(&self, worker: &Record, c: Command) -> Result<Team> {
             let launch = LaunchContext {
-                cycle: None,
                 generation: worker.snapshot.as_ref().map(|s| s.generation),
                 project_id: "p".into(),
                 task: worker.metadata.task.clone(),
@@ -2647,50 +2616,6 @@ mod tests {
             preset: "codex".into(),
             result_kind: kind,
         }
-    }
-    #[test]
-    fn initialization_rejects_a_session_sampled_before_finish_completed() {
-        let f = Fixture::new();
-        let project = new_id();
-        let mut sampled = f.lead.clone();
-        sampled.metadata.project_id.clone_from(&project);
-        modify(&f.dir, |s| {
-            s.teams.clear();
-            s.owners.clear();
-            Ok(())
-        })
-        .unwrap();
-        let scope = crate::work_cycles::Scope {
-            project_id: project.clone(),
-            task: None,
-            root: f.dir.clone(),
-            target: f.dir.clone(),
-        };
-        crate::work_cycles::begin(&scope, "", serde_json::json!({})).unwrap();
-        let mut stopped = sampled.clone();
-        stopped.snapshot.as_mut().unwrap().running = false;
-        crate::work_cycles::complete(&scope, &[stopped]).unwrap();
-        assert!(!sampled.archived);
-        let result = initialize(
-            &f.dir,
-            &project,
-            &f.dir,
-            Initialize {
-                task: None,
-                session_id: sampled.id.clone(),
-                preset: preset(),
-                paused: false,
-                checkpoint: Checkpoint::default(),
-            },
-            &[sampled],
-        );
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Archived agents cannot join")
-        );
-        assert!(list(&f.dir, &project).unwrap().is_empty());
     }
     #[test]
     fn path_reservations_allow_disjoint_work_and_cover_directories() {

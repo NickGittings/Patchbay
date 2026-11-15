@@ -199,16 +199,8 @@ pub enum Control {
     },
     ContinueScan,
 }
-#[derive(Serialize, Deserialize)]
-struct CycleMember {
-    project_id: String,
-    task: Option<String>,
-    session: String,
-}
 #[derive(Default, Serialize, Deserialize)]
 struct Store {
-    #[serde(default)]
-    cycle_members: Vec<CycleMember>,
     #[serde(default)]
     teams: Vec<chat::Team>,
     #[serde(default)]
@@ -248,18 +240,10 @@ fn load(root: &Path) -> Result<Store> {
 fn save(root: &Path, store: &Store) -> Result<()> {
     crate::workspace::atomic_write(&file(root)?, &serde_json::to_vec_pretty(store)?)
 }
-fn store_lock(root: &Path) -> Result<std::fs::File> {
-    let dir = tasks::store_dir(root)?;
-    crate::workspace::private_dir(&dir)?;
-    let guard = crate::workspace::lock(&dir.join("orchestration.lock"))?;
-    guard.lock()?;
-    Ok(guard)
-}
 fn modify<T>(root: &Path, f: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _file_guard = store_lock(root)?;
     let mut store = load(root)?;
     let before = serde_json::to_vec(&store)?;
     let result = f(&mut store);
@@ -275,10 +259,6 @@ fn get<'a>(store: &'a mut Store, id: &str) -> Result<&'a mut Run> {
         .iter_mut()
         .find(|r| r.id == id)
         .ok_or_else(|| anyhow!("Unknown provider run"))
-        .and_then(|r| {
-            crate::work_cycles::ensure_available(&r.project_id, r.task.as_deref())?;
-            Ok(r)
-        })
 }
 fn head(root: &Path) -> Result<String> {
     run(git(root).args(["rev-parse", "HEAD"]))
@@ -376,12 +356,6 @@ fn valid_id(id: &str) -> Result<()> {
 }
 /// Create an optional scan round or an implementation run after plan acceptance.
 pub fn create(project: &Project, project_id: &str, draft: Draft) -> Result<Run> {
-    ensure!(
-        crate::work_cycles::read(project_id, draft.task.as_deref())?
-            .finishing
-            .is_none(),
-        "This task is finishing"
-    );
     valid_id(&draft.id)?;
     ensure!(!draft.goal.trim().is_empty(), "Describe the goal first");
     ensure!(!draft.presets.is_empty(), "Choose agent presets");
@@ -407,7 +381,6 @@ pub fn create(project: &Project, project_id: &str, draft: Draft) -> Result<Run> 
     let root = crate::git::repo_root(root)
         .ok_or_else(|| anyhow!("Provider runs need a Git repository"))?;
     modify(Path::new(&project.root), |store| {
-        crate::work_cycles::ensure_available(project_id, draft.task.as_deref())?;
         if let Some(existing) = store.runs.iter().find(|r| r.id == draft.id) {
             ensure!(
                 existing.project_id == project_id
@@ -489,14 +462,10 @@ pub fn list(root: &Path, project_id: &str) -> Result<Vec<Run>> {
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _file_guard = store_lock(root)?;
     Ok(load(root)?
         .runs
         .into_iter()
-        .filter(|r| {
-            r.project_id == project_id
-                && crate::work_cycles::ensure_available(project_id, r.task.as_deref()).is_ok()
-        })
+        .filter(|r| r.project_id == project_id)
         .collect())
 }
 pub fn read(root: &Path, project_id: &str, id: &str) -> Result<Run> {
@@ -575,10 +544,7 @@ pub fn reconcile_at(
         if restoring {
             chat::restore(store, project_id);
         }
-        for r in store.runs.iter_mut().filter(|r| {
-            r.project_id == project_id
-                && crate::work_cycles::ensure_available(project_id, r.task.as_deref()).is_ok()
-        }) {
+        for r in store.runs.iter_mut().filter(|r| r.project_id == project_id) {
             if restoring && r.state == State::Running {
                 r.state = State::Paused;
                 r.error = Some("Restored after restart — Resume to continue".into());
@@ -663,10 +629,7 @@ pub fn reconcile_at(
         Ok(store
             .runs
             .iter()
-            .filter(|r| {
-                r.project_id == project_id
-                    && crate::work_cycles::ensure_available(project_id, r.task.as_deref()).is_ok()
-            })
+            .filter(|r| r.project_id == project_id)
             .cloned()
             .collect())
     })
@@ -1295,7 +1258,7 @@ pub fn launch(
         if r.chat_team.is_some() && !j.shared_worktree {
             text.push_str("\nThis is a coordinated chat assignment. Use agent team-result --commit <HEAD-sha> --summary <summary> for code results, agent team-report --summary <report> for report assignments, agent team to inspect, and agent team-send --id <unique-id> --to lead --text <question> to contact the lead. Only your lead routes dependencies.\n");
         }
-        let mut spec = context::job_agent_spec(
+        let spec = context::job_agent_spec(
             &mapped,
             &terminal,
             &text,
@@ -1310,13 +1273,11 @@ pub fn launch(
         )?;
         // Setup may defer dispatch before the transport can own this briefing.
         let _pending = crate::session::PendingBriefing::new(&spec);
-        crate::work_cycles::prepare(project_id, r.task.as_deref(), &mut spec)?;
-        j.session_id = Some(crate::work_cycles::agent_session_id(
+        j.session_id = Some(crate::model::task_session_id(
             project_id,
             scope,
             &terminal.id,
             task.as_deref(),
-            &spec.env[crate::work_cycles::CYCLE_ENV],
         ));
         j.state = JobState::Launching;
         j.error = None;
@@ -1389,116 +1350,6 @@ pub fn launch(
         });
     }
     result
-}
-
-/// Quiesce and retain a cycle's complete coordination records before removing active ownership.
-/// # Errors
-/// Fails if coordination or its finish journal cannot be persisted.
-pub fn retire_cycle(scope: &crate::work_cycles::Scope) -> Result<()> {
-    if crate::git::repo_root(&scope.root).is_none() {
-        return Ok(());
-    }
-    modify(&scope.root, |s| {
-        let teams: Vec<_> = s
-            .teams
-            .iter()
-            .filter(|t| t.project_id == scope.project_id && t.task == scope.task)
-            .cloned()
-            .collect();
-        let runs: Vec<_> = s
-            .runs
-            .iter()
-            .filter(|r| {
-                r.project_id == scope.project_id
-                    && (r.task == scope.task
-                        || teams.iter().any(|t| r.chat_team.as_deref() == Some(&t.id)))
-            })
-            .cloned()
-            .collect();
-        let state = crate::work_cycles::read(&scope.project_id, scope.task.as_deref())?;
-        if state
-            .finishing
-            .as_ref()
-            .is_some_and(|a| a.coordination.is_null())
-        {
-            crate::work_cycles::retain_coordination(
-                scope,
-                serde_json::json!({ "teams": teams, "runs": runs }),
-            )?;
-        }
-        let members = teams
-            .iter()
-            .flat_map(|t| {
-                std::iter::once(t.lead.session_id.clone()).chain(t.scopes.keys().cloned())
-            })
-            .chain(runs.iter().flat_map(|r| {
-                r.jobs
-                    .iter()
-                    .chain(r.coordinator.iter())
-                    .filter_map(|j| j.session_id.clone())
-            }));
-        for session in members {
-            if !s
-                .cycle_members
-                .iter()
-                .any(|m| m.project_id == scope.project_id && m.session == session)
-            {
-                s.cycle_members.push(CycleMember {
-                    project_id: scope.project_id.clone(),
-                    task: scope.task.clone(),
-                    session,
-                });
-            }
-        }
-        s.teams.retain(|t| !teams.iter().any(|old| old.id == t.id));
-        s.runs.retain(|r| !runs.iter().any(|old| old.id == r.id));
-        s.owners.retain(|o| {
-            !(o.project_id == scope.project_id && o.target == scope.target.to_string_lossy())
-        });
-        Ok(())
-    })
-}
-
-/// Owning cycle of a legacy delegated session whose metadata names its child worktree.
-/// # Errors
-/// Fails if coordination cannot be read.
-pub fn session_cycle_task(
-    root: &Path,
-    project: &str,
-    session: &str,
-) -> Result<Option<Option<String>>> {
-    if crate::git::repo_root(root).is_none() {
-        return Ok(None);
-    }
-    modify(root, |s| {
-        let owner = s
-            .teams
-            .iter()
-            .find(|t| {
-                t.project_id == project
-                    && (t.lead.session_id == session || t.scopes.contains_key(session))
-            })
-            .map(|t| t.task.clone());
-        Ok(owner
-            .or_else(|| {
-                s.runs
-                    .iter()
-                    .find(|r| {
-                        r.project_id == project
-                            && r.jobs
-                                .iter()
-                                .chain(r.coordinator.iter())
-                                .any(|j| j.session_id.as_deref() == Some(session))
-                    })
-                    .map(|r| r.task.clone())
-            })
-            .or_else(|| {
-                s.cycle_members
-                    .iter()
-                    .find(|m| m.project_id == project && m.session == session)
-                    .map(|m| m.task.clone())
-            }))
-    })
 }
 
 #[cfg(test)]
@@ -1604,49 +1455,11 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
-    #[test]
-    fn retired_legacy_worker_retains_its_parent_cycle_ownership() {
-        let f = Fixture::new();
-        let r = f.create(Kind::Scan);
-        let project = uuid::Uuid::new_v4().to_string();
-        modify(&f.root, |s| {
-            let run = s.runs.iter_mut().find(|run| run.id == r.id).unwrap();
-            run.project_id.clone_from(&project);
-            run.jobs[0].task = Some("isolated-child".into());
-            run.jobs[0].session_id = Some("legacy-worker".into());
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(
-            session_cycle_task(&f.root, &project, "legacy-worker").unwrap(),
-            Some(None)
-        );
-        let scope = crate::work_cycles::Scope {
-            project_id: project.clone(),
-            task: None,
-            root: f.root.clone(),
-            target: f.root.clone(),
-        };
-        crate::work_cycles::begin(&scope, "", serde_json::Value::Null).unwrap();
-        retire_cycle(&scope).unwrap();
-        assert_eq!(
-            session_cycle_task(&f.root, &project, "legacy-worker").unwrap(),
-            Some(None)
-        );
-        crate::work_cycles::complete(&scope, &[]).unwrap();
-        assert_eq!(
-            session_cycle_task(&f.root, &project, "legacy-worker").unwrap(),
-            Some(None)
-        );
-        assert!(list(&f.root, &project).unwrap().is_empty());
-    }
-
     fn terminal(id: &str) -> TerminalSpec {
         serde_json::from_value(serde_json::json!({"id":id, "name":id, "kind":"agent", "command":"echo fake", "adapter":null})).unwrap()
     }
     fn auth(r: &Run, j: &Job, role: Role) -> LaunchContext {
         LaunchContext {
-            cycle: None,
             generation: None,
             project_id: r.project_id.clone(),
             task: j.task.clone().or_else(|| r.task.clone()),
@@ -2178,7 +1991,7 @@ mod tests {
             let id = crate::model::task_session_id("p", l.scope, &l.terminal.id, l.task.as_deref());
             let metadata = serde_json::from_value(serde_json::json!({"projectId":"p", "projectName":"p", "projectRoot":f.root, "componentId":l.scope, "terminalId":l.terminal.id, "task":l.task, "name":"fake", "kind":"agent"})).unwrap();
             if let Some(file) = context::owned_briefing(&l.spec) { context::remove_owned_briefing_file(&file); }
-            record = Some(Record { archived: false, work_cycle: None, id, metadata, spec:l.spec, snapshot:None, history:vec![], launch_command:String::new(), restart_context:None, briefing_backup:None, interrupted:false, request_ids:vec![l.request_id] });
+            record = Some(Record { id, metadata, spec:l.spec, snapshot:None, history:vec![], launch_command:String::new(), restart_context:None, briefing_backup:None, interrupted:false, request_ids:vec![l.request_id] });
             Err(anyhow!("lost reply"))
         }).unwrap();
         let request = r.jobs[0].request_id.clone();

@@ -108,24 +108,8 @@ function claimPendingChat(
 const closing = new Set<string>()
 const terminalKey = (projectId: string, componentId: string, terminalId: string) =>
   JSON.stringify([projectId, componentId, terminalId])
-const isClosing = (launch: Launch) => {
-  if (closing.has(terminalKey(launch.projectId, launch.componentId, launch.terminalId))) return true
-  const state = projectStateOf(launch.projectId)
-  const workspace = state && workspaceOf(state, launch.chatTask)
-  const terminal =
-    launch.rootTerminal ??
-    launch.runtime?.terminal ??
-    launch.project.components
-      .find((c) => c.id === launch.componentId)
-      ?.terminals.find((t) => t.id === launch.terminalId)
-  const agent =
-    launch.componentId === PLAN_SCOPE ||
-    launch.componentId === MAP_SCOPE ||
-    terminal?.kind === 'agent'
-  return (
-    !!agent && !!workspace && (workspace.finishingTask || workspace.workCycle !== launch.workCycle)
-  )
-}
+const isClosing = (launch: Launch) =>
+  closing.has(terminalKey(launch.projectId, launch.componentId, launch.terminalId))
 let listening: Promise<void> | undefined
 /** Events at or below this generation belong to a project that has since been closed. */
 let floor = 0
@@ -216,7 +200,6 @@ export function listenForTerminals() {
 /** Everything a launch needs, read when it is requested, so a tab switch can't redirect it. */
 interface Launch {
   purpose?: 'ordinary' | 'chat'
-  workCycle?: string
   sid: string
   componentId: string
   terminalId: string
@@ -273,7 +256,6 @@ function captureLaunch(
   const workspace = state ? workspaceOf(state, workspaceTask) : undefined
   return {
     sid,
-    workCycle: workspace?.workCycle,
     componentId,
     terminalId,
     projectId: id,
@@ -1254,15 +1236,6 @@ export function reconcileSessions(force = true): Promise<void> {
             persistedReplies.get(r.id),
           )
           persistedReplies.set(r.id, key)
-        }
-        if (r.archived) {
-          if (useStore.getState().runtimeTerminals[r.id])
-            useStore.setState((s) => {
-              const runtimeTerminals = { ...s.runtimeTerminals }
-              delete runtimeTerminals[r.id]
-              return { runtimeTerminals }
-            })
-          continue
         }
         const state = projects[r.metadata.projectId]?.state
         const root =

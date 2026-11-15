@@ -17,13 +17,11 @@ export function useReviewFindings(
 ) {
   const exits = useStore((s) =>
     s.sessionRecords
-      .filter((r) => !r.archived)
       .filter((r) => r.metadata.projectId === projectId && r.metadata.componentId === REVIEW_SCOPE)
       .map((r) => `${r.id}:${s.sessions[r.id]?.running}:${s.sessions[r.id]?.exitedMs}`)
       .join(','),
   )
-  const cycle = useStore((s) => s.workCycle)
-  const key = JSON.stringify([projectId, branch, cycle])
+  const key = JSON.stringify([projectId, branch])
   const [loaded, setLoaded] = useState<LoadedFindings>()
   useEffect(() => {
     if (!projectId || !branch) return

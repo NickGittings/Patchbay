@@ -36,13 +36,11 @@ export default function TerminalControl({
   onRestart?: () => Promise<void>
 }) {
   const connected = useStore((s) => s.serviceConnected)
-  const archived = useStore((s) => s.sessionRecords.find((r) => r.id === sid)?.archived)
   const ownerProject = projectId ?? useStore.getState().project?.id ?? ''
   const auto = useStore(() => autoControlsAgent(ownerProject, sid))
   const [freshPending, setFreshPending] = useState(false)
   const pending = useRef(false)
   const interactive =
-    !archived &&
     kind === 'agent' &&
     (!isReservedScope(componentId) || componentId === PLAN_SCOPE || componentId === TASK_ROOT_SCOPE)
   const busy = restarting || freshPending
@@ -81,7 +79,7 @@ export default function TerminalControl({
         <button disabled={disabled || busy} onClick={() => stopTerminal(sid)}>
           ■ Stop
         </button>
-      ) : !archived && !isReviewAgentScope(componentId) ? (
+      ) : !isReviewAgentScope(componentId) ? (
         <button
           disabled={disabled || busy}
           onClick={() => void startTerminal(componentId, terminalId, task, projectId)}

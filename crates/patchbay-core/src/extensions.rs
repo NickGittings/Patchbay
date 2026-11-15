@@ -962,8 +962,6 @@ mod tests {
         std::fs::create_dir(&allowed).unwrap();
         std::fs::create_dir(&denied).unwrap();
         let mut record = Record {
-            archived: false,
-            work_cycle: None,
             briefing_backup: None,
             id: "session".into(),
             metadata: Metadata {
