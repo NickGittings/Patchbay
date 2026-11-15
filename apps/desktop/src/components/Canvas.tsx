@@ -5,6 +5,7 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  ControlButton,
   MiniMap,
   Panel,
   ReactFlow,
@@ -173,6 +174,22 @@ function isValidConnection(c: Connection | Edge) {
 }
 
 export default function Canvas() {
+  const [minimapVisible, setMinimapVisible] = useState(() => {
+    try {
+      return localStorage.getItem('patchbay.canvasMinimapVisible') !== 'false'
+    } catch {
+      return true
+    }
+  })
+  const toggleMinimap = () => {
+    const next = !minimapVisible
+    setMinimapVisible(next)
+    try {
+      localStorage.setItem('patchbay.canvasMinimapVisible', String(next))
+    } catch {
+      /* Keep the toggle usable when storage is unavailable. */
+    }
+  }
   const planningTask = usePlanningTask()
   const {
     project,
@@ -242,7 +259,6 @@ export default function Canvas() {
   return (
     <div className="canvas">
       <ReactFlow
-        proOptions={{ hideAttribution: true }}
         nodes={tweened(shownNodes, tween)}
         edges={visibleEdges}
         nodeTypes={nodeTypes}
@@ -305,20 +321,34 @@ export default function Canvas() {
           variant={BackgroundVariant.Dots}
           gap={20}
           size={1}
-          color="var(--border-strong)"
+          color="color-mix(in srgb, var(--border) 55%, transparent)"
         />
         {boardToggle && (
           <Panel position="top-left" className="view-tabs-panel">
             <StoryViewTabs />
           </Panel>
         )}
-        <Controls showInteractive={!planning} />
-        <MiniMap
-          pannable
-          zoomable
-          nodeColor={(n) => KIND_COLOR[(n as FlowNode).data.kind]}
-          style={{ width: 140, height: 90 }}
-        />
+        <Controls showInteractive={!planning} className="canvas-controls">
+          <ControlButton
+            onClick={toggleMinimap}
+            aria-label="Minimap"
+            aria-pressed={minimapVisible}
+            title={minimapVisible ? 'Hide minimap' : 'Show minimap'}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="m8 4 0 16m8-16v16M3 13l5-3 8 4 5-3" />
+            </svg>
+          </ControlButton>
+        </Controls>
+        {minimapVisible && (
+          <MiniMap
+            pannable
+            zoomable
+            nodeColor={(n) => KIND_COLOR[(n as FlowNode).data.kind]}
+            style={{ width: 140, height: 90 }}
+          />
+        )}
         {nodes.length === 0 && (
           <Panel position="top-center" className="canvas-empty">
             <EmptyState

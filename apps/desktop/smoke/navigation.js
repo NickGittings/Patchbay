@@ -131,6 +131,7 @@
     menuKey(document.activeElement, 'Escape')
     await until('menu dismissed with Escape', () => !menu())
     assert(document.activeElement === trigger, 'Escape did not restore trigger focus')
+    await sleep(100)
     const header = inspector.querySelector('.inspector-header')
     const bounds = header.getBoundingClientRect()
     const at = { x: bounds.left + 24, y: bounds.bottom - 4 }
@@ -195,7 +196,7 @@
         panel.width > 0 && file.width > 0 && panel.right <= file.left && file.right <= graph.left
       )
     })
-    assert(!document.querySelector('.react-flow__attribution'), 'React Flow attribution remains')
+    assert(document.querySelector('.react-flow__attribution'), 'React Flow attribution missing')
     await smoke.openInEditor({ path, line: 2 }, scope)
     assert(
       document.querySelectorAll('.file-editor [role="tab"]').length === 1,
@@ -286,6 +287,241 @@
     } catch (e) {
       assert(String(e).includes('outside the project'), String(e))
     }
+
+    // Overflow must affect only the tab strip, never the active terminal's controls.
+    const crowdedIds = []
+    for (let i = 0; i < 9; i++) {
+      const id = state().addTerminal(
+        'navigation',
+        {
+          id: `overflow-${i}`,
+          name: `Terminal ${i} with a deliberately long label to exercise ellipsis and scrolling`,
+          kind: 'shell',
+          command: '',
+        },
+        false,
+      )
+      crowdedIds.push(id)
+      await smoke.startTerminal('navigation', id)
+    }
+    const dock = () => document.querySelector('.terminal-dock')
+    const strip = () => dock()?.querySelector('.dock-tabs')
+    const actions = () => dock()?.querySelector('.dock-actions')
+    const activeVisible = () => {
+      const tab = strip()?.querySelector('.active')
+      if (tab?.dataset.dockSession && tab.dataset.dockSession !== state().activeSession)
+        return false
+      const selected = tab?.getBoundingClientRect()
+      const viewport = strip()?.getBoundingClientRect()
+      return (
+        selected &&
+        viewport &&
+        selected.left >= viewport.left - 1 &&
+        selected.right <= viewport.right + 1
+      )
+    }
+    const controlsVisible = () => {
+      const box = actions()?.getBoundingClientRect()
+      const header = dock()?.querySelector('.dock-header')?.getBoundingClientRect()
+      return (
+        box &&
+        header &&
+        box.left >= header.left - 1 &&
+        box.right <= header.right + 1 &&
+        [...actions().querySelectorAll('button')].every((button) => {
+          const b = button.getBoundingClientRect()
+          return b.left >= box.left && b.right <= box.right + 1
+        })
+      )
+    }
+    await smoke.resizeWindow(1440, 900)
+    await until('overflowing tab strip', () => strip()?.scrollWidth > strip()?.clientWidth)
+    const firstSid = smoke.sessionId('navigation', crowdedIds[0])
+    const lastSid = smoke.sessionId('navigation', crowdedIds.at(-1))
+    state().setActiveSession(firstSid)
+    await until('first programmatic tab visible', activeVisible)
+    state().setActiveSession(lastSid)
+    await until('last programmatic tab visible', activeVisible)
+    assert(controlsVisible(), 'dock actions clipped by overflowing tabs')
+    assert(
+      strip().querySelector('.active').title.includes('deliberately long label'),
+      'full tab label lost',
+    )
+    const beforeScroll = actions().getBoundingClientRect().left
+    strip().scrollLeft = 0
+    await sleep(50)
+    assert(actions().getBoundingClientRect().left === beforeScroll, 'actions scrolled with tabs')
+    strip().querySelector('.tab').click()
+    await until(
+      'terminal tab click selected',
+      () => state().activeSession === sid && activeVisible(),
+    )
+
+    // A contributed dock view can be selected, then overridden by a terminal reveal.
+    const registry = state().extensions
+    const extensionViews = state().extensionViews
+    const viewId = 'navigation.smoke.dock'
+    smoke.store.setState({
+      extensions: {
+        ...registry,
+        extensions: [
+          ...registry.extensions,
+          {
+            id: 'navigation.smoke',
+            dir: '',
+            enabled: true,
+            errors: [],
+            manifest: {
+              name: 'smoke',
+              publisher: 'navigation',
+              version: '1.0.0',
+              engines: { patchbay: '*' },
+              activationEvents: [],
+              permissions: [],
+              contributes: {
+                devices: [],
+                detectors: [],
+                commands: [],
+                menus: {},
+                context: [],
+                views: [
+                  {
+                    id: viewId,
+                    title: 'Extension dock view with a long descriptive label',
+                    location: 'dock',
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      extensionViews: { ...extensionViews, [viewId]: '<p>Dock extension smoke</p>' },
+    })
+    const extensionTab = await until('extension dock tab', () =>
+      dock()?.querySelector(`[data-extension-view-tab="${viewId}"]`),
+    )
+    extensionTab.click()
+    await until(
+      'extension selected and visible',
+      () => extensionTab.classList.contains('active') && activeVisible(),
+    )
+    assert(!actions(), 'terminal controls shown for extension view')
+    state().setActiveSession(lastSid)
+    state().revealDock(lastSid)
+    await until('terminal reveal overrides extension', () => actions() && activeVisible())
+    assert(state().activeSession === lastSid, 'reveal selected wrong terminal')
+    smoke.store.setState({ extensions: registry, extensionViews })
+
+    await smoke.resizeWindow(1024, 768)
+    smoke.selectPanel('activity')
+    await until('narrow dock action row', () => {
+      const a = actions()?.getBoundingClientRect()
+      const t = strip()?.getBoundingClientRect()
+      return a && t && a.top >= t.bottom && controlsVisible() && activeVisible()
+    })
+    const dockButton = (text) =>
+      [...actions().querySelectorAll('button')].find((b) => b.textContent.includes(text))
+    dockButton('Stop').click()
+    await until(
+      'dock Stop exits terminal',
+      () => !state().sessions[lastSid]?.running && dockButton('Restart'),
+    )
+    dockButton('Restart').click()
+    await until(
+      'dock Restart starts terminal',
+      () => state().sessions[lastSid]?.running && dockButton('Stop'),
+    )
+    dockButton('Stop').click()
+    await until('exited terminal closable', () => dock()?.querySelector('.dock-close'))
+    dock().querySelector('.dock-close').click()
+    await until('closed exited tab removed', () => !state().dockKept.includes(lastSid))
+    for (const id of crowdedIds) {
+      const session = smoke.sessionId('navigation', id)
+      smoke.stopTerminal(session)
+      await until('overflow session stopped', () => !state().sessions[session]?.running)
+      state().dropFromDock(session)
+      state().removeTerminal('navigation', id)
+    }
+    smoke.selectPanel(null)
+    await smoke.resizeWindow(1440, 900)
+    state().setActiveSession(sid)
+
+    // Preference is global and survives a Canvas unmount, including a view change.
+    const minimapPreference = localStorage.getItem('patchbay.canvasMinimapVisible')
+    const minimapToggle = () => document.querySelector('.canvas-controls [aria-label="Minimap"]')
+    if (minimapToggle().getAttribute('aria-pressed') === 'false') minimapToggle().click()
+    await until('visible minimap', () => document.querySelector('.react-flow__minimap'))
+    minimapToggle().click()
+    await until(
+      'hidden minimap persisted',
+      () =>
+        !document.querySelector('.react-flow__minimap') &&
+        localStorage.getItem('patchbay.canvasMinimapVisible') === 'false',
+    )
+    smoke.selectRailView('implementation')
+    await until('canvas unmounted', () => !minimapToggle())
+    smoke.selectRailView('navigation')
+    await until(
+      'hidden minimap restored',
+      () =>
+        minimapToggle()?.getAttribute('aria-pressed') === 'false' &&
+        !document.querySelector('.react-flow__minimap'),
+    )
+    minimapToggle().click()
+    await until(
+      'visible minimap persisted',
+      () => localStorage.getItem('patchbay.canvasMinimapVisible') === 'true',
+    )
+    smoke.selectRailView('implementation')
+    await until('canvas unmounted again', () => !minimapToggle())
+    smoke.selectRailView('navigation')
+    await until('visible minimap restored', () => document.querySelector('.react-flow__minimap'))
+    if (minimapPreference === 'false') minimapToggle().click()
+    if (minimapPreference == null) localStorage.removeItem('patchbay.canvasMinimapVisible')
+
+    const navigationButton = document.querySelector('.workspace-rail [aria-label="Navigation"]')
+    const activityButton = document.querySelector('.workspace-rail [aria-label="Activity"]')
+    navigationButton.focus()
+    await until('keyboard rail tooltip', () =>
+      document.querySelector('[role="tooltip"]')?.textContent.includes('Navigation'),
+    )
+    assert(document.querySelector('[role="tooltip"] kbd'), 'rail shortcut missing from tooltip')
+    assert(!navigationButton.title, 'duplicate native rail tooltip')
+    navigationButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await until('Escape dismisses rail tooltip', () => !document.querySelector('[role="tooltip"]'))
+    navigationButton.blur()
+    activityButton.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }))
+    await until('pointer rail tooltip', () =>
+      document.querySelector('[role="tooltip"]')?.textContent.includes('Activity'),
+    )
+    activityButton.dispatchEvent(new PointerEvent('pointerout', { bubbles: true }))
+    await until(
+      'pointer leave dismisses rail tooltip',
+      () => !document.querySelector('[role="tooltip"]'),
+    )
+    activityButton.click()
+    await until(
+      'view and utility remain selected together',
+      () =>
+        navigationButton.getAttribute('aria-pressed') === 'true' &&
+        activityButton.getAttribute('aria-pressed') === 'true',
+    )
+    const utilityHandle = document.querySelector('.utility-resize')
+    const utilityWidth = Number(utilityHandle.getAttribute('aria-valuenow'))
+    utilityHandle.focus()
+    utilityHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    await until(
+      'utility keyboard resize',
+      () => Number(utilityHandle.getAttribute('aria-valuenow')) === utilityWidth - 20,
+    )
+    assert(
+      Number(localStorage.getItem('patchbay.utilityPanelWidth')) === utilityWidth - 20,
+      'utility width not persisted',
+    )
+    utilityHandle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    smoke.selectPanel(null)
+
     const generation = smoke.sessionGeneration(sid)
     try {
       await smoke.terminalOpenReference(sid, generation - 1, 'tracked.log:1')
@@ -543,7 +779,7 @@
     await smoke.editorSavePreferences(previous)
     smoke.resetSessions(await smoke.terminalReset())
     await smoke.report(
-      'PASS navigation: inspector disclosures, terminal controls, header menus and focus, single-click docked file tabs, save and close guards, safe argv, ignored/tracked files, denied symlink, generation/cwd checks, selection and modifier links, file search, keyboard tree navigation, windowed large diffs and editor setup',
+      'PASS navigation: overflowing dock tabs, fixed action rows, active tab reveal, terminal and extension selection, dock Stop/Restart/Close, persisted minimap, inspector disclosures, terminal controls, header menus and focus, single-click docked file tabs, save and close guards, safe argv, ignored/tracked files, denied symlink, generation/cwd checks, selection and modifier links, file search, keyboard tree navigation, windowed large diffs and editor setup',
     )
   } catch (e) {
     if (previous) await smoke.editorSavePreferences(previous).catch(() => {})

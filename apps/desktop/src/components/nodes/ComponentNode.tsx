@@ -5,8 +5,8 @@ import { revealTerminal } from '../../lib/attention'
 import ExtensionBadges from '../../extensions/Badges'
 import { ComponentMenuItems, ContextMenu } from '../ComponentActions'
 import ChangesPopover from '../changes/ChangesPopover'
-import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { memo, useState, type CSSProperties } from 'react'
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
+import { memo, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { affectedIds, nearbyIds } from '../../lib/plan'
 import { useShallow } from 'zustand/react/shallow'
 import { componentTerminals } from '../../lib/attention'
@@ -78,6 +78,16 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const activeSession = useStore((s) => s.activeSession)
   const color = KIND_COLOR[data.kind]
   const attention = mostUrgent(statuses)
+  const badges = useStore((s) => s.extensionBadges[id])
+  const card = useRef<HTMLDivElement>(null)
+  const updateNodeInternals = useUpdateNodeInternals()
+  useLayoutEffect(() => {
+    if (!card.current) return
+    // Observe the rendered size, including extension badges and changing role rows.
+    const observer = new ResizeObserver(() => updateNodeInternals(id))
+    observer.observe(card.current)
+    return () => observer.disconnect()
+  }, [id, updateNodeInternals])
 
   const openTerminal = (terminalId: string) => {
     const s = useStore.getState()
@@ -87,6 +97,7 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
 
   return (
     <div
+      ref={card}
       className={`component-node ${simple && changes > 0 ? 'simple-changed' : ''} ${pulsing ? 'activity-pulse' : ''} ${affected ? 'affected' : ''} ${!planning && selected ? 'selected' : ''} ${planClass} ${
         inTask ? 'in-task' : ''
       }`}
@@ -113,28 +124,11 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
       <div className="component-header">
         <span
           className="component-name"
-          title={`${data.kind} · ${data.path === '.' ? 'repo root' : data.path}`}
+          title={`${data.name} · ${data.kind} · ${data.path === '.' ? 'repo root' : data.path}`}
         >
           {data.name}
         </span>
-        {inTask && (
-          <span className="task-badge" title="In the active task">
-            Task
-          </span>
-        )}
-        {repo && (
-          <span className="repo-badge" title={`In the ${repo} repo`}>
-            {repo}
-          </span>
-        )}
-        {issues.map((issue) => (
-          <span className="count map-issue" key={issue.kind} title={issue.message}>
-            {issue.kind}
-          </span>
-        ))}
-        {changes > 0 && <ChangesPopover componentId={id} />}
         <AttentionPill status={attention} />
-        <ExtensionBadges componentId={id} />
         <button
           className="nodrag popout-button"
           title="Open component in window"
@@ -147,6 +141,27 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
           ⧉
         </button>
       </div>
+      {(inTask || repo || issues.length > 0 || changes > 0 || !!badges?.length) && (
+        <div className="component-metadata">
+          {inTask && (
+            <span className="task-badge" title="In the active task">
+              Task
+            </span>
+          )}
+          {repo && (
+            <span className="repo-badge" title={`In the ${repo} repo`}>
+              {repo}
+            </span>
+          )}
+          {issues.map((issue) => (
+            <span className="count map-issue" key={issue.kind} title={issue.message}>
+              {issue.kind}
+            </span>
+          ))}
+          {changes > 0 && <ChangesPopover componentId={id} />}
+          <ExtensionBadges componentId={id} />
+        </div>
+      )}
       {roles.length > 0 && <AgentRoles roles={roles} />}
       <div className="terminal-chips">
         {data.terminals.map((t, i) => {

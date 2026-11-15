@@ -408,17 +408,19 @@ input[type='radio'] {
 }
 .separator {
   width: 4px;
-  background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat;
+  background: linear-gradient(var(--resize-line), var(--resize-line)) center / 1px 100% no-repeat;
+  --resize-line: var(--border);
+  position: relative;
   transition: background 0.15s;
 }
 .separator.horizontal {
   width: auto;
   height: 4px;
-  background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat;
+  background: linear-gradient(var(--resize-line), var(--resize-line)) center / 100% 1px no-repeat;
 }
 .separator:hover,
 .separator[data-separator='active'] {
-  background: var(--accent);
+  --resize-line: var(--accent);
 }
 /* Keep hidden handles at their panel boundary: resize ordering uses their DOM offsets. */
 .separator.hidden {
@@ -451,6 +453,9 @@ input[type='radio'] {
   border-bottom: 1px solid var(--border);
 }
 .view-tabs button {
+  min-height: 34px;
+  padding: 6px 12px;
+  font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
   background: none;
@@ -458,13 +463,13 @@ input[type='radio'] {
 }
 .view-tabs button:hover:not(.active) {
   color: var(--text);
-  background: transparent;
+  background: var(--hover);
 }
 .view-tabs button.active,
 .view-tabs button.active:hover:not(:disabled) {
-  color: #fff;
-  background: var(--accent);
-  box-shadow: 0 1px 8px color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  box-shadow: none;
 }
 .toast-region {
   display: flex;
@@ -868,7 +873,7 @@ input[type='radio'] {
   background: var(--panel-2);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 25%);
   transition:
     border-color 0.15s,
     box-shadow 0.15s;
@@ -887,8 +892,7 @@ input[type='radio'] {
   border-color: var(--accent);
   box-shadow:
     0 0 0 1px var(--accent),
-    0 0 24px color-mix(in srgb, var(--accent) 25%, transparent),
-    0 8px 24px rgb(0 0 0 / 50%);
+    0 3px 8px rgb(0 0 0 / 30%);
 }
 .component-header {
   display: flex;
@@ -908,6 +912,7 @@ input[type='radio'] {
 }
 .component-name {
   flex: 1;
+  min-width: 0;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1300,7 +1305,7 @@ input[type='radio'] {
   border-color: var(--accent);
   box-shadow:
     0 0 0 1px var(--accent),
-    0 0 24px color-mix(in srgb, var(--accent) 25%, transparent);
+    0 3px 8px rgb(0 0 0 / 30%);
 }
 .component-node.nearby {
   border-color: var(--border-hover);
@@ -3234,10 +3239,23 @@ kbd {
   border: 1px solid transparent;
   background: transparent;
 }
-.workspace-rail > button.active {
-  background: var(--border);
-  border-color: var(--accent);
-  color: var(--accent);
+.workspace-rail > button.view-active {
+  color: var(--accent-text);
+}
+.workspace-rail > button.view-active::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.workspace-rail > button.utility-active,
+.workspace-rail > button.toggle-active {
+  background: var(--hover);
+  color: var(--text);
 }
 .workspace-rail hr {
   width: 28px;
@@ -3252,6 +3270,7 @@ kbd {
   font-size: 10px;
   background: var(--accent);
   color: var(--bg);
+  font-weight: 600;
   border-radius: 8px;
   padding: 1px 4px;
 }
@@ -3322,12 +3341,10 @@ kbd {
   width: 4px;
   flex: 0 0 4px;
   cursor: col-resize;
-  background: var(--border);
+  --resize-line: var(--border);
+  position: relative;
+  background: linear-gradient(var(--resize-line), var(--resize-line)) center / 1px 100% no-repeat;
   touch-action: none;
-}
-.utility-resize:hover,
-.utility-resize:focus {
-  background: var(--accent);
 }
 .sessions-content {
   min-width: 0;
@@ -4345,11 +4362,24 @@ kbd {
   background: transparent;
 }
 .file-editor-tab [role='tab'] {
-  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 10px;
+  color: var(--muted);
+}
+.file-tab-label {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-editor-tab.active {
+  box-shadow: inset 0 -2px var(--accent);
 }
 .file-editor-tab [aria-selected='true'] {
-  background: var(--panel-2);
-  box-shadow: inset 0 -2px var(--accent);
+  color: var(--text);
 }
 .file-editor-code {
   display: flex;
@@ -4387,4 +4417,251 @@ kbd {
 }
 .file-editor-prompt button {
   margin-right: 8px;
+}
+
+/* Navigation workspace controls; the Inspector keeps its own tab styling. */
+.dock-header {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+}
+.terminal-dock {
+  container-type: inline-size;
+}
+.dock-tabs {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding: 0 6px;
+  border-bottom: 0;
+}
+.dock-tabs .tab {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.dock-tab-label {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dock-tabs .status-dot {
+  flex: none;
+}
+.dock-tabs .tab:hover:not(:disabled),
+.file-editor-tab button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.dock-tabs .tab:focus-visible,
+.file-editor-tab button:focus-visible {
+  outline-offset: -3px;
+}
+.dock-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-left: 1px solid var(--border);
+  white-space: normal;
+}
+.dock-actions > * {
+  max-width: 100%;
+}
+.dock-actions .agent-context {
+  overflow-wrap: anywhere;
+}
+.dock-actions .status-label {
+  min-width: 0;
+  flex-wrap: wrap;
+  white-space: normal;
+}
+.dock-actions .status-url {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@container (max-width: 680px) {
+  .dock-header {
+    flex-direction: column;
+  }
+  .dock-tabs {
+    flex: auto;
+  }
+  .dock-actions {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+}
+.file-editor-tab button {
+  min-height: 34px;
+  font-size: 12px;
+}
+.component-header > :not(.component-name) {
+  flex: none;
+}
+.component-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 0 12px 10px;
+}
+.component-metadata > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.component-metadata .extension-badge {
+  white-space: normal;
+}
+.component-node .chip {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.rail-tooltip {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  box-shadow: 0 3px 12px rgb(0 0 0 / 30%);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.rail-tooltip kbd {
+  flex: none;
+  color: var(--muted);
+  font: 11px var(--mono);
+}
+.canvas {
+  container-type: inline-size;
+}
+.canvas-controls.react-flow__controls {
+  margin: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 20%);
+}
+.canvas-controls .react-flow__controls-button {
+  width: 30px;
+  height: 30px;
+  padding: 7px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--muted);
+  background: var(--panel);
+}
+.canvas-controls .react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+.canvas-controls .react-flow__controls-button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.canvas-controls .react-flow__controls-button[aria-pressed='true'] {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.canvas-controls .react-flow__controls-button:focus-visible {
+  outline-offset: -3px;
+}
+.canvas-controls .react-flow__controls-button svg {
+  fill: currentColor;
+}
+.canvas-controls .react-flow__controls-button[aria-label='Minimap'] svg {
+  fill: none;
+}
+.canvas .react-flow__minimap {
+  margin: 12px 12px 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--panel);
+  --xy-minimap-background-color: var(--panel);
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--bg) 65%, transparent);
+}
+.separator:focus-visible,
+.utility-resize:is(:hover, :focus-visible, [data-resizing]) {
+  --resize-line: var(--accent);
+  outline: none;
+}
+.separator::after,
+.utility-resize::after {
+  content: '';
+  position: absolute;
+  z-index: 5;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 28px;
+  border-radius: 3px;
+  background: var(--accent-text);
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+.separator.horizontal::after {
+  width: 28px;
+  height: 3px;
+}
+.separator:is(:hover, :focus-visible, [data-separator='active'])::after,
+.utility-resize:is(:hover, :focus-visible, [data-resizing])::after {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .separator,
+  .separator::after,
+  .utility-resize,
+  .utility-resize::after,
+  .component-node,
+  .workspace-rail > button,
+  .dock-tabs .tab,
+  .file-editor-tab button,
+  .view-tabs button {
+    transition: none;
+  }
+}
+
+@container (max-width: 240px) {
+  .canvas-controls.react-flow__controls {
+    flex-direction: row;
+    margin-bottom: 24px;
+  }
+  .canvas-controls .react-flow__controls-button {
+    width: 26px;
+    height: 28px;
+    padding: 5px;
+    border-bottom: 0;
+    border-right: 1px solid var(--border);
+  }
+  .canvas-controls .react-flow__controls-button:last-child {
+    border-right: 0;
+  }
+  .canvas .react-flow__minimap {
+    margin-bottom: 66px;
+  }
 }

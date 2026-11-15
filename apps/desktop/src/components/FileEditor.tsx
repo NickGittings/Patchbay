@@ -204,7 +204,7 @@ export default function FileEditor({
       </header>
       <div className="file-editor-tabs" role="tablist" aria-label="Open files">
         {tabs.map((item) => (
-          <div key={item.id} className="file-editor-tab">
+          <div key={item.id} className={`file-editor-tab ${active === item.id ? 'active' : ''}`}>
             <button
               role="tab"
               aria-selected={active === item.id}
@@ -212,8 +212,8 @@ export default function FileEditor({
               disabled={!!prompt}
               onClick={() => setActive(item.id)}
             >
-              {item.target.path.split(/[\\/]/).pop()}
-              {dirty(item) ? ' •' : ''}
+              <span className="file-tab-label">{item.target.path.split(/[\\/]/).pop()}</span>
+              {dirty(item) && <span aria-label="Unsaved changes">•</span>}
             </button>
             <button
               disabled={!!prompt}

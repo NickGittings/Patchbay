@@ -1,4 +1,5 @@
 import RailIcon from './RailIcon'
+import RailTooltip from './RailTooltip'
 import UsagePanel from './UsagePanel'
 import { useUsage, usageWarnings } from '../lib/usage'
 import { useClockTick } from '../lib/clock'
@@ -80,6 +81,7 @@ export default function WorkspaceRail() {
   const selected = selectedRailView()
   const [sessionsActions, setSessionsActions] = useState<HTMLDivElement | null>(null)
   const [sessionsHost, setSessionsHost] = useState<HTMLDivElement | null>(null)
+  const [resizing, setResizing] = useState(false)
   const [width, setWidth] = useState(initialWidth)
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
   const actualWidth = panelWidth(width, windowWidth)
@@ -136,13 +138,13 @@ export default function WorkspaceRail() {
         entry?.conflict ||
         ['error', 'conflict'].includes(entry?.mapSave?.status ?? ''))
     return (
-      <button
+      <RailTooltip
         key={id}
-        className={panel === id ? 'active' : ''}
+        className={panel === id ? 'utility-active' : ''}
         aria-label={label}
         aria-description={status}
         aria-pressed={panel === id}
-        title={`${label}: ${name}${status ? ` · ${status}` : ''}`}
+        tooltip={`${label}: ${name}${status ? ` · ${status}` : ''}${id === 'activity' && count ? ` · ${count} need attention` : ''}${id === 'usage' && usageWarning ? ' · Usage limit warning' : ''}`}
         disabled={!project && id !== 'project' && id !== 'sessions' && id !== 'usage'}
         onClick={() => togglePanel(id)}
       >
@@ -168,36 +170,37 @@ export default function WorkspaceRail() {
         {id === 'activity' && count > 0 && (
           <sup aria-label={`${count} need attention`}>{count}</sup>
         )}
-      </button>
+      </RailTooltip>
     )
   }
   return (
     <>
       <nav className="workspace-rail" aria-label="Workspace navigation">
         {railViews.map((v, i) => (
-          <button
+          <RailTooltip
             key={v.id}
             disabled={!project}
             aria-label={v.label}
             aria-pressed={!!project && selected === v.id}
-            className={project && selected === v.id ? 'active' : ''}
-            title={`${v.label} (${mod}${i + 1}${simple ? ': open Full view' : ''})`}
+            className={project && selected === v.id ? 'view-active' : ''}
+            tooltip={`${v.label}${simple ? ': open Full view' : ''}`}
+            shortcut={`${mod}${i + 1}`}
             onClick={() => selectRailView(v.id)}
           >
             <RailIcon name={v.id} />
-          </button>
+          </RailTooltip>
         ))}
         <hr />
-        <button
+        <RailTooltip
           disabled={!project}
           aria-label="Chat mode"
           aria-pressed={simple}
-          className={simple ? 'active' : ''}
-          title="Chat mode"
+          className={simple ? 'toggle-active' : ''}
+          tooltip="Chat mode"
           onClick={() => useStore.getState().setSimpleMode(!simple)}
         >
           <RailIcon name="chat" />
-        </button>
+        </RailTooltip>
         <hr />
         {utility('auto')}
         {utility('activity')}
@@ -263,6 +266,7 @@ export default function WorkspaceRail() {
           </aside>
           <div
             className="utility-resize"
+            data-resizing={resizing || undefined}
             role="separator"
             aria-label="Resize utility panel"
             aria-orientation="vertical"
@@ -279,11 +283,13 @@ export default function WorkspaceRail() {
             onPointerDown={(e) => {
               e.preventDefault()
               e.currentTarget.setPointerCapture(e.pointerId)
+              setResizing(true)
             }}
             onPointerMove={(e) => {
               if (e.currentTarget.hasPointerCapture(e.pointerId)) changeWidth(e.clientX - 52)
             }}
             onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
+            onLostPointerCapture={() => setResizing(false)}
           />
         </>
       )}

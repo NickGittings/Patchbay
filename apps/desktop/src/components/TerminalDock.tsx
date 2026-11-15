@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from 'react'
 import { ExtensionView } from '../extensions/views'
 import { useExtensionViews } from '../extensions/useExtensionViews'
 import { describeTerminal, statusTitle, terminalStatus } from '../lib/display'
@@ -23,39 +24,58 @@ export default function TerminalDock({ collapsed }: { collapsed: boolean }) {
   // With no terminal to show, show an extension's view rather than an empty terminal.
   const view = extensionViews.selected ?? (active ? null : (extensionViews.views[0]?.id ?? null))
 
+  const strip = useRef<HTMLDivElement>(null)
+  const activeTab = view ?? active?.sid
+  useLayoutEffect(() => {
+    const element = strip.current
+    if (!element) return
+    const reveal = () =>
+      element.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    reveal()
+    const observer = new ResizeObserver(reveal)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [activeTab, revealed])
+
   return (
     <div className="panel terminal-dock">
-      <div className="tabs">
-        {tabs.map((t) => {
-          const status = terminalStatus(t.terminal.kind, sessions[t.sid])
-          return (
+      <div className="dock-header">
+        <div className="tabs dock-tabs" ref={strip} aria-label="Dock tabs">
+          {tabs.map((t) => {
+            const status = terminalStatus(t.terminal.kind, sessions[t.sid])
+            return (
+              <button
+                key={t.sid}
+                data-dock-session={t.sid}
+                className={`tab health-${status.health} ${!view && t.sid === active?.sid ? 'active' : ''}`}
+                title={statusTitle(status, `${t.label} · ${describeTerminal(t.terminal)}`)}
+                aria-description={statusTitle(status, t.label)}
+                aria-pressed={!view && t.sid === active?.sid}
+                onClick={() => {
+                  extensionViews.setSelected(null)
+                  setActiveSession(t.sid)
+                }}
+              >
+                <span className="status-dot" />
+                <span className="dock-tab-label">{t.label}</span>
+              </button>
+            )
+          })}
+          {extensionViews.views.map((v) => (
             <button
-              key={t.sid}
-              className={`tab health-${status.health} ${!view && t.sid === active?.sid ? 'active' : ''}`}
-              title={statusTitle(status, describeTerminal(t.terminal))}
-              onClick={() => {
-                extensionViews.setSelected(null)
-                setActiveSession(t.sid)
-              }}
+              key={v.id}
+              className={`tab ${v.id === view ? 'active' : ''}`}
+              data-extension-view-tab={v.id}
+              title={v.title}
+              aria-pressed={v.id === view}
+              onClick={() => extensionViews.setSelected(v.id)}
             >
-              <span className="status-dot" />
-              {t.label}
+              <span className="dock-tab-label">{v.title}</span>
             </button>
-          )
-        })}
-        {extensionViews.views.map((v) => (
-          <button
-            key={v.id}
-            className={`tab ${v.id === view ? 'active' : ''}`}
-            data-extension-view-tab={v.id}
-            onClick={() => extensionViews.setSelected(v.id)}
-          >
-            {v.title}
-          </button>
-        ))}
-        <span className="spacer" />
+          ))}
+        </div>
         {active && !view && (
-          <span className="tab-actions">
+          <span className="tab-actions dock-actions">
             <StatusLabel status={terminalStatus(active.terminal.kind, session)} />
             <TerminalControl
               kind={active.terminal.kind}
