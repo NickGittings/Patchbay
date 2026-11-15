@@ -127,6 +127,7 @@ fn authenticate(app: &AppHandle, token: &str) -> Option<LaunchContext> {
         .ok()?;
     let session = session?;
     Some(LaunchContext {
+        cycle: Some(session.cycle),
         generation: Some(session.generation),
         role: Role::of(
             &session.metadata.component_id,

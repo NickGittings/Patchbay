@@ -13,6 +13,14 @@ use std::path::{Path, PathBuf};
 pub const CYCLE_ENV: &str = "PATCHBAY_WORK_CYCLE";
 pub const TASK_ENV: &str = "PATCHBAY_CYCLE_TASK";
 
+/// The cycle and owning worktree captured when a command source is authenticated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Binding {
+    pub cycle: String,
+    pub task: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Scope {
@@ -129,18 +137,19 @@ pub fn prepare(project: &str, task: Option<&str>, spec: &mut SessionSpec) -> Res
 }
 #[must_use]
 pub fn session_id(metadata: &Metadata, spec: &SessionSpec) -> String {
-    let terminal = match spec
-        .env
-        .get(CYCLE_ENV)
-        .filter(|c| !c.is_empty() && metadata.kind == TerminalKind::Agent)
-    {
-        Some(cycle) => format!("{}\u{1e}cycle:{cycle}", metadata.terminal_id),
-        None => metadata.terminal_id.clone(),
-    };
+    if metadata.kind == TerminalKind::Agent {
+        return agent_session_id(
+            &metadata.project_id,
+            &metadata.component_id,
+            &metadata.terminal_id,
+            metadata.task.as_deref(),
+            spec.env.get(CYCLE_ENV).map_or("", String::as_str),
+        );
+    }
     crate::model::task_session_id(
         &metadata.project_id,
         &metadata.component_id,
-        &terminal,
+        &metadata.terminal_id,
         metadata.task.as_deref(),
     )
 }
@@ -287,15 +296,20 @@ fn artifact_paths(scope: &Scope, records: &[Record]) -> Result<Vec<PathBuf>> {
             legacy.with_extension("presented.json"),
         ]);
     }
-    for r in records.iter().filter(|r| belongs(r, scope)) {
-        if let Some(branch) = &r.metadata.branch {
-            paths.push(crate::reviews::lane_file(
-                &scope.root,
-                branch,
-                r.metadata.lane.as_deref(),
-            )?);
-            paths.push(crate::reviews::file(&scope.root, branch)?);
-        }
+    let mut branches: Vec<String> = records
+        .iter()
+        .filter(|r| belongs(r, scope))
+        .filter_map(|r| r.metadata.branch.clone())
+        .collect();
+    if let Some(pending) = read(&scope.project_id, scope.task.as_deref())?.finishing
+        && !pending.branch.is_empty()
+    {
+        branches.push(pending.branch);
+    }
+    branches.sort();
+    branches.dedup();
+    for branch in branches {
+        paths.extend(crate::reviews::branch_artifacts(&scope.root, &branch)?);
     }
     paths.sort();
     paths.dedup();
@@ -431,6 +445,113 @@ pub fn agent_session_id(
     crate::model::task_session_id(project, component, &terminal, task)
 }
 
+const ARCHIVE_OUTPUT_ENV: &str = "PATCHBAY_ARCHIVED_OUTPUT";
+fn resume_dir(id: &str) -> Result<PathBuf> {
+    Ok(directory()?
+        .join("outputs")
+        .join(workspace::session_id(id, "archive", "outputs")))
+}
+/// Private output directory already assigned to this archived session.
+#[must_use]
+pub fn existing_resume_dir(id: &str) -> Option<PathBuf> {
+    resume_dir(id).ok()?.canonicalize().ok()
+}
+
+/// Isolate archived plan/review output while preserving the recorded conversation identity.
+/// # Errors
+/// Fails if archival outputs or the independent briefing cannot be retained.
+pub(crate) fn isolate_resume(
+    id: &str,
+    spec: &mut SessionSpec,
+    launch: &mut String,
+    backup: Option<&str>,
+) -> Result<()> {
+    let dir = resume_dir(id)?;
+    workspace::private_dir(&dir)?;
+    if spec
+        .env
+        .get(ARCHIVE_OUTPUT_ENV)
+        .is_some_and(|old| Path::new(old) == dir)
+    {
+        return crate::context::restore_briefing(spec, backup);
+    }
+    let mut replacements = vec![];
+    for (key, name) in [
+        (crate::plans::PLAN_FILE_ENV, "plan.md"),
+        (crate::reviews::REVIEW_FILE_ENV, "review.md"),
+    ] {
+        if let Some(old) = spec.env.get(key) {
+            let target = dir.join(name);
+            replacements.push((old.clone(), target.display().to_string()));
+            if let Some(parent) = Path::new(old).parent() {
+                replacements.push((parent.display().to_string(), dir.display().to_string()));
+            }
+        }
+    }
+    let rewrite = |text: &str| {
+        let mut text = text.to_owned();
+        for (old, new) in &replacements {
+            let escaped_old = serde_json::to_string(old).unwrap();
+            let escaped_new = serde_json::to_string(new).unwrap();
+            text = text
+                .replace(
+                    &escaped_old[1..escaped_old.len() - 1],
+                    &escaped_new[1..escaped_new.len() - 1],
+                )
+                .replace(old, new);
+        }
+        text
+    };
+    spec.command = rewrite(&spec.command);
+    if let Some(command) = &mut spec.resume_command {
+        *command = rewrite(command);
+    }
+    *launch = rewrite(launch);
+    for value in spec.env.values_mut() {
+        *value = rewrite(value);
+    }
+    for path in &mut spec.dirs {
+        *path = PathBuf::from(rewrite(&path.to_string_lossy()));
+    }
+    if !spec.dirs.contains(&dir) {
+        spec.dirs.push(dir.clone());
+    }
+    if let Some(old) = spec.env.get(crate::context::CONTEXT_ENV).cloned() {
+        let text = backup
+            .map(str::to_owned)
+            .or_else(|| crate::context::briefing_backup(spec))
+            .context("Archived briefing unavailable")?;
+        let text = format!(
+            "{}\n\nArchived conversation: this agent runs against the worktree's current files and remains separate from its active task. Write plan/review output only to the archived paths in this environment.\n",
+            rewrite(&text)
+        );
+        let file =
+            crate::context::context_file(&format!("archive-{}", uuid::Uuid::new_v4()), &text)?;
+        let old_name = Path::new(&old)
+            .file_name()
+            .context("Missing briefing filename")?
+            .to_string_lossy();
+        let new_name = file.file_name().unwrap().to_string_lossy();
+        spec.command = spec.command.replace(old_name.as_ref(), new_name.as_ref());
+        if let Some(command) = &mut spec.resume_command {
+            *command = command.replace(old_name.as_ref(), new_name.as_ref());
+        }
+        *launch = launch.replace(old_name.as_ref(), new_name.as_ref());
+        for value in spec.env.values_mut() {
+            *value = value.replace(old_name.as_ref(), new_name.as_ref());
+        }
+        spec.env.insert(
+            crate::context::CONTEXT_ENV.into(),
+            file.display().to_string(),
+        );
+        spec.owns_briefing = true;
+    }
+    spec.env
+        .insert(ARCHIVE_OUTPUT_ENV.into(), dir.display().to_string());
+    spec.notice = Some("Archived conversation — runs against current files; remains separate from the active task.".into());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,6 +684,93 @@ mod tests {
                 .text
                 .is_empty()
         );
+        let _ = std::fs::remove_dir_all(scope.root);
+    }
+    #[test]
+    fn finishing_removes_failed_review_sidecars_without_session_records() {
+        let scope = scope();
+        crate::git::run(crate::git::git(&scope.root).args(["init", "-q", "-b", "feature"]))
+            .unwrap();
+        let findings = crate::reviews::file(&scope.root, "feature").unwrap();
+        let attempt = serde_json::json!({"branch":"feature", "head":"old", "base":"main", "mergeBase":"old", "startedMs":1, "attempt":"orphan", "round":"orphan", "launchError":"Connection lost"});
+        workspace::atomic_write(
+            &findings.with_extension("json"),
+            &serde_json::to_vec(&attempt).unwrap(),
+        )
+        .unwrap();
+        assert!(crate::reviews::read(&scope.root, "feature").is_some());
+        begin(&scope, "", Value::Null).unwrap();
+        let completed = complete(&scope, &[]).unwrap();
+        assert!(crate::reviews::read(&scope.root, "feature").is_none());
+        assert!(
+            completed.history[0].artifacts.iter().any(|a| a
+                .path
+                .extension()
+                .is_some_and(|e| e == "json")
+                && a.text.contains("Connection lost"))
+        );
+        let _ = std::fs::remove_dir_all(scope.root);
+    }
+
+    #[test]
+    fn resumed_archived_review_writes_separately_from_a_fresh_review_of_the_same_lane() {
+        let scope = scope();
+        crate::git::run(crate::git::git(&scope.root).args(["init", "-q", "-b", "feature"]))
+            .unwrap();
+        let active = crate::reviews::file(&scope.root, "feature").unwrap();
+        let attempt = serde_json::json!({"branch":"feature", "head":"current", "base":"main", "mergeBase":"current", "startedMs":1, "attempt":"fresh", "round":"fresh"});
+        workspace::atomic_write(
+            &active.with_extension("json"),
+            &serde_json::to_vec(&attempt).unwrap(),
+        )
+        .unwrap();
+        workspace::atomic_write(&active, b"Verdict: clean\nActive new review").unwrap();
+        let current = crate::reviews::read(&scope.root, "feature").unwrap().text;
+        let old_text = format!("Write findings to {}", active.display());
+        let old_context =
+            crate::context::context_file(&format!("review-{}", uuid::Uuid::new_v4()), &old_text)
+                .unwrap();
+        let mut spec = record(&scope, "agent", None, false).spec;
+        spec.command = format!(
+            "claude --add-dir '{}' --append-system-prompt '{}'",
+            active.parent().unwrap().display(),
+            old_context.display()
+        );
+        spec.resume_command = Some(spec.command.clone());
+        spec.env.insert(
+            crate::reviews::REVIEW_FILE_ENV.into(),
+            active.display().to_string(),
+        );
+        spec.env.insert(
+            crate::context::CONTEXT_ENV.into(),
+            old_context.display().to_string(),
+        );
+        spec.env.insert(
+            "PATCHBAY_ARGUMENT_0".into(),
+            format!("Write {}", active.display()),
+        );
+        spec.dirs.push(active.parent().unwrap().into());
+        let mut launch = spec.command.clone();
+        isolate_resume("archived-review", &mut spec, &mut launch, Some(&old_text)).unwrap();
+        let archived_file = PathBuf::from(&spec.env[crate::reviews::REVIEW_FILE_ENV]);
+        assert_ne!(archived_file, active);
+        workspace::atomic_write(&archived_file, b"Verdict: issues\nArchived follow-up").unwrap();
+        assert_eq!(
+            crate::reviews::read(&scope.root, "feature").unwrap().text,
+            current
+        );
+        assert!(!spec.dirs.contains(&active.parent().unwrap().to_path_buf()));
+        assert!(!spec.env["PATCHBAY_ARGUMENT_0"].contains(&active.display().to_string()));
+        assert!(!launch.contains(&old_context.display().to_string()));
+        assert_eq!(std::fs::read_to_string(&old_context).unwrap(), old_text);
+        let backup = crate::context::briefing_backup(&spec).unwrap();
+        assert!(backup.contains(&archived_file.display().to_string()));
+        let before = spec.command.clone();
+        let context = PathBuf::from(&spec.env[crate::context::CONTEXT_ENV]);
+        std::fs::remove_file(&context).unwrap();
+        isolate_resume("archived-review", &mut spec, &mut launch, Some(&backup)).unwrap();
+        assert_eq!(spec.command, before);
+        assert_eq!(std::fs::read_to_string(context).unwrap(), backup);
         let _ = std::fs::remove_dir_all(scope.root);
     }
 }

@@ -532,6 +532,7 @@ pub enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSession {
+    pub cycle: crate::work_cycles::Binding,
     pub generation: u64,
     pub id: String,
     pub metadata: Metadata,
@@ -1719,7 +1720,7 @@ impl Service {
         request_id: String,
         purpose: Option<crate::pty::LaunchPurpose>,
     ) -> Result<String> {
-        let (metadata, mut spec, launch_command, restart_context, briefing_backup) = {
+        let (metadata, mut spec, mut launch_command, restart_context, briefing_backup, archived) = {
             let records = self.records.lock().unwrap();
             let r = records.get(id).context("Unknown session")?;
             if r.request_ids.contains(&request_id) {
@@ -1731,12 +1732,22 @@ impl Service {
                 r.launch_command.clone(),
                 r.restart_context.clone(),
                 r.briefing_backup.clone(),
+                crate::work_cycles::archived(r),
             )
         };
         if let Some(purpose) = purpose {
             spec.purpose = purpose;
         }
-        crate::context::restore_briefing(&spec, briefing_backup.as_deref())?;
+        if archived {
+            crate::work_cycles::isolate_resume(
+                id,
+                &mut spec,
+                &mut launch_command,
+                briefing_backup.as_deref(),
+            )?;
+        } else {
+            crate::context::restore_briefing(&spec, briefing_backup.as_deref())?;
+        }
         let original = prepare_resume(&metadata, &mut spec, &launch_command)?;
         // Keep the original launch command for later resumes; context environment persists.
         self.start_with_command(
@@ -1963,6 +1974,28 @@ impl Service {
                 serde_json::to_value(options)?
             }
             Request::AgentSession { token } => {
+                // Coordination can await a service launch, so resolve legacy ownership
+                // before taking operation; never acquire the store lock under that lock.
+                let source = self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .find(|r| r.spec.env.get(crate::agent_bridge::TOKEN_ENV) == Some(&token))
+                    .filter(|r| !r.spec.env.contains_key(crate::work_cycles::TASK_ENV))
+                    .map(|r| {
+                        (
+                            PathBuf::from(&r.metadata.project_root),
+                            r.metadata.project_id.clone(),
+                            r.id.clone(),
+                        )
+                    });
+                let owner = match source {
+                    Some((root, project, session)) => {
+                        crate::orchestration::session_cycle_task(&root, &project, &session)?
+                    }
+                    None => None,
+                };
                 // Bind token and generation under the launch lock. A lookup cannot straddle
                 // replacement of a process in the same session slot.
                 let _operation = self.operation.lock().unwrap();
@@ -1973,11 +2006,33 @@ impl Service {
                         !token.is_empty()
                             && r.spec.env.get(crate::agent_bridge::TOKEN_ENV) == Some(&token)
                             && !crate::work_cycles::archived(r)
+                            && crate::work_cycles::ensure_available(
+                                &r.metadata.project_id,
+                                owner
+                                    .as_ref()
+                                    .map_or_else(
+                                        || crate::work_cycles::session_task(&r.metadata, &r.spec),
+                                        Clone::clone,
+                                    )
+                                    .as_deref(),
+                            )
+                            .is_ok()
                             && crate::work_cycles::check_launch(&r.metadata, &r.spec, false).is_ok()
                     })
                     .and_then(|r| {
                         let snapshot = self.pty.snapshot_with(&r.id, 0)?;
                         snapshot.running.then(|| AgentSession {
+                            cycle: crate::work_cycles::Binding {
+                                cycle: r
+                                    .spec
+                                    .env
+                                    .get(crate::work_cycles::CYCLE_ENV)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                                task: owner.clone().unwrap_or_else(|| {
+                                    crate::work_cycles::session_task(&r.metadata, &r.spec)
+                                }),
+                            },
                             id: r.id.clone(),
                             metadata: r.metadata.clone(),
                             generation: snapshot.generation,

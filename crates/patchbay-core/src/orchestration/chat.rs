@@ -2561,6 +2561,7 @@ mod tests {
         }
         fn auth(&self) -> LaunchContext {
             LaunchContext {
+                cycle: None,
                 generation: self.lead.snapshot.as_ref().map(|s| s.generation),
                 project_id: "p".into(),
                 task: None,
@@ -2606,6 +2607,7 @@ mod tests {
         }
         fn worker_cmd(&self, worker: &Record, c: Command) -> Result<Team> {
             let launch = LaunchContext {
+                cycle: None,
                 generation: worker.snapshot.as_ref().map(|s| s.generation),
                 project_id: "p".into(),
                 task: worker.metadata.task.clone(),

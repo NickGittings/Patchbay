@@ -983,7 +983,7 @@ fn briefing_name(project: &Project, scope: &str, task: Option<&str>) -> String {
     )
 }
 
-fn context_file(slug: &str, contents: &str) -> Result<PathBuf> {
+pub(crate) fn context_file(slug: &str, contents: &str) -> Result<PathBuf> {
     let slug: String = slug
         .chars()
         .map(|c| {
@@ -1575,7 +1575,8 @@ fn is_owned_briefing_file(file: &Path) -> bool {
             .file_stem()
             .and_then(|s| s.to_str())
             .and_then(|s| {
-                s.strip_prefix("merge-")
+                s.strip_prefix("archive-")
+                    .or_else(|| s.strip_prefix("merge-"))
                     .or_else(|| s.strip_prefix("review-"))
                     .or_else(|| s.strip_prefix("map-"))
                     .or_else(|| s.strip_prefix("scan-"))

@@ -260,6 +260,10 @@ pub async fn chat_team_delegate_shared(
             .find(|t| t.id == id)
             .ok_or("Unknown team")?;
         let launch = patchbay_core::agent_bridge::LaunchContext {
+            cycle: Some(patchbay_core::work_cycles::Binding {
+                cycle: team.work_cycle.clone(),
+                task: team.task.clone(),
+            }),
             generation: Some(team.lead.generation),
             project_id,
             task: team.task,

@@ -772,6 +772,24 @@ fn of_branch(path: &Path, prefix: &str) -> bool {
         })
 }
 
+/// Every retained findings/attempt file for this branch, including orphaned failed lanes.
+/// # Errors
+/// Fails if the existing reviews folder cannot be inspected.
+pub fn branch_artifacts(root: &Path, branch: &str) -> Result<Vec<PathBuf>> {
+    let Some(dir) = existing_dir(root) else {
+        return Ok(vec![]);
+    };
+    let prefix = name(branch);
+    let mut paths = vec![];
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if of_branch(&path, &prefix) && path.extension().is_some_and(|e| e == "md" || e == "json") {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
 /// Prepare a review without modifying repository files or Git state.
 /// Native Codex uses a read-only sandbox; other agents receive read-only instructions.
 /// Launch it with `Prepared::launch`, which rolls back a refused launch.

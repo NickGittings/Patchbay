@@ -199,8 +199,16 @@ pub enum Control {
     },
     ContinueScan,
 }
+#[derive(Serialize, Deserialize)]
+struct CycleMember {
+    project_id: String,
+    task: Option<String>,
+    session: String,
+}
 #[derive(Default, Serialize, Deserialize)]
 struct Store {
+    #[serde(default)]
+    cycle_members: Vec<CycleMember>,
     #[serde(default)]
     teams: Vec<chat::Team>,
     #[serde(default)]
@@ -1418,12 +1426,78 @@ pub fn retire_cycle(scope: &crate::work_cycles::Scope) -> Result<()> {
                 serde_json::json!({ "teams": teams, "runs": runs }),
             )?;
         }
+        let members = teams
+            .iter()
+            .flat_map(|t| {
+                std::iter::once(t.lead.session_id.clone()).chain(t.scopes.keys().cloned())
+            })
+            .chain(runs.iter().flat_map(|r| {
+                r.jobs
+                    .iter()
+                    .chain(r.coordinator.iter())
+                    .filter_map(|j| j.session_id.clone())
+            }));
+        for session in members {
+            if !s
+                .cycle_members
+                .iter()
+                .any(|m| m.project_id == scope.project_id && m.session == session)
+            {
+                s.cycle_members.push(CycleMember {
+                    project_id: scope.project_id.clone(),
+                    task: scope.task.clone(),
+                    session,
+                });
+            }
+        }
         s.teams.retain(|t| !teams.iter().any(|old| old.id == t.id));
         s.runs.retain(|r| !runs.iter().any(|old| old.id == r.id));
         s.owners.retain(|o| {
             !(o.project_id == scope.project_id && o.target == scope.target.to_string_lossy())
         });
         Ok(())
+    })
+}
+
+/// Owning cycle of a legacy delegated session whose metadata names its child worktree.
+/// # Errors
+/// Fails if coordination cannot be read.
+pub fn session_cycle_task(
+    root: &Path,
+    project: &str,
+    session: &str,
+) -> Result<Option<Option<String>>> {
+    if crate::git::repo_root(root).is_none() {
+        return Ok(None);
+    }
+    modify(root, |s| {
+        let owner = s
+            .teams
+            .iter()
+            .find(|t| {
+                t.project_id == project
+                    && (t.lead.session_id == session || t.scopes.contains_key(session))
+            })
+            .map(|t| t.task.clone());
+        Ok(owner
+            .or_else(|| {
+                s.runs
+                    .iter()
+                    .find(|r| {
+                        r.project_id == project
+                            && r.jobs
+                                .iter()
+                                .chain(r.coordinator.iter())
+                                .any(|j| j.session_id.as_deref() == Some(session))
+                    })
+                    .map(|r| r.task.clone())
+            })
+            .or_else(|| {
+                s.cycle_members
+                    .iter()
+                    .find(|m| m.project_id == project && m.session == session)
+                    .map(|m| m.task.clone())
+            }))
     })
 }
 
@@ -1530,11 +1604,49 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
+    #[test]
+    fn retired_legacy_worker_retains_its_parent_cycle_ownership() {
+        let f = Fixture::new();
+        let r = f.create(Kind::Scan);
+        let project = uuid::Uuid::new_v4().to_string();
+        modify(&f.root, |s| {
+            let run = s.runs.iter_mut().find(|run| run.id == r.id).unwrap();
+            run.project_id.clone_from(&project);
+            run.jobs[0].task = Some("isolated-child".into());
+            run.jobs[0].session_id = Some("legacy-worker".into());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            session_cycle_task(&f.root, &project, "legacy-worker").unwrap(),
+            Some(None)
+        );
+        let scope = crate::work_cycles::Scope {
+            project_id: project.clone(),
+            task: None,
+            root: f.root.clone(),
+            target: f.root.clone(),
+        };
+        crate::work_cycles::begin(&scope, "", serde_json::Value::Null).unwrap();
+        retire_cycle(&scope).unwrap();
+        assert_eq!(
+            session_cycle_task(&f.root, &project, "legacy-worker").unwrap(),
+            Some(None)
+        );
+        crate::work_cycles::complete(&scope, &[]).unwrap();
+        assert_eq!(
+            session_cycle_task(&f.root, &project, "legacy-worker").unwrap(),
+            Some(None)
+        );
+        assert!(list(&f.root, &project).unwrap().is_empty());
+    }
+
     fn terminal(id: &str) -> TerminalSpec {
         serde_json::from_value(serde_json::json!({"id":id, "name":id, "kind":"agent", "command":"echo fake", "adapter":null})).unwrap()
     }
     fn auth(r: &Run, j: &Job, role: Role) -> LaunchContext {
         LaunchContext {
+            cycle: None,
             generation: None,
             project_id: r.project_id.clone(),
             task: j.task.clone().or_else(|| r.task.clone()),

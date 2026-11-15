@@ -306,9 +306,19 @@ fn planner_root(
 /// # Errors
 /// Fails for unavailable projects, invalid actions or service errors.
 pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Result<Value> {
-    let cycle_lock = crate::work_cycles::command_lock(&launch.project_id, launch.task.as_deref())?;
+    let cycle_task = launch
+        .cycle
+        .as_ref()
+        .map_or(launch.task.as_deref(), |c| c.task.as_deref());
+    let cycle_lock = crate::work_cycles::command_lock(&launch.project_id, cycle_task)?;
     cycle_lock.lock()?;
-    crate::work_cycles::ensure_available(&launch.project_id, launch.task.as_deref())?;
+    crate::work_cycles::ensure_available(&launch.project_id, cycle_task)?;
+    if let Some(binding) = &launch.cycle {
+        anyhow::ensure!(
+            crate::work_cycles::read(&launch.project_id, cycle_task)?.cycle == binding.cycle,
+            "This task has finished; the agent command belongs to an archived cycle"
+        );
+    }
     let state = app;
     let scoped = state.project(&launch.project_id)?;
     anyhow::ensure!(
@@ -700,6 +710,7 @@ mod tests {
     }
     fn launch() -> LaunchContext {
         LaunchContext {
+            cycle: None,
             generation: None,
             project_id: "p".into(),
             task: Some("task".into()),
@@ -707,6 +718,39 @@ mod tests {
             role: Role::Component,
         }
     }
+    #[test]
+    fn authenticated_command_cannot_cross_a_finished_parent_cycle() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let scope = crate::work_cycles::Scope {
+            project_id: uuid::Uuid::new_v4().to_string(),
+            task: None,
+            root: dir.clone(),
+            target: dir.clone(),
+        };
+        let host = Fixture {
+            calls: Mutex::default(),
+            project: None,
+            sessions: None,
+            saves: Mutex::default(),
+        };
+        let mut launch = launch();
+        launch.project_id.clone_from(&scope.project_id);
+        // Authentication happened while this legacy worker's parent cycle was active.
+        // Its launch task still names its isolated child checkout.
+        launch.cycle = Some(crate::work_cycles::Binding {
+            cycle: String::new(),
+            task: None,
+        });
+        crate::work_cycles::begin(&scope, "", Value::Null).unwrap();
+        assert!(dispatch(&host, &launch, Action::Status {}).is_err());
+        crate::work_cycles::complete(&scope, &[]).unwrap();
+        let error = dispatch(&host, &launch, Action::Status {}).unwrap_err();
+        assert!(error.to_string().contains("archived cycle"));
+        assert!(host.calls.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn status_uses_one_preview_scan_without_resolving_the_map_or_task() {
         let host = Fixture {

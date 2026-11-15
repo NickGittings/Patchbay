@@ -174,3 +174,11 @@ records and retained session references. Late receipts and team polls cannot res
 retired state. Archived sessions retain output and explicit Resume, with a current-files
 notice, and remain separate from automatic Chat/canvas recovery. Provider history must
 still exist to resume a native conversation. See [finish validation](../finish-task-validation.md).
+
+Authentication also binds each command to its source cycle and owning worktree, including
+legacy isolated workers. Dispatch acquires that owner's command lock and rechecks both the
+cycle and finish intent, so a request authenticated before Finish cannot execute afterward.
+Finish archives all branch review lane Markdown and attempt JSON files, including orphaned
+failed attempts. Archived resume remaps plan/review outputs, directory grants and retained
+briefing/command references into a private per-session output directory; repeated resume and
+briefing recovery preserve that mapping instead of updating active review findings.

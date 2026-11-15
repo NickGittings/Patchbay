@@ -55,3 +55,7 @@ For a native provider check, finish a task with lead and workers, restart Patchb
 Task history, then send a new request. Verify the new agent has no old plan, handoff, queue,
 or review instructions. Explicitly resume an archived conversation and verify its session
 identity remains archived while the fresh Chat recipient remains selected.
+
+Review regressions additionally cover an authenticated worker command crossing its parent
+cycle boundary, failed review sidecars without retained sessions, and archived Claude-style
+review output remaining separate while a fresh review uses the original branch/lane path.

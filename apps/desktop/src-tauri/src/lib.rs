@@ -2716,6 +2716,9 @@ async fn session_resume(
         // Planners and agents with a plan were handed the repo's plans folder,
         // which lies under `.git` (and every worktree shares).
         roots.extend(root.as_deref().and_then(patchbay_core::plans::existing_dir));
+        if record.archived {
+            roots.extend(patchbay_core::work_cycles::existing_resume_dir(&record.id));
+        }
         session::check_resume(record, &roots).map_err(err)?;
         if let Some(extension_id) = &record.metadata.extension_id {
             extensions.get().allowed(extension_id, None).map_err(err)?;
