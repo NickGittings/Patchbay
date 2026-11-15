@@ -51,13 +51,10 @@ export function cleanupCurrent(job: CleanupJob) {
 /** Cancel pending cleanup at the task boundary, including polls already awaiting Git. */
 export function retireTaskCleanup(projectId: string, task: string | null, cycle: string) {
   const retiring = cleanupJobs().filter(
-    (j) =>
-      !j.handled &&
-      j.projectId === projectId &&
-      jobTask(j) === task &&
-      (j.workCycle ?? '') === cycle,
+    (j) => j.projectId === projectId && jobTask(j) === task && (j.workCycle ?? '') === cycle,
   )
-  if (retiring.length)
+  // Retain choices on retry even when a prior attempt failed before creating the journal.
+  if (retiring.some((j) => !j.handled))
     useStore.setState((s) => ({
       workspaceSettings: {
         ...s.workspaceSettings,

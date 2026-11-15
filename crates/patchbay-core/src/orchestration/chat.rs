@@ -447,7 +447,10 @@ pub fn initialize(
                 .is_none(),
             "This task is finishing"
         );
-        ensure!(!r.archived, "Archived agents cannot join the active task");
+        ensure!(
+            !crate::work_cycles::archived(r),
+            "Archived agents cannot join the active task"
+        );
         if let Some(t) = s
             .teams
             .iter()
@@ -2644,6 +2647,50 @@ mod tests {
             preset: "codex".into(),
             result_kind: kind,
         }
+    }
+    #[test]
+    fn initialization_rejects_a_session_sampled_before_finish_completed() {
+        let f = Fixture::new();
+        let project = new_id();
+        let mut sampled = f.lead.clone();
+        sampled.metadata.project_id.clone_from(&project);
+        modify(&f.dir, |s| {
+            s.teams.clear();
+            s.owners.clear();
+            Ok(())
+        })
+        .unwrap();
+        let scope = crate::work_cycles::Scope {
+            project_id: project.clone(),
+            task: None,
+            root: f.dir.clone(),
+            target: f.dir.clone(),
+        };
+        crate::work_cycles::begin(&scope, "", serde_json::json!({})).unwrap();
+        let mut stopped = sampled.clone();
+        stopped.snapshot.as_mut().unwrap().running = false;
+        crate::work_cycles::complete(&scope, &[stopped]).unwrap();
+        assert!(!sampled.archived);
+        let result = initialize(
+            &f.dir,
+            &project,
+            &f.dir,
+            Initialize {
+                task: None,
+                session_id: sampled.id.clone(),
+                preset: preset(),
+                paused: false,
+                checkpoint: Checkpoint::default(),
+            },
+            &[sampled],
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Archived agents cannot join")
+        );
+        assert!(list(&f.dir, &project).unwrap().is_empty());
     }
     #[test]
     fn path_reservations_allow_disjoint_work_and_cover_directories() {

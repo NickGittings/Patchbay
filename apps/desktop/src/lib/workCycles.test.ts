@@ -13,6 +13,7 @@ import { sessionId, TASK_ROOT_SCOPE } from '../types'
 import { emptySimpleUi, simpleKey, useSimpleUi } from './simpleUi'
 import { finishTask, refreshTaskCycle, useTaskCycles, type TaskCycleState } from './workCycles'
 import { useChatTeams } from './chatTeams'
+import { savePlanDraft } from './planDrafts'
 
 const receipt = (): TaskCycleState => ({
   cycle: 'second',
@@ -192,6 +193,44 @@ test('Finish retires pending merge cleanup before sending its core request', asy
     expect.objectContaining({
       workspace: expect.objectContaining({
         cleanupJobs: [expect.objectContaining({ id: 'old-cleanup' })],
+      }),
+    }),
+  )
+})
+
+test('retrying Finish retains cleanup choices after a failure before journal creation', async () => {
+  useStore.setState({
+    workspaceSettings: {
+      mergeCleanupJobs: [
+        {
+          id: 'retry-cleanup',
+          projectId: 'p',
+          task: null,
+          sessionId: 'old-agent',
+          choice: 'delete',
+          auto: false,
+          request: {
+            source: '/p',
+            sourceBranch: 'feature',
+            destination: '/main',
+            destinationBranch: 'main',
+          },
+        },
+      ],
+    },
+  })
+  vi.mocked(savePlanDraft).mockRejectedValueOnce(new Error('Plan changed on disk'))
+  vi.mocked(invoke).mockResolvedValueOnce({ cycle: '', finishing: null, history: [] })
+  await expect(finishTask('p', null)).rejects.toThrow('Plan changed on disk')
+  expect(invoke).not.toHaveBeenCalledWith('task_cycle_finish', expect.anything())
+  expect(useStore.getState().finishingTask).toBe(false)
+  vi.mocked(invoke).mockResolvedValue(receipt())
+  await finishTask('p', null)
+  expect(invoke).toHaveBeenCalledWith(
+    'task_cycle_finish',
+    expect.objectContaining({
+      workspace: expect.objectContaining({
+        cleanupJobs: [expect.objectContaining({ id: 'retry-cleanup', choice: 'delete' })],
       }),
     }),
   )
