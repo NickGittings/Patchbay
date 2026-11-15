@@ -111,7 +111,8 @@ export async function completeMergeChat(job: CleanupJob) {
   const state = projectStateOf(job.projectId)
   if (!state) return false
   const source = state.tasks.find((t) => t.worktree === job.request.source)
-  if (!source && job.request.source !== state.project?.root) return false
+  // Unattached Git worktrees have no Chat workspace, but still support merge cleanup.
+  if (!source && job.request.source !== state.project?.root) return true
   const task = source?.id ?? null
   const now = Date.now()
   const simple = workspaceOf(state, task).simple ?? { startedMs: now, log: [] }

@@ -193,6 +193,20 @@ function prepareChatMerge(choice: 'ask' | 'keep' | 'delete' = 'ask') {
 }
 
 test.each(['ask', 'keep', 'delete'] as const)(
+  'an unattached source worktree allows %s cleanup without clearing the project Chat',
+  async (choice) => {
+    prepareChatMerge(choice)
+    trackMergeCleanup(project, request, 'session', 'external-merge', choice, false)
+    const job = cleanupJobs().find((j) => j.id === 'external-merge')!
+    const { simple, taskWorkspaces } = useStore.getState()
+    expect(await completeMergeChat(job)).toBe(true)
+    expect(useStore.getState().simple).toBe(simple)
+    expect(useStore.getState().taskWorkspaces).toBe(taskWorkspaces)
+    expect(cleanupJobs().find((j) => j.id === job.id)?.handled).not.toBe(true)
+  },
+)
+
+test.each(['ask', 'keep', 'delete'] as const)(
   'a confirmed merge into main clears Chat with %s cleanup and preserves terminals',
   async (choice) => {
     const job = prepareChatMerge(choice)
