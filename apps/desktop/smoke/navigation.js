@@ -40,10 +40,36 @@
     await smoke.editorSavePreferences({ ...previous, fileOpenMode: 'patchbay' })
     const scope = { projectId, task: null }
     const originalText = (await smoke.readTextFile(scope, path)).text
-    await smoke.openInEditor({ path, line: 1 }, scope)
+    state().select('navigation')
+    const filesTab = await until('Inspector Files tab', () =>
+      [...document.querySelectorAll('.inspector .tabs button')].find(
+        (button) => button.textContent.trim() === 'Files',
+      ),
+    )
+    filesTab.click()
+    const fileItem = (name) =>
+      [...document.querySelectorAll('.inspector [role="treeitem"]')].find(
+        (row) => row.title === name,
+      )
+    const targetRow = await until('target file row', () => fileItem(path))
+    assert(
+      !targetRow.closest('.file-tree-row').querySelector('[title="Open in editor"]'),
+      'redundant file editor button remains',
+    )
+    targetRow.click()
     const editor = await until('built-in editor', () =>
       document.querySelector('.file-editor textarea'),
     )
+    assert(!editor.closest('[role="dialog"]'), 'file editor opened in a popup')
+    await until('Component Panel and editor to the left of the graph', () => {
+      const panel = document.querySelector('.inspector').getBoundingClientRect()
+      const graph = document.querySelector('.navigation-map').getBoundingClientRect()
+      const file = document.querySelector('.file-editor').getBoundingClientRect()
+      return (
+        panel.width > 0 && file.width > 0 && panel.right <= file.left && file.right <= graph.left
+      )
+    })
+    assert(!document.querySelector('.react-flow__attribution'), 'React Flow attribution remains')
     await smoke.openInEditor({ path, line: 2 }, scope)
     assert(
       document.querySelectorAll('.file-editor [role="tab"]').length === 1,
@@ -82,6 +108,30 @@
     await until('restore completed', () => !action('Reload').disabled)
     document.querySelector('button[aria-label="Close File editor"]').click()
     await until('editor closed', () => !document.querySelector('.file-editor'))
+    targetRow.click()
+    await until('editor reopened with one click', () =>
+      document.querySelector('.file-editor textarea'),
+    )
+    fileItem('tracked.log').click()
+    await until(
+      'second file tab',
+      () =>
+        document.querySelectorAll('.file-editor [role="tab"]').length === 2 &&
+        document.querySelector('.file-editor [aria-selected="true"]')?.textContent ===
+          'tracked.log',
+    )
+    const firstTab = document.querySelector('.file-editor-tab')
+    firstTab.querySelector('button[aria-label^="Close "]').click()
+    await until(
+      'inactive tab closed',
+      () => document.querySelectorAll('.file-editor [role="tab"]').length === 1,
+    )
+    assert(
+      document.querySelector('.file-editor [aria-selected="true"]').textContent === 'tracked.log',
+      'closing another file switched the active tab',
+    )
+    document.querySelector('.file-editor-tab button[aria-label^="Close "]').click()
+    await until('last tab closes editor pane', () => !document.querySelector('.file-editor'))
     await smoke.editorSavePreferences({
       fileOpenMode: 'external',
       editor: 'custom',
@@ -367,7 +417,7 @@
     await smoke.editorSavePreferences(previous)
     smoke.resetSessions(await smoke.terminalReset())
     await smoke.report(
-      'PASS navigation: safe argv, ignored/tracked files, denied symlink, generation/cwd checks, selection and modifier links, file search, keyboard tree navigation, windowed large diffs and editor setup',
+      'PASS navigation: single-click docked file tabs, save and close guards, safe argv, ignored/tracked files, denied symlink, generation/cwd checks, selection and modifier links, file search, keyboard tree navigation, windowed large diffs and editor setup',
     )
   } catch (e) {
     if (previous) await smoke.editorSavePreferences(previous).catch(() => {})

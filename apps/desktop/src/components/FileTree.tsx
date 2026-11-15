@@ -119,17 +119,13 @@ function TreeEntry({ entry, depth, refresh }: { entry: DirEntry; depth: number; 
             if (entry.isDir) {
               e.currentTarget.focus()
               setExpanded(!expanded)
-            }
+            } else open()
           }}
           onKeyDown={(e) => {
             if (!entry.isDir && (e.key === 'Enter' || e.key === ' ')) {
               e.preventDefault()
               open()
             }
-          }}
-          // Folders toggle on click; only files open on a double-click.
-          onDoubleClick={() => {
-            if (!entry.isDir) open()
           }}
         >
           <span className="file-tree-chevron">{entry.isDir ? (expanded ? '▾' : '▸') : '·'}</span>
@@ -151,14 +147,6 @@ function TreeEntry({ entry, depth, refresh }: { entry: DirEntry; depth: number; 
             ±
           </button>
         )}
-        <button
-          className="file-tree-action"
-          title="Open in editor"
-          aria-label={`Open ${entry.name} in editor`}
-          onClick={open}
-        >
-          ↗
-        </button>
         <button
           className="file-tree-action"
           title={revealLabel}

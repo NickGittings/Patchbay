@@ -14,6 +14,13 @@ export const CHAT_MIN_SIZE = 20
 /** The map keeps at least this much when a panel opens beside it. */
 export const CANVAS_MIN_SIZE = 20
 
+/** The Inspector now lives beside the editor; reclaim its old slot in Navigation layouts. */
+export function withoutInspector(layout: Record<string, number> | undefined) {
+  if (!layout || !Object.hasOwn(layout, INSPECTOR_PANEL)) return layout
+  const { [INSPECTOR_PANEL]: inspector, ...rest } = layout
+  return { ...rest, [CANVAS_PANEL]: (rest[CANVAS_PANEL] ?? 0) + inspector }
+}
+
 /** Collapse a panel into a specific sibling without changing the other panels' sizes. */
 export function collapsedInto(layout: Record<string, number>, id: string, fill: string) {
   if (!Object.hasOwn(layout, id) || !Object.hasOwn(layout, fill)) return undefined

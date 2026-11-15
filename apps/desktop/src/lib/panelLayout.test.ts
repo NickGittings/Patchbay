@@ -1,5 +1,14 @@
 import { expect, test } from 'vitest'
-import { CANVAS_MIN_SIZE, collapsedInto, expandedFrom } from './panelLayout'
+import { CANVAS_MIN_SIZE, collapsedInto, expandedFrom, withoutInspector } from './panelLayout'
+
+test('saved Navigation layouts reclaim the old Inspector slot without changing chat sizing', () => {
+  const saved = { 'App-pane-2': 41, 'App-simple-chat': 35, 'App-pane-5': 24 }
+  expect(withoutInspector(saved)).toEqual({ 'App-pane-2': 65, 'App-simple-chat': 35 })
+  expect(saved['App-pane-5']).toBe(24)
+  const current = { 'App-pane-2': 65, 'App-simple-chat': 35 }
+  expect(withoutInspector(current)).toBe(current)
+  expect(withoutInspector(undefined)).toBeUndefined()
+})
 
 test('collapsing chat gives its width to the canvas and leaves the inspector unchanged', () => {
   const layout = { 'App-pane-2': 49, 'App-simple-chat': 35, 'App-pane-5': 16 }

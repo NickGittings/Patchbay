@@ -147,24 +147,29 @@
       () => document.querySelector('.simple-chat') && Math.abs(chatWidth() - rootChatWidth) < 0.1,
     )
     smoke.store.setState({ inspector: true })
-    await until('Inspector beside chat', () => state().panels['App-simple']['App-pane-5'] > 0)
+    await until('Inspector beside chat', () => state().panels['Workspace-panels']['App-pane-5'] > 0)
     assert(Math.abs(chatWidth() - rootChatWidth) < 0.1, 'Inspector changed chat width')
     click(document.querySelector('[aria-label="Hide chat"]'))
     await until(
       'chat hidden beside Inspector',
       () => !document.querySelector('.simple-chat') && chatWidth() === 0,
     )
-    assert(state().panels['App-simple']['App-pane-5'] > 0, 'Hide chat closed Inspector')
+    assert(state().panels['Workspace-panels']['App-pane-5'] > 0, 'Hide chat closed Inspector')
     click(button('Show chat'))
     await until(
       'chat restored beside Inspector',
       () => document.querySelector('.simple-chat') && Math.abs(chatWidth() - rootChatWidth) < 0.1,
     )
     const besideInspector = { ...state().panels['App-simple'] }
+    const workspaceBesideInspector = { ...state().panels['Workspace-panels'] }
+    state().setPanelLayout('Workspace-panels', {
+      'App-pane-5': 70,
+      'file-editor-pane': 0,
+      'file-editor-content': 30,
+    })
     state().setPanelLayout('App-simple', {
-      'App-pane-2': 12,
+      'App-pane-2': 100,
       'App-simple-chat': 0,
-      'App-pane-5': 88,
     })
     await until('narrow canvas beside Inspector', () => button('Show chat') && chatWidth() === 0)
     click(button('Show chat'))
@@ -173,12 +178,13 @@
       () => document.querySelector('.simple-chat') && chatWidth() >= 20,
     )
     state().setPanelLayout('App-simple', besideInspector)
+    state().setPanelLayout('Workspace-panels', workspaceBesideInspector)
     await until(
       'chat width restored after minimum check',
       () => Math.abs(chatWidth() - rootChatWidth) < 0.1,
     )
     smoke.store.setState({ inspector: false })
-    await until('Inspector hidden', () => state().panels['App-simple']['App-pane-5'] === 0)
+    await until('Inspector hidden', () => state().panels['Workspace-panels']['App-pane-5'] === 0)
     for (const view of ['navigation', 'plan', 'implementation', 'review']) {
       click(document.querySelector('[aria-label="Hide chat"]'))
       await until(

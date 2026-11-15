@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import Dialog from './Dialog'
+import { Panel, Separator, useGroupRef } from 'react-resizable-panels'
+import PersistedGroup from './PersistedGroup'
+import { useCollapsed } from '../lib/useCollapsed'
+import { INSPECTOR_PANEL } from '../lib/panelLayout'
 import { listen, emitTo } from '@tauri-apps/api/event'
 import {
   FILE_EDITOR_EVENT,
@@ -22,10 +25,32 @@ interface Tab extends FileRequest {
 const normalized = (text: string) => text.replace(/\r\n/g, '\n')
 const dirty = (tab: Tab) => !!tab.file && tab.draft !== normalized(tab.file.text)
 
-export default function FileEditor() {
+/** Keep drafts mounted across project and view changes, beside the workspace. */
+export default function FileEditor({
+  children,
+  sidebar,
+}: {
+  children: ReactNode
+  sidebar?: { content: ReactNode; shown: boolean; onClose: () => void }
+}) {
   const [tabs, setTabs] = useState<Tab[]>([])
   const [active, setActive] = useState('')
-  const [visible, setVisible] = useState(false)
+  const [reveal, setReveal] = useState(0)
+  const group = useGroupRef()
+  const panel = useCollapsed('file-editor-pane', tabs.length > 0, reveal, undefined, undefined, {
+    group,
+    panel: 'file-editor-content',
+    defaultSize: 40,
+    minSize: 24,
+  })
+  const sidebarPanel = useCollapsed(
+    INSPECTOR_PANEL,
+    !!sidebar?.shown,
+    undefined,
+    sidebar?.onClose,
+    undefined,
+    { group, panel: 'file-editor-content', defaultSize: 24 },
+  )
   const [prompt, setPrompt] = useState<{ id: string; resolve: (value: string) => void }>()
   const current = useRef(tabs)
   current.current = tabs
@@ -64,7 +89,7 @@ export default function FileEditor() {
       if (!tab) continue
       if (tab.busy) return false
       if (!dirty(tab)) continue
-      setVisible(true)
+      setReveal((n) => n + 1)
       void getCurrentWindow().setFocus()
       setActive(id)
       const answer = await new Promise<string>((resolve) => setPrompt({ id, resolve }))
@@ -88,8 +113,11 @@ export default function FileEditor() {
     if (!(await allowClose(id ? [id] : current.current.map((t) => t.id)))) return
     current.current = id ? current.current.filter((t) => t.id !== id) : []
     setTabs(current.current)
-    setActive(current.current[0]?.id ?? '')
-    if (!current.current.length) setVisible(false)
+    setActive((selected) =>
+      current.current.some((tab) => tab.id === selected)
+        ? selected
+        : (current.current[0]?.id ?? ''),
+    )
   }
   useEffect(() => {
     const open = (event: Event) => {
@@ -108,7 +136,7 @@ export default function FileEditor() {
         void load(tab)
       } else update(id, { target: request.target })
       setActive(id)
-      setVisible(true)
+      setReveal((n) => n + 1)
     }
     window.addEventListener(FILE_EDITOR_EVENT, open)
     const unregister = registerEditorGuard(guard)
@@ -166,46 +194,14 @@ export default function FileEditor() {
     element.scrollTop = Math.max(0, line * 20 - element.clientHeight / 2)
     if (gutter.current) gutter.current.scrollTop = element.scrollTop
   }, [active, loaded, target])
-  if (!visible || !tab) return null
-  return (
-    <Dialog
-      title="File editor"
-      subtitle={tab.file?.path ?? tab.target.path}
-      className="file-editor"
-      onClose={() => void close()}
-      footer={
-        <>
-          <span className="hint">
-            {tab.busy ? 'Working…' : dirty(tab) ? 'Unsaved changes' : 'Saved'}
-          </span>
-          <button
-            disabled={tab.busy || !!prompt}
-            onClick={() =>
-              void editorOpen(tab.target, tab.projectId, tab.task, tab.worktree).catch((error) =>
-                update(tab.id, { error: String(error) }),
-              )
-            }
-          >
-            Open in external editor
-          </button>
-          <button
-            disabled={tab.busy || !!prompt}
-            onClick={async () => {
-              if (await allowClose([tab.id])) await load(tab)
-            }}
-          >
-            Reload
-          </button>
-          <button
-            className="primary"
-            disabled={!dirty(tab) || tab.busy || !!prompt}
-            onClick={() => void save(tab)}
-          >
-            Save
-          </button>
-        </>
-      }
-    >
+  const editor = tab && (
+    <aside className="file-editor" aria-label="File editor">
+      <header className="file-editor-header">
+        <span className="panel-title">File editor</span>
+        <button aria-label="Close File editor" disabled={!!prompt} onClick={() => void close()}>
+          ×
+        </button>
+      </header>
       <div className="file-editor-tabs" role="tablist" aria-label="Open files">
         {tabs.map((item) => (
           <div key={item.id} className="file-editor-tab">
@@ -229,6 +225,9 @@ export default function FileEditor() {
           </div>
         ))}
       </div>
+      <div className="file-editor-path" title={tab.file?.path ?? tab.target.path}>
+        {tab.file?.path ?? tab.target.path}
+      </div>
       {tab.error && <p role="alert">{tab.error}</p>}
       {prompt && (
         <div className="file-editor-prompt" role="alertdialog" aria-label="Unsaved changes">
@@ -239,7 +238,7 @@ export default function FileEditor() {
         </div>
       )}
       {tab.file && (
-        <div className="file-editor-code">
+        <div className="file-editor-code" role="tabpanel" aria-label={tab.target.path}>
           <pre ref={gutter} aria-hidden="true">
             {tab.draft
               .split('\n')
@@ -267,6 +266,69 @@ export default function FileEditor() {
           />
         </div>
       )}
-    </Dialog>
+      <footer className="file-editor-footer">
+        <span className="hint">
+          {tab.busy ? 'Working…' : dirty(tab) ? 'Unsaved changes' : 'Saved'}
+        </span>
+        <button
+          disabled={tab.busy || !!prompt}
+          onClick={() =>
+            void editorOpen(tab.target, tab.projectId, tab.task, tab.worktree).catch((error) =>
+              update(tab.id, { error: String(error) }),
+            )
+          }
+        >
+          Open in external editor
+        </button>
+        <button
+          disabled={tab.busy || !!prompt}
+          onClick={async () => {
+            if (await allowClose([tab.id])) await load(tab)
+          }}
+        >
+          Reload
+        </button>
+        <button
+          className="primary"
+          disabled={!dirty(tab) || tab.busy || !!prompt}
+          onClick={() => void save(tab)}
+        >
+          Save
+        </button>
+      </footer>
+    </aside>
+  )
+  const contentPane = (
+    <Panel id="file-editor-content" defaultSize={sidebar ? '76%' : '100%'} minSize="30%">
+      <div className="file-editor-content">{children}</div>
+    </Panel>
+  )
+  const editorPane = (
+    <Panel id="file-editor-pane" defaultSize="0%" minSize="24%" {...panel.props}>
+      {editor}
+    </Panel>
+  )
+  return (
+    <PersistedGroup
+      layoutId={sidebar ? 'Workspace-panels' : 'FileEditor'}
+      group={group}
+      orientation="horizontal"
+      className="workspace"
+    >
+      {sidebar && (
+        <>
+          <Panel id={INSPECTOR_PANEL} defaultSize="24%" minSize="16%" {...sidebarPanel.props}>
+            {sidebar.content}
+          </Panel>
+          <Separator
+            className={`separator ${sidebar.shown ? '' : 'hidden'}`}
+            disabled={!sidebar.shown}
+          />
+        </>
+      )}
+      {sidebar ? editorPane : contentPane}
+      <Separator className={`separator ${tabs.length ? '' : 'hidden'}`} disabled={!tabs.length} />
+      {sidebar ? contentPane : editorPane}
+    </PersistedGroup>
   )
 }

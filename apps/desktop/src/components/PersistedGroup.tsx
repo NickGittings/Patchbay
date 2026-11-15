@@ -1,4 +1,4 @@
-import { CHAT_LAYOUT, NAVIGATION_LAYOUT } from '../lib/panelLayout'
+import { CHAT_LAYOUT, NAVIGATION_LAYOUT, withoutInspector } from '../lib/panelLayout'
 import { simplePanelLayout, withoutHierarchy } from '../lib/simple'
 import { useLayoutEffect, useMemo, type RefObject } from 'react'
 import {
@@ -29,9 +29,9 @@ export default function PersistedGroup({
   const saved = useMemo(
     () =>
       layoutId === NAVIGATION_LAYOUT
-        ? withoutHierarchy(simplePanelLayout(original))
+        ? withoutInspector(withoutHierarchy(simplePanelLayout(original)))
         : layoutId === CHAT_LAYOUT
-          ? withoutHierarchy(original)
+          ? withoutInspector(withoutHierarchy(original))
           : original,
     [layoutId, original],
   )

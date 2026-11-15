@@ -22,6 +22,7 @@ import { followUsage } from './lib/usage'
 import PersistedGroup from './components/PersistedGroup'
 import { initializeWorkspace } from './lib/workspace'
 import NavigationDialogs from './components/NavigationDialogs'
+import FileEditor from './components/FileEditor'
 import MapMaintenanceReview from './components/MapMaintenanceReview'
 import DependencyDialog from './components/DependencyDialog'
 import { initializeDependencyDetection } from './lib/dependencies'
@@ -38,7 +39,6 @@ import {
   CHAT_OPEN_SIZES,
   CHAT_PANEL,
   CANVAS_PANEL,
-  INSPECTOR_PANEL,
   CHAT_DEFAULT_SIZE,
   CHAT_MIN_SIZE,
   NAVIGATION_LAYOUT,
@@ -158,9 +158,8 @@ function SimpleChanges({
 }
 
 /**
- * The canvas, with the Inspector while something is selected (or it is opened) and the
- * dock while terminals run. Hidden panels collapse rather than unmount, so the canvas stays put
- * and their tabs keep their state.
+ * The canvas, chat and dock while terminals run. Hidden panels collapse rather than unmount,
+ * so the canvas stays put and their tabs keep their state.
  */
 function NavigationView() {
   const group = useGroupRef()
@@ -205,7 +204,6 @@ function NavigationView() {
   const reading = simple && (!chatPanel.collapsed || !!changes)
   const reader = useSimpleData(reading)
   const storyBoard = useStore((s) => s.storyBoard)
-  const inspector = useStore(showsInspector)
   const dockViews = useExtensionViews('dock').views.length > 0
   const dock = useStore(hasDockTabs) || dockViews
   const activeSession = useStore((s) =>
@@ -220,19 +218,6 @@ function NavigationView() {
     () => ({ activeSession, revealed: terminalReveal }),
     [activeSession, terminalReveal],
   )
-  // Dragged shut: close it, so the canvas's Inspector button comes back.
-  const inspectorPanel = useCollapsed(
-    INSPECTOR_PANEL,
-    inspector,
-    undefined,
-    closeInspector,
-    undefined,
-    {
-      group,
-      panel: CANVAS_PANEL,
-      defaultSize: 24,
-    },
-  )
   // Dragged shut, the dock stays so until it is dragged open or a terminal is revealed in it.
   const dockPanel = useCollapsed('App-pane-4', dock, dockReveal)
   return (
@@ -243,7 +228,7 @@ function NavigationView() {
         orientation="horizontal"
         className="workspace"
       >
-        <Panel id={CANVAS_PANEL} defaultSize="76">
+        <Panel id={CANVAS_PANEL} defaultSize={simple ? '65%' : '100%'}>
           <PersistedGroup layoutId="App-2" orientation="vertical">
             <Panel id="App-pane-3" defaultSize="58" minSize="20">
               <div className="simple-canvas">
@@ -285,10 +270,6 @@ function NavigationView() {
             <SimpleChat key={scopeKey} reader={reader} onHide={hideChat} />
           )}
         </Panel>
-        <Separator className={`separator ${inspector ? '' : 'hidden'}`} disabled={!inspector} />
-        <Panel id={INSPECTOR_PANEL} defaultSize="24" minSize="16" {...inspectorPanel.props}>
-          <Inspector />
-        </Panel>
       </PersistedGroup>
     </SimpleChanges>
   )
@@ -301,6 +282,7 @@ function AppWorkspace() {
   const setupScope = useStore((s) => `${s.project?.id}/${s.activeTask}`)
   const projectId = useStore((s) => s.project?.id)
   const restoring = useStore((s) => s.restoring)
+  const inspector = useStore(showsInspector)
   useEffect(() => {
     void initializeWorkspace()
     const stopHost = startExtensionHost()
@@ -412,22 +394,30 @@ function AppWorkspace() {
       <div className="workspace-body">
         <WorkspaceRail />
         <main className="workspace-main">
-          <RecoveryBanners />
-          {!restoring && <WorktreeSetupStatus key={setupScope} notice />}
-          {!restoring && (simple || view === 'navigation') && (
-            <div className="navigation-shell">
-              <NavigationView key={projectId} />
-            </div>
-          )}
-          {restoring ? (
-            <div className="hint">Restoring workspace…</div>
-          ) : !simple && view === 'plan' ? (
-            <PlanView key={projectId} />
-          ) : !simple && view === 'implementation' ? (
-            <ImplementationView key={projectId} />
-          ) : !simple && view === 'review' ? (
-            <ReviewView key={projectId} />
-          ) : null}
+          <FileEditor
+            sidebar={{
+              content: <Inspector />,
+              shown: !restoring && (simple || view === 'navigation') && inspector,
+              onClose: closeInspector,
+            }}
+          >
+            <RecoveryBanners />
+            {!restoring && <WorktreeSetupStatus key={setupScope} notice />}
+            {!restoring && (simple || view === 'navigation') && (
+              <div className="navigation-shell">
+                <NavigationView key={projectId} />
+              </div>
+            )}
+            {restoring ? (
+              <div className="hint">Restoring workspace…</div>
+            ) : !simple && view === 'plan' ? (
+              <PlanView key={projectId} />
+            ) : !simple && view === 'implementation' ? (
+              <ImplementationView key={projectId} />
+            ) : !simple && view === 'review' ? (
+              <ReviewView key={projectId} />
+            ) : null}
+          </FileEditor>
         </main>
       </div>
       <footer className="workspace-footer">

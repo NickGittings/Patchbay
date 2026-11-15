@@ -23,6 +23,7 @@ import { useStore } from '../store'
 import { type Project } from '../types'
 import ChangesPanel from './changes/ChangesPanel'
 import FileTree from './FileTree'
+import FileEditor from './FileEditor'
 import TerminalGrid from './TerminalGrid'
 
 /** Panel sizes saved for this window, applied once the project model has loaded. */
@@ -157,50 +158,52 @@ export default function ComponentWindow({ id }: { id: string }) {
           {message}
         </div>
       )}
-      <PersistedGroup layoutId="ComponentWindow-1" orientation="horizontal" className="workspace">
-        <Panel id="ComponentWindow-pane-1" defaultSize="28" minSize="15">
-          <div className="side-tabs-panel">
-            <div className="side-tabs" role="tablist">
-              <button
-                role="tab"
-                aria-selected={tab === 'files'}
-                className={tab === 'files' ? 'active' : ''}
-                onClick={() => changeTab('files')}
-              >
-                Files
-              </button>
-              <button
-                role="tab"
-                aria-selected={tab === 'changes'}
-                className={tab === 'changes' ? 'active' : ''}
-                onClick={() => changeTab('changes')}
-              >
-                Changes{changes > 0 && <span className="git-badge">±{changes}</span>}
-              </button>
+      <FileEditor>
+        <PersistedGroup layoutId="ComponentWindow-1" orientation="horizontal" className="workspace">
+          <Panel id="ComponentWindow-pane-1" defaultSize="28" minSize="15">
+            <div className="side-tabs-panel">
+              <div className="side-tabs" role="tablist">
+                <button
+                  role="tab"
+                  aria-selected={tab === 'files'}
+                  className={tab === 'files' ? 'active' : ''}
+                  onClick={() => changeTab('files')}
+                >
+                  Files
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={tab === 'changes'}
+                  className={tab === 'changes' ? 'active' : ''}
+                  onClick={() => changeTab('changes')}
+                >
+                  Changes{changes > 0 && <span className="git-badge">±{changes}</span>}
+                </button>
+              </div>
+              <div className="side-tab-content">
+                {tab === 'files' ? (
+                  <FileTree
+                    key={`${project.root}/${data.path}`}
+                    path={data.path}
+                    componentId={id}
+                    agentMarks={false}
+                  />
+                ) : (
+                  <ChangesPanel componentId={id} />
+                )}
+              </div>
             </div>
-            <div className="side-tab-content">
-              {tab === 'files' ? (
-                <FileTree
-                  key={`${project.root}/${data.path}`}
-                  path={data.path}
-                  componentId={id}
-                  agentMarks={false}
-                />
-              ) : (
-                <ChangesPanel componentId={id} />
-              )}
-            </div>
-          </div>
-        </Panel>
-        <Separator className="separator" />
-        <Panel id="ComponentWindow-pane-2" defaultSize="72" minSize="30">
-          <TerminalGrid
-            componentId={id}
-            terminals={data.terminals}
-            emptyMessage="Add a dev server, test runner or agent in the main window’s Inspector for this component."
-          />
-        </Panel>
-      </PersistedGroup>
+          </Panel>
+          <Separator className="separator" />
+          <Panel id="ComponentWindow-pane-2" defaultSize="72" minSize="30">
+            <TerminalGrid
+              componentId={id}
+              terminals={data.terminals}
+              emptyMessage="Add a dev server, test runner or agent in the main window’s Inspector for this component."
+            />
+          </Panel>
+        </PersistedGroup>
+      </FileEditor>
     </div>
   )
 }

@@ -1,4 +1,3 @@
-import FileEditor from './FileEditor'
 import { isMac, titleBarMouseDown } from '../lib/platform'
 import UnifiedSearch from './UnifiedSearch'
 import SettingsDialog, { SettingsFeedback } from './SettingsDialog'
@@ -166,7 +165,6 @@ export default function NavigationDialogs({ settingsOnly = false }: { settingsOn
         </div>
       )}
       <PreferredEditorDialog />
-      <FileEditor />
     </>
   )
 }
