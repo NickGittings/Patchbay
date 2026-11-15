@@ -80,7 +80,7 @@
         await terminalPrompt(sid, generation, '\r')
         return false
       } catch (e) {
-        if (!String(e).includes('terminal authority')) throw e
+        if (e?.uncertain || !String(e?.message ?? e).includes('terminal authority')) throw e
         return true
       }
     })
