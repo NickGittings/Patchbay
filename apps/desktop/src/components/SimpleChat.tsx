@@ -3,7 +3,9 @@ import { useChatIdentity } from '../lib/chatIdentity'
 import { useChatTeams, resetLead, controlTeam } from '../lib/chatTeams'
 import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useChatFollow } from '../lib/useChatFollow'
+import { chatReplyId } from '../lib/chatNavigation'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, REVIEW_SCOPE, type MergeRequest, type SessionRecord } from '../types'
@@ -108,8 +110,8 @@ export default function SimpleChat({
   const [check, setCheck] = useState<{ key: string; paths: string[] }>()
   const [clearKey, setClearKey] = useState<string>()
   if (clearKey !== undefined && clearKey !== key) setClearKey(undefined)
-  const threadRef = useRef<HTMLDivElement>(null)
-  const atBottom = useRef(true)
+  const [freshKey, setFreshKey] = useState<string>()
+  if (freshKey !== undefined && freshKey !== key) setFreshKey(undefined)
   const projectId = s.project?.id ?? '',
     task = s.activeTask
   const snapshot = {
@@ -167,7 +169,7 @@ export default function SimpleChat({
       useSimpleUi.getState().patch(key, { inputRequests: JSON.parse(inputKey) })
   }, [key, inputKey])
   const drawerRecord = ui.terminalSession
-    ? model.records.find((r) => r.id === ui.terminalSession?.id)
+    ? s.sessionRecords.find((r) => r.id === ui.terminalSession?.id)
     : recipient
   const drawerShown = ui.terminal !== 'closed' && !!drawerRecord
   const drawerIdentity = useChatIdentity(drawerRecord)
@@ -193,6 +195,20 @@ export default function SimpleChat({
       })
   }, [s.project, s.activeTask, s.simple])
   // What can grow the thread, without serializing its records or reply texts on every render.
+  const replies = model.items.flatMap((item) =>
+    item.kind === 'agent'
+      ? item.entries.flatMap((entry) =>
+          entry.kind === 'reply'
+            ? [
+                {
+                  id: chatReplyId(entry),
+                  atMs: entry.atMs,
+                },
+              ]
+            : [],
+        )
+      : [],
+  )
   const contentKey = JSON.stringify([
     model.items.map((i) =>
       i.kind === 'agent'
@@ -206,9 +222,16 @@ export default function SimpleChat({
     inputKey,
     data?.outcome,
   ])
-  useEffect(() => {
-    if (atBottom.current) threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight })
-  }, [contentKey, ui.terminal])
+  const { threadRef, following, unread, jump, onScroll } = useChatFollow(
+    key,
+    JSON.stringify([
+      s.simple?.startedMs,
+      s.simple?.clearBoundary?.atMs,
+      s.simple?.coordinationHandoff,
+    ]),
+    replies,
+    contentKey + ui.terminal,
+  )
   useEffect(() => {
     if (!s.revealed) return
     const blocks = threadRef.current?.querySelectorAll<HTMLElement>('[data-session]')
@@ -219,7 +242,7 @@ export default function SimpleChat({
       block.scrollIntoView({ block: 'nearest' })
       useStore.getState().setRevealed(null)
     }
-  }, [s.revealed, key, contentKey])
+  }, [s.revealed, key, contentKey, threadRef])
   useEffect(() => {
     if (ui.dismissedStep && ui.dismissedStep !== state.step)
       useSimpleUi.getState().patch(key, { dismissedStep: undefined })
@@ -452,21 +475,23 @@ export default function SimpleChat({
               <button
                 disabled={!!team.reset || !!ui.pendingAction || !!ui.pendingWorkflow}
                 title="Start a fresh provider conversation. Workers and a concise work handoff are retained."
-                onClick={() =>
-                  void run('reset', async () => {
-                    await resetLead(team)
-                  })
-                }
+                onClick={() => {
+                  setClearKey(undefined)
+                  setFreshKey(key)
+                }}
               >
-                Clear conversation
+                Start fresh conversation
               </button>
             )}
             <button
               disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
-              onClick={() => setClearKey(key)}
+              onClick={() => {
+                setFreshKey(undefined)
+                setClearKey(key)
+              }}
               title="Clear Patchbay’s saved history. Provider transcripts and terminal history remain available."
             >
-              Clear chat
+              Clear visible history
             </button>
           </div>
         </details>
@@ -480,7 +505,11 @@ export default function SimpleChat({
         </button>
       </header>
       {clearKey === key && (
-        <div className="simple-clear-confirm" role="group" aria-label="Clear chat confirmation">
+        <div
+          className="simple-clear-confirm"
+          role="group"
+          aria-label="Clear visible history confirmation"
+        >
           <span>Clear this worktree’s chat history? Agents keep their context.</span>
           <button
             disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
@@ -505,7 +534,53 @@ export default function SimpleChat({
           <button onClick={() => setClearKey(undefined)}>Cancel</button>
         </div>
       )}
-      {team && <ChatCoordination key={team.id} team={team} />}
+      {team && freshKey === key && (
+        <div
+          className="simple-fresh-confirm"
+          role="group"
+          aria-label="Start fresh conversation confirmation"
+        >
+          <span>
+            Start a fresh provider conversation? Provider context resets and visible history is
+            replaced with a concise handoff. Workers and results are retained.
+          </span>
+          <button
+            disabled={!!team.reset || !!pending || !!ui.pendingAction || !!ui.pendingWorkflow}
+            onClick={() => {
+              const current = useStore.getState()
+              if (
+                simpleKey(current.project?.id, current.activeTask) !== freshKey ||
+                pendingActions.has(key) ||
+                useSimpleUi.getState().worktrees[key]?.pendingAction
+              )
+                return
+              void run('reset', async () => {
+                await resetLead(team)
+                setFreshKey((value) => (value === key ? undefined : value))
+              })
+            }}
+          >
+            Start fresh
+          </button>
+          <button onClick={() => setFreshKey(undefined)}>Cancel</button>
+        </div>
+      )}
+      {team && (
+        <ChatCoordination
+          key={team.id}
+          team={team}
+          openTerminal={(record) =>
+            useSimpleUi.getState().patch(key, {
+              terminal: 'user',
+              terminalSession: {
+                id: record.id,
+                generation: s.sessions[record.id]?.generation,
+                pinned: true,
+              },
+            })
+          }
+        />
+      )}
       {s.auto && (
         <p role="status">
           Auto · {s.auto.stage} · {s.auto.status} {s.auto.reason}
@@ -540,14 +615,7 @@ export default function SimpleChat({
           launched={() => setDialog(undefined)}
         />
       )}
-      <div
-        className="simple-thread"
-        ref={threadRef}
-        onScroll={() => {
-          const el = threadRef.current!
-          atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 70
-        }}
-      >
+      <div className="simple-thread" ref={threadRef} onScroll={onScroll}>
         {!items.length && (
           <p className="simple-narration">
             Describe what you want to build or change. Your chat agent starts with your first
@@ -682,6 +750,14 @@ export default function SimpleChat({
           </div>
         )}
       </div>
+      {!following && (
+        <div className="simple-jump">
+          <button onClick={jump}>
+            Jump to latest
+            {unread > 0 ? ` (${unread} new ${unread === 1 ? 'reply' : 'replies'})` : ''}
+          </button>
+        </div>
+      )}
       {!launching && ui.dismissedStep !== state.step && (state.prompt || options) && (
         <section
           className="simple-step"

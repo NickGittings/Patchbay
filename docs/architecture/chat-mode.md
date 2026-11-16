@@ -12,6 +12,25 @@ The rail's **Chat mode** toggle (`simpleMode`) opens one worktree conversation b
 
 Prompt delivery uses hook-confirmed readiness and generation checks (`simpleComposer.ts::promptReady` / `deliverPrompt`, `session::prompt_ready`). Enter sends (or starts/queues), Shift+Enter adds a newline, and Enter picks a mention while autocomplete is open. Installed hooks gate new/resumed agents. Sessions whose hooks confirm the turn (`authoritative`: working, asking, or a submission not yet acknowledged) queue by default; an unconfirmed state, such as after Esc, never queues, since no hook may report its end; `simpleQueue.ts::followQueuedPrompts` delivers once at a ready prompt even after switching worktrees. Queued messages append with a blank line, can be canceled back to the draft or sent now, and return to drafts on restart, exit or a failed/uncertain write without retrying. Send anyway (protocol 13 `force`) also accepts a hook-confirmed `working` turn, never `needsInput`, a Codex permission request still in its automatic-review grace (`AgentReport.approval_pending` ↔ `approvalPending`) or an agent without authoritative status, since the pasted Enter would answer a dialog; the service enforces this (`session::prompt_forceable`, mirrored by `simpleComposer.ts` `forceable`) along with the authority and generation checks. During an input wait the composer offers Answer in terminal, which opens the drawer. `sendToSession` shares claim/write/release, submission stamps, prompt logging and reply persistence. Drafts, structured mentions and unconfirmed delivery reservations persist in local chat storage without dirtying the map. Queued messages restore as drafts after app restart; an interrupted submission requires explicit delivery resolution before another send. Composer authority is released after writing unless a visible terminal owns it. The shared terminal registry preserves scrollback across drawer, Full and pop-out hosts.
 
+The component mention popup keeps focus in the textarea and exposes its selected option through
+combobox/listbox semantics. Up and Down wrap the selection, Escape dismisses the current query,
+and changing the query reopens it. Shift+Enter and IME composition retain their input behavior.
+
+`useChatFollow` accepts typed reply markers and owns layout-change detection. On mount, remount,
+worktree changes and visible-history or conversation replacement boundaries, Chat follows the
+latest content with zero unread replies. Scrolling away preserves the visible message anchor
+when older history reconciles or a stage folds. **Jump to latest** counts unseen replies received
+since that scope was opened; restored history and duplicate replies add no unread count. Jumping
+or scrolling to the bottom clears the count and resumes following, including content resizing.
+`chatNavigation::chatReplyId` supplies the same session/generation/sequence identity to reply
+markers and rendered message anchors.
+
+Prompt and reply metadata show a local timestamp with the full date in its tooltip and copy the
+saved message source. Markdown renders semantic tables and validated HTTP(S) links through the
+desktop opener; local, unsafe and malformed links remain text. Code copying preserves the fenced
+source bytes, including whitespace and line endings. Unsupported blocks remain plain text, and
+copy/open failures show actionable feedback.
+
 Tool activity remains mirrored through `HookEvent.{tool,target,file_target}`, `status::Activity` and `types.ts::Activity`. Explicit file targets alone link to diffs or pulse map components; command previews and patch bodies are never paths. The newest 50 accepted tool events are retained per generation, merged by sequence in `activity.ts`, and scoped to the selected worktree. Chat's Auto button keeps the existing Light settings, hook checks and ownership controls; Auto stages drive the flow and gates appear as chat prompts.
 
 `npm run smoke:simple` runs disposable fake agents through prompt, reply, plan, new worktree, Build, Review, Fix, conflict check and Merge while Chat stays open. It also checks drawer following, input waits and saved replies. See [Simple verification](../simple-verification.md) for checks requiring a real interactive desktop and provider.
@@ -70,8 +89,12 @@ Builder terminal changes the drawer identity while the composer continues to add
 Each worktree can have one persistent chat team. The saved `selectedAgent` becomes its lead when
 coordination is initialized; existing conversations migrate paused, preserving their history and
 recipient without launching workers. **Switch agent** queues an explicit durable provider-conversation
-replacement. **Clear conversation** uses the same handoff while retaining workers, assignments,
-results, inbox messages and checkpoints. **Clear visible history** only advances the existing reply
+replacement. **Start fresh conversation** confirms inline that provider context resets and visible
+history is replaced with a concise handoff. It uses the same durable replacement while retaining
+workers, assignments, results, inbox messages and checkpoints. The confirmation belongs to one
+visit to a worktree and disappears after switching away; pending send/workflow actions and an
+existing reset disable confirmation. Failed replacement preserves history.
+**Clear visible history** only advances the existing reply
 and plan-card boundaries; it leaves provider context and team state untouched.
 
 `orchestration::chat` stores teams alongside provider runs in the private task store, independently
@@ -106,7 +129,13 @@ messages in sequence at a hook-confirmed ready prompt. It checks session generat
 authority and the last delivered ready turn. It never forces an automated message. A lost submission
 reply stays uncertain until explicitly marked delivered or retried. Explicit results, failures and native input
 waits notify the lead. Worker conversations remain available through Sessions; Chat shows one lead
-conversation, compact coordination status and actionable failures. Worker presets and concurrency
+conversation, compact coordination status and actionable failures. The collapsed **Workers**
+disclosure lists assignments and queued, starting, working, integrating, awaiting-input or failed
+status. Completed reports leave the active list; isolated code results remain until integration.
+**View worker terminal** pins the assignment's exact session from this project in Chat's drawer
+without changing the composer recipient. Failure and input alerts offer the same action, disabled
+when no matching session record exists. The status/disclosure area scrolls within its bounded height.
+Worker presets and concurrency
 settings live in Settings → Agent roles. Pause work, Continue work and Stop work live in the chat menu.
 Lead messaging and its inbox remain available while worker scheduling is paused or stopped.
 

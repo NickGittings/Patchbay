@@ -91,12 +91,75 @@
       }
       assert(rejected, `Manual provider ${control.kind} bypassed chat team ownership`)
     }
+    const workers = await until('worker disclosure', () => document.querySelector('.chat-workers'))
+    assert(!workers.open, 'workers should start collapsed')
+    workers.open = true
+    const workerButton = await until('worker terminal action', () => {
+      const b = button('View worker terminal', workers)
+      return b && !b.disabled && b
+    })
+    workerButton.click()
+    await until('worker drawer', () => document.querySelector('.simple-terminal-drawer'))
+    assert(state().simple.selectedAgent === lead, 'opening worker changed composer recipient')
+    assert(
+      document.querySelector('.chat-recipient').textContent.includes('Talking to Lead'),
+      'worker replaced lead identity',
+    )
+    // Fresh conversation is a separate, cancellable operation with no eager reset.
+    button('Start fresh conversation').click()
+    const fresh = await until('fresh confirmation', () =>
+      document.querySelector('.simple-fresh-confirm'),
+    )
+    assert(
+      fresh.textContent.includes('Provider context resets') &&
+        fresh.textContent.includes('Workers and results are retained'),
+      'fresh confirmation missing consequences',
+    )
+    const unchangedGeneration = team().lead.generation
+    const teamKey = smoke.simpleKey(projectId, null)
+    smoke.simpleUi.getState().patch(teamKey, { pendingAction: true })
+    await until('fresh action guarded', () => button('Start fresh', fresh).disabled)
+    button('Start fresh', fresh).click()
+    assert(team().lead.generation === unchangedGeneration, 'pending action bypassed fresh guard')
+    smoke.simpleUi.getState().patch(teamKey, { pendingAction: false })
+    button('Cancel', fresh).click()
+    await until('fresh cancelled', () => !document.querySelector('.simple-fresh-confirm'))
+    assert(team().lead.generation === unchangedGeneration, 'cancel reset provider context')
+    button('Start fresh conversation').click()
+    await until('confirmation before worktree switch', () =>
+      document.querySelector('.simple-fresh-confirm'),
+    )
+    await smoke.createTask({
+      title: 'Fresh confirmation scope',
+      branch: 'fresh-confirmation-scope',
+      components: ['app'],
+    })
+    await until(
+      'other fresh scope',
+      () => state().activeTask && document.querySelector('.simple-chat'),
+    )
+    assert(
+      !document.querySelector('.simple-fresh-confirm'),
+      'worktree inherited fresh confirmation',
+    )
+    state().setActiveTask(null)
+    await until(
+      'return from fresh scope',
+      () => !state().activeTask && document.querySelector('[aria-label="Work status"]'),
+    )
+    assert(!document.querySelector('.simple-fresh-confirm'), 'return reopened fresh confirmation')
     const originalGeneration = team().lead.generation
     ;(
       await until('clear conversation enabled', () => {
-        const b = button('Clear conversation')
+        const b = button('Start fresh conversation')
         return b && !b.disabled && b
       })
+    ).click()
+    button(
+      'Start fresh',
+      await until('fresh confirmation again', () =>
+        document.querySelector('.simple-fresh-confirm'),
+      ),
     ).click()
     await until('new lead conversation', () => team()?.lead.generation > originalGeneration)
     state().setSimpleMode(false)
@@ -117,7 +180,14 @@
       !document.querySelector('.simple-thread').textContent.includes('WORKER-SIDE-THREAD-ONLY'),
       'worker reply entered main transcript',
     )
-    assert(!document.querySelector('.chat-workers'), 'Worker activity panel remains in Chat')
+    assert(
+      !document.querySelector('.chat-workers')?.textContent.includes('Inspect baseline'),
+      'Completed report remains in active list',
+    )
+    assert(
+      document.querySelector('.chat-workers')?.textContent.includes('Implement worker file'),
+      'Code awaiting integration disappeared',
+    )
     assert(!button('Open side thread'), 'Side-thread controls remain in Chat')
     const menu = document.querySelector('.chat-menu')
     menu.open = true
@@ -160,7 +230,7 @@
       document.querySelector('.chat-recipient').textContent.includes('Preset: Team agent'),
       'Composer omitted the selected preset',
     )
-    button('Clear chat').click()
+    button('Clear visible history').click()
     button(
       'Clear',
       await until('clear confirmation', () => document.querySelector('.simple-clear-confirm')),

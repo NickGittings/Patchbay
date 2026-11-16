@@ -259,6 +259,7 @@ export default function Canvas() {
   return (
     <div className="canvas">
       <ReactFlow
+        proOptions={{ hideAttribution: true }}
         nodes={tweened(shownNodes, tween)}
         edges={visibleEdges}
         nodeTypes={nodeTypes}
