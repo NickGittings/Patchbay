@@ -208,8 +208,10 @@
       ),
     )
     await until('planner reply', () => chatText().includes('I planned the fixture feature'))
-    await until('saved plan', () => chatText().includes('Simple fixture plan') && button('Build'))
-    const actionCard = document.querySelector('.simple-step')
+    const actionCard = await until('saved plan actions', () => {
+      const card = document.querySelector('.simple-step')
+      return chatText().includes('Simple fixture plan') && card && button('Build', card) && card
+    })
     const chatThread = document.querySelector('.simple-thread')
     const chatComposer = document.querySelector('.simple-composer')
     assert(actionCard.tagName === 'SECTION', 'workflow actions still use a dropdown')
