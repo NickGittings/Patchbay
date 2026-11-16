@@ -45,6 +45,16 @@
     state().setAgentRoles({ plan: [fake.id], implement: [fake.id] })
     await smoke.agentHooksConfigure('codex', true)
     await smoke.syncCurrentRoots()
+    const startPlanner = async (task) => {
+      await smoke.startTerminal('@plan', fake.id, task, pid)
+      const sid = smoke.sessionId('@plan', fake.id, task)
+      await until('planner available', () => state().sessionRecords.some((r) => r.id === sid))
+      // This manual-planning fixture addresses its planner, rather than starting a Chat lead.
+      state().patchTask(pid, task, {
+        simple: { ...state().simple, selectedAgent: sid },
+      })
+      return sid
+    }
     phase = 'create first worktree'
     const first = await smoke.createTask({
       title: 'First scope',
@@ -61,14 +71,14 @@
     state().setActiveTask(first.id)
     state().setSimpleMode(true)
     await until('first chat', () => document.querySelector('.simple-chat'))
+    const sid = await startPlanner(first.id)
     input(document.querySelector('[aria-label="Message agent"]'), 'Original prompt to clear')
     ;(
-      await until('Start ready', () => {
-        const b = button('Start')
+      await until('Send ready', () => {
+        const b = button('Send')
         return b && !b.disabled && b
       })
     ).click()
-    const sid = smoke.sessionId('@plan', fake.id, first.id)
     await until(
       'first planner working',
       () => state().sessions[sid]?.status?.agent?.state === 'working',
@@ -134,8 +144,7 @@
     state().setActiveTask(sibling.id)
     await until('sibling chat', () => !text().includes('I planned the'))
     assert(!(await smoke.planRead(pid, sibling.id)).text.trim(), 'sibling inherited another plan')
-    await smoke.startTerminal('@plan', fake.id, sibling.id, pid)
-    const siblingSid = smoke.sessionId('@plan', fake.id, sibling.id)
+    const siblingSid = await startPlanner(sibling.id)
     await until(
       'concurrent same-provider planners',
       () => state().sessions[sid]?.running && state().sessions[siblingSid]?.running,

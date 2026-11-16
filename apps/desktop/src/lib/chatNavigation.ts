@@ -2,6 +2,9 @@ export interface ReplyMarker {
   id: string
   atMs: number
 }
+export function chatReplyId(reply: { sessionId: string; generation: number; sequence: number }) {
+  return JSON.stringify([reply.sessionId, reply.generation, reply.sequence])
+}
 export interface ChatFollow {
   following: boolean
   unread: number

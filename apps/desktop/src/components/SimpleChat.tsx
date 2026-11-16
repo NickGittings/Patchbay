@@ -5,6 +5,7 @@ import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { useEffect, useState } from 'react'
 import { useChatFollow } from '../lib/useChatFollow'
+import { chatReplyId } from '../lib/chatNavigation'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import { PLAN_SCOPE, REVIEW_SCOPE, type MergeRequest, type SessionRecord } from '../types'
@@ -200,7 +201,7 @@ export default function SimpleChat({
           entry.kind === 'reply'
             ? [
                 {
-                  id: JSON.stringify([entry.sessionId, entry.generation, entry.sequence]),
+                  id: chatReplyId(entry),
                   atMs: entry.atMs,
                 },
               ]
@@ -209,7 +210,6 @@ export default function SimpleChat({
       : [],
   )
   const contentKey = JSON.stringify([
-    replies,
     model.items.map((i) =>
       i.kind === 'agent'
         ? `${i.id}:${i.entries.length}`
@@ -229,7 +229,7 @@ export default function SimpleChat({
       s.simple?.clearBoundary?.atMs,
       s.simple?.coordinationHandoff,
     ]),
-    JSON.stringify(replies),
+    replies,
     contentKey + ui.terminal,
   )
   useEffect(() => {

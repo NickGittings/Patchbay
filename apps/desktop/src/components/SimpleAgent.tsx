@@ -3,6 +3,7 @@ import { SimpleChangesContext } from './stories/simpleChanges'
 import { simpleKey, useSimpleUi, type SimpleDiff } from '../lib/simpleUi'
 import type { SimpleEntry } from '../lib/simple'
 import { useChatIdentity } from '../lib/chatIdentity'
+import { chatReplyId } from '../lib/chatNavigation'
 import { useStore } from '../store'
 import type { SessionRecord } from '../types'
 import Markdown from './findings/Markdown'
@@ -59,11 +60,7 @@ export default function SimpleAgent({
             <pre>{entry.text}</pre>
           </div>
         ) : entry.kind === 'reply' ? (
-          <div
-            className="simple-reply"
-            data-chat-entry={JSON.stringify([entry.sessionId, entry.generation, entry.sequence])}
-            key={entry.id}
-          >
+          <div className="simple-reply" data-chat-entry={chatReplyId(entry)} key={entry.id}>
             <MessageMeta atMs={entry.atMs} text={entry.text} />
             <Markdown text={entry.text} />
           </div>

@@ -4,14 +4,20 @@ import { followScroll, initialFollow, receiveReplies, type ReplyMarker } from '.
 export function useChatFollow(
   scope: string,
   boundary: string,
-  repliesKey: string,
+  replies: ReplyMarker[],
   contentKey: string,
 ) {
   const threadRef = useRef<HTMLDivElement>(null)
-  const [state, setState] = useState(() => initialFollow(JSON.parse(repliesKey) as ReplyMarker[]))
+  const [state, setState] = useState(() => initialFollow(replies))
   const anchor = useRef<{ id: string; offset: number }>(undefined)
   const current = useRef(state)
-  const previousScope = useRef({ scope, boundary })
+  const repliesKey = JSON.stringify(replies)
+  const previous = useRef<{
+    scope: string
+    boundary: string
+    repliesKey: string
+    contentKey: string
+  }>(undefined)
   const update = (next: typeof state) => {
     current.current = next
     setState(next)
@@ -23,10 +29,17 @@ export function useChatFollow(
   }
   // Layout effects keep the bottom in place before the browser paints a new reply or scope.
   useLayoutEffect(() => {
-    const changed =
-      previousScope.current.scope !== scope || previousScope.current.boundary !== boundary
-    previousScope.current = { scope, boundary }
-    const replies = JSON.parse(repliesKey) as ReplyMarker[]
+    const last = previous.current
+    // Callers may rebuild the marker array on every render; only changed content needs layout.
+    if (
+      last?.scope === scope &&
+      last.boundary === boundary &&
+      last.repliesKey === repliesKey &&
+      last.contentKey === contentKey
+    )
+      return
+    const changed = last?.scope !== scope || last.boundary !== boundary
+    previous.current = { scope, boundary, repliesKey, contentKey }
     update(changed ? initialFollow(replies) : receiveReplies(current.current, replies))
     const el = threadRef.current
     if (current.current.following) {
@@ -45,7 +58,7 @@ export function useChatFollow(
           entry.getBoundingClientRect().top - el.getBoundingClientRect().top - saved.offset
       }
     }
-  }, [scope, boundary, contentKey, repliesKey])
+  })
   useLayoutEffect(() => {
     const el = threadRef.current
     if (!el) return
