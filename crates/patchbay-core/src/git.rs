@@ -1518,6 +1518,43 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual release-mode performance measurement"]
+    fn many_repo_query_measurement() {
+        let groups: Vec<_> = (0..64)
+            .map(|i| RepoGroup {
+                root: PathBuf::from(i.to_string()),
+                members: Vec::new(),
+            })
+            .collect();
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let start = std::time::Instant::now();
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        per_repo(&groups, |_| {
+                            let n = active.fetch_add(1, Ordering::SeqCst) + 1;
+                            peak.fetch_max(n, Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                            active.fetch_sub(1, Ordering::SeqCst);
+                        })
+                    })
+                })
+                .collect();
+            for handle in handles {
+                assert_eq!(handle.join().unwrap().len(), groups.len());
+            }
+        });
+        eprintln!(
+            "4 concurrent refreshes of 64 simulated 2ms repo queries: {:?}, peak={}, budget={}",
+            start.elapsed(),
+            peak.load(Ordering::SeqCst),
+            QUERY_BUDGET.limit
+        );
+    }
+
+    #[test]
     fn queries_share_budget_preserve_order_and_recover_after_panics() {
         let budget = QueryBudget {
             limit: 2,

@@ -2753,6 +2753,7 @@ pub fn serve(dir: &Path) -> Result<()> {
             Err(e) => {
                 eprintln!("Session persistence failed: {e}");
                 saved = Instant::now();
+                saved_output = saved;
             }
         }
         if service.clients.load(Ordering::Acquire) > 0 || service.pty.has_running() {
@@ -2925,6 +2926,48 @@ mod tests {
             bytes.len(),
             start.elapsed()
         );
+        #[cfg(unix)]
+        {
+            let specs: Vec<_> = service
+                .records
+                .lock()
+                .unwrap()
+                .values()
+                .map(|r| {
+                    let mut spec = r.spec.clone();
+                    spec.id = r.id.clone();
+                    spec.command = "printf live".into();
+                    spec
+                })
+                .collect();
+            for spec in specs {
+                service.pty.spawn(spec, service.clone()).unwrap();
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while service.pty.has_running() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!service.pty.has_running());
+            let start = Instant::now();
+            for _ in 0..20 {
+                let mut old: Vec<_> = service.records.lock().unwrap().values().cloned().collect();
+                for r in &mut old {
+                    if let Some(snapshot) = service.pty.snapshot(&r.id) {
+                        r.snapshot = Some(snapshot);
+                    }
+                }
+                black_box(old);
+            }
+            let baseline = start.elapsed();
+            let start = Instant::now();
+            for _ in 0..20 {
+                black_box(service.list());
+            }
+            eprintln!(
+                "20 collections replacing 16 stale 512KiB snapshots with PTY snapshots: old={baseline:?}, optimized={:?}",
+                start.elapsed()
+            );
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

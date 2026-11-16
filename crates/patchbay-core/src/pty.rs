@@ -2306,6 +2306,25 @@ mod backlog_tests {
             assert_eq!(backlog.data.iter().copied().collect::<Vec<_>>(), reference);
             assert_eq!(backlog.end, total);
         }
+        let manager = PtyManager::default();
+        manager
+            .backlogs
+            .lock()
+            .unwrap()
+            .insert("wrap".into(), Arc::new(Mutex::new(backlog)));
+        for limit in [0, 1, 4096, BACKLOG_CAPACITY, usize::MAX] {
+            let snapshot = manager.snapshot_with("wrap", limit).unwrap();
+            assert_eq!(
+                snapshot.data,
+                reference[reference.len().saturating_sub(limit)..]
+            );
+            assert_eq!(snapshot.end, total);
+            assert!(snapshot.truncated);
+            assert_eq!(
+                snapshot.end - snapshot.data.len() as u64,
+                total - reference.len().min(limit) as u64
+            );
+        }
     }
 
     #[test]
