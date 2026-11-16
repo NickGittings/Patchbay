@@ -61,6 +61,7 @@ import { useWorkspaceActions } from './lib/workspaceActions'
 import { useNativeMenus } from './lib/nativeMenus'
 import { syncAgentProject, GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
+import { refreshMainWorktree } from './lib/mainWorktree'
 import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
 import { followAuto } from './lib/auto'
@@ -73,15 +74,35 @@ import { projectOf, useStore } from './store'
 function useGitRefresh() {
   useEffect(() => {
     let stopped = false
+    // Branches change outside the app too (an agent's `git switch` rewrites `HEAD`), so the same
+    // signal re-reads worktree branches, settled per project to one read per burst of events.
+    const branchTimers = new Map<string, ReturnType<typeof setTimeout>>()
+    const refreshBranches = (projectId: string | undefined) => {
+      if (!projectId) return
+      clearTimeout(branchTimers.get(projectId))
+      branchTimers.set(
+        projectId,
+        setTimeout(() => {
+          branchTimers.delete(projectId)
+          if (stopped) return
+          refreshMainWorktree(projectId)
+          void refreshTasks(projectId)
+        }, 250),
+      )
+    }
     // Watchers name their project; window focus sends no payload (null): refresh the active one.
     const unlisten = listen<string | null>(GIT_DIRTY_EVENT, (event) => {
-      if (!stopped) void requestGitRefresh(event.payload ?? undefined)
+      if (stopped) return
+      const projectId = event.payload ?? useStore.getState().project?.id
+      void requestGitRefresh(projectId)
+      refreshBranches(projectId)
     })
     void unlisten.catch((e) =>
       useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
     )
     return () => {
       stopped = true
+      for (const timer of branchTimers.values()) clearTimeout(timer)
       invalidateGitRefresh()
       void unlisten.then((stop) => stop()).catch(() => {})
     }

@@ -531,8 +531,45 @@ impl AuthManager {
         Ok(())
     }
 }
+/// Remove terminal control sequences and carriage returns. CLIs render differently on a TTY:
+/// Claude Code positions JSON values with `ESC [ n G`, which is not valid JSON.
+fn strip_terminal_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // CSI: parameters and intermediates, then one final byte in 0x40..=0x7E.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: terminated by BEL or ST (`ESC \`).
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Two-byte sequences such as `ESC 7` / `ESC 8`.
+                _ => {}
+            },
+            '\r' => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
 fn classify(provider: Adapter, code: i32, bytes: &[u8]) -> AuthStatus {
-    let text = String::from_utf8_lossy(bytes);
+    let text = strip_terminal_escapes(&String::from_utf8_lossy(bytes));
     let lower = text.to_ascii_lowercase();
     let (state, message) = if code == 127 && text.lines().any(|l| l.trim() == MISSING) {
         (
@@ -666,6 +703,36 @@ mod tests {
                     .contains("secret-canary")
             );
         }
+    }
+    #[test]
+    fn terminal_rendered_json_is_classified() {
+        // Claude Code 2.1 on a TTY positions JSON values with cursor escapes.
+        let signed_in = b"\x1b7\x1b[r\x1b8\x1b[?25h{\r\r\n\x1b[3G\"loggedIn\":\x1b[15Gtrue,\r\r\n\x1b[3G\"authMethod\":\x1b[17G\"claude.ai\"\r\r\n}\x1b]0;title\x07\r\n";
+        assert_eq!(
+            classify(Adapter::Claude, 0, signed_in).state,
+            AuthState::SignedIn
+        );
+        let signed_out = b"{\r\r\n\x1b[3G\"loggedIn\":\x1b[15Gfalse\r\r\n}\x1b]0;t\x1b\\";
+        assert_eq!(
+            classify(Adapter::Claude, 1, signed_out).state,
+            AuthState::SignedOut
+        );
+        assert_eq!(
+            classify(
+                Adapter::Codex,
+                0,
+                b"\x1b[1mLogged in using ChatGPT\x1b[0m\r\n"
+            )
+            .state,
+            AuthState::SignedIn
+        );
+        let fixture = Fixture::new();
+        let manager = Arc::new(AuthManager::default());
+        let context = fixture.context(
+            Adapter::Claude,
+            r#"printf '{\r\n\033[3G"loggedIn":\033[15Gtrue\r\n}\r\n'"#,
+        );
+        assert_eq!(manager.check(&context, true).state, AuthState::SignedIn);
     }
     #[test]
     fn failures_and_unsupported_commands_are_never_signed_out() {

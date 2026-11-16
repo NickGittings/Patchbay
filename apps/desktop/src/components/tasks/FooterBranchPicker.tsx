@@ -3,7 +3,7 @@ import Menu, { MenuItem } from '../Menu'
 import RailIcon from '../RailIcon'
 import { gitBranches, gitWorktrees } from '../../lib/ipc'
 import { changeBranch } from '../../lib/branches'
-import { refreshMainWorktree } from '../../lib/mainWorktree'
+import { applyMainWorktrees, refreshMainWorktree } from '../../lib/mainWorktree'
 import { refreshTasks } from '../../lib/tasks'
 import { requestGitRefresh } from '../../lib/git'
 import { useStore } from '../../store'
@@ -71,7 +71,10 @@ function BranchChoices({
     let disposed = false
     void Promise.all([gitBranches(projectId), gitWorktrees(projectId)])
       .then(([branches, trees]) => {
-        if (!disposed) setData({ branches, trees })
+        if (disposed) return
+        setData({ branches, trees })
+        // Share this read, so the footer label always matches the checked branch.
+        applyMainWorktrees(projectId, trees)
       })
       .catch((e) => {
         if (!disposed) setError(String(e))

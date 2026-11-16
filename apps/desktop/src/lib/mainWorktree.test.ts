@@ -2,6 +2,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import type { Worktree } from '../types'
 import { gitWorktrees } from './ipc'
 import {
+  applyMainWorktrees,
   ensureMainWorktree,
   forgetMainWorktree,
   refreshMainWorktree,
@@ -71,4 +72,20 @@ test('a read that finishes after closing cannot restore the forgotten entry', as
   stale.resolve(tree('closed'))
   await settle()
   expect(useMainWorktree.getState().p).toBeUndefined()
+})
+
+test('a listing from the branch menu updates the label and supersedes an older read', async () => {
+  const older = deferred()
+  vi.mocked(gitWorktrees).mockReturnValueOnce(older.promise)
+  refreshMainWorktree('p')
+  applyMainWorktrees('p', tree('agent-branch'))
+  expect(useMainWorktree.getState().p).toEqual({ git: true, branch: 'agent-branch' })
+  older.resolve(tree('stale'))
+  await settle()
+  expect(useMainWorktree.getState().p).toEqual({ git: true, branch: 'agent-branch' })
+})
+
+test('a detached main worktree is labelled with its short commit', () => {
+  applyMainWorktrees('p', [{ current: true, head: '0123456789abcdef' }] as Worktree[])
+  expect(useMainWorktree.getState().p).toEqual({ git: true, branch: 'detached 0123456' })
 })

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { Worktree } from '../types'
 import { gitWorktrees } from './ipc'
 
 export interface MainWorktree {
@@ -9,8 +10,9 @@ export interface MainWorktree {
 }
 
 /**
- * Each project's main worktree, read when its picker mounts or opens rather than on every Git
- * refresh (it only changes on a checkout), and shared so the worktree picker and Build agree.
+ * Each project's main worktree: the one source for its branch label. Re-read on Git watcher
+ * signals (an agent's checkout changes `HEAD`) and whenever a picker lists the worktrees, so the
+ * footer label, branch menu, worktree picker and Build agree.
  */
 export const useMainWorktree = create<Record<string, MainWorktree>>(() => ({}))
 
@@ -29,14 +31,25 @@ export function refreshMainWorktree(projectId: string | undefined) {
     useMainWorktree.setState({ [projectId]: info })
   }
   void gitWorktrees(projectId)
-    .then((list) => {
-      const current = list.find((w) => w.current)
-      apply({
-        git: list.length > 0,
-        branch: current?.branch ?? (current ? `detached ${current.head.slice(0, 7)}` : ''),
-      })
-    })
+    .then((list) => apply(describe(list)))
     .catch(() => apply({ git: false, branch: '' }))
+}
+
+/**
+ * Record worktrees `projectId` just listed elsewhere (such as the branch menu). It supersedes
+ * reads still on their way, so an older answer cannot overwrite it.
+ */
+export function applyMainWorktrees(projectId: string, list: Worktree[]) {
+  latest.set(projectId, { request: ++nextRequest, pending: false })
+  useMainWorktree.setState({ [projectId]: describe(list) })
+}
+
+function describe(list: Worktree[]): MainWorktree {
+  const current = list.find((w) => w.current)
+  return {
+    git: list.length > 0,
+    branch: current?.branch ?? (current ? `detached ${current.head.slice(0, 7)}` : ''),
+  }
 }
 
 /** Read `projectId`'s worktrees unless they are known already or being read. */
