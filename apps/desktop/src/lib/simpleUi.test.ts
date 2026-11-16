@@ -1,4 +1,5 @@
 import { expect, test } from 'vitest'
+import type { StorageValue } from 'zustand/middleware'
 import type { SessionRecord, SessionState } from '../types'
 import { emptySimpleUi, inputDrawer, simpleKey, useSimpleUi, type SimpleUi } from './simpleUi'
 
@@ -93,4 +94,32 @@ test('a pin whose session was forgotten closes the drawer and yields to input wa
     terminal: 'input',
     terminalSession: { id: 'builder' },
   })
+})
+
+test('dismissed workflow prompts survive persistence and rehydration', async () => {
+  let saved: StorageValue<unknown> | null = null
+  const previous = useSimpleUi.persist.getOptions().storage
+  useSimpleUi.persist.setOptions({
+    storage: {
+      getItem: () => saved,
+      setItem: (_name, value) => {
+        saved = structuredClone(value)
+      },
+      removeItem: () => {
+        saved = null
+      },
+    },
+  })
+  try {
+    const key = simpleKey('p', 't')
+    useSimpleUi.setState({ worktrees: {} })
+    useSimpleUi.getState().patch(key, { dismissedPrompt: 'attempt-1:merging' })
+    const persisted = structuredClone(saved)
+    useSimpleUi.setState({ worktrees: {} })
+    saved = persisted
+    await useSimpleUi.persist.rehydrate()
+    expect(useSimpleUi.getState().worktrees[key].dismissedPrompt).toBe('attempt-1:merging')
+  } finally {
+    useSimpleUi.persist.setOptions({ storage: previous })
+  }
 })

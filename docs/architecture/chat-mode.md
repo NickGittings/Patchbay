@@ -213,3 +213,11 @@ reports prevent a complete council result. Council results authorize neither fix
 Settings show progress and allow cancellation or an explicit fresh full council after failure;
 individual reports remain available in Review. Settled reports and their HEAD/coverage sidecars are also archived under the originating request before lanes are reused; the final inbox result points to that archive. Council scheduling runs while desktop team
 reconciliation runs, like other lead workflow requests.
+
+Chat workflow suggestions persist dismissal per project/worktree, conversation boundary, workflow
+attempt and step in `patchbay.chat-drafts`. Artifact loading and transient agent activity do not
+clear it; new attempts and completed merge confirmations have distinct identities. Merge prompts
+wait for the initial artifact read and offer conflict recovery only for a confirmed `notMerged`
+outcome. Unknown outcomes, changed branches and missing historical worktrees show status
+unavailable with **Retry status**, which refreshes the scoped artifact reader. They never imply
+integration or an unfinished merge from a missing outcome alone.

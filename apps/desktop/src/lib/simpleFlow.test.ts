@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import { flow, type FlowSnapshot } from './simpleFlow'
-import { LAUNCH_RECORD_GRACE_MS, pendingLaunch } from './simple'
+import { flow, workflowPromptKey, type FlowSnapshot } from './simpleFlow'
+import { LAUNCH_RECORD_GRACE_MS, pendingLaunch, thread } from './simple'
 import type { AutoRun, ReviewFindings, SessionRecord, SessionState } from '../types'
 const worktree = { projectId: 'p', task: 't', path: '/t', branch: 'feature' }
 const record = (scope: string): SessionRecord =>
@@ -358,4 +358,57 @@ test('an expired unclaimed launch is already settled on the first Chat render', 
   })
   expect(pendingLaunch(s, s.records)).toBeUndefined()
   expect(flow({ ...s, now: undefined }).prompt).toBeDefined()
+})
+
+test('a recovered merge with unknown status does not claim it is unfinished', () => {
+  expect(flow(snapshot('@merge')).prompt?.text).not.toBe('Merge has not completed.')
+})
+
+test('merge status loading and failures never offer conflict recovery', () => {
+  const s = snapshot('@merge')
+  expect(flow({ ...s, outcomePending: true }).prompt).toBeUndefined()
+  for (const outcome of [undefined, 'inProgress', 'dirty'] as const) {
+    const prompt = flow({ ...s, outcome }).prompt!
+    expect(prompt.actions).toEqual([{ action: 'retryMergeStatus', label: 'Retry status' }])
+  }
+  expect(flow({ ...s, outcomeError: 'The merge branches changed' }).prompt).toMatchObject({
+    text: 'Merge status unavailable: The merge branches changed',
+  })
+  expect(flow({ ...s, outcome: 'notMerged' }).prompt?.actions[0].action).toBe('checkMerge')
+  expect(flow({ ...s, outcome: 'notMerged', conflicts: [] }).prompt?.actions[0].action).toBe(
+    'merge',
+  )
+  for (const outcome of ['merged', 'alreadyIntegrated'] as const)
+    expect(flow({ ...s, outcome }).step).toBe('merged')
+})
+
+test('prompt identity survives loading and activity, but changes for new attempts and scopes', () => {
+  const s = snapshot('@merge')
+  const key = (snapshot: FlowSnapshot) =>
+    workflowPromptKey(snapshot, thread(snapshot, snapshot.worktree), flow(snapshot))
+  const original = key(s)
+  expect(key({ ...s, outcomePending: true })).toBe(original)
+  expect(key({ ...s, outcomeError: 'Source worktree no longer exists' })).toBe(original)
+  expect(key({ ...s, sessions: { '@merge': session('working') } })).toBe(original)
+  expect(key({ ...s, outcome: 'merged' })).not.toBe(original)
+  expect(key({ ...s, worktree: { ...worktree, task: 'other' } })).not.toBe(original)
+  expect(key({ ...s, sessions: { '@merge': { ...session('review'), generation: 2 } } })).not.toBe(
+    original,
+  )
+  s.simple!.log.push({
+    id: 'attempt',
+    kind: 'action',
+    action: 'merge',
+    stage: 'merge',
+    atMs: 11,
+    sessionId: '@merge',
+    generation: 1,
+  })
+  const launched = key(s)
+  expect(key({ ...s, sessions: { '@merge': session('working') } })).toBe(launched)
+  expect(key({ ...s, sessions: { '@merge': { ...session('review'), generation: 2 } } })).not.toBe(
+    launched,
+  )
+  s.simple!.log.push({ ...s.simple!.log[0], id: 'next-attempt', atMs: 12 })
+  expect(key(s)).not.toBe(launched)
 })

@@ -187,3 +187,40 @@ test('branch metadata remains available while a newly saved review base reloads 
   expect(render().worktrees).toEqual([])
   expect(render().branches).toEqual([])
 })
+
+test.each(['The merge branches changed', 'Source worktree no longer exists'])(
+  'historical merge read failures preserve artifacts and support retry: %s',
+  async (message) => {
+    useStore.setState({
+      simple: {
+        startedMs: 1,
+        log: [
+          {
+            id: 'merge',
+            atMs: 1,
+            stage: 'merge',
+            kind: 'action',
+            action: 'merge',
+            request: {
+              source: '/repo',
+              sourceBranch: 'feature',
+              destination: '/removed',
+              destinationBranch: 'main',
+            },
+          },
+        ],
+      },
+    })
+    vi.mocked(ipc.mergeOutcome).mockRejectedValue(new Error(message))
+    render()
+    const reader = await settle()
+    expect(reader.data?.outcome).toBeUndefined()
+    expect(reader.data?.outcomeError).toContain(message)
+    expect(reader.data?.plan.text).toBe('plan')
+    vi.mocked(ipc.mergeOutcome).mockResolvedValue('alreadyIntegrated')
+    reader.retry()
+    render()
+    await vi.waitFor(() => expect(render().data?.outcome).toBe('alreadyIntegrated'))
+    expect(render().data?.outcomeError).toBeUndefined()
+  },
+)

@@ -6,7 +6,7 @@ import { useChatTeams } from '../lib/chatTeams'
 import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { recordStage, pendingLaunch, LAUNCH_RECORD_GRACE_MS, thread } from '../lib/simple'
-import { flow } from '../lib/simpleFlow'
+import { flow, workflowPromptKey } from '../lib/simpleFlow'
 import type { useSimpleData } from '../lib/useSimpleData'
 import { useExpiredDeadline } from '../lib/clock'
 import { simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
@@ -125,6 +125,8 @@ export default function ChatMode({
       ...snapshot,
       worktree,
       findings: findings?.findings,
+      outcomePending: !data && !error,
+      outcomeError: data?.outcomeError || error || undefined,
       base: base ?? undefined,
       conflicts: check?.key === checkKey ? check.paths : undefined,
       now,
@@ -168,10 +170,7 @@ export default function ChatMode({
         simple: { startedMs: Date.now(), log: [] },
       })
   }, [s.project, s.activeTask, s.simple])
-  useEffect(() => {
-    if (ui.dismissedStep && ui.dismissedStep !== state.step)
-      useSimpleUi.getState().patch(key, { dismissedStep: undefined })
-  }, [key, state.step, ui.dismissedStep])
+  const promptKey = workflowPromptKey({ ...snapshot, worktree }, model, state)
   if (!s.project) return null
   // Review's own dialog, beside the step's actions once there is work to review.
   const options = ['built', 'reviewed', 'fixed'].includes(state.step)
@@ -383,7 +382,7 @@ export default function ChatMode({
         openFile={openFile}
         openDiff={(file) => useSimpleUi.getState().patch(key, { changes: true, diff: file })}
       />
-      {!launching && ui.dismissedStep !== state.step && (state.prompt || options) && (
+      {!launching && ui.dismissedPrompt !== promptKey && (state.prompt || options) && (
         <section
           className="simple-step"
           data-step={state.step}
@@ -398,7 +397,7 @@ export default function ChatMode({
               className="simple-dismiss"
               aria-label="Dismiss suggestion"
               title="Dismiss suggestion"
-              onClick={() => useSimpleUi.getState().patch(key, { dismissedStep: state.step })}
+              onClick={() => useSimpleUi.getState().patch(key, { dismissedPrompt: promptKey })}
             >
               ×
             </button>
@@ -410,7 +409,7 @@ export default function ChatMode({
                 className={index === 0 ? 'primary' : undefined}
                 disabled={!!pending}
                 key={b.action}
-                onClick={() => act(b.action)}
+                onClick={() => (b.action === 'retryMergeStatus' ? reader.retry() : act(b.action))}
               >
                 {b.label}
               </button>

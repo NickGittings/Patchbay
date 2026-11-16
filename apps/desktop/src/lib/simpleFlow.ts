@@ -23,7 +23,15 @@ export type SimpleStep =
   | 'merging'
   | 'merged'
 export type FlowAction =
-  'build' | 'plan' | 'review' | 'fix' | 'checkMerge' | 'merge' | 'resumeAuto' | 'mergeApproval'
+  | 'build'
+  | 'plan'
+  | 'review'
+  | 'fix'
+  | 'checkMerge'
+  | 'merge'
+  | 'resumeAuto'
+  | 'mergeApproval'
+  | 'retryMergeStatus'
 export interface StepPrompt {
   text: string
   actions: { action: FlowAction; label: string }[]
@@ -31,6 +39,8 @@ export interface StepPrompt {
 export interface FlowSnapshot extends SimpleSnapshot {
   worktree: SimpleWorktree
   findings?: ReviewFindings | null
+  outcomePending?: boolean
+  outcomeError?: string
   outcome?: MergeOutcome
   base?: string
   conflicts?: string[]
@@ -181,18 +191,32 @@ export function flow(
       busyAgent: state?.state === 'needsInput' ? undefined : agent,
       agent,
     }
-  if (model.stage === 'merge')
+  if (model.stage === 'merge') {
+    if (snapshot.outcomePending) return { step: 'merging', agent }
+    const outcome = snapshot.outcome
     return {
       step: 'merging',
       agent,
-      prompt: {
-        text:
-          snapshot.outcome === 'dirty'
-            ? 'Commit the worktree changes before merging.'
-            : 'Merge has not completed.',
-        actions: [button('checkMerge', 'Check conflicts')],
-      },
+      prompt:
+        outcome === 'notMerged'
+          ? snapshot.conflicts
+            ? mergePrompt()
+            : {
+                text: 'Merge has not completed.',
+                actions: [button('checkMerge', 'Check conflicts')],
+              }
+          : {
+              text: snapshot.outcomeError
+                ? `Merge status unavailable: ${snapshot.outcomeError}`
+                : outcome === 'dirty'
+                  ? 'Commit the worktree changes before merging.'
+                  : outcome === 'inProgress'
+                    ? 'Merge in progress…'
+                    : 'Merge status unavailable. The original merge worktrees may have changed.',
+              actions: [button('retryMergeStatus', 'Retry status')],
+            },
     }
+  }
   if (model.stage === 'review' && own && ended) {
     const verdict = snapshot.findings?.verdict
     if (!verdict)
@@ -279,4 +303,38 @@ function isFix(snapshot: FlowSnapshot, agent: SessionRecord | undefined) {
     .filter((e) => e.kind === 'action' && (e.action === 'fix' || e.action === 'implement'))
     .at(-1)
   return action?.kind === 'action' ? action.action === 'fix' : !!agent.metadata.branch
+}
+
+/** Stable across artifact reloads and turn activity; a new workflow attempt gets a new key. */
+export function workflowPromptKey(
+  snapshot: FlowSnapshot,
+  model: ReturnType<typeof thread>,
+  state: SimpleFlow,
+): string {
+  const entry = workflowLog(snapshot.simple).findLast(
+    (e) =>
+      e.stage === model.stage &&
+      (e.kind === 'prompt' ||
+        (e.kind === 'action' &&
+          ['plan', 'implement', 'review', 'fix', 'merge'].includes(e.action))),
+  )
+  const record = model.records.filter((r) => recordStage(r) === model.stage).at(-1)
+  const run = record && (snapshot.sessions[record.id] ?? record.snapshot)
+  const newerRun =
+    entry &&
+    record &&
+    entry.sessionId === record.id &&
+    entry.generation !== undefined &&
+    run?.generation !== undefined &&
+    run.generation > entry.generation
+  const attempt = entry && !newerRun ? [entry.id] : [record?.id, run?.generation, run?.startedMs]
+  return JSON.stringify([
+    snapshot.worktree.projectId,
+    snapshot.worktree.task,
+    snapshot.simple?.startedMs,
+    snapshot.simple?.clearBoundary?.atMs,
+    snapshot.auto?.runId,
+    attempt,
+    state.step,
+  ])
 }

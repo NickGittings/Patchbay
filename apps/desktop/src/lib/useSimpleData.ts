@@ -49,6 +49,7 @@ export function useSimpleData(visible: boolean) {
   const worktree = useStore(activeWorktree)
   const revision = useStore((s) => s.gitChanges)
   const selectionKey = JSON.stringify([projectId, task, worktree])
+  const [retryVersion, setRetryVersion] = useState(0)
   const [data, setData] = useState<Artifacts>()
   const sourceData = data?.selectionKey === selectionKey ? data : undefined
   const source = sourceData?.worktrees.find((w) => (worktree ? w.path === worktree : w.current))
@@ -203,7 +204,7 @@ export function useSimpleData(visible: boolean) {
       window.removeEventListener('focus', focus)
       document.removeEventListener('visibilitychange', focus)
     }
-  }, [visible, projectId, task, worktree, key, savedBase, selectionKey])
+  }, [visible, projectId, task, worktree, key, savedBase, selectionKey, retryVersion])
   const current = data?.key === key && error?.key !== key ? data : undefined
   const scope = useMemo(
     () => ({
@@ -219,6 +220,7 @@ export function useSimpleData(visible: boolean) {
   const groups = useMemo(() => changeGroups(listedNodes ?? [], review), [listedNodes, review])
   const files = useMemo(() => changeRefs(groups), [groups])
   return {
+    retry: () => setRetryVersion(retryVersion + 1),
     data: current,
     // Branch metadata remains usable while artifacts reload for a newly saved review base.
     worktrees: sourceData?.worktrees ?? [],
