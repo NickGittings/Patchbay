@@ -16,7 +16,7 @@ import { useMapActivityFeedback } from './lib/mapActivity'
 import SimpleDiff from './components/SimpleDiff'
 import { useSimpleData } from './lib/useSimpleData'
 import { simpleKey, useSimpleUi } from './lib/simpleUi'
-import SimpleChat from './components/SimpleChat'
+import ChatMode from './components/ChatMode'
 import { followNotifications } from './lib/notifications'
 import { followUsage } from './lib/usage'
 import PersistedGroup from './components/PersistedGroup'
@@ -267,7 +267,7 @@ function NavigationView() {
           {...chatPanel.props}
         >
           {simple && !chatPanel.collapsed && (
-            <SimpleChat key={scopeKey} reader={reader} onHide={hideChat} />
+            <ChatMode key={scopeKey} reader={reader} onHide={hideChat} />
           )}
         </Panel>
       </PersistedGroup>
