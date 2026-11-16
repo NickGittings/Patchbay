@@ -1,3 +1,4 @@
+import { mentionKey } from '../lib/chatMentions'
 import type { ChatFailureKind } from '../lib/chatTeams'
 import { useChatIdentity } from '../lib/chatIdentity'
 import { chatRecipient, chatAutoActive } from '../lib/chat'
@@ -21,7 +22,7 @@ import {
 } from '../lib/chatTeams'
 import { selectPanel, useRail } from '../lib/rail'
 import { persistReplies } from '../lib/simpleReplies'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import type { SessionRecord } from '../types'
@@ -156,11 +157,17 @@ export default function SimpleComposer({
   const query = ui.mentions.some((m) => caret > m.start && caret <= m.end)
     ? null
     : ui.draft.slice(0, caret).match(/(?:^|\s)@([^\s@]*)$/)
-  const candidates = query
-    ? s.nodes
-        .filter((n) => `${n.id} ${n.data.name}`.toLowerCase().includes(query[1].toLowerCase()))
-        .slice(0, 8)
-    : []
+  const mentionListId = useId()
+  const queryKey = JSON.stringify([scopeKey, query?.[1] ?? null])
+  const [selection, setSelection] = useState({ key: queryKey, index: 0, dismissed: false })
+  if (selection.key !== queryKey) setSelection({ key: queryKey, index: 0, dismissed: false })
+  const candidates =
+    query && !selection.dismissed
+      ? s.nodes
+          .filter((n) => `${n.id} ${n.data.name}`.toLowerCase().includes(query[1].toLowerCase()))
+          .slice(0, 8)
+      : []
+  const selectedIndex = Math.min(selection.index, Math.max(0, candidates.length - 1))
   // The service applies the same provider, turn and approval checks.
   const canForce = !autoActive && running && !ready && s.serviceConnected && forceable(state)
   const asking = running && state?.status?.agent?.state === 'needsInput'
@@ -357,6 +364,9 @@ export default function SimpleComposer({
     if (!useStore.getState().highlighted.includes(id)) useStore.getState().toggleHighlight(id)
     setCaret(start + token.length)
     input.current?.focus()
+    requestAnimationFrame(() =>
+      input.current?.setSelectionRange(start + token.length, start + token.length),
+    )
   }
   const queuedSession = useStore((s) => (ui.queued ? s.sessions[ui.queued.sessionId] : undefined))
   return (
@@ -410,6 +420,13 @@ export default function SimpleComposer({
       <textarea
         ref={input}
         aria-label="Message agent"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={candidates.length > 0}
+        aria-controls={candidates.length > 0 ? mentionListId : undefined}
+        aria-activedescendant={
+          candidates.length > 0 ? `${mentionListId}-${candidates[selectedIndex].id}` : undefined
+        }
         value={ui.draft}
         placeholder="Message the agent… @component to scope · Shift+Enter for a newline"
         onSelect={(e) => {
@@ -423,11 +440,17 @@ export default function SimpleComposer({
           })
         }}
         onKeyDown={(e) => {
-          if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)
+          if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
+          const navigation = mentionKey(e.key, selectedIndex, candidates.length)
+          if (navigation) {
+            e.preventDefault()
+            setSelection({ key: queryKey, ...navigation })
             return
+          }
+          if (e.key !== 'Enter') return
           if (candidates.length && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
             e.preventDefault()
-            mention(candidates[0].id)
+            mention(candidates[selectedIndex].id)
           } else if (!e.shiftKey || e.metaKey || e.ctrlKey) {
             e.preventDefault()
             if (status.sendable) void send()
@@ -435,9 +458,17 @@ export default function SimpleComposer({
         }}
       />
       {candidates.length > 0 && (
-        <div role="listbox" aria-label="Mention component">
-          {candidates.map((n) => (
-            <button role="option" aria-selected={false} key={n.id} onClick={() => mention(n.id)}>
+        <div id={mentionListId} role="listbox" aria-label="Mention component">
+          {candidates.map((n, index) => (
+            <button
+              role="option"
+              tabIndex={-1}
+              id={`${mentionListId}-${n.id}`}
+              aria-selected={index === selectedIndex}
+              key={n.id}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => mention(n.id)}
+            >
               {n.data.name}
             </button>
           ))}

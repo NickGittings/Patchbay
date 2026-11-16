@@ -7,6 +7,7 @@ import { useStore } from '../store'
 import type { SessionRecord } from '../types'
 import Markdown from './findings/Markdown'
 import SimpleStatus from './SimpleStatus'
+import MessageMeta from './MessageMeta'
 
 export default function SimpleAgent({
   record,
@@ -52,12 +53,18 @@ export default function SimpleAgent({
       </header>
       {entries.map((entry) =>
         entry.kind === 'prompt' ? (
-          <div className="simple-prompt" key={entry.id}>
+          <div className="simple-prompt" data-chat-entry={entry.id} key={entry.id}>
             <strong>You</strong>
+            <MessageMeta atMs={entry.atMs} text={entry.text} />
             <pre>{entry.text}</pre>
           </div>
         ) : entry.kind === 'reply' ? (
-          <div className="simple-reply" key={entry.id}>
+          <div
+            className="simple-reply"
+            data-chat-entry={JSON.stringify([entry.sessionId, entry.generation, entry.sequence])}
+            key={entry.id}
+          >
+            <MessageMeta atMs={entry.atMs} text={entry.text} />
             <Markdown text={entry.text} />
           </div>
         ) : null,

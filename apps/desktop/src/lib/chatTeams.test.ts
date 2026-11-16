@@ -137,6 +137,15 @@ test('fresh conversation queues a durable reset and keeps history until confirma
   expect(useStore.getState().simple?.log[0].text).toBe('Retain my changes')
   expect(useSimpleUi.getState().worktrees[simpleKey('p', null)].coordinationReset).toBe(true)
 })
+test('failed fresh reset retains the saved conversation and workers', async () => {
+  const current = team()
+  useChatTeams.setState({ teams: { p: [current] }, runs: {} })
+  const history = useStore.getState().simple
+  vi.mocked(invoke).mockRejectedValue(new Error('Reset could not be saved'))
+  await expect(resetLead(current)).rejects.toThrow('Reset could not be saved')
+  expect(useStore.getState().simple).toEqual(history)
+  expect(useChatTeams.getState().teams.p[0].workers).toEqual(current.workers)
+})
 test('a confirmed replacement clears once, retains a handoff and keeps clear reply boundaries after restore', async () => {
   const confirmed = team({
     lead: { ...team().lead, generation: 2 },

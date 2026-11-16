@@ -7,7 +7,7 @@ import ChatCoordination from './ChatCoordination'
 
 const state = vi.hoisted(() => ({ jobs: [] as ProviderJob[] }))
 vi.mock('../store', () => ({
-  useStore: (select: (s: unknown) => unknown) => select({ sessions: {} }),
+  useStore: (select: (s: unknown) => unknown) => select({ sessions: {}, sessionRecords: [] }),
 }))
 vi.mock('../lib/chatTeams', () => ({
   controlTeam: vi.fn(),
@@ -32,6 +32,7 @@ test.each([
   ]
   const html = renderToStaticMarkup(
     createElement(ChatCoordination, {
+      openTerminal: vi.fn(),
       team: { id: 'team', projectId: 'p', state: 'running', messages: [] } as unknown as ChatTeam,
     }),
   )

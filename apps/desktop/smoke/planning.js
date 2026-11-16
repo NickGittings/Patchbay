@@ -73,7 +73,7 @@
       'first planner working',
       () => state().sessions[sid]?.status?.agent?.state === 'working',
     )
-    button('Clear chat').click()
+    button('Clear visible history').click()
     const confirm = await until('clear confirmation', () =>
       document.querySelector('.simple-clear-confirm'),
     )
@@ -95,7 +95,7 @@
     const chatKey = smoke.simpleKey(pid, first.id)
     const queued = smoke.simpleUi.getState().worktrees[chatKey].queued
     assert(queued, 'message was not queued')
-    button('Clear chat').click()
+    button('Clear visible history').click()
     const confirm2 = await until('second clear confirmation', () =>
       document.querySelector('.simple-clear-confirm'),
     )
