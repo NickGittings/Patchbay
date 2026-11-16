@@ -7,8 +7,8 @@
   --border-strong: #36363c;
   --border-hover: #46464e;
   --text: #ededef;
-  --muted: #7c7c85;
-  --faint: #5a5a63;
+  --muted: #a1a1aa;
+  --faint: #9696a1;
   --accent: #3d7bff;
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
   --accent-text: #9dbbff;
@@ -244,7 +244,7 @@ input[type='radio'] {
   align-items: center;
   gap: 6px;
   flex: none;
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
   color: var(--tone);
 }
@@ -355,7 +355,7 @@ input[type='radio'] {
 }
 .menu-shortcut {
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .menu-row {
@@ -387,7 +387,7 @@ input[type='radio'] {
 }
 .attention-label {
   flex: none;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 @keyframes pulse {
@@ -530,7 +530,7 @@ input[type='radio'] {
 }
 .panel-title,
 .section-title {
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -609,7 +609,7 @@ input[type='radio'] {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 .inspector .inspector-actions-trigger,
@@ -732,14 +732,14 @@ input[type='radio'] {
 }
 .inspector-terminal-meta {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
 }
 .inspector-terminal-action {
   flex: none;
   padding: 4px 8px;
   color: var(--accent-text);
-  font-size: 11px;
+  font-size: 12px;
 }
 .inspector-terminal-settings:not([hidden]) {
   display: grid;
@@ -749,7 +749,7 @@ input[type='radio'] {
 .inspector-terminal-settings > button {
   justify-self: start;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .inspector .add-terminal {
   margin-top: 10px;
@@ -830,7 +830,7 @@ input[type='radio'] {
 .context pre {
   white-space: pre-wrap;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -904,7 +904,7 @@ input[type='radio'] {
   opacity: 0;
 }
 .kind-badge {
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -928,7 +928,7 @@ input[type='radio'] {
 }
 .repo-badge {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -949,7 +949,7 @@ input[type='radio'] {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 12px;
   padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -1000,7 +1000,7 @@ input[type='radio'] {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   padding: 1px 8px;
   border-radius: 999px;
@@ -1349,7 +1349,7 @@ input[type='radio'] {
   width: 100%;
   margin-top: 6px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   resize: vertical;
 }
 .scope-chips {
@@ -1495,7 +1495,7 @@ input[type='radio'] {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1px 8px;
@@ -1519,7 +1519,7 @@ input[type='radio'] {
 }
 .validation-chip button {
   padding: 0 4px;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -1572,7 +1572,7 @@ input[type='radio'] {
   text-overflow: ellipsis;
   direction: rtl;
   text-align: left;
-  font-size: 11px;
+  font-size: 12px;
 }
 .path-dir {
   color: var(--muted);
@@ -1605,7 +1605,7 @@ input[type='radio'] {
   height: 18px;
   padding: 0;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 12px;
 }
 .kind-pill.kind-added,
 .kind-pill.kind-untracked {
@@ -1825,7 +1825,7 @@ input[type='radio'] {
   gap: 6px;
   border-radius: 999px;
   padding: 2px 10px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted);
   background: transparent;
 }
@@ -1922,12 +1922,12 @@ button.review-name:hover:not(:disabled) {
 .review-count {
   flex: 1;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12px;
   white-space: nowrap;
 }
 .review-via {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2097,7 +2097,7 @@ button.review-name:hover:not(:disabled) {
   display: block;
   margin-bottom: 4px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.08em;
 }
@@ -2116,7 +2116,7 @@ button.review-name:hover:not(:disabled) {
 .session-worktree-count,
 .session-worktree-path {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .session-worktree-path {
   max-width: 100%;
@@ -2161,7 +2161,7 @@ button.review-name:hover:not(:disabled) {
   background: color-mix(in srgb, var(--role-color) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--role-color) 25%, transparent);
   border-radius: var(--radius-sm);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 .session-role.plan {
@@ -2197,7 +2197,7 @@ button.review-name:hover:not(:disabled) {
   align-items: center;
   gap: 4px;
   margin-left: 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .component-groups {
@@ -2309,7 +2309,7 @@ button.review-name:hover:not(:disabled) {
   text-align: left;
   margin: 4px 0;
   overflow-wrap: anywhere;
-  font-size: 11px;
+  font-size: 12px;
 }
 .action-result .failed {
   color: var(--bad);
@@ -2335,7 +2335,7 @@ button.review-name:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--task) 60%, var(--border-strong));
 }
 .task-badge {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--task);
   background: color-mix(in srgb, var(--task) 14%, transparent);
   border-radius: 4px;
@@ -2438,7 +2438,7 @@ button.review-name:hover:not(:disabled) {
   flex-wrap: wrap;
 }
 .worktree-tag {
-  font-size: 11px;
+  font-size: 12px;
   padding: 1px 7px;
   border-radius: 9px;
   border: 1px solid var(--border-strong);
@@ -2652,7 +2652,7 @@ button.review-name:hover:not(:disabled) {
   text-transform: capitalize;
 }
 .maintenance-origin {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   margin: 12px 0;
 }
@@ -2797,7 +2797,7 @@ kbd {
 }
 .welcome-keys {
   color: var(--faint);
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 .terminal-close-confirm {
@@ -2929,7 +2929,7 @@ kbd {
 }
 .merge-agent-dialog code {
   overflow-wrap: anywhere;
-  font-size: 11px;
+  font-size: 12px;
 }
 .agent-role-field {
   display: grid;
@@ -3392,7 +3392,7 @@ kbd {
 }
 .rail-actions .hint {
   margin: 0 8px 6px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .project-list .grow,
 .project-list .grow:hover:not(:disabled) {
@@ -3540,7 +3540,7 @@ kbd {
   padding: 0;
   list-style: none;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .auto-stepper [aria-current] {
   color: var(--accent);
@@ -3620,7 +3620,7 @@ kbd {
   background: none;
   color: var(--accent);
   padding: 0;
-  font-size: 11px;
+  font-size: 12px;
 }
 .terminal-row > summary {
   align-items: center;
@@ -3697,7 +3697,7 @@ kbd {
   text-align: center;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .diff-view:focus {
   outline: none;
@@ -3735,7 +3735,7 @@ kbd {
 .usage-source {
   display: block;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 .usage-source {
   overflow-wrap: anywhere;
@@ -3952,7 +3952,7 @@ kbd {
 .rail-section-header h3 {
   margin: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 .rail-section-header .panel-actions {
@@ -4145,7 +4145,7 @@ kbd {
   height: 28px;
   min-width: 28px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .footer-popover-header .footer-popover-icon {
   flex: none;
@@ -4215,7 +4215,7 @@ kbd {
   flex-wrap: wrap;
   gap: 8px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   margin-bottom: 6px;
 }
 .notification-entry .toast-close {
@@ -4668,4 +4668,74 @@ kbd {
   .canvas .react-flow__minimap {
     margin-bottom: 66px;
   }
+}
+
+/* Navigation labels are optional; narrow windows retain the saved preference. */
+.workspace-rail[data-expanded='true'] {
+  width: 168px;
+  flex-basis: 168px;
+  align-items: stretch;
+}
+.workspace-rail[data-expanded='true'] > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 10px;
+  text-align: left;
+  justify-content: flex-start;
+}
+.rail-label,
+.rail-group-label {
+  display: none;
+}
+.workspace-rail[data-expanded='true'] .rail-label,
+.workspace-rail[data-expanded='true'] .rail-group-label {
+  display: block;
+  font-size: 12px;
+}
+.rail-group-label {
+  padding: 4px 10px;
+  color: var(--muted);
+}
+.workspace-rail[data-expanded='true'] hr {
+  width: 100%;
+}
+.review-context {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin-bottom: 12px;
+}
+.review-context code,
+.review-context span {
+  overflow-wrap: anywhere;
+}
+.review-context span,
+.review-context summary {
+  color: var(--muted);
+  font-size: 12px;
+}
+.review-title-row,
+.review-status-row {
+  flex-wrap: wrap;
+}
+.panel-status {
+  padding: 16px;
+  color: var(--muted);
+}
+.panel-status p {
+  margin: 0 0 10px;
+}
+.panel-status[data-kind='error'] p {
+  color: var(--text);
+}
+.panel-status details {
+  margin-top: 10px;
+}
+.panel-status pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px var(--mono);
 }

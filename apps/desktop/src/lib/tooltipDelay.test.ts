@@ -1,0 +1,31 @@
+import { afterEach, expect, test, vi } from 'vitest'
+import { tooltipDelay } from './tooltipDelay'
+
+afterEach(() => vi.useRealTimers())
+test('pointer entry waits 350ms and repeated entry restarts the delay', () => {
+  vi.useFakeTimers()
+  const show = vi.fn()
+  const delay = tooltipDelay(show)
+  delay.pointer()
+  vi.advanceTimersByTime(349)
+  expect(show).not.toHaveBeenCalled()
+  delay.pointer()
+  vi.advanceTimersByTime(349)
+  expect(show).not.toHaveBeenCalled()
+  vi.advanceTimersByTime(1)
+  expect(show).toHaveBeenCalledOnce()
+})
+test('cancellation prevents a late tooltip and keyboard focus opens immediately', () => {
+  vi.useFakeTimers()
+  const show = vi.fn()
+  const delay = tooltipDelay(show)
+  delay.pointer()
+  delay.cancel()
+  vi.runAllTimers()
+  expect(show).not.toHaveBeenCalled()
+  delay.pointer()
+  delay.focus()
+  expect(show).toHaveBeenCalledOnce()
+  vi.runAllTimers()
+  expect(show).toHaveBeenCalledOnce()
+})

@@ -84,3 +84,44 @@ test('global role settings stay open when switching or closing projects', () => 
   store.setState({ project: null })
   expect(useRail.getState().settings).toBe('notifications')
 })
+
+test('rail labels respect the width threshold without changing the saved preference', async () => {
+  const { railWidth, readRailExpanded, setRailExpanded } = await import('./rail')
+  const storage = new Map<string, string>()
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+  })
+  try {
+    expect(readRailExpanded()).toBe(false)
+    setRailExpanded(true)
+    expect(readRailExpanded()).toBe(true)
+    expect(railWidth(true, 1099)).toBe(52)
+    expect(railWidth(true, 1100)).toBe(168)
+    expect(readRailExpanded()).toBe(true)
+    expect(railWidth(false, 1440)).toBe(52)
+    expect(panelWidth(640, 1100, 168)).toBe(524)
+  } finally {
+    vi.unstubAllGlobals()
+    useRail.setState({ expanded: false })
+  }
+})
+test('rail preference survives storage failures in memory', async () => {
+  const { readRailExpanded, setRailExpanded } = await import('./rail')
+  vi.stubGlobal('localStorage', {
+    getItem: () => {
+      throw new Error('unavailable')
+    },
+    setItem: () => {
+      throw new Error('unavailable')
+    },
+  })
+  try {
+    expect(readRailExpanded()).toBe(false)
+    setRailExpanded(true)
+    expect(useRail.getState().expanded).toBe(true)
+  } finally {
+    vi.unstubAllGlobals()
+    useRail.setState({ expanded: false })
+  }
+})

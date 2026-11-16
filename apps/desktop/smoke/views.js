@@ -42,7 +42,9 @@
   const changesSettled = (selector) => {
     const el = query(selector)
     if (!el) return false
-    const error = el.querySelector('.file-tree-error, .diff-error')
+    const error = el.querySelector(
+      '.file-tree-error, .diff-error, .panel-status[data-kind="error"]',
+    )
     if (error) throw new Error(`${selector}: ${error.textContent}`)
     return el.querySelector('.change-list') || el.textContent.includes('No uncommitted changes')
   }

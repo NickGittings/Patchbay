@@ -1,4 +1,5 @@
 import { availableReviewBase } from '../lib/reviewAgents'
+import PanelStatus from './PanelStatus'
 import CommitHistory from './changes/CommitHistory'
 import CommitDetails from './changes/CommitDetails'
 import type { HistorySelection } from '../lib/history'
@@ -304,13 +305,28 @@ export default function ReviewView() {
             <Panel id="ReviewView-pane-1" defaultSize="38" minSize="20">
               <div className="review-list" ref={listPane}>
                 <div className="review-header">
+                  <div className="review-context">
+                    <strong>{reviewTask?.title ?? 'Main worktree'}</strong>
+                    <code>
+                      {source?.branch ??
+                        (source ? `detached ${source.head.slice(0, 7)}` : 'Resolving branch…')}
+                    </code>
+                    <span>
+                      {base ? `Changes since merge base with ${base}` : 'Uncommitted changes'}
+                    </span>
+                    {source?.path && (
+                      <details>
+                        <summary>Worktree location</summary>
+                        <code>{source.path}</code>
+                      </details>
+                    )}
+                  </div>
                   <div className="review-title-row">
-                    {!other && reviewTask && <strong>{reviewTask.title}</strong>}
                     <span className="review-totals">
                       {review && shownFiles.length > 0 && <DiffStat {...totals} />}
                     </span>
                     <button
-                      className="review-agent-button"
+                      className="review-agent-button primary"
                       disabled={!source?.branch}
                       onClick={() => setReviewDialogScope(dialogScope)}
                     >
@@ -336,6 +352,7 @@ export default function ReviewView() {
                     <button
                       className="review-refresh"
                       title="Refresh review"
+                      aria-label="Refresh review"
                       onClick={() => {
                         setRefresh((n) => n + 1)
                         setWorktreeRefresh((n) => n + 1)
@@ -391,18 +408,18 @@ export default function ReviewView() {
                     </div>
                   )}
                 </div>
-                {other && (
-                  <div className="review-banner">
-                    Viewing {reviewTask ? `“${reviewTask.title}” on ` : ''}
-                    <code>{other.branch ?? `detached ${other.head.slice(0, 7)}`}</code> at{' '}
-                    <code>{other.path}</code>.
-                  </div>
+                {error && (
+                  <PanelStatus
+                    kind="error"
+                    message="Could not load changes."
+                    details={error}
+                    onRetry={() => {
+                      setRefresh((n) => n + 1)
+                      setWorktreeRefresh((n) => n + 1)
+                    }}
+                  />
                 )}
-                <div className="hint">
-                  {base ? `Changes since merge base with ${base}` : 'Uncommitted changes'}
-                </div>
-                {error && <div className="hint file-tree-error">{error}</div>}
-                {!review && !error && <div className="hint">Loading…</div>}
+                {!review && !error && <PanelStatus kind="loading" message="Loading changes…" />}
                 {review && !groups.length && (
                   <div className="review-empty">
                     <div className="review-empty-mark">✓</div>
@@ -561,15 +578,13 @@ export default function ReviewView() {
                   />
                 ) : (
                   <div className="diff-view">
-                    <div className="review-empty" role={error ? 'alert' : 'status'}>
-                      {error
-                        ? `Could not load changes: ${error}`
-                        : !review
-                          ? 'Loading changes…'
-                          : base
-                            ? `No changes since merge base with ${base}.`
-                            : 'No uncommitted changes.'}
-                    </div>
+                    {review && !error && (
+                      <div className="review-empty">
+                        {base
+                          ? `No changes since merge base with ${base}.`
+                          : 'No uncommitted changes.'}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

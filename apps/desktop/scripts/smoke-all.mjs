@@ -23,6 +23,7 @@ const smoke = (script, env = {}, fixture) => ({
   env: { PATCHBAY_SMOKE_SCRIPT: at('smoke', script), PATCHBAY_SMOKE_ROOT: defaultFixture, ...env },
 })
 const SCRIPTS = {
+  design: smoke('design.js'),
   auth: smoke(
     'auth.js',
     { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-auth/project') },
