@@ -62,14 +62,14 @@
   margin-left: 4px;
 }
 .story-column > header button {
-  font-size: 11px;
+  font-size: 12px;
   padding: 3px 6px;
 }
 .story-all {
   align-self: flex-start;
   border-color: transparent;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   padding: 3px 0;
 }
 .story-all.active {
@@ -122,7 +122,7 @@
   flex-wrap: wrap;
   gap: 6px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 .story-status {
   text-transform: capitalize;
@@ -138,14 +138,14 @@
 }
 .story-worktree {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .story-stage {
   color: var(--running);
-  font-size: 11px;
+  font-size: 12px;
 }
 .story-stage.waitingOnYou,
 .story-stage.paused {
@@ -162,7 +162,7 @@
 }
 .story-hint {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 .story-editor {
@@ -204,7 +204,7 @@
   margin-top: 6px;
 }
 .story-editor .scope-chips button {
-  font-size: 11px;
+  font-size: 12px;
   padding: 4px 7px;
 }
 .story-editor .scope-chips button.active {

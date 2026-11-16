@@ -9,7 +9,28 @@ export const railViews: { id: View; label: string }[] = [
   { id: 'implementation', label: 'Build' },
   { id: 'review', label: 'Review' },
 ]
-export const useRail = create<{ settings: string | null }>(() => ({ settings: null }))
+export function readRailExpanded() {
+  try {
+    return localStorage.getItem('patchbay.railExpanded') === 'true'
+  } catch {
+    return false
+  }
+}
+export function railWidth(expanded: boolean, windowWidth: number) {
+  return expanded && windowWidth >= 1100 ? 168 : 52
+}
+export const useRail = create<{ settings: string | null; expanded: boolean }>(() => ({
+  settings: null,
+  expanded: readRailExpanded(),
+}))
+export function setRailExpanded(expanded: boolean) {
+  useRail.setState({ expanded })
+  try {
+    localStorage.setItem('patchbay.railExpanded', String(expanded))
+  } catch {
+    // Keep the preference for this window when storage is unavailable.
+  }
+}
 /** The open utility panel lives in the store alone (`utilityPanel`). */
 export function selectPanel(panel: UtilityPanel | null) {
   useStore.setState({ utilityPanel: panel })
@@ -35,6 +56,9 @@ export function selectedRailView(): View | null {
   const s = useStore.getState()
   return s.simpleMode ? null : s.view
 }
-export function panelWidth(width: number, windowWidth: number) {
-  return Math.max(240, Math.min(Number.isFinite(width) ? width : 360, 640, windowWidth - 460))
+export function panelWidth(width: number, windowWidth: number, navigationWidth = 52) {
+  return Math.max(
+    240,
+    Math.min(Number.isFinite(width) ? width : 360, 640, windowWidth - 460 - (navigationWidth - 52)),
+  )
 }

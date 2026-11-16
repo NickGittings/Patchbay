@@ -10,6 +10,8 @@ import { worktreeAttention } from '../lib/attention'
 import { STAGE_LABELS, STATUS_LABELS } from '../lib/autoSettings'
 import {
   panelWidth,
+  railWidth,
+  setRailExpanded,
   railViews,
   selectedRailView,
   selectPanel,
@@ -84,7 +86,10 @@ export default function WorkspaceRail() {
   const [resizing, setResizing] = useState(false)
   const [width, setWidth] = useState(initialWidth)
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
-  const actualWidth = panelWidth(width, windowWidth)
+  const expanded = useRail((s) => s.expanded)
+  const navigationWidth = railWidth(expanded, windowWidth)
+  const labeled = navigationWidth > 52
+  const actualWidth = panelWidth(width, windowWidth, navigationWidth)
   const worktreeName = task?.title ?? 'Main worktree'
   const panelSubtitle = (id: UtilityPanel) =>
     id === 'project'
@@ -110,7 +115,7 @@ export default function WorkspaceRail() {
     return () => window.removeEventListener('resize', resize)
   }, [])
   const changeWidth = (value: number) => {
-    const next = panelWidth(value, window.innerWidth)
+    const next = panelWidth(value, window.innerWidth, navigationWidth)
     setWidth(next)
     try {
       localStorage.setItem('patchbay.utilityPanelWidth', String(next))
@@ -149,6 +154,7 @@ export default function WorkspaceRail() {
         onClick={() => togglePanel(id)}
       >
         <RailIcon name={id} />
+        <span className="rail-label">{label}</span>
         {id === 'usage' && usageWarning && (
           <span className="rail-status usage-dot" aria-label="Usage limit warning" />
         )}
@@ -175,7 +181,8 @@ export default function WorkspaceRail() {
   }
   return (
     <>
-      <nav className="workspace-rail" aria-label="Workspace navigation">
+      <nav className="workspace-rail" data-expanded={labeled} aria-label="Workspace navigation">
+        <span className="rail-group-label">Views</span>
         {railViews.map((v, i) => (
           <RailTooltip
             key={v.id}
@@ -188,9 +195,11 @@ export default function WorkspaceRail() {
             onClick={() => selectRailView(v.id)}
           >
             <RailIcon name={v.id} />
+            <span className="rail-label">{v.label}</span>
           </RailTooltip>
         ))}
         <hr />
+        <span className="rail-group-label">Mode</span>
         <RailTooltip
           disabled={!project}
           aria-label="Chat mode"
@@ -200,14 +209,30 @@ export default function WorkspaceRail() {
           onClick={() => useStore.getState().setSimpleMode(!simple)}
         >
           <RailIcon name="chat" />
+          <span className="rail-label">Chat mode</span>
         </RailTooltip>
         <hr />
+        <span className="rail-group-label">Tools</span>
         {utility('auto')}
         {utility('activity')}
         {utility('stack')}
         {utility('sessions')}
         {utility('usage')}
         <span className="spacer" />
+        <RailTooltip
+          aria-label={expanded ? 'Collapse navigation labels' : 'Expand navigation labels'}
+          aria-expanded={labeled}
+          tooltip={
+            windowWidth < 1100
+              ? 'Navigation labels appear in wider windows'
+              : 'Toggle navigation labels'
+          }
+          disabled={windowWidth < 1100}
+          onClick={() => setRailExpanded(!expanded)}
+        >
+          <span aria-hidden="true">{labeled ? '«' : '»'}</span>
+          <span className="rail-label">Collapse</span>
+        </RailTooltip>
       </nav>
       {panel && panel !== 'project' && panel !== 'worktree' && (
         <>
@@ -271,7 +296,7 @@ export default function WorkspaceRail() {
             aria-label="Resize utility panel"
             aria-orientation="vertical"
             aria-valuemin={240}
-            aria-valuemax={panelWidth(640, windowWidth)}
+            aria-valuemax={panelWidth(640, windowWidth, navigationWidth)}
             aria-valuenow={actualWidth}
             tabIndex={0}
             onKeyDown={(e) => {
@@ -286,7 +311,12 @@ export default function WorkspaceRail() {
               setResizing(true)
             }}
             onPointerMove={(e) => {
-              if (e.currentTarget.hasPointerCapture(e.pointerId)) changeWidth(e.clientX - 52)
+              if (e.currentTarget.hasPointerCapture(e.pointerId))
+                changeWidth(
+                  e.clientX -
+                    (document.querySelector('.workspace-rail')?.getBoundingClientRect().right ??
+                      navigationWidth),
+                )
             }}
             onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
             onLostPointerCapture={() => setResizing(false)}

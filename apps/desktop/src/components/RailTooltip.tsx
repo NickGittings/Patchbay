@@ -1,7 +1,15 @@
-import { useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes } from 'react'
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ButtonHTMLAttributes,
+} from 'react'
+import { tooltipDelay } from '../lib/tooltipDelay'
 import { createPortal } from 'react-dom'
 
-/** A rail button with an immediate tooltip outside the rail's scrolling/clipping area. */
+/** A rail button with a delayed pointer tooltip outside the rail's scrolling/clipping area. */
 export default function RailTooltip({
   tooltip,
   shortcut,
@@ -13,6 +21,21 @@ export default function RailTooltip({
   const trigger = useRef<HTMLButtonElement>(null)
   const tip = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
+  const [delay] = useState(() => tooltipDelay(() => setOpen(true)))
+  const close = () => {
+    delay.cancel()
+    setOpen(false)
+  }
+  useEffect(() => {
+    const cancelPending = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') delay.cancel()
+    }
+    window.addEventListener('keydown', cancelPending, true)
+    return () => {
+      delay.cancel()
+      window.removeEventListener('keydown', cancelPending, true)
+    }
+  }, [delay])
   const [position, setPosition] = useState({ left: 56, top: 8 })
   useLayoutEffect(() => {
     if (!open) return
@@ -53,12 +76,12 @@ export default function RailTooltip({
         {...props}
         ref={trigger}
         aria-describedby={open ? id : undefined}
-        onPointerEnter={() => setOpen(true)}
-        onPointerLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
+        onPointerEnter={delay.pointer}
+        onPointerLeave={close}
+        onFocus={delay.focus}
+        onBlur={close}
         onClick={(event) => {
-          setOpen(false)
+          close()
           onClick?.(event)
         }}
       >

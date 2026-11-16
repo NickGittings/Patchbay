@@ -11,6 +11,7 @@ import DiffStat from './DiffStat'
 import DiffView from './DiffView'
 import ValidationChips from './ValidationChips'
 import { useComponentChanges } from './useComponentChanges'
+import PanelStatus from '../PanelStatus'
 import EmptyState from '../EmptyState'
 
 /** One component's uncommitted changes, its validation status, and the selected file's diff. */
@@ -48,9 +49,14 @@ export default function ChangesPanel({ componentId }: { componentId: string }) {
       </div>
       <ValidationChips componentId={componentId} changedAt={latestChange(files ?? undefined)} />
       {error ? (
-        <div className="hint file-tree-error">{error}</div>
+        <PanelStatus
+          kind="error"
+          message="Could not load changes."
+          details={error}
+          onRetry={() => setRefresh((n) => n + 1)}
+        />
       ) : !files ? (
-        <div className="hint">Loading…</div>
+        <PanelStatus kind="loading" message="Loading changes…" />
       ) : !files.length ? (
         <EmptyState icon="✓" title="No uncommitted changes" />
       ) : (
