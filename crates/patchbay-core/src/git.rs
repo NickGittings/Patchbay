@@ -10,7 +10,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, LazyLock, Mutex};
 use std::time::SystemTime;
 
 /// The nearest folder at or above `dir` containing `.git` (a directory, or a
@@ -469,15 +470,90 @@ fn count_lines(path: &Path) -> Option<u32> {
     u32::try_from(newlines + unterminated).ok()
 }
 
-/// Run `query` for every group's repo at once (in parallel, so many sibling
-/// repos don't add up to one long refresh). `None` where it panicked.
+/// Shared across refreshes, so overlapping requests cannot multiply Git workers.
+struct QueryBudget {
+    limit: usize,
+    active: Mutex<usize>,
+    ready: Condvar,
+}
+struct QueryLease<'a> {
+    budget: &'a QueryBudget,
+    count: usize,
+}
+impl QueryBudget {
+    fn acquire(&self, requested: usize) -> QueryLease<'_> {
+        let mut active = self.active.lock().unwrap();
+        while *active == self.limit {
+            active = self.ready.wait(active).unwrap();
+        }
+        let count = requested.min(self.limit - *active);
+        *active += count;
+        QueryLease {
+            budget: self,
+            count,
+        }
+    }
+}
+impl Drop for QueryLease<'_> {
+    fn drop(&mut self) {
+        *self.budget.active.lock().unwrap() -= self.count;
+        self.budget.ready.notify_all();
+    }
+}
+static QUERY_BUDGET: LazyLock<QueryBudget> = LazyLock::new(|| QueryBudget {
+    limit: std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 4),
+    active: Mutex::new(0),
+    ready: Condvar::new(),
+});
+
+/// Query repos with bounded parallelism, retaining input order and isolating panics.
 fn per_repo<T: Send>(
     groups: &[RepoGroup],
     query: impl Fn(&RepoGroup) -> T + Sync,
 ) -> Vec<Option<T>> {
+    query_with_budget(groups, query, &QUERY_BUDGET)
+}
+
+fn query_with_budget<T: Send>(
+    groups: &[RepoGroup],
+    query: impl Fn(&RepoGroup) -> T + Sync,
+    budget: &QueryBudget,
+) -> Vec<Option<T>> {
+    if groups.is_empty() {
+        return Vec::new();
+    }
+    let lease = budget.acquire(groups.len());
+    let next = AtomicUsize::new(0);
     std::thread::scope(|scope| {
-        let handles: Vec<_> = groups.iter().map(|g| scope.spawn(|| query(g))).collect();
-        handles.into_iter().map(|h| h.join().ok()).collect()
+        let handles: Vec<_> = (0..lease.count)
+            .map(|_| {
+                let query = &query;
+                let next = &next;
+                scope.spawn(move || {
+                    let mut results = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(group) = groups.get(index) else {
+                            break;
+                        };
+                        let result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| query(group)))
+                                .ok();
+                        results.push((index, result));
+                    }
+                    results
+                })
+            })
+            .collect();
+        let mut results: Vec<_> = (0..groups.len()).map(|_| None).collect();
+        for handle in handles {
+            for (index, result) in handle.join().expect("query worker panicked outside query") {
+                results[index] = result;
+            }
+        }
+        results
     })
 }
 
@@ -1439,6 +1515,57 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn queries_share_budget_preserve_order_and_recover_after_panics() {
+        let budget = QueryBudget {
+            limit: 2,
+            active: Mutex::new(0),
+            ready: Condvar::new(),
+        };
+        let groups: Vec<_> = (0..20)
+            .map(|i| RepoGroup {
+                root: PathBuf::from(i.to_string()),
+                members: Vec::new(),
+            })
+            .collect();
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..3)
+                .map(|_| {
+                    scope.spawn(|| {
+                        query_with_budget(
+                            &groups,
+                            |g| {
+                                let n = active.fetch_add(1, Ordering::SeqCst) + 1;
+                                peak.fetch_max(n, Ordering::SeqCst);
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                                active.fetch_sub(1, Ordering::SeqCst);
+                                let index: usize = g.root.to_str().unwrap().parse().unwrap();
+                                assert_ne!(index, 7, "injected query panic");
+                                index
+                            },
+                            &budget,
+                        )
+                    })
+                })
+                .collect();
+            for handle in handles {
+                let results = handle.join().unwrap();
+                for (i, result) in results.into_iter().enumerate() {
+                    assert_eq!(result, (i != 7).then_some(i));
+                }
+            }
+        });
+        assert!(peak.load(Ordering::SeqCst) <= 2);
+        assert_eq!(*budget.active.lock().unwrap(), 0);
+        assert_eq!(
+            query_with_budget(&groups[..1], |_| 42, &budget),
+            vec![Some(42)]
+        );
+        assert!(query_with_budget::<usize>(&[], |_| panic!("empty query"), &budget).is_empty());
     }
 
     #[test]

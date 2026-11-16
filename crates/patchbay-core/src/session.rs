@@ -864,6 +864,32 @@ struct Events {
     bytes: usize,
     ring: VecDeque<(usize, Envelope)>,
 }
+impl Events {
+    /// Capture an owned batch; serialization must happen after releasing the ring lock.
+    fn batch(&self, instance: &str, after: u64) -> Batch {
+        let first = self.ring.front().map_or(self.end, |(_, e)| e.sequence);
+        let gap = self
+            .ring
+            .front()
+            .is_some_and(|(_, e)| after.saturating_add(1) < e.sequence);
+        let skip =
+            usize::try_from(after.saturating_add(1).saturating_sub(first)).unwrap_or(usize::MAX);
+        Batch {
+            instance_id: instance.to_owned(),
+            end: self.end,
+            gap,
+            events: if after >= self.end {
+                Vec::new()
+            } else {
+                self.ring
+                    .range(skip.min(self.ring.len())..)
+                    .take(POLL_LIMIT)
+                    .map(|(_, e)| e.clone())
+                    .collect()
+            },
+        }
+    }
+}
 #[derive(Clone)]
 struct Viewer {
     client: String,
@@ -1047,13 +1073,23 @@ impl Service {
     }
     /// Every record with its live snapshot, output included, for persistence.
     fn list(&self) -> Vec<Record> {
-        let mut records: Vec<_> = self.records.lock().unwrap().values().cloned().collect();
-        for r in &mut records {
-            if let Some(s) = self.pty.snapshot(&r.id) {
-                r.snapshot = Some(s);
-            }
-        }
-        records
+        self.records
+            .lock()
+            .unwrap()
+            .values()
+            .map(|r| Record {
+                id: r.id.clone(),
+                metadata: r.metadata.clone(),
+                spec: r.spec.clone(),
+                snapshot: self.pty.snapshot(&r.id).or_else(|| r.snapshot.clone()),
+                history: r.history.clone(),
+                launch_command: r.launch_command.clone(),
+                restart_context: r.restart_context.clone(),
+                briefing_backup: r.briefing_backup.clone(),
+                interrupted: r.interrupted,
+                request_ids: r.request_ids.clone(),
+            })
+            .collect()
     }
     /// Records without output, environment or launch internals, for clients.
     /// Never copies a backlog. Request ids are listed once their launch has spawned,
@@ -1118,6 +1154,28 @@ impl Service {
             &self.dir.join("sessions.json"),
             &serde_json::to_vec(&records)?,
         )
+    }
+    /// Consume dirty flags before writing so concurrent updates survive the save.
+    fn save_if_due(
+        &self,
+        metadata_due: bool,
+        output_due: bool,
+        write: impl FnOnce() -> Result<()>,
+    ) -> Result<bool> {
+        let metadata = metadata_due && self.dirty.swap(false, Ordering::AcqRel);
+        let output = (metadata || output_due) && self.output_dirty.swap(false, Ordering::AcqRel);
+        if !metadata && !output {
+            return Ok(false);
+        }
+        if let Err(error) = write() {
+            // Retry the entire snapshot, including any output consumed above.
+            self.dirty.store(true, Ordering::Release);
+            if output {
+                self.output_dirty.store(true, Ordering::Release);
+            }
+            return Err(error);
+        }
+        Ok(true)
     }
     fn owns(&self, client: &str, id: &str, viewer: &str) -> bool {
         self.viewers
@@ -2061,23 +2119,8 @@ impl Service {
                 serde_json::Value::Null
             }
             Request::Poll { after } => {
-                let events = self.events.lock().unwrap();
-                let gap = events
-                    .ring
-                    .front()
-                    .is_some_and(|(_, e)| after + 1 < e.sequence);
-                serde_json::to_value(Batch {
-                    instance_id: self.instance.clone(),
-                    end: events.end,
-                    gap,
-                    events: events
-                        .ring
-                        .iter()
-                        .filter(|(_, e)| e.sequence > after)
-                        .take(POLL_LIMIT)
-                        .map(|(_, e)| e.clone())
-                        .collect(),
-                })?
+                let batch = self.events.lock().unwrap().batch(&self.instance, after);
+                serde_json::to_value(batch)?
             }
             Request::Conversation {
                 id,
@@ -2697,19 +2740,20 @@ pub fn serve(dir: &Path) -> Result<()> {
             Err(e) => return Err(e.into()),
         }
         service.capture_conversations();
-        let metadata = saved.elapsed() >= SAVE_DIRTY && service.dirty.swap(false, Ordering::AcqRel);
-        let output = saved_output.elapsed() >= SAVE_OUTPUT
-            && service.output_dirty.swap(false, Ordering::AcqRel);
-        if metadata || output {
-            if let Err(e) = service.persist() {
-                eprintln!("Session persistence failed: {e}");
-                service.dirty.store(true, Ordering::Release);
-            } else {
-                // A full write covers pending output too.
-                service.output_dirty.store(false, Ordering::Release);
+        match service.save_if_due(
+            saved.elapsed() >= SAVE_DIRTY,
+            saved_output.elapsed() >= SAVE_OUTPUT,
+            || service.persist(),
+        ) {
+            Ok(true) => {
+                saved = Instant::now();
                 saved_output = Instant::now();
             }
-            saved = Instant::now();
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("Session persistence failed: {e}");
+                saved = Instant::now();
+            }
         }
         if service.clients.load(Ordering::Acquire) > 0 || service.pty.has_running() {
             idle = Instant::now();
@@ -2793,6 +2837,182 @@ fn serve_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "manual release-mode performance measurement"]
+    fn backend_performance_measurements() {
+        use std::hint::black_box;
+        let mut events = Events::default();
+        for sequence in 1..=8192 {
+            events.end = sequence;
+            events.ring.push_back((
+                1,
+                Envelope {
+                    instance_id: "bench".into(),
+                    sequence,
+                    event: TerminalEvent::Output {
+                        session_id: "bench".into(),
+                        generation: 1,
+                        seq: sequence,
+                        data: vec![1],
+                    },
+                },
+            ));
+        }
+        let start = Instant::now();
+        for _ in 0..10_000 {
+            black_box(
+                events
+                    .ring
+                    .iter()
+                    .filter(|(_, e)| e.sequence > black_box(events.end))
+                    .take(POLL_LIMIT)
+                    .map(|(_, e)| e.clone())
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let scan = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..10_000 {
+            black_box(events.batch("bench", black_box(events.end)));
+        }
+        eprintln!(
+            "10k caught-up polls, 8192 events: scan={scan:?}, indexed={:?}",
+            start.elapsed()
+        );
+
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let service = Service::load(&dir).unwrap();
+        let snapshot = serde_json::json!({
+            "data": "", "end": 524288, "generation": 1, "running": false,
+            "exitCode": 0, "startedMs": 1, "exitedMs": 2, "truncated": false,
+            "status": crate::status::SessionStatus::default(), "notice": null,
+        });
+        let mut record: Record = serde_json::from_value(serde_json::json!({
+            "id":"bench", "metadata":{"projectId":"p", "projectName":"P",
+                "projectRoot":dir, "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell"},
+            "spec":{"id":"bench", "command":"cat", "cwd":dir, "env":{},
+                "ready_when":"", "service":false, "notice":null, "dirs":[]},
+            "snapshot":snapshot, "history":[], "interrupted":false, "requestIds":[],
+        })).unwrap();
+        record.snapshot.as_mut().unwrap().data = vec![b'x'; 512 * 1024];
+        record.history = vec![record.snapshot.clone().unwrap(); 3];
+        for i in 0..16 {
+            let mut record = record.clone();
+            record.id = i.to_string();
+            service
+                .records
+                .lock()
+                .unwrap()
+                .insert(record.id.clone(), record);
+        }
+        let start = Instant::now();
+        let records: BTreeMap<_, _> = service
+            .list()
+            .into_iter()
+            .map(|r| (r.id.clone(), r))
+            .collect();
+        let collection = start.elapsed();
+        let start = Instant::now();
+        let bytes = serde_json::to_vec(&records).unwrap();
+        let serialization = start.elapsed();
+        let start = Instant::now();
+        atomic_write(&dir.join("measurement.json"), &bytes).unwrap();
+        let write = start.elapsed();
+        let start = Instant::now();
+        service.persist().unwrap();
+        eprintln!(
+            "16 sessions, 3 histories, 512KiB each: collect={collection:?}, serialize={serialization:?}, write={write:?}, bytes={}, total={:?}",
+            bytes.len(),
+            start.elapsed()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn polling_matches_reference_across_eviction_and_pagination() {
+        let mut events = Events::default();
+        for sequence in 1..=1500 {
+            events.end = sequence;
+            events.ring.push_back((
+                1,
+                Envelope {
+                    instance_id: "test".into(),
+                    sequence,
+                    event: TerminalEvent::Output {
+                        session_id: "test".into(),
+                        generation: 1,
+                        seq: sequence,
+                        data: vec![1],
+                    },
+                },
+            ));
+            if events.ring.len() > 1000 {
+                events.ring.pop_front();
+            }
+        }
+        for after in [0, 499, 500, 501, 999, 1499, 1500, 1501, u64::MAX] {
+            let batch = events.batch("test", after);
+            let expected: Vec<_> = events
+                .ring
+                .iter()
+                .filter(|(_, e)| e.sequence > after)
+                .take(POLL_LIMIT)
+                .map(|(_, e)| e.sequence)
+                .collect();
+            assert_eq!(
+                batch.events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(batch.gap, after < 500);
+            assert_eq!(batch.end, 1500);
+        }
+        assert!(Events::default().batch("empty", 0).events.is_empty());
+        assert!(!Events::default().batch("empty", u64::MAX).gap);
+        assert!(
+            !Events {
+                end: 42,
+                ..Events::default()
+            }
+            .batch("evicted", 0)
+            .gap
+        );
+    }
+
+    #[test]
+    fn save_preserves_concurrent_output_and_retries_failed_writes() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let service = Service::load(&dir).unwrap();
+        service.output_dirty.store(true, Ordering::Release);
+        assert!(
+            service
+                .save_if_due(true, true, || {
+                    service.output_dirty.store(true, Ordering::Release);
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert!(service.output_dirty.load(Ordering::Acquire));
+        assert!(
+            service
+                .save_if_due(true, true, || bail!("injected failure"))
+                .is_err()
+        );
+        assert!(service.dirty.load(Ordering::Acquire));
+        assert!(service.output_dirty.load(Ordering::Acquire));
+        assert!(
+            service
+                .save_if_due(true, true, || service.persist())
+                .unwrap()
+        );
+        assert!(
+            !service
+                .save_if_due(true, true, || panic!("clean save"))
+                .unwrap()
+        );
+        Service::load(&dir).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn rejects_unbounded_or_malformed_protocol_frames() {
         assert!(read_frame::<Request>(&mut &u32::MAX.to_be_bytes()[..]).is_err());

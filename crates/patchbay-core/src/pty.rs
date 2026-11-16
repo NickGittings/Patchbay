@@ -2269,6 +2269,46 @@ mod backlog_tests {
     }
 
     #[test]
+    #[ignore = "manual release-mode performance measurement"]
+    fn full_backlog_output_measurement() {
+        let mut backlog = Backlog::default();
+        backlog.append(&vec![0; BACKLOG_CAPACITY]);
+        let chunk = vec![b'x'; 8192];
+        let start = std::time::Instant::now();
+        for _ in 0..16_384 {
+            std::hint::black_box(backlog.append(std::hint::black_box(&chunk)));
+        }
+        eprintln!(
+            "128MiB appended to full 512KiB backlog in {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn repeated_wraparound_and_oversized_chunks_match_reference() {
+        let mut backlog = Backlog::default();
+        let mut reference = Vec::new();
+        let mut total = 0;
+        for size in [
+            8191,
+            BACKLOG_CAPACITY,
+            31,
+            BACKLOG_CAPACITY + 97,
+            0,
+            4096,
+            7001,
+        ] {
+            let chunk: Vec<_> = (0..size).map(|i| u8::try_from(i % 251).unwrap()).collect();
+            assert_eq!(backlog.append(&chunk), total);
+            total += size as u64;
+            reference.extend_from_slice(&chunk);
+            reference.drain(..reference.len().saturating_sub(BACKLOG_CAPACITY));
+            assert_eq!(backlog.data.iter().copied().collect::<Vec<_>>(), reference);
+            assert_eq!(backlog.end, total);
+        }
+    }
+
+    #[test]
     fn retains_only_tail_with_total_byte_offset() {
         let mut backlog = Backlog::default();
         assert_eq!(backlog.append(&vec![1; BACKLOG_CAPACITY]), 0);
