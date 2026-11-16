@@ -5,27 +5,40 @@ import { useRef, useState } from 'react'
 import { StoryViewTabs } from './stories/StoryBoard'
 import { useStepKeys } from './changes/useStepKeys'
 import { useStore } from '../store'
-import { changePosition, resolveChangeSelection, stepChange } from '../lib/changeNav'
+import { changePosition, changeRefs, resolveChangeSelection, stepChange } from '../lib/changeNav'
 import { useSimpleUi, type SimpleDiff as Selection } from '../lib/simpleUi'
 import type { useSimpleData } from '../lib/useSimpleData'
 import ChangeList from './changes/ChangeList'
 import DiffView from './changes/DiffView'
+import DiffStat from './changes/DiffStat'
+import ChangeGroupCard from './changes/ChangeGroupCard'
+import PanelStatus from './PanelStatus'
+import { plural } from '../lib/display'
+import { lineTotals } from '../lib/review'
 
-export default function SimpleDiff({
-  scopeKey,
-  selection,
-  reader,
-}: {
+interface Props {
   scopeKey: string
   selection?: Selection | null
   reader: ReturnType<typeof useSimpleData>
-}) {
+}
+
+export default function SimpleDiff(props: Props) {
+  // Local disclosures and history belong to one conversation's worktree.
+  return (
+    <ChangesContent key={JSON.stringify([props.scopeKey, props.reader.scope.path])} {...props} />
+  )
+}
+
+function ChangesContent({ scopeKey, selection, reader }: Props) {
   const [history, setHistory] = useState<HistorySelection | null>(null)
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const task = useStore((s) => s.activeTask)
-  const { groups, files: order } = reader
+  const title = useStore((s) => s.tasks.find((t) => t.id === task)?.title)
+  const { groups, files } = reader
+  const order = changeRefs(groups.filter((g) => !collapsed[g.id]))
   // Findings can be clicked while the comparison reloads and its file list is empty.
   // Resolve their path again when files arrive, preserving explicit listed selections.
-  const selected = resolveChangeSelection(order, selection, reader.source?.path)
+  const selected = resolveChangeSelection(files, selection, reader.source?.path)
   const file = selected
     ? (reader.data?.review.changes[selected.componentId]?.find((f) => f.path === selected.path) ??
       null)
@@ -45,27 +58,89 @@ export default function SimpleDiff({
         <StoryViewTabs />
       </header>
       <div className="simple-diff-body" ref={body}>
-        <aside>
-          <div className="hint">
-            {reader.base ? `Changes since merge base with ${reader.base}` : 'Uncommitted changes'}
+        <aside className="review-list" aria-label="Changed files">
+          <div className="review-header">
+            <div className="review-context">
+              <strong>{title ?? 'Main worktree'}</strong>
+              <code>
+                {reader.source?.branch ??
+                  (reader.source
+                    ? `detached ${reader.source.head.slice(0, 7)}`
+                    : 'Resolving branch…')}
+              </code>
+              <span>
+                {reader.base
+                  ? `Changes since merge base with ${reader.base}`
+                  : 'Uncommitted changes'}
+              </span>
+              {reader.source?.path && (
+                <details>
+                  <summary>Worktree location</summary>
+                  <code>{reader.source.path}</code>
+                </details>
+              )}
+            </div>
+            <div className="review-title-row">
+              <span className="review-totals">
+                {reader.data && files.length > 0 && (
+                  <>
+                    {plural(files.length, 'file')}
+                    <DiffStat {...lineTotals(groups.flatMap((g) => g.files))} />
+                  </>
+                )}
+              </span>
+              <button
+                className="review-refresh"
+                title="Refresh changes"
+                aria-label="Refresh changes"
+                onClick={reader.retry}
+              >
+                ↻
+              </button>
+            </div>
           </div>
-          {groups.map((g) => (
-            <section key={g.id}>
-              <h3>{g.name}</h3>
-              <ChangeList
-                files={g.files}
-                base={g.base}
-                selected={!history && g.id === selected?.componentId ? selected.path : undefined}
-                onSelect={(path) => {
-                  setHistory(null)
-                  patch(scopeKey, { diff: { componentId: g.id, path } })
-                }}
-                onStep={step}
+          {reader.error ? (
+            <PanelStatus
+              kind="error"
+              message="Could not load changes."
+              details={reader.error}
+              onRetry={reader.retry}
+            />
+          ) : !reader.data ? (
+            <PanelStatus kind="loading" message="Loading changes…" />
+          ) : !groups.length ? (
+            <div className="review-empty">
+              <div className="review-empty-mark">✓</div>
+              {reader.base
+                ? `No changes since merge base with ${reader.base}.`
+                : 'No uncommitted changes.'}
+            </div>
+          ) : null}
+          {groups.map((g) => {
+            const open = !collapsed[g.id]
+            return (
+              <ChangeGroupCard
+                key={g.id}
+                group={g}
+                open={open}
+                onToggle={() => setCollapsed((value) => ({ ...value, [g.id]: open }))}
                 task={task}
-                worktree={reader.source?.path}
-              />
-            </section>
-          ))}
+              >
+                <ChangeList
+                  files={g.files}
+                  base={g.base}
+                  selected={!history && g.id === selected?.componentId ? selected.path : undefined}
+                  onSelect={(path) => {
+                    setHistory(null)
+                    patch(scopeKey, { diff: { componentId: g.id, path } })
+                  }}
+                  onStep={step}
+                  task={task}
+                  worktree={reader.source?.path}
+                />
+              </ChangeGroupCard>
+            )
+          })}
           <CommitHistory worktree={reader.source?.path} selected={history} onSelect={setHistory} />
         </aside>
         {history ? (
@@ -86,7 +161,7 @@ export default function SimpleDiff({
               ? `Could not load changes: ${reader.error}`
               : selection
                 ? `Diff unavailable: ${selection.path} is no longer changed in this comparison.`
-                : !order.length
+                : !files.length
                   ? reader.base
                     ? `No changes since merge base with ${reader.base}.`
                     : 'No uncommitted changes.'

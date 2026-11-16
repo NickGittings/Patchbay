@@ -223,3 +223,12 @@ unavailable with **Retry status**, which refreshes the scoped artifact reader. T
 integration or an unfinished merge from a missing outcome alone.
 Legacy merge sessions without a saved request retain paths but cannot establish the original
 branch pair; their status stays unavailable instead of substituting current checkout branches.
+
+Chat's Changes pane shares Review's sticky worktree context header, refresh/retry feedback,
+aggregate line totals, and component cards. Cards show kind colors, file counts, line totals,
+and active-task validation chips (except for project files). Component names remain labels.
+Review and Chat render component cards through the shared `ChangeGroupCard`.
+Groups start expanded; collapsing one preserves the open diff. File stepping and navigation
+counts include only expanded groups; selection resolution and aggregate totals retain all files. Local collapse and commit-history
+selection reset when the conversation worktree changes. Map / Stories / Changes tabs, finding
+line links, file stepping, and commit history retain their existing chat behavior.

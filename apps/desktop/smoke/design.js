@@ -123,8 +123,120 @@
         !query('.review-list .panel-status[data-kind="error"]') && changesSettled('.review-view'),
     )
 
+    // Exercise chat presentation independently of provider workflow timing.
+    const component = state().nodes[0]
+    assert(component, 'missing fixture component')
+    let response = 'files'
+    const diffUrl = window.__TAURI_INTERNALS__.convertFileSrc('git_diff', 'ipc')
+    const json = (value) =>
+      Promise.resolve(
+        new Response(JSON.stringify(value), {
+          headers: { 'Content-Type': 'application/json', 'Tauri-Response': 'ok' },
+        }),
+      )
+    window.fetch = (input, options) => {
+      if (String(input) === reviewUrl) {
+        if (response === 'error')
+          return Promise.resolve(
+            new Response('Smoke: unavailable', {
+              headers: { 'Content-Type': 'text/plain', 'Tauri-Response': 'error' },
+            }),
+          )
+        return json({
+          changes:
+            response === 'empty'
+              ? {}
+              : {
+                  [component.id]: [
+                    { path: 'presentation.txt', kind: 'modified', added: 2, removed: 1 },
+                  ],
+                  '@project': [
+                    { path: 'project-first.txt', kind: 'modified', added: 1, removed: 0 },
+                    { path: 'project-second.txt', kind: 'modified', added: 1, removed: 0 },
+                  ],
+                },
+          affected: [],
+        })
+      }
+      if (String(input) === diffUrl)
+        return json({
+          patch:
+            'diff --git a/presentation.txt b/presentation.txt\n--- a/presentation.txt\n+++ b/presentation.txt\n@@ -1 +1,2 @@\n-old\n+new\n+line\n',
+          binary: false,
+          truncated: false,
+        })
+      return reviewFetch(input, options)
+    }
+    try {
+      state().setView('navigation')
+      state().setSimpleMode(true)
+      await until('chat mounted', () => query('.simple-chat'))
+      smoke.simpleUi
+        .getState()
+        .patch(smoke.simpleKey(state().project.id, state().activeTask), { changes: true })
+      await until('chat component card', () => query('.simple-diff .review-group'))
+      assert(query('.simple-diff .review-context strong'), 'chat context missing')
+      assert(
+        query('.simple-diff .review-totals').textContent.includes('3 files'),
+        'chat totals missing',
+      )
+      const toggle = query('.simple-diff .review-toggle')
+      click(query('.simple-diff .change-row[data-path="presentation.txt"]'))
+      await until('component file selected', () =>
+        query('.simple-diff .change-row[data-path="presentation.txt"][aria-selected="true"]'),
+      )
+      click(toggle)
+      await until('collapsed chat group', () => toggle.getAttribute('aria-expanded') === 'false')
+      assert(
+        !query('.simple-diff .change-row[data-path="presentation.txt"]'),
+        'collapsed files still shown',
+      )
+      await until('collapsed selection diff preserved', () =>
+        query('.simple-diff .diff-file-path')?.textContent.includes('presentation.txt'),
+      )
+      const first = query('.simple-diff .change-row[data-path="project-first.txt"]')
+      click(first)
+      await until('visible file selected', () => first.getAttribute('aria-selected') === 'true')
+      first.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }),
+      )
+      await sleep(100)
+      assert(first.getAttribute('aria-selected') === 'true', 'keyboard selected a collapsed file')
+      assert(document.activeElement === first, 'keyboard lost visible file focus')
+      assert(
+        query('.simple-diff .review-totals').textContent.includes('3 files'),
+        'collapse changed aggregate total',
+      )
+      await until(
+        'expanded-only navigation count',
+        () => query('.simple-diff .diff-nav-count')?.textContent.trim() === '1 / 2',
+      )
+      assert(
+        query('.simple-diff [aria-label="Previous changed file"]').disabled,
+        'previous navigation includes collapsed group',
+      )
+      click(query('.simple-diff [aria-label="Next changed file"]'))
+      await until('next visible file selected', () =>
+        query('.simple-diff .change-row[data-path="project-second.txt"][aria-selected="true"]'),
+      )
+      click(toggle)
+      await until('expanded chat group', () => query('.simple-diff .change-row'))
+      await smoke.resizeWindow(900, 700)
+      const pane = query('.simple-diff').getBoundingClientRect()
+      const list = query('.simple-diff aside').getBoundingClientRect()
+      assert(list.left >= pane.left && list.right <= pane.right, 'narrow chat list clipped')
+      response = 'error'
+      click(query('.simple-diff .review-refresh'))
+      await until('chat failure', () => query('.simple-diff [role="alert"]'))
+      response = 'empty'
+      click(query('.simple-diff .panel-status button'))
+      await until('chat empty state', () => query('.simple-diff .review-empty-mark'))
+    } finally {
+      window.fetch = reviewFetch
+    }
+
     await smoke.report(
-      'PASS design: rail labels, preference, width threshold, panel resize, tooltip timing and Escape, review summary and retry recovery',
+      'PASS design: rail labels, preference, width threshold, panel resize, tooltip timing and Escape, review summary and retry recovery, chat Changes cards, totals, collapse, narrow layout and error recovery',
     )
   } catch (error) {
     await smoke.report(`FAIL design: ${String(error)} ${error?.stack || ''}`)

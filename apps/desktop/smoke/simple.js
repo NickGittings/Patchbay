@@ -336,9 +336,34 @@
       ),
     )
     await until('Changes pane', () => document.querySelector('.simple-diff'))
-    const pane = document.querySelector('.simple-diff')
+    let pane = document.querySelector('.simple-diff')
     await until('listed changes', () => pane.querySelectorAll('.change-row').length === 3)
     assert(button('Changes 3', pane), 'tab count differs from its file list')
+    assert(pane.querySelector('.review-context strong'), 'missing worktree context')
+    assert(
+      pane.querySelector('.review-context code')?.textContent ===
+        state().tasks.find((t) => t.id === task)?.branch,
+      'wrong Changes branch',
+    )
+    assert(
+      pane.querySelector('.review-totals')?.textContent.includes('3 files'),
+      'missing total file count',
+    )
+    assert(pane.querySelector('.review-totals .diff-stat'), 'missing total line counts')
+    const group = pane.querySelector('.review-group')
+    const toggle = group.querySelector('.review-toggle')
+    assert(toggle.getAttribute('aria-expanded') === 'true', 'group did not start expanded')
+    await until('selected diff loaded', () => pane.querySelector('.diff-view [data-new-line]'))
+    const openDiff = pane.querySelector('.diff-view')?.textContent
+    click(toggle)
+    await until('collapsed change group', () => !group.querySelector('.change-list'))
+    assert(toggle.getAttribute('aria-expanded') === 'false', 'collapse state not exposed')
+    assert(pane.querySelector('.diff-view')?.textContent === openDiff, 'collapse changed the diff')
+    click(toggle)
+    await until('expanded change group', () => group.querySelector('.change-list'))
+    click(pane.querySelector('[aria-label="Refresh changes"]'))
+    await until('refreshed changes', () => pane.querySelectorAll('.change-row').length === 3)
+
     const selectedPath = () => pane.querySelector('.change-row[aria-selected="true"]')?.dataset.path
     const key = (key, target = document.activeElement ?? document.body) =>
       target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
@@ -355,7 +380,9 @@
       !untouched.defaultPrevented && selectedPath() === beforeClick,
       'body arrow stepped a file before any click',
     )
-    pane.querySelector('aside h3').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    pane
+      .querySelector('.review-group-header')
+      .dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
     key('ArrowLeft')
     await until('body arrow moves selection', () => selectedPath() === 'src/app.txt')
     click(pane.querySelector('.change-row[data-path="src/another.txt"]'))
@@ -377,6 +404,28 @@
     assert(
       asideBounds.left >= paneBounds.left && asideBounds.right <= paneBounds.right,
       'Changes list is clipped',
+    )
+    click(await until('recent commit', () => pane.querySelector('.commit-row')))
+    await until('commit details', () => pane.querySelector('.commit-details'))
+    click(pane.querySelector('.change-row[data-path="src/app.txt"]'))
+    await until('working diff after history', () => !pane.querySelector('.commit-details'))
+    click(pane.querySelector('.review-toggle'))
+    await until('group collapsed before switching', () =>
+      pane.querySelector('.review-toggle[aria-expanded="false"]'),
+    )
+    state().setActiveTask(null, true)
+    await until(
+      'root conversation',
+      () => state().activeTask === null && document.querySelector('.simple-chat'),
+    )
+    state().setActiveTask(task)
+    await until('worktree conversation', () => document.querySelector('.simple-chat'))
+    click(await until('worktree Changes tab', () => button('Changes 3')))
+    pane = await until('worktree Changes restored', () => document.querySelector('.simple-diff'))
+    await until('restored expanded groups', () => pane.querySelectorAll('.change-row').length === 3)
+    assert(
+      !pane.querySelector('.review-toggle[aria-expanded="false"]'),
+      'collapsed groups leaked across worktree switch',
     )
     click(button('Map', pane))
     await until('Map returns', () => !document.querySelector('.simple-diff'))

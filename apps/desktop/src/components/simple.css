@@ -227,9 +227,9 @@
   min-height: 0;
 }
 .simple-diff-body aside {
-  width: 30%;
+  flex: 0 0 38%;
   box-sizing: border-box;
-  min-width: 160px;
+  min-width: 0;
   overflow: auto;
   border-right: 1px solid var(--border);
 }
@@ -280,15 +280,21 @@
   display: none;
 }
 
-/* Headings start where the rows' kind pills do (2px accent bar + 18px padding). */
-.simple-diff-body aside h3 {
-  margin: 0;
-  padding: 10px 12px 4px 20px;
-  font-size: 12px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.simple-diff-body .review-group-header {
+  flex-wrap: wrap;
+}
+.simple-diff-body .review-name {
+  min-width: 0;
+  flex: 1 1 80px;
+}
+.simple-diff-body .review-count {
+  flex: 0 0 auto;
+}
+.simple-diff-body .review-totals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 .simple-diff-body aside .change-list {
   height: auto;

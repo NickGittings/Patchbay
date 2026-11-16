@@ -9,9 +9,9 @@ import { changePosition, changeRefs, stepChange } from '../lib/changeNav'
 import PersistedGroup from './PersistedGroup'
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
-import { KIND_COLOR, plural } from '../lib/display'
+import { KIND_COLOR } from '../lib/display'
 import { gitReview, gitBranches, gitWorktrees, reviewPrune } from '../lib/ipc'
-import { ago, changedFileRef, latestChange, latestChangeOf, lineTotals } from '../lib/review'
+import { ago, changedFileRef, latestChangeOf, lineTotals } from '../lib/review'
 import { useCollapsed } from '../lib/useCollapsed'
 import { activeWorktree } from '../lib/tasks'
 import {
@@ -26,8 +26,9 @@ import { useReviewFindings, type LoadedFindings } from '../lib/useReviewFindings
 import { useClockTick } from '../lib/clock'
 import ReviewAgentPanel from './ReviewAgentPanel'
 import { useStore } from '../store'
-import { PROJECT_SCOPE, REVIEW_SCOPE, type Review, type Worktree } from '../types'
+import { REVIEW_SCOPE, type Review, type Worktree } from '../types'
 import ChangeList from './changes/ChangeList'
+import ChangeGroupCard from './changes/ChangeGroupCard'
 import DiffStat from './changes/DiffStat'
 import DiffView from './changes/DiffView'
 import ValidationChips from './changes/ValidationChips'
@@ -428,61 +429,33 @@ export default function ReviewView() {
                 )}
                 {shown.map((g) => {
                   const open = !collapsed[g.id]
-                  const project = g.id === PROJECT_SCOPE
                   return (
-                    <section key={g.id} className="review-group">
-                      <header className="review-group-header">
-                        <button
-                          className="review-toggle"
-                          aria-expanded={open}
-                          aria-label={open ? 'Collapse' : 'Expand'}
-                          onClick={() => setCollapsed({ ...collapsed, [g.id]: open })}
-                        >
-                          {open ? '▾' : '▸'}
-                        </button>
-                        <span
-                          className={`kind-dot ${project ? 'project' : ''}`}
-                          style={project ? undefined : { background: g.color }}
-                        />
-                        {project ? (
-                          <span className="review-name" title="Files no component contains">
-                            {g.name}
-                          </span>
-                        ) : (
-                          <button className="review-name" onClick={() => select(g.id)}>
-                            {g.name}
-                          </button>
-                        )}
-                        <span className="review-count">{plural(g.files.length, 'file')}</span>
-                        <DiffStat {...lineTotals(g.files)} />
-                      </header>
-                      {!project && (
-                        <ValidationChips
-                          componentId={g.id}
-                          changedAt={latestChange(g.files)}
-                          task={validationTask}
-                        />
-                      )}
-                      {open && (
-                        <ChangeList
-                          files={g.files}
-                          base={g.base}
-                          selected={
-                            !history && pane !== 'findings' && current?.componentId === g.id
-                              ? current.path
-                              : undefined
-                          }
-                          onSelect={(path) => {
-                            setHistory(null)
-                            setSelected({ componentId: g.id, path })
-                            setPane('diff')
-                          }}
-                          onStep={step}
-                          task={null}
-                          worktree={target}
-                        />
-                      )}
-                    </section>
+                    <ChangeGroupCard
+                      key={g.id}
+                      group={g}
+                      open={open}
+                      onToggle={() => setCollapsed({ ...collapsed, [g.id]: open })}
+                      onSelectComponent={() => select(g.id)}
+                      task={validationTask}
+                    >
+                      <ChangeList
+                        files={g.files}
+                        base={g.base}
+                        selected={
+                          !history && pane !== 'findings' && current?.componentId === g.id
+                            ? current.path
+                            : undefined
+                        }
+                        onSelect={(path) => {
+                          setHistory(null)
+                          setSelected({ componentId: g.id, path })
+                          setPane('diff')
+                        }}
+                        onStep={step}
+                        task={null}
+                        worktree={target}
+                      />
+                    </ChangeGroupCard>
                   )
                 })}
                 <CommitHistory
