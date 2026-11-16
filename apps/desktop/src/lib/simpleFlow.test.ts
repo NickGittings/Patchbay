@@ -391,6 +391,9 @@ test('prompt identity survives loading and activity, but changes for new attempt
   expect(key({ ...s, outcomeError: 'Source worktree no longer exists' })).toBe(original)
   expect(key({ ...s, sessions: { '@merge': session('working') } })).toBe(original)
   expect(key({ ...s, outcome: 'merged' })).not.toBe(original)
+  const recovery = key({ ...s, outcome: 'notMerged' })
+  expect(recovery).not.toBe(original)
+  expect(key({ ...s, outcome: 'notMerged', conflicts: [] })).not.toBe(recovery)
   expect(key({ ...s, worktree: { ...worktree, task: 'other' } })).not.toBe(original)
   expect(key({ ...s, sessions: { '@merge': { ...session('review'), generation: 2 } } })).not.toBe(
     original,
@@ -409,6 +412,12 @@ test('prompt identity survives loading and activity, but changes for new attempt
   expect(key({ ...s, sessions: { '@merge': { ...session('review'), generation: 2 } } })).not.toBe(
     launched,
   )
+  const replacement = {
+    ...record('@merge'),
+    id: 'new-merge',
+    snapshot: { ...record('@merge').snapshot!, generation: 1, startedMs: 100 },
+  }
+  expect(key({ ...s, records: [replacement], sessions: {} })).not.toBe(launched)
   s.simple!.log.push({ ...s.simple!.log[0], id: 'next-attempt', atMs: 12 })
   expect(key(s)).not.toBe(launched)
 })

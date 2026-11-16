@@ -323,11 +323,22 @@ export function workflowPromptKey(
   const newerRun =
     entry &&
     record &&
-    entry.sessionId === record.id &&
-    entry.generation !== undefined &&
-    run?.generation !== undefined &&
-    run.generation > entry.generation
+    (entry.sessionId === record.id
+      ? entry.generation !== undefined &&
+        run?.generation !== undefined &&
+        run.generation > entry.generation
+      : (run?.startedMs ?? record.history.at(-1)?.startedMs ?? 0) > entry.atMs)
   const attempt = entry && !newerRun ? [entry.id] : [record?.id, run?.generation, run?.startedMs]
+  const promptType =
+    state.step === 'merging'
+      ? snapshot.outcome === 'notMerged'
+        ? snapshot.conflicts
+          ? 'merge'
+          : 'checkMerge'
+        : snapshot.outcome === 'dirty' || snapshot.outcome === 'inProgress'
+          ? snapshot.outcome
+          : 'status'
+      : state.step
   return JSON.stringify([
     snapshot.worktree.projectId,
     snapshot.worktree.task,
@@ -336,5 +347,6 @@ export function workflowPromptKey(
     snapshot.auto?.runId,
     attempt,
     state.step,
+    promptType,
   ])
 }

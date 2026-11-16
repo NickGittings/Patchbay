@@ -224,3 +224,22 @@ test.each(['The merge branches changed', 'Source worktree no longer exists'])(
     expect(render().data?.outcomeError).toBeUndefined()
   },
 )
+
+test('legacy merge records never infer the original branches from current checkouts', async () => {
+  useStore.setState({
+    sessionRecords: [
+      {
+        id: 'old-merge',
+        metadata: { projectId: 'p', componentId: '@merge' },
+        spec: { cwd: '/repo', merge_source: '/repo' },
+        history: [],
+      },
+    ] as never,
+  })
+  vi.mocked(ipc.mergeOutcome).mockResolvedValue('merged')
+  render()
+  const reader = await settle()
+  expect(reader.data?.outcome).toBeUndefined()
+  expect(reader.data?.outcomeError).toBe('The original merge request is unavailable.')
+  expect(ipc.mergeOutcome).not.toHaveBeenCalled()
+})

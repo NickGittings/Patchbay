@@ -120,19 +120,17 @@ export default function ChatMode({
   const { pending, failure, dialog, setDialog, check, act, logReviewers, logMerge } = workflow
   const checkKey = JSON.stringify([key, source?.head, target?.head])
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
-  const state = flow(
-    {
-      ...snapshot,
-      worktree,
-      findings: findings?.findings,
-      outcomePending: !data && !error,
-      outcomeError: data?.outcomeError || error || undefined,
-      base: base ?? undefined,
-      conflicts: check?.key === checkKey ? check.paths : undefined,
-      now,
-    },
-    model,
-  )
+  const flowSnapshot = {
+    ...snapshot,
+    worktree,
+    findings: findings?.findings,
+    outcomePending: !data && !error,
+    outcomeError: data?.outcomeError || error || undefined,
+    base: base ?? undefined,
+    conflicts: check?.key === checkKey ? check.paths : undefined,
+    now,
+  }
+  const state = flow(flowSnapshot, model)
   const questions = chatInputRequests(
     model.records.filter(
       (r) => !model.foreign.has(r.id) && (!team || r.id === team.lead.sessionId),
@@ -170,7 +168,7 @@ export default function ChatMode({
         simple: { startedMs: Date.now(), log: [] },
       })
   }, [s.project, s.activeTask, s.simple])
-  const promptKey = workflowPromptKey({ ...snapshot, worktree }, model, state)
+  const promptKey = workflowPromptKey(flowSnapshot, model, state)
   if (!s.project) return null
   // Review's own dialog, beside the step's actions once there is work to review.
   const options = ['built', 'reviewed', 'fixed'].includes(state.step)

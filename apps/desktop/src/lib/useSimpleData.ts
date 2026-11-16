@@ -94,30 +94,22 @@ export function useSimpleData(visible: boolean) {
         const base = chatReviewBase(source, state.tasks, worktrees, branches, savedBase)
         const review = await gitReview(project, worktree, base)
         const merge = latestMerge(state)
-        let request: MergeRequest | undefined = merge?.kind === 'action' ? merge.request : undefined
-        // Recovered merge records explicitly retain source and destination paths.
-        if (!request) {
-          const source = worktree ?? project.root
-          const record = [...state.sessionRecords]
-            .reverse()
-            .find(
-              (r) =>
-                r.metadata.projectId === projectId &&
-                r.metadata.componentId === '@merge' &&
-                r.spec.merge_source === source,
-            )
-          const from = worktrees.find((w) => w.path === source),
-            to = worktrees.find((w) => w.path === record?.spec.cwd)
-          if (record && from?.branch && to?.branch)
-            request = {
-              source,
-              sourceBranch: from.branch,
-              destination: to.path,
-              destinationBranch: to.branch,
-            }
-        }
-        // Recovered requests need the worktree list, so this read follows the others.
-        let outcome: MergeOutcome | undefined, outcomeError: string | undefined
+        const request: MergeRequest | undefined =
+          merge?.kind === 'action' ? merge.request : undefined
+        // Legacy records retain paths but not the original branch pair. Current checkouts
+        // cannot establish what was merged after branches switch or cleanup removes a tree.
+        const recovered =
+          !request &&
+          state.sessionRecords.some(
+            (r) =>
+              r.metadata.projectId === projectId &&
+              r.metadata.componentId === '@merge' &&
+              r.spec.merge_source === (worktree ?? project.root),
+          )
+        let outcome: MergeOutcome | undefined
+        let outcomeError: string | undefined = recovered
+          ? 'The original merge request is unavailable.'
+          : undefined
         if (request)
           await mergeOutcome(project, request).then(
             (o) => (outcome = o),
