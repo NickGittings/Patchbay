@@ -215,7 +215,7 @@ individual reports remain available in Review. Settled reports and their HEAD/co
 reconciliation runs, like other lead workflow requests.
 
 Chat workflow suggestions persist dismissal per project/worktree, conversation boundary, workflow
-attempt and prompt type in `patchbay.chat-drafts`. Artifact loading and transient agent activity do not
+attempt and prompt type (retaining every dismissed identity) in `patchbay.chat-drafts`. Artifact loading and transient agent activity do not
 clear it; new attempts and completed merge confirmations have distinct identities. Merge prompts
 wait for the initial artifact read and offer conflict recovery only for a confirmed `notMerged`
 outcome. Unknown outcomes, changed branches and missing historical worktrees show status

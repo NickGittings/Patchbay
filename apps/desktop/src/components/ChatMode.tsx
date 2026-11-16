@@ -380,7 +380,7 @@ export default function ChatMode({
         openFile={openFile}
         openDiff={(file) => useSimpleUi.getState().patch(key, { changes: true, diff: file })}
       />
-      {!launching && ui.dismissedPrompt !== promptKey && (state.prompt || options) && (
+      {!launching && !ui.dismissedPrompts?.includes(promptKey) && (state.prompt || options) && (
         <section
           className="simple-step"
           data-step={state.step}
@@ -395,7 +395,11 @@ export default function ChatMode({
               className="simple-dismiss"
               aria-label="Dismiss suggestion"
               title="Dismiss suggestion"
-              onClick={() => useSimpleUi.getState().patch(key, { dismissedPrompt: promptKey })}
+              onClick={() =>
+                useSimpleUi.getState().patch(key, {
+                  dismissedPrompts: [...(ui.dismissedPrompts ?? []), promptKey],
+                })
+              }
             >
               ×
             </button>

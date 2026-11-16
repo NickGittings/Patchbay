@@ -113,12 +113,17 @@ test('dismissed workflow prompts survive persistence and rehydration', async () 
   try {
     const key = simpleKey('p', 't')
     useSimpleUi.setState({ worktrees: {} })
-    useSimpleUi.getState().patch(key, { dismissedPrompt: 'attempt-1:merging' })
+    useSimpleUi
+      .getState()
+      .patch(key, { dismissedPrompts: ['attempt-1:status', 'attempt-1:checkMerge'] })
     const persisted = structuredClone(saved)
     useSimpleUi.setState({ worktrees: {} })
     saved = persisted
     await useSimpleUi.persist.rehydrate()
-    expect(useSimpleUi.getState().worktrees[key].dismissedPrompt).toBe('attempt-1:merging')
+    expect(useSimpleUi.getState().worktrees[key].dismissedPrompts).toEqual([
+      'attempt-1:status',
+      'attempt-1:checkMerge',
+    ])
   } finally {
     useSimpleUi.persist.setOptions({ storage: previous })
   }
