@@ -1,6 +1,7 @@
 import CommitHistory from './changes/CommitHistory'
 import CommitDetails from './changes/CommitDetails'
 import type { HistorySelection } from '../lib/history'
+import { shortSha } from '../lib/commitId'
 import { useRef, useState } from 'react'
 import { StoryViewTabs } from './stories/StoryBoard'
 import { useStepKeys } from './changes/useStepKeys'
@@ -65,7 +66,7 @@ function ChangesContent({ scopeKey, selection, reader }: Props) {
               <code>
                 {reader.source?.branch ??
                   (reader.source
-                    ? `detached ${reader.source.head.slice(0, 7)}`
+                    ? `detached ${shortSha(reader.source.head)}`
                     : 'Resolving branch…')}
               </code>
               <span>

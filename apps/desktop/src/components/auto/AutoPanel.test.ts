@@ -12,6 +12,7 @@ vi.mock('../../store', () => ({
 vi.mock('../../lib/auto', () => ({
   STAGE_LABELS: { review: 'Review' },
   effortSettings: () => ({ maxRounds: 2 }),
+  inPlace: (run: { baseCommit?: string }) => !!run.baseCommit,
 }))
 vi.mock('../../lib/simpleActions', () => ({ logSimple: vi.fn() }))
 vi.mock('../../lib/attention', () => ({ revealTerminal: vi.fn() }))

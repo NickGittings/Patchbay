@@ -2,13 +2,12 @@ vi.mock('../../lib/auto', async () => ({
   ...(await vi.importActual('../../lib/autoSettings')),
   runAgents: () => [],
   AutoHooksRequired: class extends Error {},
-  NoReviewBase: class extends Error {},
   autoSnapshot: vi.fn(),
   checkAutoHooks: vi.fn(),
   inferStage: vi.fn(),
+  IN_PLACE_MERGE: { mode: 'ask', destinationBranch: '' },
   reviewBaseMoved: vi.fn(),
   startAuto: vi.fn(),
-  wantsNewWorktree: vi.fn(),
 }))
 vi.mock('../../lib/autoWorktree', () => ({ seedAutoTask: vi.fn() }))
 vi.mock('../../lib/stories', () => ({ linkAutoStory: vi.fn() }))

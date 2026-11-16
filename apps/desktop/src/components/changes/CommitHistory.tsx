@@ -1,5 +1,6 @@
 import type { ChangedFile } from '../../types'
 import { ago } from '../../lib/review'
+import { shortSha } from '../../lib/commitId'
 import { Fragment, useEffect, useEffectEvent, useState } from 'react'
 import {
   graphRows,
@@ -174,7 +175,7 @@ function HistoryBrowser({
                       <span className="commit-meta">
                         {commit.hash === page.head && <b>HEAD </b>}
                         {commit.refs && <b>{commit.refs} </b>}
-                        {commit.hash.slice(0, 7)} · {commit.author} · {ago(commit.timestamp * 1000)}
+                        {shortSha(commit.hash)} · {commit.author} · {ago(commit.timestamp * 1000)}
                       </span>
                     </span>
                   </button>

@@ -9,6 +9,7 @@ import {
   scheduleAutoResume,
   setAutoUsageResume,
   effortSettings,
+  inPlace,
   mergeNow,
   pauseAuto,
   resumeAuto,
@@ -26,6 +27,7 @@ import { SeverityCounts, VerdictBadge } from '../findings/FindingsPanel'
 import { useRunningReviewLanes } from '../../lib/reviewAgents'
 import { useReviewFindings } from '../../lib/useReviewFindings'
 import { activeTaskOf } from '../../lib/tasks'
+import { shortSha } from '../../lib/commitId'
 import './auto.css'
 
 function validationSummary(reports: ActionReport[]) {
@@ -139,7 +141,8 @@ export default function AutoPanel({
                 'implement',
                 'validate',
                 'review',
-                'merge',
+                // A run in place ends after review.
+                ...(inPlace(run) ? [] : ['merge' as const]),
               ] as const
             ).map((stage) => (
               <li
@@ -148,7 +151,9 @@ export default function AutoPanel({
                   (run.stage === 'fix'
                     ? 'implement'
                     : run.stage === 'mergeGate' || run.stage === 'done'
-                      ? 'merge'
+                      ? inPlace(run)
+                        ? 'review'
+                        : 'merge'
                       : run.stage) === stage
                     ? 'step'
                     : undefined
@@ -167,9 +172,11 @@ export default function AutoPanel({
           {run.autonomous && (
             <p className="muted">
               Autonomous execution ·{' '}
-              {run.merge.mode === 'auto'
-                ? 'Automatic merge after review'
-                : 'Merge approval required'}
+              {inPlace(run)
+                ? 'In place, no merge'
+                : run.merge.mode === 'auto'
+                  ? 'Automatic merge after review'
+                  : 'Merge approval required'}
             </p>
           )}
           {run.recovery && (
@@ -257,7 +264,7 @@ export default function AutoPanel({
                 {run.stage === 'scan' ? 'Continue with available findings' : 'Skip stage'}
               </button>
             )}
-            {run.stage === 'mergeGate' && run.status === 'waitingOnYou' && (
+            {run.stage === 'mergeGate' && run.status === 'waitingOnYou' && !inPlace(run) && (
               <button className="primary" onClick={() => act('mergeApproval', mergeNow)}>
                 Merge now
               </button>
@@ -291,7 +298,11 @@ export default function AutoPanel({
               </dl>
             )}
 
-            <p>Merge into: {run.merge.destinationBranch}</p>
+            <p>
+              {run.baseCommit
+                ? `In place: reviewing against ${shortSha(run.baseCommit)}, no merge`
+                : `Merge into: ${run.merge.destinationBranch}`}
+            </p>
             <p>Fix round limit: {effortSettings(run).maxRounds}</p>
             <ol className="auto-log">
               {[...run.log].reverse().map((l, i) => (

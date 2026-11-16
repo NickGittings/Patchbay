@@ -36,6 +36,7 @@ import FindingsPanel, { SeverityCounts, VerdictBadge } from './findings/Findings
 import { useRunningReviewLanes } from '../lib/reviewAgents'
 import FixFindingsButton from './findings/FixFindingsButton'
 import type { FileRef } from '../lib/findings'
+import { shortSha } from '../lib/commitId'
 
 /** Worktree branches and HEADs are polled while shown; the watcher covers their diffs. */
 const WORKTREE_POLL_MS = 5000
@@ -310,7 +311,7 @@ export default function ReviewView() {
                     <strong>{reviewTask?.title ?? 'Main worktree'}</strong>
                     <code>
                       {source?.branch ??
-                        (source ? `detached ${source.head.slice(0, 7)}` : 'Resolving branch…')}
+                        (source ? `detached ${shortSha(source.head)}` : 'Resolving branch…')}
                     </code>
                     <span>
                       {base ? `Changes since merge base with ${base}` : 'Uncommitted changes'}

@@ -3,6 +3,7 @@ import { linkAutoStory } from '../../lib/stories'
 import { logSimple } from '../../lib/simpleActions'
 import { useContext, useEffect, useMemo, useState } from 'react'
 import ReviewerPicker from '../ReviewerPicker'
+import MergeFields from './MergeFields'
 import { useStore } from '../../store'
 import {
   AGENT_ROLES,
@@ -17,14 +18,14 @@ import {
   checkAutoHooks,
   EFFORT,
   inferStage,
-  NoReviewBase,
+  IN_PLACE_MERGE,
+  type JudgedBase,
   reviewBaseMoved,
   runAgents as autoRunAgents,
   startAuto,
   STAGES,
   STAGE_LABELS,
   type AutoSnapshot,
-  wantsNewWorktree,
 } from '../../lib/auto'
 import { ROLE_LABELS, roleDevice, roleDevices } from '../../lib/agentRoles'
 import { agentDevices } from '../../lib/plan'
@@ -133,14 +134,25 @@ export default function AutoDialog({
   const [destinations, setDestinations] = useState<string[]>([])
   const [snapshot, setSnapshot] = useState<AutoSnapshot | null>(null)
   const [error, setError] = useState('')
-  // The worktree's branch can't be reviewed or merged into itself, so the run needs a new one.
-  const [needsWorktree, setNeedsWorktree] = useState<NoReviewBase | null>(null)
-  // That view checks the base's inputs on every Git refresh (focus, terminal exits, file changes)
-  // and task list change, and loads again only once they changed, so a branch checked out or a
-  // worktree with a base attached meanwhile leaves it.
+  // A worktree with no branch to review against (the project folder on its default or only
+  // branch) runs in place, with no merge.
+  const inPlaceSnapshot = snapshot?.inPlace ? snapshot : null
+  const judged = useMemo<JudgedBase | null>(
+    () =>
+      inPlaceSnapshot && {
+        task,
+        path: inPlaceSnapshot.source.path,
+        inputs: inPlaceSnapshot.baseInputs,
+        head: inPlaceSnapshot.base,
+      },
+    [inPlaceSnapshot, task],
+  )
+  // That form checks the base's inputs and HEAD on every Git refresh (focus, terminal exits, file
+  // changes) and task list change, and loads again only once they changed, so a new commit shows
+  // its sha, and a branch checked out or a worktree with a base attached offers a merge again.
   const [recheck, setRecheck] = useState(0)
   useEffect(() => {
-    if (!needsWorktree || !projectId) return
+    if (!judged || !projectId) return
     // One check at a time; a refresh during one checks again after it.
     let checking = false
     let again = false
@@ -148,7 +160,7 @@ export default function AutoDialog({
     const check = () => {
       checking = true
       again = false
-      void reviewBaseMoved(projectId, needsWorktree)
+      void reviewBaseMoved(projectId, judged)
         .then((moved) => {
           if (moved && !done) setRecheck((n) => n + 1)
           return moved
@@ -168,7 +180,7 @@ export default function AutoDialog({
       done = true
       unsubscribe()
     }
-  }, [needsWorktree, projectId])
+  }, [judged, projectId])
   const [integrationCheck, setIntegrationCheck] = useState<{
     distinct: string[]
     devices: typeof devices
@@ -220,17 +232,11 @@ export default function AutoDialog({
         )
         setSnapshot(snapshot)
         setError('')
-        setNeedsWorktree(null)
       })
       .catch((e) => {
         if (cancelled) return
-        if (e instanceof NoReviewBase && wantsNewWorktree(e)) {
-          setNeedsWorktree(e)
-          setError('')
-        } else {
-          setNeedsWorktree(null)
-          setError(String(e))
-        }
+        setSnapshot(null)
+        setError(String(e))
       })
       .finally(() => {
         if (!cancelled) setLoadedKey(requestKey)
@@ -256,6 +262,9 @@ export default function AutoDialog({
       cancelled = true
     }
   }, [distinct, devices])
+  const merge: AutoRun['merge'] = inPlaceSnapshot
+    ? IN_PLACE_MERGE
+    : { mode, destinationBranch: destination, cleanup: cleanupChoice }
   const settings = simple ? EFFORT.light : { ...EFFORT[effort], ...overrides }
   const decision =
     snapshot &&
@@ -275,7 +284,8 @@ export default function AutoDialog({
         reviewers,
         scanners,
         workers,
-        merge: { mode, destinationBranch: destination, cleanup: cleanupChoice },
+        merge,
+        baseCommit: inPlaceSnapshot?.base,
       },
       true,
     )
@@ -283,30 +293,6 @@ export default function AutoDialog({
     ? `${STAGE_LABELS[decision.stage]} (${decision.reason})`
     : 'Detecting current work…'
 
-  if (needsWorktree)
-    return (
-      <div className="auto-content">
-        <p>
-          Auto needs a branch other than {needsWorktree.branch}; create a worktree for this task.
-        </p>
-        <label>
-          Task goal
-          <textarea value={goal} onChange={(e) => edit({ goal: e.target.value })} rows={4} />
-        </label>
-        {/* The goal shown titles the worktree; only a typed one moves, since the copied project
-            plan fills in the same goal there. */}
-        <button
-          onClick={() => {
-            // Close the popover first, as the worktree picker does, so activating the new worktree
-            // can't remount this dialog under the New worktree dialog before its draft moves.
-            closeMenu()
-            seedAutoTask(draftKey, goal, goal === filled.goal)
-          }}
-        >
-          New worktree…
-        </button>
-      </div>
-    )
   return (
     <div className="auto-content">
       <label>
@@ -320,7 +306,9 @@ export default function AutoDialog({
         Starting stage
         <select value={stage} onChange={(e) => edit({ stage: e.target.value as AutoStage | '' })}>
           <option value="">Use detected stage</option>
-          {STAGES.filter((s) => s !== 'done').map((s) => (
+          {STAGES.filter(
+            (s) => s !== 'done' && !(inPlaceSnapshot && (s === 'mergeGate' || s === 'merge')),
+          ).map((s) => (
             <option key={s} value={s}>
               {STAGE_LABELS[s]}
             </option>
@@ -393,39 +381,32 @@ export default function AutoDialog({
         />
         Autonomous execution
       </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={mode === 'auto'}
-          onChange={(e) => edit({ mode: e.target.checked ? 'auto' : 'ask' })}
-        />
-        Merge automatically after review
-      </label>
-      <label>
-        After merge
-        <select
-          value={cleanupChoice}
-          onChange={(e) =>
-            useStore.setState((s) => ({
-              workspaceSettings: { ...s.workspaceSettings, mergeCleanup: e.target.value },
-            }))
+      <MergeFields
+        inPlaceBase={
+          inPlaceSnapshot && {
+            branch: inPlaceSnapshot.source.branch ?? '',
+            head: inPlaceSnapshot.base,
           }
+        }
+        mode={mode}
+        onMode={(mode) => edit({ mode })}
+        cleanup={cleanupChoice}
+        destination={destination}
+        destinations={destinations}
+        onDestination={(destination) => edit({ destination })}
+      />
+      {inPlaceSnapshot && (
+        <button
+          onClick={() => {
+            // Close the popover first, as the worktree picker does, so activating the new worktree
+            // can't remount this dialog under the New worktree dialog before its draft moves.
+            closeMenu()
+            seedAutoTask(draftKey, goal, goal === filled.goal)
+          }}
         >
-          <option value="ask">Ask</option>
-          <option value="keep">Keep worktree and branch</option>
-          <option value="delete">Delete worktree and branch</option>
-        </select>
-        <small>Remembered for new Auto runs in all projects.</small>
-      </label>
-      <label>
-        Destination branch
-        <select value={destination} onChange={(e) => edit({ destination: e.target.value })}>
-          <option value="">Choose a destination worktree</option>
-          {destinations.map((b) => (
-            <option key={b}>{b}</option>
-          ))}
-        </select>
-      </label>
+          New worktree…
+        </button>
+      )}
       <PanelDetails title="Agents">
         <fieldset className="auto-agents">
           <legend>Agents</legend>
@@ -506,7 +487,7 @@ export default function AutoDialog({
           loading ||
           starting ||
           !integration ||
-          !destinations.includes(destination) ||
+          (!inPlaceSnapshot && !destinations.includes(destination)) ||
           !goal.trim() ||
           !reviewers.length
         }
@@ -521,7 +502,7 @@ export default function AutoDialog({
             resumeOnUsageReset: draft.resumeOnUsageReset === true,
             effort: simple ? 'light' : effort,
             overrides: simple ? {} : overrides,
-            merge: { mode, destinationBranch: destination, cleanup: cleanupChoice },
+            merge,
             device,
             agents: runAgents,
             reviewers: reviewers.length > 1 ? reviewers : undefined,

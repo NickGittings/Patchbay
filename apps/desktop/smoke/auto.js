@@ -330,6 +330,37 @@
       smoke.restoredLayout(backgroundLayout).taskWorkspaces[description.id].auto
     assert(restoredBackground.autonomous === true, 'Restore lost autonomous execution')
     assert(unfinished.auto.pauseKind === 'restored', 'Restore lost its pause kind')
+    // The project folder on main has no branch to review against, so Auto runs there in place.
+    const root = state().project.root
+    const startHead = (await smoke.gitWorktrees()).find((w) => w.path === root).head
+    const folderRun = (s = state()) => (s.activeTask === null ? s.auto : s.taskWorkspaces['']?.auto)
+    const inPlaceStages = []
+    const unsubscribeInPlace = smoke.store.subscribe((s) => {
+      const run = folderRun(s)
+      if (run && inPlaceStages.at(-1) !== run.stage) inPlaceStages.push(run.stage)
+    })
+    await smoke.startAuto(projectId, null, {
+      autonomous: true,
+      goal: 'Finish the fixture task',
+      effort: 'light',
+      device: 'auto-fixture',
+      merge: { mode: 'ask', destinationBranch: '' },
+    })
+    assert(folderRun()?.baseCommit === startHead, 'In-place run did not pin its Start commit')
+    await until('in-place run to Done', () => {
+      assert(state().activeTask === task.id, 'In-place Auto switched the active worktree')
+      const run = folderRun()
+      if (['failed', 'paused', 'waitingOnYou'].includes(run?.status)) throw new Error(run.reason)
+      return run?.status === 'done'
+    })
+    unsubscribeInPlace()
+    assert(
+      inPlaceStages.join(',') === 'plan,implement,review,done',
+      `Wrong in-place sequence ${inPlaceStages}`,
+    )
+    assert(folderRun().reason === 'Review is clean', `In-place run ended: ${folderRun().reason}`)
+    const endHead = (await smoke.gitWorktrees()).find((w) => w.path === root).head
+    assert(endHead !== startHead, 'In-place implementation did not commit on main')
     // A future schedule holds power without launching an agent or changing scheduler rules.
     const completedAuto = state().auto
     smoke.store.setState({
@@ -364,7 +395,7 @@
       workspaceSettings: { ...state().workspaceSettings, autoKeepAwake: false },
     })
     await smoke.report(
-      'PASS Auto: review → fix → review → approval → merge → done; native Codex P-tag conversion and process exit, authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, autonomous recovery from a missing plan, background description planning/implementation/affected validation and automatic merge without switching worktrees or views',
+      'PASS Auto: review → fix → review → approval → merge → done; native Codex P-tag conversion and process exit, authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, autonomous recovery from a missing plan, background description planning/implementation/affected validation and automatic merge without switching worktrees or views, and an in-place run on main from plan to Done against its Start commit',
     )
   } catch (e) {
     await smoke.report(

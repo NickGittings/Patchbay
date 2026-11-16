@@ -57,15 +57,23 @@ if 'Stage: plan' in body:
         sys.exit(0)
     pathlib.Path(os.environ['PATCHBAY_PLAN_FILE']).write_text('# Fixture description plan\n\nAdd description.txt and commit the implementation.\n')
 elif 'Stage: implement' in body:
-    pathlib.Path('description.txt').write_text('Implemented from a description\n')
-    git('add', 'description.txt')
+    # Auto in place works on main itself, where description.txt is already merged.
+    name = 'in-place.txt' if git('rev-parse', '--abbrev-ref', 'HEAD') == 'main' else 'description.txt'
+    pathlib.Path(name).write_text('Implemented from a description\n')
+    git('add', name)
     git('commit', '-qm', 'Implement fixture description')
 elif 'Stage: review' in body:
     path = pathlib.Path(os.environ['PATCHBAY_REVIEW_FILE'])
     fixed = pathlib.Path('shared.txt').read_text() == 'feature fixed\n'
     args = sys.argv[1:]
     assert args[args.index('exec'):args.index('exec') + 4] == ['exec', '--sandbox', 'read-only', 'review'], args
-    assert args[args.index('--base') + 1] == git('rev-parse', 'main'), args
+    base = args[args.index('--base') + 1]
+    if git('rev-parse', '--abbrev-ref', 'HEAD') == 'main':
+        # In place: the commit Auto started at, behind the work it reviews.
+        subprocess.check_call(['git', 'merge-base', '--is-ancestor', base, 'HEAD'])
+        assert base != git('rev-parse', 'HEAD'), args
+    else:
+        assert base == git('rev-parse', 'main'), args
     assert args[args.index('-o') + 1] == str(path), args
     assert args[args.index('--sandbox') + 1] == 'read-only', args
     assert 'approval_policy="never"' in args, args

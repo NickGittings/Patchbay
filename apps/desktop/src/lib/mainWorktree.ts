@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { Worktree } from '../types'
 import { gitWorktrees } from './ipc'
+import { shortSha } from './commitId'
 
 export interface MainWorktree {
   /** Whether the project is in a Git repository, so tasks (worktrees) can be made. */
@@ -81,7 +82,7 @@ function describe(list: Worktree[]): MainWorktree {
   const current = list.find((w) => w.current)
   return {
     git: list.length > 0,
-    branch: current?.branch ?? (current ? `detached ${current.head.slice(0, 7)}` : ''),
+    branch: current?.branch ?? (current ? `detached ${shortSha(current.head)}` : ''),
   }
 }
 

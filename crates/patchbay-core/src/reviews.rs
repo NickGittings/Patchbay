@@ -3840,6 +3840,24 @@ mod tests {
     }
 
     #[test]
+    fn prepare_reviews_the_default_branch_against_a_commit_id() {
+        // Auto in place reviews `main` against the commit it started at.
+        let mut f = Fixture::new();
+        git::run(git::git(&f.dir).args(["checkout", "-q", "main"])).unwrap();
+        let start = git::run(git::git(&f.dir).args(["rev-parse", "HEAD"])).unwrap();
+        fs::write(f.dir.join("file.txt"), "work\n").unwrap();
+        git::run(git::git(&f.dir).args(["commit", "-qam", "work"])).unwrap();
+        f.request.branch = "main".into();
+        f.request.base.clone_from(&start);
+        let job = f.prepare("claude").unwrap();
+        f.save("Verdict: clean", true);
+        let findings = read(&f.dir, "main").unwrap();
+        assert_eq!(findings.base, start);
+        assert!(findings.reviewed_head.is_some());
+        cleanup([job]);
+    }
+
+    #[test]
     fn shown_findings_keep_their_own_base_and_report_the_latest_round() {
         let f = Fixture::new();
         let (a, a_file) = prepare_lane(&f, "claude", "r1");

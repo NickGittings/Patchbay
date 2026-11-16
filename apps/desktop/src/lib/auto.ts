@@ -118,7 +118,18 @@ export interface AutoSnapshot {
   outcome: MergeOutcome
   agents: { sessionId: string; stage: AutoStage; state: string; sinceMs: number }[]
   reviewRecord?: SessionRecord
+  /** The run works in place: `base` is a commit, not a branch, and nothing is merged. */
+  inPlace: boolean
+  /** What the base was judged from (`reviewBaseInputs`), to notice when a branch base appears. */
+  baseInputs: string
 }
+/** A run working in place reviews against its Start commit and finishes without merging. */
+export const inPlace = (run: Pick<AutoRun, 'baseCommit'>) => !!run.baseCommit
+/** A run in place merges nothing, so it has no destination or cleanup. */
+export const IN_PLACE_MERGE: AutoRun['merge'] = { mode: 'ask', destinationBranch: '' }
+/** Where a run goes once review leaves nothing to fix: the merge gate, or Done for a run in place. */
+export const afterReview = (run: Pick<AutoRun, 'baseCommit'>): 'mergeGate' | 'done' =>
+  inPlace(run) ? 'done' : 'mergeGate'
 export type Decision = {
   stage: AutoStage
   status: AutoRun['status']
@@ -155,7 +166,9 @@ export function reviewDecision(run: AutoRun, findings: ReviewFindings | null): D
       reason: `${count} blocking finding(s)${run.validationFindings ? '; validation needs attention' : ''}`,
     }
   }
-  return { stage: 'mergeGate', status: 'running', reason: 'No blocking findings remain' }
+  return afterReview(run) === 'done'
+    ? { stage: 'done', status: 'done', reason: 'Review is clean' }
+    : { stage: 'mergeGate', status: 'running', reason: 'No blocking findings remain' }
 }
 /**
  * Existing manual work takes precedence over a remembered stage. A `fresh` run (just started, with
@@ -204,6 +217,20 @@ export function inferStage(snapshot: AutoSnapshot, run: AutoRun, fresh = false):
   }
   if (snapshot.freshness === 'current') {
     const decision = reviewDecision(run, snapshot.findings)
+    // In place, clean findings of an unchanged HEAD are the last run's; a new goal starts over.
+    if (
+      inPlace(run) &&
+      decision.stage === 'done' &&
+      !snapshot.hasChanges &&
+      (fresh || run.stage === 'plan' || run.stage === 'implement')
+    )
+      return run.stage === 'implement' && (snapshot.plan.trim() || snapshot.proposal)
+        ? { stage: 'implement', status: 'running', reason: 'Saved plan is ready' }
+        : {
+            stage: 'plan',
+            status: 'running',
+            reason: 'Earlier work is reviewed; plan the new goal',
+          }
     if (decision.stage === 'mergeGate' && needsValidation(snapshot, run))
       return { stage: 'validate', status: 'running', reason: 'Validate the current changes' }
     return decision
@@ -405,36 +432,39 @@ class AutoConfigurationError extends Error {}
 export class BranchMoved extends Error {}
 /** The worktree's `branch` has nothing to review against, such as `main` in the project folder. */
 export class NoReviewBase extends AutoConfigurationError {
-  readonly task: string | null
-  readonly path: string
-  readonly branch: string
-  readonly branches: string[]
-  /** What the base was judged from (`reviewBaseInputs`). */
-  readonly inputs: string
-  constructor(task: string | null, source: Worktree, branches: string[], inputs: string) {
+  constructor() {
     super('No review base found; choose another worktree')
-    this.task = task
-    this.path = source.path
-    this.branch = source.branch ?? ''
-    this.branches = branches
-    this.inputs = inputs
   }
 }
 /**
- * Whether a new worktree would give the run a base: only for the project folder on its default
- * (or only) branch, since other worktrees and branches can choose another one.
+ * Whether a run works in place when its worktree has no branch to review against: only the project
+ * folder on its default (or only) branch, since other worktrees and branches can choose a base.
  */
-export const wantsNewWorktree = (e: NoReviewBase) =>
-  !e.task && (e.branches.length <= 1 || DEFAULT_BRANCHES.includes(e.branch))
+const worksInPlace = (task: string | null, source: Worktree, branches: string[]) =>
+  !task && (branches.length <= 1 || DEFAULT_BRANCHES.includes(source.branch ?? ''))
+/** What a snapshot's base was judged from, to notice when it may change (`reviewBaseMoved`). */
+export interface JudgedBase {
+  task: string | null
+  path: string
+  /** `AutoSnapshot.baseInputs`. */
+  inputs: string
+  /** For a base in place, the HEAD it shows, which a new commit moves. */
+  head?: string
+}
 /**
- * Whether what `e` was judged from, the worktree's checked-out branch, its task's base, the open
- * worktree's branch and the branches, has changed: two Git reads instead of a whole `autoSnapshot`.
+ * Whether what a base was judged from, the worktree's checked-out branch, its task's base, the open
+ * worktree's branch and the branches, or for a base in place its HEAD, has changed: two Git reads
+ * instead of a whole `autoSnapshot`.
  */
-export async function reviewBaseMoved(projectId: string, e: NoReviewBase) {
+export async function reviewBaseMoved(projectId: string, judged: JudgedBase) {
   const [worktrees, branches] = await Promise.all([gitWorktrees(projectId), gitBranches(projectId)])
-  const source = worktrees.find((w) => (e.task ? w.path === e.path : w.current))
+  const source = worktrees.find((w) => (judged.task ? w.path === judged.path : w.current))
   const tasks = projectStateOf(projectId)?.tasks ?? []
-  return !source || reviewBaseInputs(source, tasks, worktrees, branches) !== e.inputs
+  return (
+    !source ||
+    reviewBaseInputs(source, tasks, worktrees, branches) !== judged.inputs ||
+    (judged.head !== undefined && source.head !== judged.head)
+  )
 }
 /**
  * The run's worktree: a task's own, else the project folder's current worktree, whose top can sit
@@ -526,19 +556,20 @@ export async function autoSnapshot(
   ])
   const { source, tasks } = await sourceWorktree(projectId, task, worktrees, run.branch)
   const path = source.path
-  // Review what the merge will bring in: the destination when it is a branch, else the default.
+  // Review what the merge will bring in: the destination when it is a branch, else the default. A
+  // run in place reviews against its Start commit; one not started yet, against the current HEAD.
   const destination = run.merge.destinationBranch
-  const base =
-    destination && destination !== source.branch && branches.includes(destination)
+  const baseInputs = reviewBaseInputs(source, tasks, worktrees, branches)
+  const branchBase = run.baseCommit
+    ? ''
+    : destination && destination !== source.branch && branches.includes(destination)
       ? destination
       : defaultReviewBase(source, tasks, worktrees, branches)
-  if (!base)
-    throw new NoReviewBase(
-      task,
-      source,
-      branches,
-      reviewBaseInputs(source, tasks, worktrees, branches),
-    )
+  const inPlaceBase =
+    run.baseCommit ||
+    (!branchBase && !run.branch && worksInPlace(task, source, branches) ? source.head : '')
+  const base = branchBase || inPlaceBase
+  if (!base) throw new NoReviewBase()
   const [review, findings] = await Promise.all([
     gitReview(project, path, base),
     reviewRead(projectId, source.branch),
@@ -633,10 +664,13 @@ export async function autoSnapshot(
     reviewRecord: records
       .filter((r) => r.metadata.componentId === REVIEW_SCOPE && r.spec.cwd === path)
       .sort((a, b) => (b.snapshot?.startedMs ?? 0) - (a.snapshot?.startedMs ?? 0))[0],
+    inPlace: !!inPlaceBase,
+    baseInputs,
   }
   // A branch with no work yet is trivially "integrated", so inference reads the outcome only once
   // the branch was reviewed or merged. At the gate, also notice a merge done by hand.
   if (
+    !snapshot.inPlace &&
     (run.stage === 'merge' ||
       run.stage === 'mergeGate' ||
       (inferring &&
@@ -797,6 +831,12 @@ export async function startAuto(projectId: string, task: string | null, settings
       log: [],
     }
     const snapshot = await autoSnapshot(projectId, task, run, true)
+    if (snapshot.inPlace) {
+      if (settings.stage === 'merge' || settings.stage === 'mergeGate')
+        throw new Error('Auto runs in place here, with no merge; choose another starting stage')
+      run.baseCommit = snapshot.base
+      run.merge = IN_PLACE_MERGE
+    }
     const decision = inferStage(snapshot, run, true)
     let stage =
       settings.stage === 'merge' && !mergeableHead(snapshot, run) ? 'mergeGate' : settings.stage
@@ -817,7 +857,7 @@ export async function startAuto(projectId: string, task: string | null, settings
       throw new Error('Describe the task first')
     if (!driveable(projectId, task, run)) throw new Error('The task changed')
     await autoOwnership(projectId, task, true, run.ownershipId)
-    const reviewedHead = mergeableHead(snapshot, run)
+    const reviewedHead = snapshot.inPlace ? undefined : mergeableHead(snapshot, run)
     // Starting at Merge skips the gate, so a branch not reviewed clean still waits for approval.
     useStore.getState().patchTask(projectId, task, {
       auto: {
@@ -1262,6 +1302,7 @@ export async function skipStage(projectId: string, task: string | null) {
       return
   }
   // Only an explicit budget wait accepts findings. Failed or interrupted fixes return to review.
+  const finish = afterReview(run)
   const stage: AutoStage =
     run.stage === 'plan'
       ? 'implement'
@@ -1269,7 +1310,7 @@ export async function skipStage(projectId: string, task: string | null) {
           run.stage === 'validate' ||
           (run.stage === 'fix' && run.waitingFor !== 'fixBudget')
         ? 'review'
-        : 'mergeGate'
+        : finish
   // Skipping review cannot grant automatic merge permission.
   patch(
     projectId,
@@ -1279,11 +1320,11 @@ export async function skipStage(projectId: string, task: string | null) {
       ...track([]),
       reviewRound: undefined,
       inputSessionId: undefined,
-      reviewedHead: stage === 'mergeGate' ? undefined : run.reviewedHead,
+      reviewedHead: stage === finish ? undefined : run.reviewedHead,
       // Skipped validation leaves no failures for review and fix to act on.
       ...(run.stage === 'validate' ? { validation: undefined, validationFindings: undefined } : {}),
       stage,
-      status: stage === 'mergeGate' ? 'waitingOnYou' : 'running',
+      status: stage !== finish ? 'running' : finish === 'done' ? 'done' : 'waitingOnYou',
       reason: 'Stage skipped by you',
     },
     'Stage skipped by you',
@@ -1845,7 +1886,12 @@ async function drive(projectId: string, task: string | null) {
       return
     }
     // Approval waits still observe Git, including a merge performed outside Auto.
-    if (run.stage === 'mergeGate' && run.status === 'waitingOnYou' && !run.sessionId) {
+    if (
+      run.stage === 'mergeGate' &&
+      run.status === 'waitingOnYou' &&
+      !run.sessionId &&
+      !inPlace(run)
+    ) {
       const previous = controller.gatePoll
       if (previous?.runId === runId && Date.now() - previous.atMs < 5000) return
       controller.gatePoll = { runId, atMs: Date.now() }

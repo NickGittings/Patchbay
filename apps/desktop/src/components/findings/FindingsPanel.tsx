@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { useClockTick } from '../../lib/clock'
 import { parseFindings, severityCounts, type FileRef } from '../../lib/findings'
 import { ago } from '../../lib/review'
+import { isCommitId, shortSha } from '../../lib/commitId'
 import { laneRunning, useRunningReviewLanes } from '../../lib/reviewAgents'
 import type { LoadedFindings } from '../../lib/useReviewFindings'
 import { SEVERITIES, type ReviewFindings, type Severity } from '../../types'
@@ -145,7 +146,8 @@ export default function FindingsPanel({
         <div className="findings-title-row">
           <VerdictBadge findings={findings} running={running} />
           <span className="findings-meta">
-            Against {findings.base} · {status === 'stale' ? 'Changed since review · ' : ''}
+            Against {isCommitId(findings.base) ? shortSha(findings.base) : findings.base} ·{' '}
+            {status === 'stale' ? 'Changed since review · ' : ''}
             {findings.modifiedMs > 0 ? `reviewed ${ago(findings.modifiedMs)}` : 'not written yet'}
           </span>
           <span className="spacer" />

@@ -181,6 +181,12 @@ export interface AutoRun {
   laneSessions?: AutoLaunch[]
   /** The branch the run works on; Auto never judges another branch checked out in its worktree. */
   branch?: string
+  /**
+   * The HEAD at Start of a run working in place, on a worktree with no branch to review against
+   * (the project folder on its default or only branch): every review compares against it, and the
+   * run ends after a clean review instead of merging.
+   */
+  baseCommit?: string
   round: number
   sessionId?: string
   /** Auto may stop only a session it launched, in the recorded process generation. */

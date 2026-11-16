@@ -2374,6 +2374,28 @@ mod tests {
     }
 
     #[test]
+    fn review_accepts_a_commit_id_as_base() {
+        let f = Fixture::new();
+        if !f.repo(".") {
+            return;
+        }
+        f.write("file.txt", "base");
+        assert!(run_git(&f.0, &["add", "."]));
+        assert!(run_git(&f.0, &["commit", "-qm", "base"]));
+        let start = run(git(&f.0).args(["rev-parse", "HEAD"])).unwrap();
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "name": "p", "root": f.0.display().to_string(), "components": [],
+        }))
+        .unwrap();
+        let r = review(&project, vec![], None, Some(&start)).unwrap();
+        assert!(!r.ahead);
+        f.write("file.txt", "work");
+        assert!(run_git(&f.0, &["commit", "-qam", "work"]));
+        let r = review(&project, vec![], None, Some(&start)).unwrap();
+        assert!(r.ahead);
+    }
+
+    #[test]
     fn review_branch_ignores_commits_outside_the_project() {
         let f = Fixture::new();
         if !f.repo(".") {

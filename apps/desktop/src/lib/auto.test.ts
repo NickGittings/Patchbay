@@ -160,6 +160,8 @@ const snapshot = (
   freshness: 'none',
   outcome: 'notMerged',
   agents: [],
+  inPlace: false,
+  baseInputs: '',
   ...patch,
 })
 beforeEach(() => {
@@ -1245,22 +1247,141 @@ test("a new task's goal is its own, never the project's leftover plan", async ()
   expect((await autoSnapshot('p', 't', run())).goal).toBe('Task plan')
 })
 
-test('the default branch in the project folder asks for a worktree', async () => {
-  const { NoReviewBase, wantsNewWorktree } = await import('./auto')
+/** The project folder on `main`, the repository's only branch, at `start`. */
+function loadInPlace() {
+  load()
+  useStore.getState().setActiveTask(null, true)
+  vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    { ...tree, path: '/p', branch: 'main', head: 'start', current: true },
+  ])
+}
+const inPlaceSettings = {
+  goal: 'Goal',
+  effort: 'light' as const,
+  device: 'codex',
+  merge: { mode: 'ask' as const, destinationBranch: '' },
+}
+
+test('the default branch in the project folder runs in place against its HEAD', async () => {
+  loadInPlace()
+  const preview = await autoSnapshot('p', null, run({ runId: '', merge: inPlaceSettings.merge }))
+  expect(preview).toMatchObject({ inPlace: true, base: 'start' })
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  await startAuto('p', null, inPlaceSettings)
+  expect(autoRun('p', null)).toMatchObject({
+    baseCommit: 'start',
+    branch: 'main',
+    stage: 'plan',
+    merge: { mode: 'ask', destinationBranch: '' },
+  })
+  // Later commits on the branch are reviewed against the commit Auto started at.
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([
+    { ...tree, path: '/p', branch: 'main', head: 'later', current: true },
+  ])
+  const later = await autoSnapshot('p', null, autoRun('p', null)!)
+  expect(later).toMatchObject({ inPlace: true, base: 'start' })
+  expect(ipc.gitReview).toHaveBeenLastCalledWith(expect.anything(), '/p', 'start')
+  expect(ipc.mergeOutcome).not.toHaveBeenCalled()
+})
+
+test('a run in place never starts at the merge stages', async () => {
+  loadInPlace()
+  for (const stage of ['merge', 'mergeGate'] as const)
+    await expect(startAuto('p', null, { ...inPlaceSettings, stage })).rejects.toThrow(
+      'Auto runs in place here, with no merge',
+    )
+  expect(autoRun('p', null)).toBeFalsy()
+})
+
+test('a clean review in place ends Done without a merge gate', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  loadInPlace()
+  vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
+    agent('working', 1001)
+    return 's'
+  })
+  await withFollower(async () => {
+    await startAuto('p', null, inPlaceSettings)
+    await flush()
+    expect(jobs.startReviewAgent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ worktree: '/p', branch: 'main', base: 'start' }),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    )
+    vi.mocked(ipc.reviewRead).mockResolvedValue({
+      ...findings(),
+      base: 'start',
+      reviewedHead: 'start',
+    })
+    agent('review', 1200)
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(autoRun('p', null)).toMatchObject({
+      stage: 'done',
+      status: 'done',
+      reason: 'Review is clean',
+      reviewedHead: undefined,
+    })
+    expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+  })
+  expect(ipc.mergeOutcome).not.toHaveBeenCalled()
+  expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+})
+
+test('clean findings in place end Done, but a new goal on the same HEAD plans', () => {
+  const clean = { ...findings(), base: 'start' }
+  const current = snapshot({ inPlace: true, base: 'start', freshness: 'current', findings: clean })
+  expect(reviewDecision(run({ baseCommit: 'start' }), clean)).toMatchObject({
+    stage: 'done',
+    status: 'done',
+  })
+  expect(inferStage(current, run({ baseCommit: 'start', stage: 'review' }))).toMatchObject({
+    stage: 'done',
+  })
+  expect(inferStage(current, run({ baseCommit: 'start', stage: 'plan' }), true)).toMatchObject({
+    stage: 'plan',
+    status: 'running',
+  })
+  expect(
+    inferStage({ ...current, hasChanges: true }, run({ baseCommit: 'start' }), true),
+  ).toMatchObject({ stage: 'done' })
+  // Only a run in place ends Done on clean findings; a worktree run goes to the merge gate.
+  expect(inferStage(current, run({ stage: 'plan' }), true)).toMatchObject({ stage: 'mergeGate' })
+})
+
+test('skipping the fix budget wait in place ends Done', async () => {
+  load()
+  setRun({ stage: 'fix', status: 'waitingOnYou', waitingFor: 'fixBudget', baseCommit: 'start' })
+  await skipStage('p', 't')
+  expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+})
+
+test('a started run without a base commit still has no review base', async () => {
+  const { NoReviewBase } = await import('./auto')
+  loadInPlace()
+  const error = await autoSnapshot('p', null, run({ branch: 'main' })).catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(NoReviewBase)
+  expect(String(error)).toMatch('No review base found; choose another worktree')
+})
+
+test('a detached HEAD in the project folder does not run in place', async () => {
   load()
   vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
   vi.mocked(ipc.gitWorktrees).mockResolvedValue([
-    { ...tree, path: '/p', branch: 'main', current: true },
+    { ...tree, path: '/p', branch: undefined, current: true },
   ])
-  // Runs keep the message; only the dialog offers a new worktree for it.
-  const error = await autoSnapshot('p', null, run()).catch((e: unknown) => e)
-  expect(error).toBeInstanceOf(NoReviewBase)
-  expect(String(error)).toMatch('No review base found; choose another worktree')
-  expect(wantsNewWorktree(error as InstanceType<typeof NoReviewBase>)).toBe(true)
+  await expect(autoSnapshot('p', null, run({ runId: '' }))).rejects.toThrow(
+    'Choose a worktree with a branch',
+  )
 })
 
-test('a branch that is not the default asks for another worktree, not a new one', async () => {
-  const { NoReviewBase, wantsNewWorktree } = await import('./auto')
+test('a branch that is not the default has no review base and does not run in place', async () => {
+  const { NoReviewBase } = await import('./auto')
   load()
   vi.mocked(ipc.gitBranches).mockResolvedValue(['feature', 'develop'])
   vi.mocked(ipc.gitWorktrees).mockResolvedValue([
@@ -1268,7 +1389,6 @@ test('a branch that is not the default asks for another worktree, not a new one'
   ])
   const error = await autoSnapshot('p', null, run({ runId: '' })).catch((e: unknown) => e)
   expect(error).toBeInstanceOf(NoReviewBase)
-  expect(wantsNewWorktree(error as InstanceType<typeof NoReviewBase>)).toBe(false)
 })
 
 test('needsInput can go directly to review without an observed working tick', async () => {
@@ -3322,24 +3442,36 @@ test('Resume of a superseded round stops only what Auto owns and follows the new
   })
 })
 
-test('the needs-worktree view reloads only once the base it was judged from may change', async () => {
-  const { NoReviewBase, reviewBaseMoved } = await import('./auto')
+test('the in-place form reloads only once the base it was judged from may change', async () => {
+  const { reviewBaseMoved } = await import('./auto')
   load()
   const folder = { ...tree, path: '/p', branch: 'main', current: true }
   vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, folder])
   vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
-  const judged = await autoSnapshot('p', null, run()).then(
-    () => null,
-    (e: unknown) => e as InstanceType<typeof NoReviewBase>,
+  const preview = await autoSnapshot(
+    'p',
+    null,
+    run({ merge: { mode: 'ask', destinationBranch: '' } }),
   )
-  expect(judged).toBeInstanceOf(NoReviewBase)
+  expect(preview.inPlace).toBe(true)
+  const judged = {
+    task: null,
+    path: preview.source.path,
+    inputs: preview.baseInputs,
+    head: preview.base,
+  }
   vi.mocked(ipc.planRead).mockClear()
-  expect(await reviewBaseMoved('p', judged!)).toBe(false)
+  expect(await reviewBaseMoved('p', judged)).toBe(false)
+  // A new commit leaves the base's inputs as they were, but moves the HEAD the form shows.
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, { ...folder, head: 'def' }])
+  expect(await reviewBaseMoved('p', { ...judged, head: undefined })).toBe(false)
+  expect(await reviewBaseMoved('p', judged)).toBe(true)
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, folder])
   vi.mocked(ipc.gitBranches).mockResolvedValue(['main', 'feature'])
-  expect(await reviewBaseMoved('p', judged!)).toBe(true)
+  expect(await reviewBaseMoved('p', judged)).toBe(true)
   vi.mocked(ipc.gitBranches).mockResolvedValue(['main'])
   vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, { ...folder, branch: 'feature' }])
-  expect(await reviewBaseMoved('p', judged!)).toBe(true)
+  expect(await reviewBaseMoved('p', judged)).toBe(true)
   vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, folder])
   // Attaching the project folder as a worktree with a base gives it something to review against.
   useStore
@@ -3348,7 +3480,7 @@ test('the needs-worktree view reloads only once the base it was judged from may 
       ...useStore.getState().tasks,
       { ...useStore.getState().tasks[0], id: 'f', worktree: '/p', branch: 'main', base: 'develop' },
     ])
-  expect(await reviewBaseMoved('p', judged!)).toBe(true)
+  expect(await reviewBaseMoved('p', judged)).toBe(true)
   expect(ipc.planRead).not.toHaveBeenCalled()
 })
 

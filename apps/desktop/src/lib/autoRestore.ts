@@ -1,6 +1,7 @@
 import type { AutoRun } from '../types'
 import { restoredAgents, restoredPresetIds } from './agentRoles'
 import { SEVERITIES } from '../types'
+import { isCommitId } from './commitId'
 import { EFFORT, finished as ended, STAGES, validOverrides } from './autoSettings'
 
 const finite = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) ? n : undefined)
@@ -154,6 +155,10 @@ export function restoredAuto(value: unknown): AutoRun | null {
         )
       : undefined,
     branch: typeof r.branch === 'string' ? r.branch : undefined,
+    // Without its Start commit, a run in place has nothing to review against.
+    ...(typeof r.baseCommit === 'string' && isCommitId(r.baseCommit)
+      ? { baseCommit: r.baseCommit }
+      : {}),
     round: r.round,
     status: finished ? r.status : 'paused',
     background: r.background === true,

@@ -81,6 +81,13 @@ test('parallel reviewers and their sessions survive a restore', () => {
   ])
 })
 
+test("an in-place run's Start commit survives restore; anything else is dropped", () => {
+  const sha = 'a'.repeat(40)
+  expect(restoredAuto({ ...saved, baseCommit: sha })?.baseCommit).toBe(sha)
+  for (const baseCommit of [undefined, 'main', 'abc', 1, `${sha}\n`])
+    expect(restoredAuto({ ...saved, baseCommit })).not.toHaveProperty('baseCommit')
+})
+
 test('background permission survives restore and only literal true enables it', () => {
   expect(restoredAuto({ ...saved, background: true })).toMatchObject({
     background: true,
