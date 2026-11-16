@@ -322,16 +322,9 @@ export function mergeableHead(snapshot: AutoSnapshot, run: AutoRun) {
     ? snapshot.source.head
     : undefined
 }
+/** The whole plan when there is one, which the user can edit before starting. */
 export function inferredGoal(plan: string, title: string, notes: string, branch: string) {
-  return (
-    plan.match(/^#+\s+(.+)$/m)?.[1]?.trim() ||
-    plan
-      .trim()
-      .split(/\n\s*\n/)[0]
-      ?.trim() ||
-    [title, notes].filter(Boolean).join('\n\n') ||
-    branch
-  )
+  return plan.trim() || [title, notes].filter(Boolean).join('\n\n') || branch
 }
 
 /** Enough to notice a rewritten plan without persisting its text. */

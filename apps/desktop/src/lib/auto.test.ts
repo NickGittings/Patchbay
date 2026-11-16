@@ -1244,7 +1244,7 @@ test("a new task's goal is its own, never the project's leftover plan", async ()
     text: task ? '# Task plan' : '# Unrelated old goal',
     cut: false,
   }))
-  expect((await autoSnapshot('p', 't', run())).goal).toBe('Task plan')
+  expect((await autoSnapshot('p', 't', run())).goal).toBe('# Task plan')
 })
 
 /** The project folder on `main`, the repository's only branch, at `start`. */
