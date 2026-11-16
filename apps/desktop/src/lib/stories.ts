@@ -89,6 +89,34 @@ export type ResolvedStoryStatus = {
   value: StoryProgress
 } & ({ source: 'saved' | 'auto' | 'children' } | { source: 'worktree'; worktree: Task })
 
+export type StoryFilter = 'all' | 'active' | StoryProgress
+
+export const STORY_FILTERS: { value: StoryFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'backlog', label: 'Backlog' },
+  { value: 'active', label: 'Active' },
+  { value: 'planned', label: 'Planned' },
+  { value: 'building', label: 'Building' },
+  { value: 'reviewing', label: 'Review' },
+  { value: 'merging', label: 'Merge' },
+  { value: 'done', label: 'Done' },
+]
+
+/** Filter one column by full-board derived status, preserving its display order. */
+export function filterStories(
+  items: Story[],
+  statuses: ReadonlyMap<string, ResolvedStoryStatus>,
+  filter: StoryFilter,
+): Story[] {
+  if (filter === 'all') return items
+  return items.filter((item) => {
+    const value = statuses.get(item.id)?.value
+    return filter === 'active'
+      ? value === 'planned' || value === 'building' || value === 'reviewing' || value === 'merging'
+      : value === filter
+  })
+}
+
 type StoryRuns = Record<
   string,
   (Pick<AutoRun, 'runId' | 'status'> & Partial<Pick<AutoRun, 'stage'>>) | null | undefined

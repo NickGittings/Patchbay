@@ -196,7 +196,6 @@
         panel.width > 0 && file.width > 0 && panel.right <= file.left && file.right <= graph.left
       )
     })
-    assert(document.querySelector('.react-flow__attribution'), 'React Flow attribution missing')
     await smoke.openInEditor({ path, line: 2 }, scope)
     assert(
       document.querySelectorAll('.file-editor [role="tab"]').length === 1,

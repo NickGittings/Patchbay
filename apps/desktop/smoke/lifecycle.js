@@ -165,14 +165,22 @@
       if (state().runtimeTerminals[sid])
         throw new Error('Mapped terminal remained in runtime registry')
       smoke.selectPanel('sessions')
-      const reconnect = await until('counter reconnect button', () =>
-        [...document.querySelectorAll('.session-row')]
-          .find((row) => row.title === state().project.root)
-          ?.querySelector('button'),
-      )
+      const reconnect = await until('counter reconnect button', () => {
+        const row = [...document.querySelectorAll('.session-row')].find(
+          (row) => row.title === state().project.root && row.textContent.includes('Counter'),
+        )
+        return (
+          row &&
+          [...row.querySelectorAll('button')].find(
+            (button) => button.textContent.trim() === 'Reconnect',
+          )
+        )
+      })
       reconnect.click()
-      await until('session preview', () => document.querySelector('.session-preview .xterm-host'))
-      smoke.selectPanel(null)
+      await until(
+        'sessions closed after reconnect',
+        () => !document.querySelector('.sessions-content'),
+      )
       await until('terminal returned to dock', () =>
         document.querySelector('.terminal-dock .terminal-host .xterm-host'),
       )

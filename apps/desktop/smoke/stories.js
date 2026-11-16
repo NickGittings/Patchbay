@@ -146,7 +146,7 @@
         () => state().stories !== before && !button('.story-editor', 'Save')?.disabled,
       )
     }
-    const { storyCreate, storyRemove, storyCompleteAuto, storyList } =
+    const { storyCreate, storyRemove, storyCompleteAuto, storyList, planRead } =
       await import('/src/lib/ipc.ts')
     const { updateStory, refreshStories, completeAutoStories } = await import('/src/lib/stories.ts')
     const savedStory = () => state().stories.find((s) => s.id === story.id)
@@ -236,6 +236,160 @@
     await removeSelected(temporaryEpic)
     const fallbackFeature = await create('feature', 'Fallback feature regression')
     assert(fallbackFeature.parent === epic.id, 'Add feature retained a deleted epic id')
+    // Each column filters independently, preserving hierarchy navigation and editor drafts.
+    const statusFilter = (title = 'Stories') => query(`[aria-label="${title}"] .story-filter`)
+    assert(document.querySelectorAll('.story-filter').length === 3, 'expected three filters')
+    for (const title of ['Epics', 'Features', 'Stories']) {
+      const select = statusFilter(title)
+      assert(select?.value === 'all', `${title} filter did not default to All`)
+      assert(select.closest('header')?.querySelector('h3'), `${title} filter is not beside title`)
+      assert(
+        [...select.options].map((o) => o.text).join() ===
+          'All,Backlog,Active,Planned,Building,Review,Merge,Done',
+        `${title} filter choices changed`,
+      )
+    }
+    const filterEpic = await storyCreate(projectId, { kind: 'epic', title: 'Filter epic' })
+    const filterFeature = await storyCreate(projectId, {
+      kind: 'feature',
+      title: 'Filter feature',
+      parent: filterEpic.id,
+    })
+    const filterStory = await storyCreate(projectId, {
+      kind: 'story',
+      title: 'Filter planned story',
+      parent: filterFeature.id,
+    })
+    const filterSibling = await storyCreate(projectId, {
+      kind: 'story',
+      title: 'Filter backlog sibling',
+      parent: filterFeature.id,
+    })
+    const filterUnassigned = await storyCreate(projectId, {
+      kind: 'story',
+      title: 'Filter unassigned story',
+    })
+    await refreshStories(projectId)
+    await updateStory(projectId, filterEpic.id, { status: 'done' })
+    await updateStory(projectId, filterStory.id, { status: 'planned' })
+    await updateStory(projectId, filterUnassigned.id, { status: 'planned' })
+    const card = (title) =>
+      [...document.querySelectorAll('.story-card')].find(
+        (b) => b.querySelector('.story-card-title')?.textContent.trim() === title,
+      )
+    const counts = () =>
+      [...document.querySelectorAll('.story-column h3 span')]
+        .map((el) => Number(el.textContent))
+        .join()
+    const filteredDirty = state().dirty
+    click(button('.story-column', 'All epics'))
+    edit(statusFilter(), 'planned')
+    await until('Stories filtered independently', () => counts() === '2,3,3')
+    assert(!card(filterSibling.title), 'Stories filter included a nonmatching sibling')
+    assert(card(filterEpic.title)?.querySelector('.story-status.done'), 'epic badge changed')
+    assert(
+      card(filterFeature.title)?.querySelector('.story-status.backlog'),
+      'feature badge changed',
+    )
+    assert(button('.story-column', 'Unassigned stories · 1'), 'Unassigned count was not filtered')
+    edit(statusFilter('Epics'), 'done')
+    await until('Epics filtered independently', () => counts() === '1,3,3')
+    edit(statusFilter('Features'), 'planned')
+    await until('Features filtered independently', () => counts() === '1,1,3')
+    assert(!card(filterFeature.title) && card(filterStory.title), 'Features filter hid its story')
+    edit(statusFilter('Features'), 'all')
+    chooseCard(filterEpic.title)
+    await until('epic navigation', () => counts() === '1,1,1')
+    chooseCard(filterFeature.title)
+    edit(statusFilter('Epics'), 'backlog')
+    await until('hidden epic retains navigation', () => counts() === '1,1,1')
+    assert(card(filterStory.title) && !card(story.title), 'filter reset hierarchy navigation')
+    edit(statusFilter('Features'), 'done')
+    await until('hidden feature retains navigation', () => counts() === '1,0,1')
+    edit(statusFilter('Epics'), 'all')
+    edit(statusFilter('Features'), 'all')
+    click(button('.story-column', 'Unassigned stories · 1'))
+    await until('filtered Unassigned navigation', () => counts() === '2,3,1')
+    edit(statusFilter(), 'active')
+    await until('Active retains Unassigned navigation', () => counts() === '2,3,1')
+    assert(card(filterUnassigned.title) && !card(story.title), 'filter reset Unassigned selection')
+    click(button('.story-column', 'All stories'))
+    await until('all stories navigation restored', () => card(filterStory.title))
+    chooseCard(filterStory.title)
+    await until('filtered story editor', () => field('Title')?.value === filterStory.title)
+    const editor = query('.story-editor')
+    edit(field('Title'), 'Unsaved filtered title')
+    edit(field('Description'), 'Unsaved filtered description')
+    edit(field('Status'), 'done')
+    edit(statusFilter(), 'done')
+    await until('Stories empty without changing other columns', () => counts() === '2,3,0')
+    assert(
+      query('.story-editor') === editor &&
+        field('Title').value === 'Unsaved filtered title' &&
+        field('Description').value === 'Unsaved filtered description' &&
+        field('Status').value === 'done',
+      'status filter discarded the hidden editor or unsaved fields',
+    )
+    for (const title of ['Epics', 'Features', 'Stories']) edit(statusFilter(title), 'merging')
+    await until(
+      'filtered empty columns',
+      () =>
+        counts() === '0,0,0' &&
+        [...document.querySelectorAll('.story-column .story-hint')].filter(
+          (el) => el.textContent === 'No matches for this status',
+        ).length === 3,
+    )
+    assert(state().dirty === filteredDirty, 'status filters dirtied the map')
+    click(query('[aria-label="Close story editor"]'))
+    click(query('[aria-label="Add story"]'))
+    await until('new filtered draft', () => query('.story-editor h3')?.textContent === 'New story')
+    edit(field('Title'), 'Unsaved new filtered story')
+    const draftEditor = query('.story-editor')
+    for (const title of ['Epics', 'Features', 'Stories']) edit(statusFilter(title), 'all')
+    await until('All selected', () => statusFilter()?.value === 'all')
+    assert(
+      query('.story-editor') === draftEditor &&
+        field('Title').value === 'Unsaved new filtered story',
+      'status filter discarded a new draft',
+    )
+    click(query('[aria-label="Close story editor"]'))
+    // Only card lists scroll; headers and their filters remain visible in all three columns.
+    const beforeScrollStories = state().stories
+    const scrollItems = ['epic', 'feature', 'story'].flatMap((kind) =>
+      Array.from({ length: 40 }, (_, index) => ({
+        ...story,
+        id: `scroll-${kind}-${index}`,
+        kind,
+        title: `Scroll ${kind} ${index}`,
+        parent: kind === 'feature' ? epic.id : kind === 'story' ? feature.id : null,
+      })),
+    )
+    smoke.store.setState({ stories: [...beforeScrollStories, ...scrollItems] })
+    try {
+      await until('scroll fixtures', () => document.querySelectorAll('.story-card').length > 100)
+      // Measure without yielding so background story polling cannot replace these fixtures.
+      for (const column of document.querySelectorAll('.story-column')) {
+        const header = column.querySelector('header')
+        const filter = column.querySelector('.story-filter')
+        const cards = column.querySelector('.story-cards')
+        const headerTop = header.getBoundingClientRect().top
+        const filterTop = filter.getBoundingClientRect().top
+        cards.scrollTop = cards.scrollHeight
+        assert(cards.scrollTop > 0, 'card list did not scroll')
+        assert(
+          Math.abs(header.getBoundingClientRect().top - headerTop) < 1 &&
+            Math.abs(filter.getBoundingClientRect().top - filterTop) < 1,
+          'column header or filter moved when scrolling',
+        )
+        assert(filter.checkVisibility(), 'column filter disappeared while scrolling')
+      }
+    } finally {
+      smoke.store.setState({ stories: beforeScrollStories })
+    }
+    await storyRemove(projectId, filterEpic.id, true)
+    await storyRemove(projectId, filterUnassigned.id, true)
+    await refreshStories(projectId)
+    assert(!state().stories.some((s) => s.id === filterSibling.id), 'filter fixture cleanup failed')
     assert(
       story.acceptance[0] === 'The board retains my story' &&
         story.components.join() === component.id,
@@ -246,6 +400,7 @@
       'board mode was not saved in layout',
     )
     // Map toggles retain the mounted React Flow instance and viewport.
+    for (const title of ['Epics', 'Features', 'Stories']) edit(statusFilter(title), 'done')
     click(button('.story-board-header', 'Map'))
     await until('map visible', () => !state().storyBoard)
     await until('map component visible again', mapNodeVisible)
@@ -261,6 +416,8 @@
     state().setSimpleMode(true)
     click(await until('Chat Stories toggle', () => button('.navigation-map .view-tabs', 'Stories')))
     await until('board beside chat', () => query('.story-board'))
+    for (const title of ['Epics', 'Features', 'Stories'])
+      assert(statusFilter(title)?.value === 'all', `${title} filter did not reset when reopened`)
     assert(state().simpleMode && state().view === 'navigation', 'Stories left Chat mode')
     click(button('.story-board-header', 'Map'))
     await until('Chat map visible', () => !state().storyBoard && mapNodeVisible())
@@ -356,7 +513,7 @@
     const pendingRun = {
       runId: 'smoke-unfinished-run',
       status: 'paused',
-      stage: 'build',
+      stage: 'implement',
       goal: 'Finish the story',
       effort: 'standard',
       device: fake.id,
@@ -378,15 +535,60 @@
       state().stories.find((s) => s.id === unassigned.id).status === 'done',
       'unfinished Auto run could not complete the reopened story',
     )
+    // A background Auto run updates filters immediately without disturbing unsaved edits.
+    await updateStory(projectId, unassigned.id, { status: 'planned' })
+    edit(statusFilter(), 'building')
+    await until('background Building included', () => card(unassigned.title))
+    edit(field('Title'), 'Unsaved live filtered title')
+    const liveEditor = query('.story-editor')
+    state().patchTask(projectId, task.id, { auto: { ...pendingRun, stage: 'review' } })
+    await until(
+      'background Review leaves Building',
+      () => !card(unassigned.title) && query('.story-editor .story-status.reviewing'),
+    )
+    edit(statusFilter(), 'reviewing')
+    await until('background Review included', () =>
+      card(unassigned.title)?.querySelector('.story-status.reviewing'),
+    )
+    state().patchTask(projectId, task.id, { auto: { ...pendingRun, stage: 'mergeGate' } })
+    await until(
+      'background Merge leaves Review',
+      () => !card(unassigned.title) && query('.story-editor .story-status.merging'),
+    )
+    edit(statusFilter(), 'merging')
+    await until('background Merge included', () =>
+      card(unassigned.title)?.querySelector('.story-status.merging'),
+    )
+    edit(statusFilter(), 'active')
+    await until('Active includes background Merge', () => card(unassigned.title))
+    assert(
+      query('.story-editor') === liveEditor &&
+        field('Title').value === 'Unsaved live filtered title',
+      'live status updates discarded the editor or unsaved fields',
+    )
+    click(query('[aria-label="Close story editor"]'))
+    edit(statusFilter(), 'all')
+    await updateStory(projectId, unassigned.id, { status: 'done' })
     state().patchTask(projectId, task.id, { auto: null })
     state().setActiveTask(task.id)
+    await smoke.report(
+      'INFO stories: status filter selection, counts, navigation, empty results, editor preservation, reopening reset and live background Auto changes passed',
+    )
     chooseCard(story.title)
 
     await until(
       'story linked at worktree creation',
       () => state().stories.find((s) => s.id === story.id)?.task === task.id,
     )
-    state().setView('plan')
+    // New worktrees have their own plan; finish it before handing off implementation.
+    click(await until('Plan linked story', () => button('.story-editor', 'Plan →')))
+    const taskPlanner = smoke.sessionId('@plan', fake.id, task.id)
+    await until('worktree planner ready', () =>
+      smoke.terminalText(taskPlanner).text.includes('story-agent-ready'),
+    )
+    await until('worktree plan written', async () =>
+      (await planRead(projectId, task.id)).text.includes('# Story implementation'),
+    )
     click(
       await until('Implement in worktree', () =>
         [...document.querySelectorAll('.plan-implement button')].find((b) =>
@@ -424,20 +626,23 @@
           `Following worktree ${task.title}`,
         ),
     )
-    const rootRecord = state().sessionRecords.find((r) => r.metadata.task === task.id)
-    assert(rootRecord, 'missing implementation session record')
-    smoke.store.setState({
-      sessionRecords: [
-        ...state().sessionRecords,
-        {
-          ...rootRecord,
-          id: 'story-review-record',
-          metadata: { ...rootRecord.metadata, componentId: '@review', branch: task.branch },
-          spec: { ...rootRecord.spec, cwd: task.worktree },
-          snapshot: { ...rootRecord.snapshot, startedMs: Date.now() + 1 },
-        },
-      ],
-    })
+    edit(statusFilter(), 'building')
+    await until(
+      'Building filter includes linked story',
+      () => statusFilter()?.value === 'building' && card(story.title),
+    )
+    // Keep the review in sessiond so background reconciliation preserves it.
+    await smoke.startReviewAgents(
+      state().toProject(),
+      { worktree: task.worktree, branch: task.branch, base: 'main' },
+      [fake],
+    )
+    await until(
+      'live Review leaves Building filter',
+      () => !card(story.title) && query('.story-editor .story-status.reviewing'),
+    )
+    assert(field('Title')?.value === story.title, 'live filter change closed the editor')
+    edit(statusFilter(), 'reviewing')
     await until('Review card', () =>
       [...document.querySelectorAll('.story-card')].find(
         (b) =>
@@ -463,6 +668,7 @@
       ),
     )
     await until('story editor after rollup', () => field('Title')?.value === story.title)
+    edit(statusFilter(), 'all')
     click(await until('Auto story button', () => button('.story-editor', 'Auto…')))
     const goal = await until('Auto goal prefilled', () => {
       const el = query('.auto-content textarea')
@@ -481,7 +687,12 @@
         !field('Status') &&
         button('.story-editor', 'Reopen'),
     )
-    click(button('.story-editor', 'Reopen'))
+    click(
+      await until('Reopen enabled after completion', () => {
+        const reopen = button('.story-editor', 'Reopen')
+        return reopen && !reopen.matches(':disabled') && reopen
+      }),
+    )
     await until(
       'reopening resumes worktree status',
       () =>
@@ -581,7 +792,7 @@
       () => !state().storyBoard && query('.navigation-map:not(.story-map-hidden) .canvas'),
     )
     await smoke.report(
-      'PASS stories: hierarchy creation, acceptance, component links, layout persistence, viewport, trusted planner briefing, Plan handoff, Building status, saved status editing, Reopen, retained status choices, child completion, running Auto linkage, stale Auto rejection, merged-branch Reopen, Auto goal, map visibility and toggle',
+      'PASS stories: hierarchy creation, status filters, counts, independent column filters, fixed headers, navigation, empty results, live status filtering, editor preservation, filter reset, acceptance, component links, layout persistence, viewport, trusted planner briefing, Plan handoff, Building status, saved status editing, Reopen, retained status choices, child completion, running Auto linkage, stale Auto rejection, merged-branch Reopen, Auto goal, map visibility and toggle',
     )
   } catch (e) {
     await smoke.report(`FAIL stories: ${e?.message ?? e} ${e?.stack ?? ''}`)

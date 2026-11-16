@@ -250,8 +250,12 @@
       document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm'),
     )
     await smoke.report('INFO simple: planner input and repeated reveals passed')
-    click(button('Build'))
-    await until('worktree build done', () => workflowText().includes('Building done.'))
+    click(button('Build', document.querySelector('.simple-step')))
+    await until('worktree build done', () => {
+      const failure = document.querySelector('.simple-thread [role="alert"]')
+      if (failure) throw new Error(`Build failed: ${failure.textContent}`)
+      return workflowText().includes('Building done.')
+    })
     click(
       await until('review options above composer', () =>
         document.querySelector('.simple-step [aria-label="Review options"]:not(:disabled)'),
@@ -441,7 +445,7 @@
     click(button('Map'))
     await smoke.terminalWrite(builder, 'smoke-clean\n')
     await until('only committed change remains', () => button('Changes 1'))
-    click(button('Review'))
+    click(button('Review', document.querySelector('.simple-step')))
     await until(
       'review findings',
       () => workflowText().includes('1 issues found.') && button('Fix'),
@@ -656,7 +660,7 @@
     )
   } catch (e) {
     await smoke.report(
-      `FAIL simple: ${String(e)} ${e.stack ?? ''} chat=${chatText().slice(-1800)} message=${state().message}`,
+      `FAIL simple: ${String(e)} ${e.stack ?? ''} view=${state().view} simple=${state().simpleMode} board=${state().storyBoard} workflow=${workflowText()} chat=${chatText().slice(-1800)} message=${state().message}`,
     )
   }
 })()

@@ -77,8 +77,11 @@
     await until('feature task registered', () => state().tasks.some((t) => t.id === task.id))
     state().setView('review')
     await until('Review mounted', () => visible('.review-refresh'))
-    assert(!visible('.review-banner'), 'open worktree has a review banner')
-    // Keep the diff request pending, then fail it, so both states are visible in the main pane.
+    assert(
+      visible('.review-context strong')?.textContent === 'Main worktree',
+      'Review did not identify the main worktree',
+    )
+    // Keep the diff request pending, then fail it, so both states are visible in the change list.
     const originalFetch = window.fetch
     const reviewUrl = window.__TAURI_INTERNALS__.convertFileSrc('git_review', 'ipc')
     const pendingReviews = []
@@ -92,7 +95,7 @@
       await until('diff request pending', () => pendingReviews.length)
       await until('diff loading message', () =>
         document
-          .querySelector('.diff-view [role="status"]')
+          .querySelector('.review-list .panel-status [role="status"]')
           ?.textContent.includes('Loading changes…'),
       )
       for (const resolve of pendingReviews)
@@ -103,7 +106,7 @@
         )
       await until('diff error message', () =>
         document
-          .querySelector('.diff-view [role="alert"]')
+          .querySelector('.review-list .panel-status[data-kind="error"]')
           ?.textContent.includes('Smoke: review diff unavailable'),
       )
     } finally {
@@ -123,12 +126,12 @@
       'findings tell users already in Review to navigate to Review',
     )
     click(visible('.review-findings-button'))
-    const banner = await until('worktree explanation', () => {
-      const el = visible('.review-banner')
+    const context = await until('worktree explanation', () => {
+      const el = visible('.review-context')
       return el?.textContent.includes('Feature fixes') && el
     })
-    assert(banner.textContent.includes(`${parent}/feature`), 'review omitted worktree path')
-    assert(banner.querySelector('code')?.textContent === 'feature', 'review omitted branch')
+    assert(context.textContent.includes(`${parent}/feature`), 'review omitted worktree path')
+    assert(context.querySelector('code')?.textContent === 'feature', 'review omitted branch')
     // The merge dialog lists Review's worktrees as destinations; opens it while closed.
     const destinations = () => {
       if (!dialog()) click(visible('.review-merge-button'))
@@ -532,7 +535,7 @@
     assert(!state().dockKept.includes(sid), 'stopped merge was retained in the dock')
     state().setView('review')
     await until('Review restored after Navigation', () =>
-      visible('.review-banner')?.textContent.includes('Feature fixes'),
+      visible('.review-context strong')?.textContent.includes('Feature fixes'),
     )
     await smoke.terminalWrite(
       shell,
@@ -581,7 +584,10 @@
     await smoke.reconcileSessions()
     click([...form.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
     state().setActiveTask(null)
-    await until('Main worktree Review rendered', () => !visible('.review-banner'))
+    await until(
+      'Main worktree Review rendered',
+      () => visible('.review-context strong')?.textContent === 'Main worktree',
+    )
     form = await openDialog()
     const sourceSelect = () => form.querySelector('select[aria-label="Source worktree"]')
     const destinationSelect = () => form.querySelector('select[aria-label="Destination branch"]')

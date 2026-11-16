@@ -6,7 +6,14 @@ import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../../store'
 import type { AutoRun, Story, StoryDraft, StoryKind } from '../../types'
 import { STAGE_LABELS, STATUS_LABELS, unfinished } from '../../lib/autoSettings'
-import { progressLabel, storyStatuses, tree } from '../../lib/stories'
+import {
+  filterStories,
+  progressLabel,
+  STORY_FILTERS,
+  storyStatuses,
+  tree,
+  type StoryFilter,
+} from '../../lib/stories'
 import { shortTitle } from '../../lib/shortTitle'
 import StoryEditor from './StoryEditor'
 import './stories.css'
@@ -76,11 +83,28 @@ export default function StoryBoard() {
   const [feature, setFeature] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [draft, setDraft] = useState<StoryDraft | null>(null)
+  const [filters, setFilters] = useState<Record<StoryKind, StoryFilter>>({
+    epic: 'all',
+    feature: 'all',
+    story: 'all',
+  })
   const projectId = project?.id
+  const runs = useMemo(() => {
+    const runs: Record<string, AutoRun | null> = Object.fromEntries(
+      Object.entries(taskWorkspaces).map(([id, w]) => [id, w.auto]),
+    )
+    if (activeTask) runs[activeTask] = auto
+    return runs
+  }, [taskWorkspaces, activeTask, auto])
+  const statuses = useMemo(
+    () => storyStatuses(stories, tasks, runs, projectId ?? '', sessionRecords),
+    [stories, tasks, runs, projectId, sessionRecords],
+  )
   const hierarchy = tree(stories)
   const selectedEpic = hierarchy.epics.some((e) => e.item.id === epic) ? epic : null
   const selectedFeature =
-    feature === 'unassigned' || stories.some((s) => s.kind === 'feature' && s.id === feature)
+    feature === 'unassigned' ||
+    hierarchy.epics.some((e) => e.features.some((f) => f.item.id === feature))
       ? feature
       : null
   const visibleFeatures = hierarchy.epics
@@ -93,17 +117,6 @@ export default function StoryBoard() {
           .filter((f) => !selectedFeature || f.item.id === selectedFeature)
           .flatMap((f) => f.stories)
           .concat(!selectedFeature && !selectedEpic ? hierarchy.unassigned : [])
-  const runs = useMemo(() => {
-    const runs: Record<string, AutoRun | null> = Object.fromEntries(
-      Object.entries(taskWorkspaces).map(([id, w]) => [id, w.auto]),
-    )
-    if (activeTask) runs[activeTask] = auto
-    return runs
-  }, [taskWorkspaces, activeTask, auto])
-  const statuses = useMemo(
-    () => storyStatuses(stories, tasks, runs, projectId ?? '', sessionRecords),
-    [stories, tasks, runs, projectId, sessionRecords],
-  )
   const add = (kind: StoryKind) => {
     setSelected(null)
     setDraft({
@@ -127,77 +140,103 @@ export default function StoryBoard() {
     if (item.kind === 'feature') setFeature(item.id)
   }
   const item = stories.find((s) => s.id === selected)
-  const column = (kind: StoryKind, title: string, items: Story[], all: () => void) => (
-    <section className="story-column" aria-label={title}>
-      <header>
-        <h3>
-          {title} <span>{items.length}</span>
-        </h3>
-        <button
-          onClick={() => add(kind)}
-          disabled={kind === 'feature' && !hierarchy.epics.length}
-          aria-label={`Add ${kind}`}
-        >
-          + Add
-        </button>
-      </header>
-      <button className="story-all" onClick={all}>
-        All {title.toLowerCase()}
-      </button>
-      <div className="story-cards">
-        {items.map((item) => {
-          const worktree = tasks.find((t) => t.id === item.task)
-          const value = statuses.get(item.id)!.value
-          // The worktree's Auto run: this item's own, or whatever still runs there.
-          const run = worktree && runs[worktree.id]
-          const stage = run && (run.runId === item.autoRunId || unfinished(run.status)) && run
-          return (
-            <button
-              key={item.id}
-              className={`story-card ${selected === item.id ? 'selected' : ''}`}
-              aria-pressed={selected === item.id}
-              onClick={() => choose(item)}
+  const column = (kind: StoryKind, title: string, candidates: Story[], all: () => void) => {
+    const items = filterStories(candidates, statuses, filters[kind])
+    return (
+      <section className="story-column" aria-label={title}>
+        <header>
+          <div className="story-column-heading">
+            <h3>
+              {title} <span>{items.length}</span>
+            </h3>
+            <select
+              className="story-filter"
+              aria-label={`Filter ${title.toLowerCase()} by status`}
+              value={filters[kind]}
+              onChange={(e) =>
+                setFilters((current) => ({ ...current, [kind]: e.target.value as StoryFilter }))
+              }
             >
-              <span className="story-card-title">
-                <i className={`story-dot ${kind}`} />
-                {item.title}
-              </span>
-              <span className="story-card-meta">
-                <span className={`chip story-status ${value}`}>{progressLabel(value)}</span>
-                <span>{item.components.length} components</span>
-              </span>
-              {worktree && (
-                <span className="story-worktree" title={worktree.worktree}>
-                  {shortTitle(worktree.title)}
-                  {worktree.missing ? ' · missing' : ''}
-                </span>
-              )}
-              {stage && (
-                <span className={`story-stage ${stage.status}`}>
-                  {/* The done stage says nothing its status doesn't. */}
-                  {stage.stage === 'done'
-                    ? STATUS_LABELS[stage.status]
-                    : `${STAGE_LABELS[stage.stage]} · ${STATUS_LABELS[stage.status]}`}
-                </span>
-              )}
-            </button>
-          )
-        })}
-        {!items.length && <p className="story-hint">No {title.toLowerCase()} here yet.</p>}
-      </div>
-      {kind === 'feature' && (
-        <button
-          className={feature === 'unassigned' ? 'story-all active' : 'story-all'}
-          onClick={() => {
-            setEpic(null)
-            setFeature('unassigned')
-          }}
-        >
-          Unassigned stories · {hierarchy.unassigned.length}
+              {STORY_FILTERS.map(({ value, label }) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            onClick={() => add(kind)}
+            disabled={kind === 'feature' && !hierarchy.epics.length}
+            aria-label={`Add ${kind}`}
+          >
+            + Add
+          </button>
+        </header>
+        <button className="story-all" onClick={all}>
+          All {title.toLowerCase()}
         </button>
-      )}
-    </section>
-  )
+        <div className="story-cards">
+          {items.map((item) => {
+            const worktree = tasks.find((t) => t.id === item.task)
+            const value = statuses.get(item.id)!.value
+            // The worktree's Auto run: this item's own, or whatever still runs there.
+            const run = worktree && runs[worktree.id]
+            const stage = run && (run.runId === item.autoRunId || unfinished(run.status)) && run
+            return (
+              <button
+                key={item.id}
+                className={`story-card ${selected === item.id ? 'selected' : ''}`}
+                aria-pressed={selected === item.id}
+                onClick={() => choose(item)}
+              >
+                <span className="story-card-title">
+                  <i className={`story-dot ${kind}`} />
+                  {item.title}
+                </span>
+                <span className="story-card-meta">
+                  <span className={`chip story-status ${value}`}>{progressLabel(value)}</span>
+                  <span>{item.components.length} components</span>
+                </span>
+                {worktree && (
+                  <span className="story-worktree" title={worktree.worktree}>
+                    {shortTitle(worktree.title)}
+                    {worktree.missing ? ' · missing' : ''}
+                  </span>
+                )}
+                {stage && (
+                  <span className={`story-stage ${stage.status}`}>
+                    {/* The done stage says nothing its status doesn't. */}
+                    {stage.stage === 'done'
+                      ? STATUS_LABELS[stage.status]
+                      : `${STAGE_LABELS[stage.stage]} · ${STATUS_LABELS[stage.status]}`}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+          {!items.length && (
+            <p className="story-hint">
+              {filters[kind] === 'all'
+                ? `No ${title.toLowerCase()} here yet.`
+                : 'No matches for this status'}
+            </p>
+          )}
+        </div>
+        {kind === 'feature' && (
+          <button
+            className={feature === 'unassigned' ? 'story-all active' : 'story-all'}
+            onClick={() => {
+              setEpic(null)
+              setFeature('unassigned')
+            }}
+          >
+            Unassigned stories ·{' '}
+            {filterStories(hierarchy.unassigned, statuses, filters.story).length}
+          </button>
+        )}
+      </section>
+    )
+  }
   return (
     <div className="story-board" aria-label="Story board">
       <header className="story-board-header view-tabs-header">

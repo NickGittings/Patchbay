@@ -304,7 +304,7 @@
         },
       })
       const rail = document.querySelector('.workspace-rail')
-      const labels = [...rail.querySelectorAll(':scope > button')].map((b) =>
+      const labels = [...rail.querySelectorAll(':scope > button[aria-pressed]')].map((b) =>
         b.getAttribute('aria-label'),
       )
       if (

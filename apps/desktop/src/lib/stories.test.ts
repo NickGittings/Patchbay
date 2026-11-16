@@ -2,6 +2,7 @@ vi.mock('./workspace', () => ({ flushWorkspace: vi.fn(async () => {}) }))
 import { beforeEach, expect, test, vi } from 'vitest'
 import { projectStateOf, useStore } from '../store'
 import { PLAN_SCOPE, plannerSessionId, type AutoRun, type Story, type Task } from '../types'
+import type { StoryFilter, StoryProgress } from './stories'
 vi.mock('./ipc', () => ({
   storyList: vi.fn(),
   storyUpdate: vi.fn(),
@@ -13,6 +14,7 @@ vi.mock('./ipc', () => ({
 vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
 const {
   tree,
+  filterStories,
   storyStatuses,
   reopenStoryPatch,
   progressLabel,
@@ -103,6 +105,92 @@ test('tree orders each hierarchy level and keeps orphan stories under Unassigned
   expect(hierarchy.epics[0].features[0].stories.map((s) => s.id)).toEqual(['s1', 's2'])
   expect(hierarchy.unassigned.map((s) => s.id)).toEqual(['free', 'orphan'])
   expect(tree([])).toEqual({ epics: [], unassigned: [] })
+})
+const filterItems: Story[] = PROGRESS.map((value) => ({
+  ...story(value),
+  status: value === 'reviewing' || value === 'merging' ? 'backlog' : value,
+  task: value === 'reviewing' || value === 'merging' ? value : null,
+}))
+const filterStatuses = storyStatuses(
+  filterItems,
+  ['reviewing', 'merging'].map((id) => ({ ...task, id })),
+  {
+    reviewing: { runId: 'review', status: 'running', stage: 'review' },
+    merging: { runId: 'merge', status: 'waitingOnYou', stage: 'mergeGate' },
+  },
+  'p',
+)
+test.each(PROGRESS)('column filter selects derived %s cards', (value) => {
+  expect(filterStories(filterItems, filterStatuses, value).map((s) => s.id)).toEqual([value])
+})
+test('Active includes all four intermediate stages and excludes Backlog and Done', () => {
+  expect(filterStories(filterItems, filterStatuses, 'active').map((s) => s.id)).toEqual([
+    'planned',
+    'building',
+    'reviewing',
+    'merging',
+  ])
+})
+test('column filters use full-board rollups independently without adding context parents', () => {
+  const items = [
+    { ...story('epic', 'epic'), status: 'done' as const },
+    story('feature', 'feature', 'epic'),
+    { ...story('match', 'story', 'feature'), status: 'planned' as const },
+    story('sibling', 'story', 'feature'),
+  ]
+  const statuses = storyStatuses(items, [], {}, 'p')
+  expect(statuses.get('feature')?.value).toBe('backlog')
+  const column = (kind: Story['kind']) => items.filter((s) => s.kind === kind)
+  expect(filterStories(column('epic'), statuses, 'done').map((s) => s.id)).toEqual(['epic'])
+  expect(filterStories(column('feature'), statuses, 'planned')).toEqual([])
+  expect(filterStories(column('story'), statuses, 'planned').map((s) => s.id)).toEqual(['match'])
+  expect(filterStories(column('feature'), statuses, 'all')).toEqual(column('feature'))
+  expect(items.map((s) => s.status)).toEqual(['done', 'backlog', 'planned', 'backlog'])
+})
+test('column filtering preserves display order and includes matching orphan and unassigned stories', () => {
+  const items = [
+    story('epic', 'epic'),
+    story('feature', 'feature', 'epic'),
+    story('s2', 'story', 'feature', 2),
+    story('s1', 'story', 'feature', 1),
+    story('orphan', 'story', 'missing'),
+    story('unassigned'),
+    { ...story('hidden'), status: 'done' as const },
+  ]
+  const hierarchy = tree(items)
+  const candidates = hierarchy.epics[0].features[0].stories.concat(hierarchy.unassigned)
+  expect(
+    filterStories(candidates, storyStatuses(items, [], {}, 'p'), 'backlog').map((s) => s.id),
+  ).toEqual(['s1', 's2', 'orphan', 'unassigned'])
+  expect(hierarchy).toEqual(tree(items))
+})
+test.each<StoryFilter>(['all', 'active', ...PROGRESS])(
+  'column filter %s handles an empty board',
+  (filter) => {
+    expect(filterStories([], new Map(), filter)).toEqual([])
+  },
+)
+test('All returns the full column without filtering or requiring statuses', () => {
+  expect(filterStories(filterItems, new Map(), 'all')).toBe(filterItems)
+})
+test('column filter follows live derived status changes without changing saved story status', () => {
+  const items = [{ ...story('live'), task: task.id }]
+  for (const [stage, value] of [
+    ['implement', 'building'],
+    ['review', 'reviewing'],
+    ['merge', 'merging'],
+  ] as const) {
+    const statuses = storyStatuses(
+      items,
+      [task],
+      { task: { runId: 'run', status: 'running', stage } },
+      'p',
+    )
+    for (const filter of ['building', 'reviewing', 'merging'] satisfies StoryProgress[]) {
+      expect(filterStories(items, statuses, filter)).toEqual(filter === value ? items : [])
+    }
+  }
+  expect(items[0].status).toBe('backlog')
 })
 test('status ignores old Auto runs on reused tasks and preserves saved completion after cleanup', () => {
   const item = { ...story('s'), task: 'task' }

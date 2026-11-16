@@ -78,7 +78,7 @@
       },
     })
     await until('one planner received both reports', async () =>
-      (await smoke.planRead(opened.id)).text.includes('Provider plan'),
+      (await smoke.planRead(opened.id, task.id)).text.includes('Provider plan'),
     )
     const build = await smoke.implementPlannerPlan('planner')
     assert(build.implementationRun, 'Workers did not select a coordinator')

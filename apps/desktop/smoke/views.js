@@ -292,8 +292,9 @@
       )
       await until('planner exited during restart', () => state().sessions[sid]?.running === false)
       await until('restart progress label', () => {
-        const button = document.querySelector('.planner-terminal .tab-actions button')
-        return button?.disabled && button.textContent === '▶ Stopping…'
+        return [...document.querySelectorAll('.planner-terminal .tab-actions button')].some(
+          (button) => button.disabled && button.textContent === '▶ Stopping…',
+        )
       })
     } finally {
       window.fetch = restartFetch

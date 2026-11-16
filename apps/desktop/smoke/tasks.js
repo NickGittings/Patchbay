@@ -207,7 +207,7 @@
     // Review follows the active task, with its task terminals' status.
     click(viewButton('Review'))
     await until('task review', () =>
-      document.querySelector('.review-banner')?.textContent.includes('Smoke task'),
+      document.querySelector('.review-context strong')?.textContent.includes('Smoke task'),
     )
     await until('task validation', () =>
       document.querySelector('.review-view .validation-chip.running'),

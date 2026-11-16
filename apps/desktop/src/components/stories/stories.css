@@ -18,6 +18,22 @@
   flex-direction: column;
   background: var(--bg);
 }
+.story-column-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.story-column-heading h3 {
+  white-space: nowrap;
+}
+.story-filter {
+  min-width: 0;
+  max-width: 95px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 12px;
+}
 .story-board-body {
   display: flex;
   flex: 1;
@@ -29,17 +45,19 @@
   flex-direction: column;
   flex: 1;
   min-width: 470px;
+  min-height: 0;
 }
 .story-columns {
   display: grid;
   grid-template-columns: repeat(3, minmax(140px, 1fr));
   flex: 1;
-  min-height: 150px;
+  min-height: 0;
 }
 .story-column {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   border-right: 1px solid var(--border);
   padding: 10px;
   gap: 8px;
@@ -75,8 +93,14 @@
 .story-all.active {
   color: var(--accent-text);
 }
+.story-column > header {
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
 .story-cards {
   display: flex;
+  flex: 1;
+  min-height: 0;
   flex-direction: column;
   gap: 8px;
   overflow: auto;
@@ -107,14 +131,14 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--accent);
+  background: #60a5fa;
   flex-shrink: 0;
 }
 .story-dot.epic {
-  background: var(--review);
+  background: var(--input);
 }
 .story-dot.feature {
-  background: var(--input);
+  background: #a855f7;
 }
 .story-card-meta {
   display: flex;
