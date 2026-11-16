@@ -138,9 +138,14 @@ fn save(file: &Path, store: &mut Store) -> Result<()> {
     Ok(())
 }
 
-/// Update the derived fields (`branch`, `missing`, `current`) from git.
-fn reconcile(root: &Path, tasks: &mut [Task]) {
-    let trees = git::worktrees(root);
+/// Update the derived fields (`branch`, `missing`, `current`) from git. A
+/// failed listing is an error rather than an empty one, which would mark every
+/// task missing and drop the user out of the active task.
+fn reconcile(root: &Path, tasks: &mut [Task]) -> Result<()> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    let trees = git::try_worktrees(root)?;
     for task in tasks {
         if let Some(w) = trees.iter().find(|w| w.path == task.worktree) {
             task.missing = false;
@@ -151,6 +156,7 @@ fn reconcile(root: &Path, tasks: &mut [Task]) {
             task.current = false;
         }
     }
+    Ok(())
 }
 
 /// Load, change and save the store under the lock.
@@ -169,14 +175,15 @@ pub(crate) fn modify<T>(
 /// The tasks of the repo containing `root` (canonical), oldest first.
 ///
 /// # Errors
-/// Fails if `root` isn't in a repo or the store can't be read.
+/// Fails if `root` isn't in a repo, the store can't be read, or git can't list
+/// the worktrees.
 pub fn list(root: &Path) -> Result<Vec<Task>> {
     let file = store_file(root)?;
     let mut tasks = {
         let _guard = lock();
         load(&file)?.tasks
     };
-    reconcile(root, &mut tasks);
+    reconcile(root, &mut tasks)?;
     Ok(tasks)
 }
 
@@ -500,7 +507,9 @@ pub fn update(root: &Path, id: &str, patch: TaskPatch) -> Result<Task> {
         }
         Ok(task.clone())
     })?;
-    reconcile(root, std::slice::from_mut(&mut task));
+    // The change is saved already; a failed listing only leaves the derived
+    // fields as stored, and the next list corrects them.
+    let _ = reconcile(root, std::slice::from_mut(&mut task));
     Ok(task)
 }
 
@@ -1031,6 +1040,27 @@ mod tests {
         crate::context::remove_owned_briefing_file(
             &crate::context::owned_briefing(&prepared.job.spec).unwrap(),
         );
+    }
+
+    #[test]
+    fn a_failed_worktree_listing_errors_instead_of_marking_tasks_missing() {
+        let f = Fixture::new();
+        let Some(root) = f.repo() else { return };
+        let task = create(
+            &root,
+            TaskDraft {
+                title: "Kept".into(),
+                branch: "feature/kept".into(),
+                base: Some("main".into()),
+                components: vec![],
+            },
+        )
+        .unwrap();
+        // A `.git` file pointing nowhere: the repo is found, but git fails.
+        f.write("broken/.git", "gitdir: /nonexistent/patchbay\n");
+        let mut tasks = vec![task];
+        assert!(reconcile(&f.0.join("broken"), &mut tasks).is_err());
+        assert!(!tasks[0].missing);
     }
 
     #[test]

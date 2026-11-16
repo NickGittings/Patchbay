@@ -10,38 +10,71 @@ export interface MainWorktree {
 }
 
 /**
- * Each project's main worktree: the one source for its branch label. Re-read on Git watcher
- * signals (an agent's checkout changes `HEAD`) and whenever a picker lists the worktrees, so the
- * footer label, branch menu, worktree picker and Build agree.
+ * Each project's main worktree: the one source for its branch label. Re-read when the Git
+ * watcher sees a `HEAD` or ref change (an agent's checkout) and whenever a picker lists the
+ * worktrees, so the footer label, branch menus, worktree picker and Build agree.
  */
 export const useMainWorktree = create<Record<string, MainWorktree>>(() => ({}))
 
 /** Each project's newest request, and whether it is still waiting for its answer. */
 const latest = new Map<string, { request: number; pending: boolean }>()
 let nextRequest = 0
+/** Each project's branch refresh waiting for a burst of watcher signals to settle. */
+const scheduled = new Map<string, ReturnType<typeof setTimeout>>()
 
-/** Re-read `projectId`'s worktrees; only the newest request's answer is kept. */
-export function refreshMainWorktree(projectId: string | undefined) {
-  if (!projectId) return
+/**
+ * Record `listing`, a read of `projectId`'s worktrees, as the project's newest one. The request is
+ * numbered now, before it answers, so only the newest read started applies: an older one that
+ * answers later is ignored, as is any answer after the project closed. Returns `listing` for the
+ * caller's own use; a failure is recorded as no Git repository.
+ */
+export function readMainWorktrees(projectId: string, listing: Promise<Worktree[]>) {
   const request = ++nextRequest
   latest.set(projectId, { request, pending: true })
   const apply = (info: MainWorktree) => {
     if (latest.get(projectId)?.request !== request) return
     latest.set(projectId, { request, pending: false })
+    const known = useMainWorktree.getState()[projectId]
+    if (known?.git === info.git && known.branch === info.branch) return
     useMainWorktree.setState({ [projectId]: info })
   }
-  void gitWorktrees(projectId)
-    .then((list) => apply(describe(list)))
-    .catch(() => apply({ git: false, branch: '' }))
+  void listing.then(
+    (list) => apply(describe(list)),
+    () => apply({ git: false, branch: '' }),
+  )
+  return listing
+}
+
+/** Re-read `projectId`'s worktrees; only the newest request's answer is kept. */
+export function refreshMainWorktree(projectId: string | undefined) {
+  if (!projectId) return
+  readMainWorktrees(projectId, gitWorktrees(projectId)).catch(() => {})
 }
 
 /**
- * Record worktrees `projectId` just listed elsewhere (such as the branch menu). It supersedes
- * reads still on their way, so an older answer cannot overwrite it.
+ * Re-read `projectId`'s branches once a burst of watcher signals settles, running `also` (such as
+ * a task list refresh) alongside. Closing the project cancels it.
  */
-export function applyMainWorktrees(projectId: string, list: Worktree[]) {
-  latest.set(projectId, { request: ++nextRequest, pending: false })
-  useMainWorktree.setState({ [projectId]: describe(list) })
+export function scheduleBranchRefresh(
+  projectId: string,
+  also?: (projectId: string) => void,
+  delay = 250,
+) {
+  clearTimeout(scheduled.get(projectId))
+  scheduled.set(
+    projectId,
+    setTimeout(() => {
+      scheduled.delete(projectId)
+      refreshMainWorktree(projectId)
+      also?.(projectId)
+    }, delay),
+  )
+}
+
+/** Cancel every scheduled branch refresh (the listener is going away). */
+export function cancelBranchRefreshes() {
+  for (const timer of scheduled.values()) clearTimeout(timer)
+  scheduled.clear()
 }
 
 function describe(list: Worktree[]): MainWorktree {
@@ -58,8 +91,13 @@ export function ensureMainWorktree(projectId: string | undefined) {
   refreshMainWorktree(projectId)
 }
 
-/** Drop a closed project's entry; a request still on its way is ignored when it answers. */
+/**
+ * Drop a closed project's entry and its scheduled refresh; a request still on its way is ignored
+ * when it answers.
+ */
 export function forgetMainWorktree(projectId: string) {
+  clearTimeout(scheduled.get(projectId))
+  scheduled.delete(projectId)
   latest.delete(projectId)
   useMainWorktree.setState((m) => {
     if (!(projectId in m)) return m

@@ -44,6 +44,8 @@ mod smoke;
 const WINDOW_CLOSED_EVENT: &str = "patchbay://window-closed";
 const FILE_ACCESS_EVENT: &str = "patchbay://file-access";
 const GIT_DIRTY_EVENT: &str = "patchbay://git-dirty";
+/// A watched `HEAD` or ref changed, so worktree branches may have moved.
+const BRANCHES_CHANGED_EVENT: &str = "patchbay://branches-changed";
 
 /// A component pop-out's window label. Must match `componentLabel` in `windows.ts`:
 /// the code points of `JSON.stringify([projectId, componentId])` in hex.
@@ -232,8 +234,11 @@ fn rewatch(app: &AppHandle, id: &str) {
             );
             roots
         },
-        move || {
+        move |change: patchbay_core::watch::Change| {
             let _ = handle.emit_to("main", GIT_DIRTY_EVENT, &id);
+            if change.branches {
+                let _ = handle.emit_to("main", BRANCHES_CHANGED_EVENT, &id);
+            }
         },
     );
 }

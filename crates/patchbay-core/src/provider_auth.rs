@@ -538,17 +538,19 @@ fn strip_terminal_escapes(text: &str) -> String {
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            '\u{1b}' => match chars.next() {
+            '\u{1b}' => match chars.peek().copied() {
                 // CSI: parameters and intermediates, then one final byte in 0x40..=0x7E.
                 Some('[') => {
+                    chars.next();
                     for c in chars.by_ref() {
                         if ('\u{40}'..='\u{7e}').contains(&c) {
                             break;
                         }
                     }
                 }
-                // OSC: terminated by BEL or ST (`ESC \`).
-                Some(']') => {
+                // OSC, DCS, SOS, PM and APC strings: terminated by BEL or ST (`ESC \`).
+                Some(']' | 'P' | 'X' | '^' | '_') => {
+                    chars.next();
                     while let Some(c) = chars.next() {
                         if c == '\u{7}' {
                             break;
@@ -559,7 +561,19 @@ fn strip_terminal_escapes(text: &str) -> String {
                         }
                     }
                 }
+                // nF sequences such as `ESC ( B`: intermediates in 0x20..=0x2F, then a final byte.
+                Some('\u{20}'..='\u{2f}') => {
+                    while chars
+                        .next_if(|c| ('\u{20}'..='\u{2f}').contains(c))
+                        .is_some()
+                    {}
+                    chars.next_if(|c| ('\u{30}'..='\u{7e}').contains(c));
+                }
                 // Two-byte sequences such as `ESC 7` / `ESC 8`.
+                Some('\u{30}'..='\u{7e}') => {
+                    chars.next();
+                }
+                // A lone ESC: drop it but keep what follows.
                 _ => {}
             },
             '\r' => {}
@@ -703,6 +717,16 @@ mod tests {
                     .contains("secret-canary")
             );
         }
+    }
+    #[test]
+    fn all_escape_sequence_forms_are_stripped_without_leaking_text() {
+        assert_eq!(
+            strip_terminal_escapes("\x1b(B\x1b[m{\x1b#8\"a\":1}\x1bPtmux;\x1b\\ok\x1b_apc\x07"),
+            "{\"a\":1}ok"
+        );
+        // A lone ESC keeps the character after it.
+        assert_eq!(strip_terminal_escapes("a\x1b\nb\x1b"), "a\nb");
+        assert_eq!(strip_terminal_escapes("\x1b7x\x1b8"), "x");
     }
     #[test]
     fn terminal_rendered_json_is_classified() {

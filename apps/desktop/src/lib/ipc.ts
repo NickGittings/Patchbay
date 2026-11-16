@@ -48,6 +48,8 @@ import type {
 } from '../types'
 
 export const GIT_DIRTY_EVENT = 'patchbay://git-dirty'
+/** Mirrors `BRANCHES_CHANGED_EVENT`: a watched `HEAD` or ref changed in the named project. */
+export const BRANCHES_CHANGED_EVENT = 'patchbay://branches-changed'
 /** Mirrors `service::TERMINAL_EVENT`. */
 const TERMINAL_EVENT = 'patchbay://terminal'
 

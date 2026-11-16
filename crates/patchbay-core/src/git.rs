@@ -1018,21 +1018,28 @@ pub struct Worktree {
 /// repo or git fails.
 #[must_use]
 pub fn worktrees(root: &Path) -> Vec<Worktree> {
+    try_worktrees(root).unwrap_or_default()
+}
+
+/// [`worktrees`], telling a failed listing apart from a repo without any:
+/// empty only when `root` isn't in a repo.
+///
+/// # Errors
+/// Fails if `git worktree list` cannot run or exits unsuccessfully.
+pub fn try_worktrees(root: &Path) -> Result<Vec<Worktree>> {
     let Some(repo) = nearest_repo(root) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let output = git(&repo)
         .args(["worktree", "list", "--porcelain"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
+        .output()
+        .context("could not run git worktree list")?;
     if !output.status.success() {
-        return Vec::new();
+        bail!("git worktree list failed ({})", output.status);
     }
-    parse_worktrees(&String::from_utf8_lossy(&output.stdout))
+    Ok(parse_worktrees(&String::from_utf8_lossy(&output.stdout))
         .into_iter()
         .enumerate()
         .filter(|(_, w)| !w.bare)
@@ -1046,7 +1053,7 @@ pub fn worktrees(root: &Path) -> Vec<Worktree> {
                 main: i == 0,
             })
         })
-        .collect()
+        .collect())
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]

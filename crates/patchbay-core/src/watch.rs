@@ -81,9 +81,43 @@ pub fn relevant(path: &Path) -> bool {
             || (rest.len() == 1
                 && ["index", "HEAD", "packed-refs", "config"]
                     .iter()
-                    .any(|name| rest[0] == *name));
+                    .any(|name| rest[0] == *name))
+            // A linked worktree's `HEAD`, so a checkout there is seen too.
+            || (rest[0] == "worktrees" && (rest.len() < 3 || (rest.len() == 3 && rest[2] == "HEAD")));
     }
     true
+}
+
+/// Whether a relevant path can move a branch: a `HEAD`, a ref, or packed refs.
+fn moves_branches(path: &Path) -> bool {
+    let parts: Vec<_> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    parts
+        .iter()
+        .position(|name| *name == ".git")
+        .is_some_and(|git| {
+            let rest = &parts[git + 1..];
+            match rest {
+                [] => false,
+                [name] => *name == "HEAD" || *name == "packed-refs",
+                [first, ..] if *first == "refs" => true,
+                [first, _, last] => *first == "worktrees" && *last == "HEAD",
+                _ => false,
+            }
+        })
+}
+
+/// What a change signal covers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Change {
+    /// A branch may have moved (a `HEAD` or ref changed, or coverage was
+    /// rebuilt so it cannot be ruled out), so worktree branches need re-reading.
+    pub branches: bool,
 }
 
 /// Core-owned watcher lifecycle. Setup and retries run on a detached worker;
@@ -105,7 +139,7 @@ impl GitWatcher {
     pub fn update(
         &self,
         roots: impl Fn() -> Vec<PathBuf> + Send + 'static,
-        on_change: impl Fn() + Send + 'static,
+        on_change: impl Fn(Change) + Send + 'static,
     ) {
         if self.stopped.load(Ordering::Relaxed) {
             return;
@@ -664,11 +698,21 @@ impl PendingChanges {
         }
         (dirty, rescan)
     }
+
+    /// Whether the batch may have moved a branch in one of `roots`' repositories.
+    fn moves_branches(&self, roots: &[PathBuf], ignores: &mut Ignores) -> bool {
+        self.rescan
+            || self.paths.iter().any(|path| {
+                moves_branches(path)
+                    && !matches!(scope(roots, path), Scope::Outside)
+                    && relevant_to(roots, path, ignores)
+            })
+    }
 }
 
 fn run(
     roots: impl Fn() -> Vec<PathBuf>,
-    on_change: impl Fn(),
+    on_change: impl Fn(Change),
     updates: mpsc::Receiver<()>,
     stopped: Arc<AtomicBool>,
 ) {
@@ -685,7 +729,7 @@ fn run(
 
 fn run_with_watcher<W: Watcher>(
     roots: impl Fn() -> Vec<PathBuf>,
-    on_change: impl Fn(),
+    on_change: impl Fn(Change),
     updates: mpsc::Receiver<()>,
     stopped: Arc<AtomicBool>,
     mode: Mode,
@@ -710,6 +754,8 @@ fn run_with_watcher<W: Watcher>(
         let mut dirty = false;
         let mut rescan = false;
         let mut settle = false;
+        // Unknown changes (errors, new coverage) count as possibly moving branches.
+        let mut branches = false;
         while let Ok(event) = events.try_recv() {
             match event {
                 Ok(event) => pending.push(event),
@@ -719,6 +765,7 @@ fn run_with_watcher<W: Watcher>(
                     registered.clear();
                     dirty = true;
                     rescan = true;
+                    branches = true;
                 }
             }
         }
@@ -729,6 +776,7 @@ fn run_with_watcher<W: Watcher>(
             let (batch_dirty, batch_rescan) = batch.assess(&current, &registered, &mut ignores);
             dirty |= batch_dirty;
             rescan |= batch_rescan;
+            branches |= batch_dirty && batch.moves_branches(&current, &mut ignores);
             // A root itself may have been deleted or recreated.
             last_check = None;
         }
@@ -746,6 +794,7 @@ fn run_with_watcher<W: Watcher>(
             } else if dirs != current {
                 // A root or repository appeared or vanished on its own.
                 dirty = true;
+                branches = true;
             }
             if dirs != current {
                 current = dirs;
@@ -760,7 +809,7 @@ fn run_with_watcher<W: Watcher>(
         let watching = !requested.is_empty();
         // Publish invalidation before potentially expensive structural scans.
         if dirty && watching {
-            on_change();
+            on_change(Change { branches });
             last_refresh = Instant::now();
         }
         let retry = failed && last_retry.elapsed() >= retry_after;
@@ -786,12 +835,12 @@ fn run_with_watcher<W: Watcher>(
             failed = !ok;
             last_retry = Instant::now();
             if (recovered || settle) && watching {
-                on_change();
+                on_change(Change { branches: true });
                 last_refresh = Instant::now();
             }
         }
         if failed && watching && last_refresh.elapsed() >= FALLBACK {
-            on_change();
+            on_change(Change::default());
             last_refresh = Instant::now();
         }
         if updates.recv_timeout(Duration::from_millis(100)).is_ok() {
@@ -904,7 +953,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             run_with_watcher(
                 move || roots.clone(),
-                move || {
+                move |_| {
                     let _ = tx.send(());
                 },
                 update_rx,
@@ -1106,6 +1155,9 @@ mod tests {
             ".git/info",
             ".git/info/exclude",
             ".git/refs/heads/build",
+            ".git/worktrees",
+            ".git/worktrees/task",
+            ".git/worktrees/task/HEAD",
             "tools/build",
             "target",
             "vendor/file",
@@ -1118,8 +1170,45 @@ mod tests {
             ".git/logs/HEAD",
             ".git/index.lock",
             ".git/refs/heads/main.lock",
+            ".git/worktrees/task/index",
+            ".git/worktrees/task/logs/HEAD",
+            ".git/worktrees/task/HEAD.lock",
         ] {
             assert!(!relevant(Path::new(p)), "{p}");
+        }
+    }
+
+    #[test]
+    fn only_heads_and_refs_flag_a_possible_branch_move() {
+        let f = Fixture::new();
+        f.write("src/file", "");
+        let roots = vec![f.0.clone()];
+        let mut ignores = Ignores::default();
+        let batch = |paths: &[&str]| {
+            let mut pending = PendingChanges::default();
+            for p in paths {
+                pending.push(
+                    Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+                        .add_path(f.0.join(p)),
+                );
+            }
+            pending
+        };
+        for p in [
+            ".git/HEAD",
+            ".git/packed-refs",
+            ".git/refs/heads/main",
+            ".git/worktrees/task/HEAD",
+        ] {
+            assert!(batch(&[p]).moves_branches(&roots, &mut ignores), "{p}");
+        }
+        for p in [
+            "src/file",
+            ".git/index",
+            ".git/config",
+            ".git/worktrees/task/index",
+        ] {
+            assert!(!batch(&[p]).moves_branches(&roots, &mut ignores), "{p}");
         }
     }
 
@@ -1305,7 +1394,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         watcher.update(
             move || vec![root.clone()],
-            move || {
+            move |_| {
                 let _ = tx.send(());
             },
         );
@@ -1328,7 +1417,7 @@ mod tests {
     fn a_dead_worker_is_replaced_on_the_next_update() {
         let f = Fixture::new();
         let watcher = GitWatcher::default();
-        watcher.update(|| panic!("worker failure"), || {});
+        watcher.update(|| panic!("worker failure"), |_| {});
         let start = Instant::now();
         while !watcher
             .worker
@@ -1346,7 +1435,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         watcher.update(
             move || vec![root.clone()],
-            move || {
+            move |_| {
                 let _ = tx.send(());
             },
         );
@@ -1365,7 +1454,7 @@ mod tests {
                 let _ = release_rx.recv();
                 Vec::new()
             },
-            || {},
+            |_| {},
         );
         entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         let start = Instant::now();

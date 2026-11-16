@@ -59,52 +59,42 @@ import WorkspaceContext from './components/WorkspaceContext'
 import NotificationCenter from './components/NotificationCenter'
 import { useWorkspaceActions } from './lib/workspaceActions'
 import { useNativeMenus } from './lib/nativeMenus'
-import { syncAgentProject, GIT_DIRTY_EVENT } from './lib/ipc'
+import { syncAgentProject, BRANCHES_CHANGED_EVENT, GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
-import { refreshMainWorktree } from './lib/mainWorktree'
+import { cancelBranchRefreshes, scheduleBranchRefresh } from './lib/mainWorktree'
 import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
 import { followAuto } from './lib/auto'
 import { followQueuedPrompts } from './lib/simpleQueue'
 import { followActiveTask, refreshTasks } from './lib/tasks'
 import { syncComponentWindows } from './lib/windows'
-import { projectOf, useStore } from './store'
+import { projectOf, projectStateOf, useStore } from './store'
 
 /** Refresh on project changes, file mutations and focus in any app window. */
 function useGitRefresh() {
   useEffect(() => {
     let stopped = false
-    // Branches change outside the app too (an agent's `git switch` rewrites `HEAD`), so the same
-    // signal re-reads worktree branches, settled per project to one read per burst of events.
-    const branchTimers = new Map<string, ReturnType<typeof setTimeout>>()
-    const refreshBranches = (projectId: string | undefined) => {
-      if (!projectId) return
-      clearTimeout(branchTimers.get(projectId))
-      branchTimers.set(
-        projectId,
-        setTimeout(() => {
-          branchTimers.delete(projectId)
-          if (stopped) return
-          refreshMainWorktree(projectId)
-          void refreshTasks(projectId)
-        }, 250),
-      )
-    }
     // Watchers name their project; window focus sends no payload (null): refresh the active one.
     const unlisten = listen<string | null>(GIT_DIRTY_EVENT, (event) => {
-      if (stopped) return
-      const projectId = event.payload ?? useStore.getState().project?.id
-      void requestGitRefresh(projectId)
-      refreshBranches(projectId)
+      if (!stopped) void requestGitRefresh(event.payload ?? undefined)
     })
-    void unlisten.catch((e) =>
-      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
-    )
+    // Branches change outside the app too (an agent's `git switch` rewrites `HEAD`). The watcher
+    // signals those separately, so file saves and focus never re-read worktrees; each burst
+    // settles to one read per project, and closing the project cancels a pending one.
+    const unlistenBranches = listen<string>(BRANCHES_CHANGED_EVENT, (event) => {
+      if (stopped || !projectStateOf(event.payload)?.project) return
+      scheduleBranchRefresh(event.payload, (id) => void refreshTasks(id, { quiet: true }))
+    })
+    const report = (e: unknown) =>
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
+    void unlisten.catch(report)
+    void unlistenBranches.catch(report)
     return () => {
       stopped = true
-      for (const timer of branchTimers.values()) clearTimeout(timer)
+      cancelBranchRefreshes()
       invalidateGitRefresh()
-      void unlisten.then((stop) => stop()).catch(() => {})
+      for (const stop of [unlisten, unlistenBranches])
+        void stop.then((off) => off()).catch(() => {})
     }
   }, [])
 }

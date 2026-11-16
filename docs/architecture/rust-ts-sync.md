@@ -6,7 +6,7 @@ Types are mirrored by hand — there is no codegen:
 - `crates/patchbay-core/src/model.rs` / `events.rs` / `devices.rs` (serde, `camelCase`) ↔ `apps/desktop/src/types.ts`
 - Tauri command list in `src-tauri/src/lib.rs` (`generate_handler!`) ↔ wrappers in `apps/desktop/src/lib/ipc.ts` (Tauri converts camelCase args to snake_case params)
 - The terminal event channel name `patchbay://terminal` appears in both `service.rs` (`TERMINAL_EVENT`) and `ipc.ts`.
-- The Git invalidation channel `patchbay://git-dirty` appears in both `lib.rs` and `ipc.ts`.
+- The Git invalidation channel `patchbay://git-dirty` and the branch channel `patchbay://branches-changed` (`watch::Change.branches`) appear in both `lib.rs` and `ipc.ts`.
 - `usage::{Window, ProviderUsage, Usage, StatusLine}` ↔ `types.ts::{UsageWindow, ProviderUsage, Usage, StatusLineCapture}`; `usage_read`/`usage_status_line_check`/`usage_status_line_configure` ↔ `usageRead`/`usageStatusLineCheck`/`usageStatusLineConfigure`.
 - `status::{SessionStatus, AgentReport, AgentState}` ↔ the same names in `types.ts`; `TerminalEvent::Status` ↔ the `status` event.
 - `pty::Snapshot` ↔ `TerminalSnapshot`, `files::DirEntry` ↔ `DirEntry`, `git::{ChangedFile, ChangeKind, FileDiff, Review, Affected, Worktree}` ↔ the same names in `types.ts`. Terminal `started`/`exited` events and snapshots carry `startedMs`/`exitedMs`.

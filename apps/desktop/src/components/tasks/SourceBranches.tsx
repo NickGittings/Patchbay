@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { gitBranches, gitWorktrees, type BranchAction } from '../../lib/ipc'
 import { changeBranch } from '../../lib/branches'
-import { refreshMainWorktree, useMainWorktree } from '../../lib/mainWorktree'
+import { readMainWorktrees, refreshMainWorktree, useMainWorktree } from '../../lib/mainWorktree'
 import { requestGitRefresh } from '../../lib/git'
 import { refreshTasks } from '../../lib/tasks'
 import type { Worktree } from '../../types'
@@ -23,7 +23,7 @@ export default function SourceBranches({ projectId }: { projectId: string }) {
   const load = useCallback(async () => {
     const [nextBranches, nextTrees] = await Promise.all([
       gitBranches(projectId),
-      gitWorktrees(projectId),
+      readMainWorktrees(projectId, gitWorktrees(projectId)),
     ])
     setBranches(nextBranches)
     setTrees(nextTrees)
@@ -34,7 +34,11 @@ export default function SourceBranches({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (!open) return
     let disposed = false
-    void Promise.all([gitBranches(projectId), gitWorktrees(projectId)])
+    // Share the worktree read, so the branch label matches what this list shows.
+    void Promise.all([
+      gitBranches(projectId),
+      readMainWorktrees(projectId, gitWorktrees(projectId)),
+    ])
       .then(([nextBranches, nextTrees]) => {
         if (disposed) return
         setBranches(nextBranches)

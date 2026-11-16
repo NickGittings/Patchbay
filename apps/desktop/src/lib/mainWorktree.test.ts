@@ -2,10 +2,11 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import type { Worktree } from '../types'
 import { gitWorktrees } from './ipc'
 import {
-  applyMainWorktrees,
   ensureMainWorktree,
   forgetMainWorktree,
+  readMainWorktrees,
   refreshMainWorktree,
+  scheduleBranchRefresh,
   useMainWorktree,
 } from './mainWorktree'
 
@@ -74,18 +75,73 @@ test('a read that finishes after closing cannot restore the forgotten entry', as
   expect(useMainWorktree.getState().p).toBeUndefined()
 })
 
-test('a listing from the branch menu updates the label and supersedes an older read', async () => {
+test('a menu listing numbered before a newer read cannot override it, even answering last', async () => {
+  const menu = deferred()
+  vi.mocked(gitWorktrees).mockResolvedValueOnce(tree('feat'))
+  void readMainWorktrees('p', menu.promise)
+  refreshMainWorktree('p')
+  await settle()
+  expect(useMainWorktree.getState().p).toEqual({ git: true, branch: 'feat' })
+  menu.resolve(tree('main'))
+  await settle()
+  expect(useMainWorktree.getState().p).toEqual({ git: true, branch: 'feat' })
+})
+
+test('a menu listing started last supersedes an older read', async () => {
   const older = deferred()
   vi.mocked(gitWorktrees).mockReturnValueOnce(older.promise)
   refreshMainWorktree('p')
-  applyMainWorktrees('p', tree('agent-branch'))
-  expect(useMainWorktree.getState().p).toEqual({ git: true, branch: 'agent-branch' })
+  await readMainWorktrees('p', Promise.resolve(tree('agent-branch')))
+  await settle()
   older.resolve(tree('stale'))
   await settle()
   expect(useMainWorktree.getState().p).toEqual({ git: true, branch: 'agent-branch' })
 })
 
-test('a detached main worktree is labelled with its short commit', () => {
-  applyMainWorktrees('p', [{ current: true, head: '0123456789abcdef' }] as Worktree[])
+test('an unchanged listing keeps the same entry, so subscribers do not re-render', async () => {
+  await readMainWorktrees('p', Promise.resolve(tree('main')))
+  await settle()
+  const before = useMainWorktree.getState().p
+  await readMainWorktrees('p', Promise.resolve(tree('main')))
+  await settle()
+  expect(useMainWorktree.getState().p).toBe(before)
+})
+
+test('a detached main worktree is labelled with its short commit', async () => {
+  await readMainWorktrees(
+    'p',
+    Promise.resolve([{ current: true, head: '0123456789abcdef' }] as Worktree[]),
+  )
+  await settle()
   expect(useMainWorktree.getState().p).toEqual({ git: true, branch: 'detached 0123456' })
+})
+
+test('closing a project cancels its scheduled branch refresh', async () => {
+  vi.useFakeTimers()
+  try {
+    const also = vi.fn()
+    scheduleBranchRefresh('p', also)
+    forgetMainWorktree('p')
+    await vi.runAllTimersAsync()
+    expect(gitWorktrees).not.toHaveBeenCalled()
+    expect(also).not.toHaveBeenCalled()
+    expect(useMainWorktree.getState().p).toBeUndefined()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('a burst of branch signals settles to one read', async () => {
+  vi.useFakeTimers()
+  try {
+    vi.mocked(gitWorktrees).mockResolvedValue(tree('feat'))
+    const also = vi.fn()
+    for (let i = 0; i < 3; i++) scheduleBranchRefresh('p', also)
+    await vi.runAllTimersAsync()
+    expect(gitWorktrees).toHaveBeenCalledTimes(1)
+    expect(also).toHaveBeenCalledOnce()
+    expect(useMainWorktree.getState().p).toEqual({ git: true, branch: 'feat' })
+  } finally {
+    vi.useRealTimers()
+  }
 })

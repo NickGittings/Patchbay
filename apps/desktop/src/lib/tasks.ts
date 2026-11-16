@@ -53,8 +53,13 @@ const pending = new Map<string, Promise<void>>()
  * failure keeps the list as it was (a project outside a git repo simply has none). A list older
  * than one already applied may miss a worktree created since, which would drop it as the active
  * task and prune its draft, so it is ignored; callers return once the newest request settles.
+ * `quiet` refreshes (background watcher signals) keep a failure to themselves instead of
+ * repeating the error with every signal.
  */
-export async function refreshTasks(projectId = useStore.getState().project?.id) {
+export async function refreshTasks(
+  projectId = useStore.getState().project?.id,
+  { quiet = false }: { quiet?: boolean } = {},
+) {
   if (getCurrentWebviewWindow().label !== 'main' || !projectId) return
   const seq = (requested.get(projectId) ?? 0) + 1
   requested.set(projectId, seq)
@@ -66,7 +71,12 @@ export async function refreshTasks(projectId = useStore.getState().project?.id) 
       applyTasks(projectId, tasks)
     } catch (e) {
       const s = useStore.getState()
-      if (seq === requested.get(projectId) && s.project?.id === projectId && s.tasks.length)
+      if (
+        !quiet &&
+        seq === requested.get(projectId) &&
+        s.project?.id === projectId &&
+        s.tasks.length
+      )
         s.setMessage(String(e), undefined, undefined, 'error')
     }
   })()
