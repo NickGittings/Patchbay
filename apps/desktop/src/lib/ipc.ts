@@ -568,6 +568,8 @@ export const onAgentQuestionClosed = (
     handler(e.payload),
   )
 export const agentQuestions = () => invoke<import('../types').AgentQuestion[]>('agent_questions')
+export const agentQuestionsWatch = (sessionIds: string[]) =>
+  invoke<void>('agent_questions_watch', { sessionIds })
 export const agentQuestionClaim = (id: string) => invoke<boolean>('agent_question_claim', { id })
 /** `null` leaves the question to the agent's own terminal menu. */
 export const agentQuestionAnswer = (id: string, answers: string[] | null) =>

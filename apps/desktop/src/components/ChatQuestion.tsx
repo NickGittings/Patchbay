@@ -1,12 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import type { SessionRecord, UserQuestion } from '../types'
 import type { ChatInputRequest } from '../lib/chat'
 import {
   answerQuestion,
+  claimQuestion,
   composeAnswers,
   OTHER,
   pendingQuestion,
+  releaseQuestion,
   useAgentQuestions,
   type QuestionChoice,
 } from '../lib/agentQuestions'
@@ -32,6 +34,21 @@ export default function ChatQuestion({
   const [choices, setChoices] = useState<(QuestionChoice | undefined)[]>([])
   const [sent, setSent] = useState<'chat' | 'terminal' | 'failed'>()
   const [terminalOpen, setTerminalOpen] = useState(false)
+  // A newer question in the same input wait (a replaced one, or Codex asking again after
+  // a declined call) starts over: earlier picks and a sent answer belong to the old one.
+  const [askedId, setAskedId] = useState(pending?.id)
+  if (pending && pending.id !== askedId) {
+    setAskedId(pending.id)
+    setChoices([])
+    setSent(undefined)
+  }
+  // Shown on screen, so its hook waits for the answer; leaving hands it back.
+  const pendingId = pending?.id
+  useEffect(() => {
+    if (!pendingId) return
+    void claimQuestion(pendingId)
+    return () => releaseQuestion(pendingId)
+  }, [pendingId])
   const answers = composeAnswers(questions, choices)
   const answerable = !!pending && !sent && questions.length > 0
   const name = record.metadata.name
@@ -71,6 +88,13 @@ export default function ChatQuestion({
             Send answer
           </button>
           <button onClick={() => void send(null)}>Answer in terminal</button>
+          <span className="chat-question-note">
+            {name} asks in its terminal from{' '}
+            {new Date(pending.deadlineMs).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </span>
         </div>
       ) : (
         <p className="chat-question-note" role="status">

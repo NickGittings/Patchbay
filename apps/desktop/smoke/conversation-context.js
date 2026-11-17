@@ -73,8 +73,14 @@
         await until('compacting indicator', () => document.body.textContent.includes('Compacting…'))
       }
       if (provider === 'codex') await smoke.terminalWrite(sid, 'compact\r')
-      // The question tool's hook: unclaimed, the provider's own menu asks; claimed and
-      // answered, the hook hands the answer back. Nothing is typed into the terminal.
+      await until('compaction completion', () => !!context()?.lastCompactionMs)
+      assert(
+        agent()?.state === (provider === 'claude' ? 'needsInput' : 'working'),
+        'Compaction ended the turn',
+      )
+      // The question tool's hook. Chat not showing the agent, or not claiming the question,
+      // leaves the provider's own menu to ask; claimed and answered, the hook hands the
+      // answer back. Nothing is typed into the terminal.
       const questions = smoke.agentQuestions
       await questions.listen()
       const offered = () =>
@@ -86,6 +92,11 @@
           .match(/fixture-answer (.*)/)?.[1]
       let from = smoke.terminalText(sid).text.length
       await smoke.terminalWrite(sid, 'question\r')
+      await until('unwatched question asks in the terminal', () => answered(from) === 'none')
+      assert(!offered(), 'Unwatched question was offered to Chat')
+      questions.watch([sid])
+      from = smoke.terminalText(sid).text.length
+      await smoke.terminalWrite(sid, 'question\r')
       const first = await until('question offered', offered)
       assert(first.questions[0].options[1].label === 'Blue', 'Question lost its options')
       await until('unclaimed question falls back', () => answered(from) === 'none')
@@ -95,18 +106,14 @@
         'question offered again',
         () => offered()?.id !== first.id && offered(),
       )
-      await questions.claim([sid])
+      await questions.claim(second.id)
       await until('question status', () => agent()?.questions?.[0]?.question === 'Pick a color')
       assert(await questions.answer(second.id, ['Blue']), 'Chat answer refused')
       // Claude takes the answer as its tool's own; Codex gets it as the declined call's reason.
       const expected = provider === 'claude' ? 'allow:Blue' : 'deny:Blue'
       const output = await until('hook answer', () => answered(from))
       assert(output.trim() === expected, `Hook answered ${output}, expected ${expected}`)
-      await until('compaction completion', () => !!context()?.lastCompactionMs)
-      assert(
-        agent()?.state === (provider === 'claude' ? 'needsInput' : 'working'),
-        'Compaction ended the turn',
-      )
+      questions.watch(null)
       await smoke.terminalWrite(sid, 'clear\rlate-stop\r')
       await until(
         'same-id clear',

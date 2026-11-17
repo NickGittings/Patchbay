@@ -3,7 +3,7 @@ use crate::{AppState, CmdResult, Project, blocking, err, for_task};
 use patchbay_core::agent_bridge::{LaunchContext, Role, Server};
 pub use patchbay_core::agent_commands::Activity;
 use patchbay_core::agent_commands::{Host, ProjectScope};
-use patchbay_core::agent_questions::Pending;
+use patchbay_core::agent_questions::{Asked, Pending};
 use patchbay_core::session::{AgentSession, Request};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -72,30 +72,29 @@ impl Host for Desktop {
         questions: Vec<patchbay_core::agent_hooks::UserQuestion>,
         wait: std::time::Duration,
     ) -> Option<Vec<String>> {
-        let pending = Pending {
-            id: String::new(),
+        let asked = Asked {
             project_id: launch.project_id.clone(),
             task: launch.task.clone(),
             session_id: launch.agent_session.clone(),
             generation: launch.generation,
             questions,
-            deadline_ms: 0,
-            claimed: false,
         };
-        let mut id = String::new();
+        let mut id = None;
         let answer = self.0.state::<AppState>().questions.ask(
-            pending,
+            asked,
             patchbay_core::agent_questions::CLAIM_WAIT,
             wait,
             |offered| {
-                id.clone_from(&offered.id);
+                id = Some(offered.id.clone());
                 let _ = self.0.emit("patchbay://agent-question", offered);
             },
         );
-        let _ = self.0.emit(
-            "patchbay://agent-question-closed",
-            serde_json::json!({"id":id,"answered":answer.is_some()}),
-        );
+        if let Some(id) = id {
+            let _ = self.0.emit(
+                "patchbay://agent-question-closed",
+                serde_json::json!({"id":id,"answered":answer.is_some()}),
+            );
+        }
         answer
     }
 }
@@ -104,6 +103,12 @@ impl Host for Desktop {
 #[tauri::command]
 pub fn agent_questions(state: State<'_, AppState>) -> Vec<Pending> {
     state.questions.list()
+}
+
+/// The sessions whose questions Chat shows; others ask in their terminals at once.
+#[tauri::command]
+pub fn agent_questions_watch(session_ids: Vec<String>, state: State<'_, AppState>) {
+    state.questions.watch(session_ids);
 }
 
 /// Chat shows the question, so its hook keeps waiting for the answer.

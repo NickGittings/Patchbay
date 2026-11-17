@@ -455,8 +455,14 @@
 }
 .chat-question-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
   margin-bottom: 8px;
+}
+.chat-question-actions .chat-question-note {
+  margin: 0;
+  font-size: 12px;
 }
 .chat-question-note {
   margin: 0 0 8px;

@@ -1,7 +1,11 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import type { AgentQuestion, UserQuestion } from '../types'
 
-const calls: { claim: string[]; answer: [string, string[] | null][] } = { claim: [], answer: [] }
+const calls: { claim: string[]; answer: [string, string[] | null][]; watch: string[][] } = {
+  claim: [],
+  answer: [],
+  watch: [],
+}
 vi.mock('./ipc', () => ({
   agentQuestions: async () => [],
   agentQuestionClaim: async (id: string) => {
@@ -12,16 +16,20 @@ vi.mock('./ipc', () => ({
     calls.answer.push([id, answers])
     return true
   },
+  agentQuestionsWatch: async (ids: string[]) => {
+    calls.watch.push(ids)
+  },
   onAgentQuestion: async () => () => {},
   onAgentQuestionClosed: async () => () => {},
 }))
 
 const {
-  claimQuestions,
+  claimQuestion,
   composeAnswers,
   OTHER,
   pendingQuestion,
-  releaseQuestions,
+  releaseQuestion,
+  watchQuestions,
   useAgentQuestions,
 } = await import('./agentQuestions')
 
@@ -38,12 +46,12 @@ const offered = (id: string, sessionId: string, generation: number | null = 1): 
   generation,
   questions: [question('Pick', ['A'])],
   deadlineMs: 0,
-  claimed: false,
 })
 
 beforeEach(() => {
   calls.claim = []
   calls.answer = []
+  calls.watch = []
   useAgentQuestions.setState({ pending: {}, claimed: {} })
 })
 
@@ -69,19 +77,35 @@ test('a pending question belongs to its session’s current process only', () =>
   expect(pendingQuestion(pending, 'other', 2)).toBeUndefined()
 })
 
-test('Chat claims only the questions of agents it shows, and hands them back when it stops', async () => {
-  useAgentQuestions.setState({
-    pending: { a: offered('a', 'lead'), b: offered('b', 'worker'), gone: offered('gone', 'lead2') },
-  })
-  await claimQuestions(new Set(['lead', 'lead2']))
-  expect(calls.claim).toEqual(['a', 'gone'])
-  expect(Object.keys(useAgentQuestions.getState().pending).sort()).toEqual(['a', 'b'])
-  await claimQuestions(new Set(['lead']))
-  expect(calls.claim).toEqual(['a', 'gone'])
+test('a card claims its question, and leaving the screen hands it back', async () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+  useAgentQuestions.setState({ pending: { a: offered('a', 'lead'), gone: offered('gone', 'x') } })
+  await claimQuestion('gone')
+  expect(useAgentQuestions.getState().pending.gone).toBeUndefined()
+  await claimQuestion('a')
+  await claimQuestion('a')
+  expect(calls.claim).toEqual(['gone', 'a'])
 
-  releaseQuestions(new Set(['lead']))
+  // A remount (development double effects) keeps the claim.
+  releaseQuestion('a')
+  await claimQuestion('a')
+  await tick()
   expect(calls.answer).toEqual([])
-  releaseQuestions(null)
+
+  releaseQuestion('a')
+  await tick()
   expect(calls.answer).toEqual([['a', null]])
   expect(useAgentQuestions.getState().pending.a).toBeUndefined()
+})
+
+test('Chat tells the desktop which sessions it shows, keeping them across a remount', async () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+  watchQuestions(['lead'])
+  watchQuestions(null)
+  watchQuestions(['lead'])
+  await tick()
+  expect(calls.watch).toEqual([['lead'], ['lead']])
+  watchQuestions(null)
+  await tick()
+  expect(calls.watch).toEqual([['lead'], ['lead'], []])
 })

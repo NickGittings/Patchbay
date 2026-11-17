@@ -469,16 +469,15 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                 },
             )?;
             let snapshot = snapshot.context("The agent's session has ended")?;
+            // Unlike plans, both must be known: an agent whose conversation isn't reported
+            // yet asks in its terminal rather than risk showing a nested run's question.
+            let current = snapshot
+                .status
+                .agent
+                .as_ref()
+                .and_then(|a| a.conversation_id.as_deref());
             anyhow::ensure!(
-                snapshot.running
-                    && current_conversation(
-                        snapshot
-                            .status
-                            .agent
-                            .as_ref()
-                            .and_then(|a| a.conversation_id.as_deref()),
-                        conversation.as_deref()
-                    ),
+                snapshot.running && current.is_some() && current == conversation.as_deref(),
                 "Only the agent's own conversation can ask in Chat"
             );
             // Leave the provider time to show its own menu once the hook stops waiting.
@@ -833,6 +832,11 @@ mod tests {
         );
         // A nested run inherits the capability but not the conversation.
         assert!(dispatch(&host, &launch(), ask("nested", 1)).is_err());
+        let mut unknown = ask("mine", 1);
+        if let Action::AskUser { conversation, .. } = &mut unknown {
+            *conversation = None;
+        }
+        assert!(dispatch(&host, &launch(), unknown).is_err());
         assert!(dispatch(&host, &launch(), ask("mine", 0)).is_err());
         dispatch(&host, &launch(), ask("mine", 9)).unwrap();
         assert_eq!(

@@ -3208,6 +3208,7 @@ pub fn run() {
                 review_prune,
                 agent_commands::task_activities,
                 agent_commands::agent_questions,
+                agent_commands::agent_questions_watch,
                 agent_commands::agent_question_claim,
                 agent_commands::agent_question_answer,
                 agent_commands::sync_agent_project,

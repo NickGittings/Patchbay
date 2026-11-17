@@ -236,6 +236,16 @@ fn answer_output(provider: Adapter, input: &Value, answers: &[String]) -> Option
 /// Any failure, a skip, or no answer in time leaves the provider's own menu to ask.
 fn ask_in_chat(provider: Adapter, input: &Value, questions: Vec<UserQuestion>) -> Option<Value> {
     use crate::agent_bridge::{Action, call_from_env_within};
+    // Chat answers what it shows; a call it can't show in full (too many or blank
+    // questions) would take answers that can't be handed back, so the menu asks.
+    let asked = input
+        .get("tool_input")
+        .and_then(|t| t.get("questions"))
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    if asked != questions.len() {
+        return None;
+    }
     let conversation = input
         .get("session_id")
         .and_then(Value::as_str)

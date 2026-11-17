@@ -4,18 +4,20 @@ import {
   agentQuestionAnswer,
   agentQuestionClaim,
   agentQuestions,
+  agentQuestionsWatch,
   onAgentQuestion,
   onAgentQuestionClosed,
 } from './ipc'
 
 /**
- * Agent questions whose provider hook is waiting for a Chat answer. A question Chat doesn't
- * claim within a few seconds, skips, or leaves unanswered until its deadline goes to the
- * agent's own terminal menu instead; nothing here writes to the terminal.
+ * Agent questions whose provider hook is waiting for a Chat answer. Only sessions Chat shows
+ * are offered (`watchQuestions`); a question whose card doesn't claim it within a few
+ * seconds, that the user skips, or that stays unanswered until its deadline goes to the
+ * agent's own terminal menu instead. Nothing here writes to the terminal.
  */
 interface AgentQuestionsState {
   pending: Record<string, AgentQuestion>
-  /** Questions this window claimed and must hand back when Chat stops showing them. */
+  /** Questions a card in this window claimed and hands back when it leaves the screen. */
   claimed: Record<string, true>
 }
 
@@ -42,11 +44,20 @@ export function listenAgentQuestions() {
         return { pending: { ...pending, [question.id]: question } }
       }),
     )
-    await onAgentQuestionClosed(({ id }) => remove(id))
+    // Questions that end while the list loads must not come back with it.
+    let closed: Set<string> | undefined = new Set()
+    await onAgentQuestionClosed(({ id }) => {
+      closed?.add(id)
+      remove(id)
+    })
     const waiting = await agentQuestions().catch(() => [])
-    useAgentQuestions.setState((s) => ({
-      pending: { ...Object.fromEntries(waiting.map((q) => [q.id, q])), ...s.pending },
-    }))
+    const ended = closed
+    closed = undefined
+    useAgentQuestions.setState((s) => {
+      const sessions = new Set(Object.values(s.pending).map((q) => q.sessionId))
+      const listed = waiting.filter((q) => !ended.has(q.id) && !sessions.has(q.sessionId))
+      return { pending: { ...Object.fromEntries(listed.map((q) => [q.id, q])), ...s.pending } }
+    })
   })().catch(() => {
     listening = undefined
   })
@@ -66,26 +77,41 @@ export function pendingQuestion(
   )
 }
 
-/** Claim the questions of sessions Chat shows, so their hooks wait for an answer. */
-export async function claimQuestions(sessionIds: ReadonlySet<string>) {
-  const { pending, claimed } = useAgentQuestions.getState()
-  for (const question of Object.values(pending)) {
-    if (!sessionIds.has(question.sessionId) || claimed[question.id]) continue
-    useAgentQuestions.setState((s) => ({ claimed: { ...s.claimed, [question.id]: true } }))
-    const ok = await agentQuestionClaim(question.id).catch(() => false)
-    if (!ok) remove(question.id)
-  }
+// Releases wait a tick, so a remount (React's development double effects, or a re-keyed
+// card) keeps what it showed instead of handing it back to the terminal.
+let unwatch: ReturnType<typeof setTimeout> | undefined
+const releasing = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** The sessions Chat shows; `null` once it shows none. Others ask in their terminals. */
+export function watchQuestions(sessionIds: readonly string[] | null) {
+  clearTimeout(unwatch)
+  const send = () => void agentQuestionsWatch([...(sessionIds ?? [])]).catch(() => {})
+  if (sessionIds) send()
+  else unwatch = setTimeout(send, 0)
 }
 
-/** Hand claimed questions of sessions Chat no longer shows back to their terminals. */
-export function releaseQuestions(sessionIds: ReadonlySet<string> | null) {
-  const { pending, claimed } = useAgentQuestions.getState()
-  for (const id of Object.keys(claimed)) {
-    const question = pending[id]
-    if (question && sessionIds?.has(question.sessionId)) continue
-    remove(id)
-    if (question) void agentQuestionAnswer(id, null).catch(() => {})
-  }
+/** A card on screen claims its question, so the hook waits for the answer. */
+export async function claimQuestion(id: string) {
+  clearTimeout(releasing.get(id))
+  releasing.delete(id)
+  if (useAgentQuestions.getState().claimed[id]) return
+  useAgentQuestions.setState((s) => ({ claimed: { ...s.claimed, [id]: true } }))
+  if (!(await agentQuestionClaim(id).catch(() => false))) remove(id)
+}
+
+/** A card leaving the screen hands its unanswered question back to the terminal. */
+export function releaseQuestion(id: string) {
+  clearTimeout(releasing.get(id))
+  releasing.set(
+    id,
+    setTimeout(() => {
+      releasing.delete(id)
+      const { pending, claimed } = useAgentQuestions.getState()
+      if (!claimed[id]) return
+      remove(id)
+      if (pending[id]) void agentQuestionAnswer(id, null).catch(() => {})
+    }, 0),
+  )
 }
 
 /** Send answers (or `null` for the terminal). False when the question already ended. */

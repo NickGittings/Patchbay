@@ -108,7 +108,8 @@ import * as agentQuestionsModule from './agentQuestions'
 const agentQuestions = {
   store: agentQuestionsModule.useAgentQuestions,
   listen: agentQuestionsModule.listenAgentQuestions,
-  claim: (ids: string[]) => agentQuestionsModule.claimQuestions(new Set(ids)),
+  watch: agentQuestionsModule.watchQuestions,
+  claim: agentQuestionsModule.claimQuestion,
   answer: agentQuestionsModule.answerQuestion,
 }
 

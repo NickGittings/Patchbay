@@ -602,9 +602,8 @@ export interface AgentQuestion {
   sessionId: string
   generation: number | null
   questions: UserQuestion[]
-  /** Unix milliseconds. */
+  /** When the agent's own menu takes over, in Unix milliseconds. */
   deadlineMs: number
-  claimed: boolean
 }
 
 export interface AgentContext {
