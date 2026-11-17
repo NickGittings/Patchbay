@@ -33,13 +33,12 @@ export default function SimpleAgent({
   return (
     <article className="simple-agent" data-session={sessionId}>
       <header>
-        <strong>
-          {identity.label}
-          {identity.preset && <span> · Preset: {identity.preset}</span>}
-        </strong>
+        <strong>{identity.title}</strong>
         {latest && <SimpleStatus sessions={[session]} />}
         {record && (
           <button
+            aria-label={`View ${identity.role} terminal`}
+            title={`View ${identity.role} terminal`}
             onClick={() => {
               const s = useStore.getState()
               useSimpleUi.getState().patch(simpleKey(s.project?.id, s.activeTask), {
@@ -48,7 +47,7 @@ export default function SimpleAgent({
               })
             }}
           >
-            View {identity.role} terminal
+            Terminal
           </button>
         )}
       </header>

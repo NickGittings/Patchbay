@@ -212,7 +212,7 @@ test('handoffs apply to their own background worktree without clearing another w
     'Background handoff',
   )
 })
-test('clear visible history leaves coordination, provider and worker state untouched', () => {
+test('clear chat leaves coordination, provider and worker state untouched', () => {
   const current = cacheTeam(team())
   expect(clearSimpleChat('p', null)).toBe(true)
   expect(useChatTeams.getState().teams.p).toEqual([current])

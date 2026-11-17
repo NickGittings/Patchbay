@@ -40,6 +40,16 @@
   gap: 6px;
   flex-wrap: wrap;
 }
+.copy-icon {
+  display: inline-flex;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: var(--muted);
+}
+.copy-icon:hover {
+  color: var(--text);
+}
 .copy-feedback {
   position: absolute;
   width: 1px;

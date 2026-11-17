@@ -232,15 +232,15 @@ export default function ChatMode({
                 disabled={!!pending || team.state === 'stopped'}
                 onClick={() => setConfirm({ kind: 'stop', key })}
               >
-                Stop work…
+                Stop work
               </MenuItem>
               <MenuSeparator />
               <MenuItem
                 disabled={!!team.reset || !!ui.pendingAction || !!ui.pendingWorkflow}
-                title="Start a fresh provider conversation. Workers and a concise work handoff are retained."
+                title="Reset the lead’s provider context. Workers and a concise work handoff are retained."
                 onClick={() => setConfirm({ kind: 'fresh', key })}
               >
-                Start fresh conversation…
+                Clear lead context
               </MenuItem>
             </>
           )}
@@ -249,7 +249,7 @@ export default function ChatMode({
             onClick={() => setConfirm({ kind: 'clear', key })}
             title="Clear Patchbay’s saved history. Provider transcripts and terminal history remain available."
           >
-            Clear visible history…
+            Clear chat
           </MenuItem>
         </Menu>
         <button
@@ -263,7 +263,8 @@ export default function ChatMode({
       </header>
       {confirm?.kind === 'clear' && (
         <Dialog
-          title="Clear visible history"
+          title="Clear chat"
+          className="centered chat-confirm"
           onClose={closeConfirm}
           footer={
             <>
@@ -288,7 +289,8 @@ export default function ChatMode({
       )}
       {team && confirm?.kind === 'fresh' && (
         <Dialog
-          title="Start fresh conversation"
+          title="Clear lead context"
+          className="centered chat-confirm"
           onClose={closeConfirm}
           footer={
             <>
@@ -305,20 +307,21 @@ export default function ChatMode({
                   })
                 }}
               >
-                Start fresh
+                Clear context
               </button>
             </>
           }
         >
           <p>
-            Start a fresh provider conversation? Provider context resets and visible history is
-            replaced with a concise handoff. Workers and results are retained.
+            Clear the lead’s context? Its provider conversation resets and the chat is replaced with
+            a concise handoff. Workers and results are retained.
           </p>
         </Dialog>
       )}
       {team && confirm?.kind === 'stop' && (
         <Dialog
           title="Stop work"
+          className="centered chat-confirm"
           onClose={closeConfirm}
           footer={
             <>

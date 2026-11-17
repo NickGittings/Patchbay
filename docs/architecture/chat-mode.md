@@ -37,7 +37,7 @@ Tool activity remains mirrored through `HookEvent.{tool,target,file_target}`, `s
 
 Plan cards use the saved plan or submitted proposal timestamp. Conversation groups split around intervening plan cards, and equal-time items have deterministic ordering. Later replies never move an earlier plan. Clear hides pre-boundary cards while keeping the underlying plan and Build eligibility.
 
-**Clear visible history** confirms inline for its selected worktree and rechecks pending send/workflow actions before clearing. `SimpleState.clearBoundary` retains a timestamp and per-session generation/sequence watermarks. `retainedWorkflow` contains text-free launch, prompt and workflow facts used by ownership, planning boundaries, merge routing and available actions. Restoration, bounded history, rendering, ingestion, reconciliation and draft handoff honor that boundary, so snapshots cannot replay removed text. Drafts, queued prompts, terminals, running agents and provider context, Auto, files and plans are preserved. Provider transcripts and terminal history remain accessible.
+**Clear chat** confirms inline for its selected worktree and rechecks pending send/workflow actions before clearing. `SimpleState.clearBoundary` retains a timestamp and per-session generation/sequence watermarks. `retainedWorkflow` contains text-free launch, prompt and workflow facts used by ownership, planning boundaries, merge routing and available actions. Restoration, bounded history, rendering, ingestion, reconciliation and draft handoff honor that boundary, so snapshots cannot replay removed text. Drafts, queued prompts, terminals, running agents and provider context, Auto, files and plans are preserved. Provider transcripts and terminal history remain accessible.
 
 A successful merge into `main` automatically clears the source worktree's visible Chat history
 using the same boundary. The global merge-cleanup watcher waits for confirmed Git integration
@@ -83,18 +83,19 @@ ordinary session resumes keep their original purpose. A running legacy lead with
 must be stopped once, then reconnected by sending again. Its saved history remains available.
 
 Chat identities use durable team membership: Lead for the team's lead, Builder for its workers
-and adopted scopes, otherwise Agent. Provider and preset labels remain separate. Opening a
+and adopted scopes, otherwise Agent. Headers, the drawer and the composer show `chatIdentity`'s
+`title` (role · provider · preset), omitting a preset named after its provider. Opening a
 Builder terminal changes the drawer identity while the composer continues to address its recipient.
 
 Each worktree can have one persistent chat team. The saved `selectedAgent` becomes its lead when
 coordination is initialized; existing conversations migrate paused, preserving their history and
 recipient without launching workers. **Switch agent** queues an explicit durable provider-conversation
-replacement. **Start fresh conversation** confirms inline that provider context resets and visible
+replacement. **Clear lead context** confirms inline that provider context resets and visible
 history is replaced with a concise handoff. It uses the same durable replacement while retaining
 workers, assignments, results, inbox messages and checkpoints. The confirmation belongs to one
 visit to a worktree and disappears after switching away; pending send/workflow actions and an
 existing reset disable confirmation. Failed replacement preserves history.
-**Clear visible history** only advances the existing reply
+**Clear chat** only advances the existing reply
 and plan-card boundaries; it leaves provider context and team state untouched.
 
 `orchestration::chat` stores teams alongside provider runs in the private task store, independently
@@ -161,7 +162,8 @@ delivery wait while running workers may still submit results. Reconciliation reb
 the replacement generation before delivery resumes. The visible transcript clears only after a
 confirmed replacement, and retains a concise handoff with an idempotent application marker. Failed
 or interrupted replacement preserves history and retries the same request identity after explicit
-Resume. Unfinished coordination restores paused after app restart, including uncertain deliveries.
+Resume. Unfinished coordination restores paused after app restart, including uncertain deliveries;
+Stop clears the restart notice (`RESTART_NOTICE`) from the team and its rounds; other errors, such as Block reasons, remain. The status line shows the notice in place of `Paused` rather than as a separate alert.
 Session protocol 23 retains protocol 22’s generation-bound resets for existing leads by session ID and generation inside the service, retaining
 their private environment, original launch options and recoverable briefing without exposing those
 settings in session summaries. Retried reset identities launch only once, and stale generations

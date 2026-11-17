@@ -221,9 +221,7 @@ export default function ChatModeTimeline({
         {failure && <p role="alert">{failure}</p>}
         {drawerShown && drawerRecord && (
           <div className="simple-terminal-drawer" aria-label={`${drawerIdentity.role} terminal`}>
-            <p>
-              Live activity · {drawerIdentity.label} · Preset: {drawerIdentity.preset}
-            </p>
+            <p>{drawerIdentity.title}</p>
             <TerminalPane
               key={drawerRecord.id}
               componentId={drawerRecord.metadata.componentId}

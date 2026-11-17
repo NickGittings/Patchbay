@@ -17,7 +17,9 @@
     if (!value) throw new Error(text)
   }
   const button = (text, root = document) =>
-    [...root.querySelectorAll('button')].find((b) => b.textContent.trim() === text)
+    [...root.querySelectorAll('button')].find(
+      (b) => b.textContent.trim() === text || b.getAttribute('aria-label') === text,
+    )
   // React commits a click's update in a microtask; checking right after it avoids a polling round,
   // which background smoke windows throttle to about a second.
   const soon = async (label, check) => {
@@ -71,7 +73,7 @@
     await until('persistent agent', () => team()?.lead.sessionId)
     const lead = team().lead.sessionId
     assert(
-      document.querySelector('.chat-recipient').textContent.includes('Talking to Lead · Codex'),
+      document.querySelector('.chat-recipient').textContent.includes('Lead · Codex'),
       'Composer does not identify the durable lead',
     )
     const jobs = () =>
@@ -117,31 +119,29 @@
     await until('worker drawer', () => document.querySelector('.simple-terminal-drawer'))
     assert(state().simple.selectedAgent === lead, 'opening worker changed composer recipient')
     assert(
-      document.querySelector('.chat-recipient').textContent.includes('Talking to Lead'),
+      document.querySelector('.chat-recipient').textContent.includes('Lead · Codex'),
       'worker replaced lead identity',
     )
     // Fresh conversation is a separate, cancellable operation with no eager reset.
-    ;(await chatMenu('Start fresh conversation…')).click()
-    const fresh = await until('fresh confirmation', () => confirmDialog('Start fresh conversation'))
+    ;(await chatMenu('Clear lead context')).click()
+    const fresh = await until('fresh confirmation', () => confirmDialog('Clear lead context'))
     assert(
-      fresh.textContent.includes('Provider context resets') &&
+      fresh.textContent.includes('Its provider conversation resets') &&
         fresh.textContent.includes('Workers and results are retained'),
       'fresh confirmation missing consequences',
     )
     const unchangedGeneration = team().lead.generation
     const teamKey = smoke.simpleKey(projectId, null)
     smoke.simpleUi.getState().patch(teamKey, { pendingAction: true })
-    await until('fresh action guarded', () => button('Start fresh', fresh).disabled)
-    button('Start fresh', fresh).click()
+    await until('fresh action guarded', () => button('Clear context', fresh).disabled)
+    button('Clear context', fresh).click()
     assert(team().lead.generation === unchangedGeneration, 'pending action bypassed fresh guard')
     smoke.simpleUi.getState().patch(teamKey, { pendingAction: false })
     button('Cancel', fresh).click()
-    await until('fresh cancelled', () => !confirmDialog('Start fresh conversation'))
+    await until('fresh cancelled', () => !confirmDialog('Clear lead context'))
     assert(team().lead.generation === unchangedGeneration, 'cancel reset provider context')
-    ;(await chatMenu('Start fresh conversation…')).click()
-    await until('confirmation before worktree switch', () =>
-      confirmDialog('Start fresh conversation'),
-    )
+    ;(await chatMenu('Clear lead context')).click()
+    await until('confirmation before worktree switch', () => confirmDialog('Clear lead context'))
     await smoke.createTask({
       title: 'Fresh confirmation scope',
       branch: 'fresh-confirmation-scope',
@@ -151,24 +151,24 @@
       'other fresh scope',
       () => state().activeTask && document.querySelector('.simple-chat'),
     )
-    assert(!confirmDialog('Start fresh conversation'), 'worktree inherited fresh confirmation')
+    assert(!confirmDialog('Clear lead context'), 'worktree inherited fresh confirmation')
     state().setActiveTask(null)
     await until(
       'return from fresh scope',
       () => !state().activeTask && document.querySelector('[aria-label="Work status"]'),
     )
-    assert(!confirmDialog('Start fresh conversation'), 'return reopened fresh confirmation')
+    assert(!confirmDialog('Clear lead context'), 'return reopened fresh confirmation')
     const originalGeneration = team().lead.generation
-    await chatMenu('Start fresh conversation…')
+    await chatMenu('Clear lead context')
     ;(
       await until('clear conversation enabled', () => {
-        const b = button('Start fresh conversation…')
+        const b = button('Clear lead context')
         return b && !b.disabled && b
       })
     ).click()
     button(
-      'Start fresh',
-      await until('fresh confirmation again', () => confirmDialog('Start fresh conversation')),
+      'Clear context',
+      await until('fresh confirmation again', () => confirmDialog('Clear lead context')),
     ).click()
     await until('new lead conversation', () => team()?.lead.generation > originalGeneration)
     state().setSimpleMode(false)
@@ -228,20 +228,16 @@
       document.querySelector(`.simple-agent[data-session="${team().lead.sessionId}"] header`),
     )
     assert(
-      leadHeader.textContent.includes('Lead · Codex') &&
-        leadHeader.textContent.includes('Preset: Team agent') &&
+      leadHeader.textContent.includes('Lead · Codex · Team agent') &&
         button('View Lead terminal', leadHeader),
       'Message header mixed the Lead role, provider or preset',
     )
     assert(
-      document.querySelector('.chat-recipient').textContent.includes('Preset: Team agent'),
+      document.querySelector('.chat-recipient').textContent.includes('Lead · Codex · Team agent'),
       'Composer omitted the selected preset',
     )
-    ;(await chatMenu('Clear visible history…')).click()
-    button(
-      'Clear',
-      await until('clear confirmation', () => confirmDialog('Clear visible history')),
-    ).click()
+    ;(await chatMenu('Clear chat')).click()
+    button('Clear', await until('clear confirmation', () => confirmDialog('Clear chat'))).click()
     assert(
       jobs().every((j) => j.summary),
       'visible clear erased worker results',
@@ -257,7 +253,7 @@
     await until('original worktree team', () =>
       document.querySelector('[aria-label="Work status"]'),
     )
-    ;(await chatMenu('Stop work…')).click()
+    ;(await chatMenu('Stop work')).click()
     button('Stop work', await until('stop confirmation', () => confirmDialog('Stop work'))).click()
     await until('stopped team', () => team().state === 'stopped')
     assert(

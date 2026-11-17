@@ -371,13 +371,6 @@ export default function SimpleComposer({
   const queuedSession = useStore((s) => (ui.queued ? s.sessions[ui.queued.sessionId] : undefined))
   return (
     <div className="simple-composer">
-      {(recipient || team) && (
-        <p className="chat-recipient" role="status">
-          {recipient
-            ? `Talking to ${identity.label} · Preset: ${identity.preset} · ${status.label}`
-            : status.label}
-        </p>
-      )}
       {exhausted.map(({ provider, key, window }) => (
         <p className="simple-usage-warning" role="status" key={`${provider}:${key}`}>
           {providerName(provider)} {windowName(key)} usage exhausted (
@@ -475,7 +468,11 @@ export default function SimpleComposer({
         </div>
       )}
       <div className="simple-composer-controls">
-        <span>{ui.connection ?? status.label}</span>
+        <span className="chat-recipient" role="status">
+          {recipient
+            ? `${identity.title} · ${ui.connection ?? status.label}`
+            : (ui.connection ?? status.label)}
+        </span>
         {recipient && running && !autoActive && (
           <button disabled={pending} onClick={() => stopTerminal(recipient.id)}>
             Stop {identity.role}

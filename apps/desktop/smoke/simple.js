@@ -19,7 +19,9 @@
     if (!value) throw new Error(text)
   }
   const button = (text, root = document) =>
-    [...root.querySelectorAll('button')].find((b) => b.textContent.trim() === text)
+    [...root.querySelectorAll('button')].find(
+      (b) => b.textContent.trim() === text || b.getAttribute('aria-label') === text,
+    )
   // React commits a click's update in a microtask; checking right after it avoids a polling round,
   // which background smoke windows throttle to about a second.
   const soon = async (label, check) => {
@@ -117,7 +119,7 @@
     await until('planner selected', () => state().simple?.selectedAgent === plannerRecord.id)
     // Adopt the legacy manual session, then release coordination for this workflow fixture.
     await smoke.refreshChatTeams(projectId)
-    click(await chatMenu('Stop work…'))
+    click(await chatMenu('Stop work'))
     click(button('Stop work', await until('stop confirmation', () => confirmDialog('Stop work'))))
     await until(
       'coordination stopped for manual workflow',
@@ -260,7 +262,8 @@
         )
       }
     }
-    click(button('View Lead terminal'))
+    // Scoped to the composer: message headers' pinning View buttons share this accessible name.
+    click(button('View Lead terminal', document.querySelector('.simple-composer')))
     await until('planner drawer', () =>
       document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm'),
     )

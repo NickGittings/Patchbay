@@ -22,12 +22,11 @@ export function chatIdentity(
       : 'Agent'
   const provider = record && (profileHookProvider(record.spec.command) ?? record.metadata.adapter)
   const providerLabel = provider === 'codex' ? 'Codex' : provider ? 'Claude' : undefined
-  return {
-    role,
-    provider: providerLabel,
-    preset: record?.metadata.name,
-    label: [role, providerLabel].filter(Boolean).join(' · '),
-  }
+  const preset = record?.metadata.name
+  const label = [role, providerLabel].filter(Boolean).join(' · ')
+  // A preset named after its provider adds nothing beside the provider label.
+  const distinct = preset && preset.toLowerCase() !== providerLabel?.toLowerCase()
+  return { role, title: distinct ? `${label} · ${preset}` : label }
 }
 
 export function useChatIdentity(record: SessionRecord | undefined) {

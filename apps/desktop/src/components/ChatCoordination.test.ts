@@ -10,6 +10,7 @@ vi.mock('../store', () => ({
   useStore: (select: (s: unknown) => unknown) => select({ sessions: {}, sessionRecords: [] }),
 }))
 vi.mock('../lib/chatTeams', () => ({
+  RESTART_NOTICE: 'Paused after restart',
   controlTeam: vi.fn(),
   useChatTeams: (select: (s: unknown) => unknown) =>
     select({ runs: { p: [{ chatTeam: 'team', jobs: state.jobs }] } }),
@@ -40,4 +41,25 @@ test.each([
     expect(html).toContain('Retry work')
     expect(html).toContain(error)
   } else expect(html).not.toContain('Retry work')
+})
+
+test('a restored team shows the restart notice once, as status rather than an alert', () => {
+  state.jobs = []
+  const render = (error: string) =>
+    renderToStaticMarkup(
+      createElement(ChatCoordination, {
+        openTerminal: vi.fn(),
+        team: {
+          id: 'team',
+          projectId: 'p',
+          state: 'paused',
+          error,
+          messages: [],
+        } as unknown as ChatTeam,
+      }),
+    )
+  const restored = render('Paused after restart')
+  expect(restored.match(/Paused/g)).toHaveLength(1)
+  expect(restored).not.toContain('role="alert"')
+  expect(render('launch failed')).toContain('<p role="alert">launch failed</p>')
 })

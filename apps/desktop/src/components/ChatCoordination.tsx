@@ -1,5 +1,5 @@
 import { useStore } from '../store'
-import { controlTeam, useChatTeams, type ChatTeam } from '../lib/chatTeams'
+import { controlTeam, RESTART_NOTICE, useChatTeams, type ChatTeam } from '../lib/chatTeams'
 import { selectPanel, useRail } from '../lib/rail'
 import { useState } from 'react'
 import type { SessionRecord } from '../types'
@@ -40,6 +40,8 @@ export default function ChatCoordination({
       setBusy(false)
     }
   }
+  // The restart notice is informational; it replaces "Paused" instead of raising an alert.
+  const restartNotice = team.error === RESTART_NOTICE
   const failures = jobs.filter((j) => j.state === 'failed' || (j.state === 'launching' && j.error))
   const asking = jobs.filter((j) => workerStatus(j, sessions) === 'awaiting input')
   return (
@@ -52,10 +54,12 @@ export default function ChatCoordination({
                 .join(' · ')
             : 'Ready'
           : team.state === 'paused'
-            ? 'Work paused · You can still message the lead'
+            ? restartNotice
+              ? RESTART_NOTICE
+              : 'Paused'
             : team.state === 'stopped'
-              ? 'Work stopped · You can still message the lead'
-              : 'Work complete'}
+              ? 'Stopped'
+              : 'Complete'}
       </p>
       {active.length > 0 && (
         <details className="chat-workers">
@@ -73,7 +77,7 @@ export default function ChatCoordination({
         </details>
       )}
       {team.reset && <p role="status">{team.reset.error ?? 'Restoring context…'}</p>}
-      {team.error && <p role="alert">{team.error}</p>}
+      {team.error && !restartNotice && <p role="alert">{team.error}</p>}
       {failures.map((job) => (
         <p role="alert" key={job.id}>
           {job.terminal.name}: {job.error ?? 'Work failed'} {terminalAction(job)}

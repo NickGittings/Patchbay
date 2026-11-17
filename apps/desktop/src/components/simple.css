@@ -392,10 +392,6 @@
   width: 100%;
   box-sizing: border-box;
 }
-.chat-recipient {
-  margin: 0 0 8px;
-  font-size: 12px;
-}
 .chat-question {
   margin: 12px 0;
   padding: 10px;
@@ -463,4 +459,17 @@
 .simple-composer [role='option'][aria-selected='true'] {
   background: var(--hover);
   outline: 1px solid var(--border);
+}
+/* Chat menu confirmations ask one short question; keep them compact and centered. */
+.chat-confirm .dialog-shell {
+  width: min(480px, 90vw);
+}
+.chat-confirm .dialog-body p {
+  margin: 0 0 8px;
+}
+.chat-confirm .dialog-body p:last-child {
+  margin-bottom: 0;
+}
+.chat-confirm .settings-footer {
+  padding: 10px 12px;
 }

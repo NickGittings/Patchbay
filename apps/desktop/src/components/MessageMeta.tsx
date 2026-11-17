@@ -7,7 +7,7 @@ export default function MessageMeta({ atMs, text }: { atMs: number; text: string
       <time dateTime={date.toISOString()} title={date.toLocaleString()}>
         {date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
       </time>
-      <CopyButton text={text} label="Copy message" />
+      <CopyButton text={text} label="Copy message" icon />
     </div>
   )
 }

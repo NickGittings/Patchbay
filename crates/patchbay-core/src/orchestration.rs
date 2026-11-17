@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+
+/// Set on runs and teams that a restart paused; Stop clears only this notice.
+pub const RESTART_NOTICE: &str = "Paused after restart";
 use std::sync::Mutex;
 
 pub mod chat;
@@ -547,7 +550,7 @@ pub fn reconcile_at(
         for r in store.runs.iter_mut().filter(|r| r.project_id == project_id) {
             if restoring && r.state == State::Running {
                 r.state = State::Paused;
-                r.error = Some("Restored after restart — Resume to continue".into());
+                r.error = Some(RESTART_NOTICE.into());
             }
             if matches!(r.state, State::Complete | State::Stopped) {
                 continue;
@@ -656,6 +659,7 @@ pub fn control(root: &Path, project_id: &str, id: &str, control: Control) -> Res
             Control::Stop => {
                 if r.state != State::Complete {
                     r.state = State::Stopped;
+                    clear_restart_notice(&mut r.error);
                 }
             }
             Control::Resume => {
@@ -1352,6 +1356,13 @@ pub fn launch(
     result
 }
 
+/// Stopped work no longer waits to resume, so the restart notice is stale. Other errors stay.
+pub(crate) fn clear_restart_notice(error: &mut Option<String>) {
+    if error.as_deref() == Some(RESTART_NOTICE) {
+        *error = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1681,6 +1692,16 @@ mod tests {
         let r = control(&f.root, "p", &r.id, Control::ContinueScan).unwrap();
         assert_eq!(r.state, State::Complete);
         assert!(r.accepted_partial);
+    }
+    #[test]
+    fn stopping_a_restored_run_clears_the_restart_notice() {
+        let f = Fixture::new();
+        let r = f.create(Kind::Scan);
+        let runs = reconcile(&f.root, "p", &[], true).unwrap();
+        assert_eq!(runs[0].error.as_deref(), Some("Paused after restart"));
+        let r = control(&f.root, "p", &r.id, Control::Stop).unwrap();
+        assert_eq!(r.state, State::Stopped);
+        assert_eq!(r.error, None);
     }
     #[test]
     fn dependency_validation_is_atomic_and_rejects_cycles_missing_ids_and_wrong_presets() {

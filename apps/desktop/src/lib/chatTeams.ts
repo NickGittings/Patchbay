@@ -14,6 +14,9 @@ import { logSimple } from './simpleActions'
 import { claimAgentChat, selectChatAgent } from './agentChats'
 import { simpleKey, useSimpleUi } from './simpleUi'
 
+/** Mirrors core `orchestration::RESTART_NOTICE`, set when a restart pauses a team. */
+export const RESTART_NOTICE = 'Paused after restart'
+
 export interface TeamMessage {
   id: string
   sequence: number

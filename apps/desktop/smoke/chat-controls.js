@@ -19,7 +19,9 @@
     if (!value) throw new Error(text)
   }
   const button = (text, root = document) =>
-    [...root.querySelectorAll('button')].find((b) => b.textContent.trim() === text)
+    [...root.querySelectorAll('button')].find(
+      (b) => b.textContent.trim() === text || b.getAttribute('aria-label') === text,
+    )
   // React commits a click's update in a microtask; checking right after it avoids a polling round,
   // which background smoke windows throttle to about a second.
   const soon = async (label, check) => {
@@ -113,12 +115,10 @@
       document.querySelector('.chat-question summary')?.textContent.includes('Second agent'),
       'question lost originating agent',
     )
-    click(await chatMenu('Clear visible history…'))
-    const clear = await until('visible history confirmation', () =>
-      confirmDialog('Clear visible history'),
-    )
+    click(await chatMenu('Clear chat'))
+    const clear = await until('visible history confirmation', () => confirmDialog('Clear chat'))
     click(button('Cancel', clear))
-    await until('clear cancelled', () => !confirmDialog('Clear visible history'))
+    await until('clear cancelled', () => !confirmDialog('Clear chat'))
     assert(state().simple.selectedAgent === first.id, 'visible clear changed lead')
     // Follow the latest on mount, but preserve a reader's position when replies arrive.
     const now = Date.now()
@@ -354,20 +354,15 @@
         el.scrollHeight - el.scrollTop - el.clientHeight < 5
       )
     })
-    click(await chatMenu('Clear visible history…'))
-    click(
-      button(
-        'Clear',
-        await until('clear visible history', () => confirmDialog('Clear visible history')),
-      ),
-    )
+    click(await chatMenu('Clear chat'))
+    click(button('Clear', await until('clear chat', () => confirmDialog('Clear chat'))))
     await until('visible history cleared', () => !chatText().includes('Saved Markdown'))
     assert(!document.querySelector('.simple-jump'), 'history clear created unread replies')
     smoke.store.setState({ sessionRecords: originalRecords, sessions: originalSessions })
     state().patchTask(projectId, null, { simple: originalSimple })
     // A confirmation belongs to one visit to a worktree, even after switching away and back.
-    click(await chatMenu('Clear visible history…'))
-    await until('confirmation before task switch', () => confirmDialog('Clear visible history'))
+    click(await chatMenu('Clear chat'))
+    await until('confirmation before task switch', () => confirmDialog('Clear chat'))
     await smoke.createTask({
       title: 'Clear confirmation',
       branch: 'clear-confirmation',
@@ -377,13 +372,13 @@
       'other task chat',
       () => state().activeTask && document.querySelector('.simple-chat'),
     )
-    assert(!confirmDialog('Clear visible history'), 'task inherited clear confirmation')
+    assert(!confirmDialog('Clear chat'), 'task inherited clear confirmation')
     state().setActiveTask(null)
     await until(
       'original task chat',
       () => !state().activeTask && document.querySelector('.simple-chat'),
     )
-    assert(!confirmDialog('Clear visible history'), 'returning task reopened confirmation')
+    assert(!confirmDialog('Clear chat'), 'returning task reopened confirmation')
     // Chat's resize handle must receive pointer hits even while Inspector is hidden.
     const { width: chatWidth, drag: dragChat } = smoke.chatPanel
     await dragChat(-160)
@@ -456,17 +451,17 @@
       assert(Math.abs(chatWidth() - rootChatWidth) < 0.1, `${view} lost chat width`)
     }
     // Project tabs restore hidden Chat from every Full view without replaying entry requests.
-    click(await chatMenu('Clear visible history…'))
-    await until('confirmation before project switch', () => confirmDialog('Clear visible history'))
+    click(await chatMenu('Clear chat'))
+    await until('confirmation before project switch', () => confirmDialog('Clear chat'))
     const second = await smoke.openSecondProject()
     smoke.acceptOpened(second)
     state().setSimpleMode(true)
     await sleep(100)
     await until('second project Chat', () => document.querySelector('.simple-chat'))
-    assert(!confirmDialog('Clear visible history'), 'project inherited clear confirmation')
+    assert(!confirmDialog('Clear chat'), 'project inherited clear confirmation')
     state().activateProject(projectId)
     await until('original project Chat', () => document.querySelector('.simple-chat'))
-    assert(!confirmDialog('Clear visible history'), 'returning project reopened confirmation')
+    assert(!confirmDialog('Clear chat'), 'returning project reopened confirmation')
     state().activateProject(second.id)
     await until('second project Chat again', () => document.querySelector('.simple-chat'))
     click(document.querySelector('[aria-label="Hide chat"]'))

@@ -32,13 +32,16 @@ const team = {
 } as ChatTeam
 const run = { chatTeam: 'team', jobs: [{ sessionId: 'worker' }] } as ProviderRun
 
-test('role follows durable team membership; provider and preset remain separate', () => {
+test('role follows durable team membership; a preset named after its provider is omitted', () => {
   expect(chatIdentity(record('lead'), [team], [run])).toEqual({
     role: 'Lead',
-    provider: 'Codex',
-    preset: 'Thorough coding',
-    label: 'Lead · Codex',
+    title: 'Lead · Codex · Thorough coding',
   })
+  expect(
+    chatIdentity({ ...record('lead'), metadata: { ...record('lead').metadata, name: 'codex' } }, [
+      team,
+    ]).title,
+  ).toBe('Lead · Codex')
   expect(chatIdentity(record('worker'), [team], [run]).role).toBe('Builder')
   expect(chatIdentity(record('unknown'), [team], [run]).role).toBe('Agent')
   expect(chatIdentity(record('worker'), [team], [{ ...run, chatTeam: 'other' }]).role).toBe('Agent')

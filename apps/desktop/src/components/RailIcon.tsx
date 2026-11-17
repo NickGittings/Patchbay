@@ -6,6 +6,7 @@ const paths: Record<string, string> = {
   success: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 m-5 9 3 3 7-7',
   needsInput: 'M4 4h16v12H9l-5 4Z M12 7v4 M12 14h.01',
   finished: 'm4 12 5 5L20 6',
+  copy: 'M9 9h11v11H9Z M5 15H4V4h11v1',
   warning: 'm12 3 10 18H2Z M12 9v5 M12 17h.01',
   info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M12 11v6 M12 7h.01',
   project: 'M3 7V5h6l2 2h10v13H3Z',
@@ -26,12 +27,12 @@ const paths: Record<string, string> = {
   changes: 'M14 3H5v18h14V8Z M14 3v5h5 M8 12h8 M8 16h5',
   running: 'M3 4h18v16H3Z m4 4 4 4-4 4 M13 16h4',
 }
-export default function RailIcon({ name }: { name: string }) {
+export default function RailIcon({ name, size = 21 }: { name: string; size?: number }) {
   return (
     <svg
       aria-hidden="true"
-      width="21"
-      height="21"
+      width={size}
+      height={size}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"

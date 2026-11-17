@@ -3509,6 +3509,8 @@ kbd {
 }
 .dialog-shell {
   padding: 0;
+  /* `.panel` fills its container; a dialog sizes to its content up to the panel max-height. */
+  height: auto;
 }
 .dialog-shell .utility-header {
   position: sticky;

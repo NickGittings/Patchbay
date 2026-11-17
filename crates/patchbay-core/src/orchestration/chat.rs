@@ -1559,6 +1559,7 @@ pub fn control(
             }
             Control::Stop => {
                 t.state = State::Stopped;
+                clear_restart_notice(&mut t.error);
                 t.reset = None;
                 for r in s
                     .runs
@@ -1566,6 +1567,7 @@ pub fn control(
                     .filter(|r| r.chat_team.as_deref() == Some(&t.id) && r.state != State::Complete)
                 {
                     r.state = State::Stopped;
+                    clear_restart_notice(&mut r.error);
                 }
                 s.owners.retain(|o| !(o.kind == "chat" && o.id == t.id));
             }
@@ -1825,7 +1827,7 @@ pub(super) fn restore(s: &mut Store, project: &str) {
     for t in s.teams.iter_mut().filter(|t| t.project_id == project) {
         if t.state == State::Running {
             t.state = State::Paused;
-            t.error = Some("Restored after restart — Resume to continue coordination".into());
+            t.error = Some(RESTART_NOTICE.into());
         }
         for m in &mut t.messages {
             if m.state == DeliveryState::Sending {
@@ -1864,8 +1866,7 @@ pub fn reconcile(
                 }
                 if t.state == State::Running {
                     t.state = State::Paused;
-                    t.error =
-                        Some("Restored after restart — Resume to continue coordination".into());
+                    t.error = Some(RESTART_NOTICE.into());
                 }
                 for m in &mut t.messages {
                     if m.state == DeliveryState::Sending {
@@ -3678,6 +3679,45 @@ mod tests {
             |_| panic!("paused"),
         )
         .unwrap();
+    }
+    #[test]
+    fn stopping_a_restored_team_clears_the_restart_notice() {
+        let f = Fixture::new();
+        let restored = reconcile(&f.dir, "p", std::slice::from_ref(&f.lead), true).unwrap();
+        assert_eq!(restored[0].error.as_deref(), Some("Paused after restart"));
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Stop,
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        assert_eq!(f.state().state, State::Stopped);
+        assert_eq!(f.state().error, None);
+    }
+    #[test]
+    fn stopping_a_team_keeps_errors_other_than_the_restart_notice() {
+        let f = Fixture::new();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Block {
+                reason: "launch failed".into(),
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Stop,
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        assert_eq!(f.state().error.as_deref(), Some("launch failed"));
     }
     #[test]
     fn native_compaction_schedules_one_recovery_and_excludes_delivered_messages() {
