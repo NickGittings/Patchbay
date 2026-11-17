@@ -2152,6 +2152,7 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
                 turn: Some("turn".into()),
                 tool: (event == "PreToolUse").then(|| "Read".into()),
                 file_target: true,
+                questions: None,
                 target: Some("src/lib.rs".into()),
                 prompt: None,
                 reply: None,

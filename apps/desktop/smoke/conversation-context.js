@@ -23,7 +23,7 @@
       await until('pop-out New conversation', () => button('New conversation'))
       assert(document.querySelector('.agent-context'), 'Pop-out lacks context indicator')
       await smoke.report(
-        'PASS conversation-context: Claude/Codex fresh launches, confirmation, duplicate clicks, history, context, clear/compact, chained status-line, Auto guard, and pop-out controls',
+        'PASS conversation-context: Claude/Codex fresh launches, Chat question answers, confirmation, duplicate clicks, history, context, clear/compact, chained status-line, Auto guard, and pop-out controls',
       )
       return
     }
@@ -73,6 +73,35 @@
         await until('compacting indicator', () => document.body.textContent.includes('Compacting…'))
       }
       if (provider === 'codex') await smoke.terminalWrite(sid, 'compact\r')
+      // The question tool's hook: unclaimed, the provider's own menu asks; claimed and
+      // answered, the hook hands the answer back. Nothing is typed into the terminal.
+      const questions = smoke.agentQuestions
+      await questions.listen()
+      const offered = () =>
+        Object.values(questions.store.getState().pending).find((q) => q.sessionId === sid)
+      const answered = (from) =>
+        smoke
+          .terminalText(sid)
+          .text.slice(from)
+          .match(/fixture-answer (.*)/)?.[1]
+      let from = smoke.terminalText(sid).text.length
+      await smoke.terminalWrite(sid, 'question\r')
+      const first = await until('question offered', offered)
+      assert(first.questions[0].options[1].label === 'Blue', 'Question lost its options')
+      await until('unclaimed question falls back', () => answered(from) === 'none')
+      from = smoke.terminalText(sid).text.length
+      await smoke.terminalWrite(sid, 'question\r')
+      const second = await until(
+        'question offered again',
+        () => offered()?.id !== first.id && offered(),
+      )
+      await questions.claim([sid])
+      await until('question status', () => agent()?.questions?.[0]?.question === 'Pick a color')
+      assert(await questions.answer(second.id, ['Blue']), 'Chat answer refused')
+      // Claude takes the answer as its tool's own; Codex gets it as the declined call's reason.
+      const expected = provider === 'claude' ? 'allow:Blue' : 'deny:Blue'
+      const output = await until('hook answer', () => answered(from))
+      assert(output.trim() === expected, `Hook answered ${output}, expected ${expected}`)
       await until('compaction completion', () => !!context()?.lastCompactionMs)
       assert(
         agent()?.state === (provider === 'claude' ? 'needsInput' : 'working'),

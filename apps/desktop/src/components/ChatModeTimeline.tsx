@@ -210,6 +210,7 @@ export default function ChatModeTimeline({
             <ChatQuestion
               key={`${request.sessionId}:${request.generation}:${request.sinceMs}`}
               record={record}
+              request={request}
             />
           )
         })}

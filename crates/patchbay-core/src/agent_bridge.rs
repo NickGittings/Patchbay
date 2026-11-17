@@ -148,6 +148,12 @@ pub enum Action {
     WithdrawPlan {
         conversation: Option<String>,
     },
+    /// The agent's own question tool, offered to Chat until the hook's wait ends.
+    /// Answers `{"answers": [one per question] | null}`; null leaves the native menu.
+    AskUser {
+        conversation: Option<String>,
+        questions: Vec<crate::agent_hooks::UserQuestion>,
+    },
     /// Dependencies a detection agent proposes for the user to review.
     ProposeLinks {
         proposal: crate::link_proposals::LinkProposal,

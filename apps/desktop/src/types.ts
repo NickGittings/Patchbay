@@ -582,6 +582,29 @@ export interface AgentReport {
   authoritative?: boolean
   /** A Codex permission request in its automatic-review grace: `working`, but maybe asking. */
   approvalPending?: boolean
+  /** Every question of the provider's question tool while it waits (`agent_hooks::UserQuestion`). */
+  questions?: UserQuestion[] | null
+}
+
+/** Mirrors `agent_hooks::UserQuestion`. */
+export interface UserQuestion {
+  question: string
+  header?: string
+  multiSelect: boolean
+  options: { label: string; description?: string }[]
+}
+
+/** A question offered to Chat while its hook waits (`agent_questions::Pending`). */
+export interface AgentQuestion {
+  id: string
+  projectId: string
+  task: string | null
+  sessionId: string
+  generation: number | null
+  questions: UserQuestion[]
+  /** Unix milliseconds. */
+  deadlineMs: number
+  claimed: boolean
 }
 
 export interface AgentContext {

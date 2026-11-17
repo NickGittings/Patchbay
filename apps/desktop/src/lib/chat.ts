@@ -1,4 +1,4 @@
-import type { SessionRecord, SessionState } from '../types'
+import type { SessionRecord, SessionState, UserQuestion } from '../types'
 import type { SimpleState } from './simple'
 
 /** Selection never follows a workflow stage or another agent's input wait. */
@@ -34,6 +34,8 @@ export interface ChatInputRequest {
   sessionId: string
   generation: number
   sinceMs: number
+  /** The provider's whole question, when its question tool asked it. */
+  questions?: UserQuestion[]
 }
 
 /** Keep the input host while typing invalidates status, until a hook confirms it closed. */
@@ -50,8 +52,13 @@ export function chatInputRequests(
       (r) => r.sessionId === record.id && r.generation === session.generation,
     )
     if (old && !report?.authoritative) return [old]
-    return report?.state === 'needsInput'
-      ? [{ sessionId: record.id, generation: session.generation, sinceMs: report.sinceMs }]
-      : []
+    if (report?.state !== 'needsInput') return []
+    const request: ChatInputRequest = {
+      sessionId: record.id,
+      generation: session.generation,
+      sinceMs: report.sinceMs,
+    }
+    if (report.questions?.length) request.questions = report.questions
+    return [request]
   })
 }

@@ -1,5 +1,6 @@
 //! Opt-in provider hook configuration and a silent, portable native reporter.
-//! Reporting is passive: no provider decisions, stdout, or trust bypasses.
+//! Reporting is passive: no provider decisions or trust bypasses. The only stdout is
+//! an answer the user gave in Chat to the provider's own question tool.
 //! Planner hooks also hand native Claude plans to the authenticated desktop bridge.
 use crate::adapters::Adapter;
 use anyhow::{Context, Result};
@@ -47,6 +48,212 @@ pub struct HookEvent {
     pub target: Option<String>,
     #[serde(default)]
     pub file_target: bool,
+    /// The provider's question tool (`AskUserQuestion`/`request_user_input`) in full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questions: Option<Vec<UserQuestion>>,
+}
+
+/// Questions relayed from one question tool call, and options per question.
+pub const QUESTION_LIMIT: usize = 4;
+pub const OPTION_LIMIT: usize = 6;
+const QUESTION_CHARS: usize = 500;
+const LABEL_CHARS: usize = 200;
+/// How long the hook waits for an answer from Chat before the provider shows its own menu.
+pub const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Provider timeout for `PreToolUse`, which may wait [`ANSWER_WAIT`]; other events stay short.
+const QUESTION_HOOK_TIMEOUT: u64 = 150;
+const HOOK_TIMEOUT: u64 = 3;
+
+fn hook_timeout(event: &str) -> u64 {
+    if event == "PreToolUse" {
+        QUESTION_HOOK_TIMEOUT
+    } else {
+        HOOK_TIMEOUT
+    }
+}
+
+/// One question from a provider's question tool, bounded for display in Chat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestion {
+    pub question: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub header: String,
+    #[serde(default)]
+    pub multi_select: bool,
+    #[serde(default)]
+    pub options: Vec<QuestionOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+fn clip(text: &str, chars: usize) -> String {
+    text.chars().take(chars).collect()
+}
+
+impl UserQuestion {
+    /// Re-apply the display bounds to questions from an untrusted source.
+    #[must_use]
+    pub fn bounded(questions: Vec<Self>) -> Vec<Self> {
+        questions
+            .into_iter()
+            .filter(|q| !q.question.trim().is_empty())
+            .take(QUESTION_LIMIT)
+            .map(|q| Self {
+                question: clip(&q.question, QUESTION_CHARS),
+                header: clip(&q.header, LABEL_CHARS),
+                multi_select: q.multi_select,
+                options: q
+                    .options
+                    .into_iter()
+                    .filter(|o| !o.label.trim().is_empty())
+                    .take(OPTION_LIMIT)
+                    .map(|o| QuestionOption {
+                        label: clip(&o.label, LABEL_CHARS),
+                        description: clip(&o.description, LABEL_CHARS),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+}
+
+/// Every question of a Claude `AskUserQuestion` or Codex `request_user_input` call.
+fn questions(input: &Value) -> Option<Vec<UserQuestion>> {
+    if !matches!(
+        input.get("tool_name").and_then(Value::as_str),
+        Some("AskUserQuestion" | "request_user_input")
+    ) {
+        return None;
+    }
+    let text = |value: &Value, field: &str| {
+        value
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .chars()
+            .take(QUESTION_CHARS)
+            .collect::<String>()
+    };
+    let questions = input
+        .get("tool_input")?
+        .get("questions")?
+        .as_array()?
+        .iter()
+        .take(QUESTION_LIMIT + 1)
+        .map(|q| UserQuestion {
+            question: text(q, "question"),
+            header: text(q, "header"),
+            multi_select: q
+                .get("multiSelect")
+                .or_else(|| q.get("multi_select"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            options: q
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .take(OPTION_LIMIT + 1)
+                .map(|o| QuestionOption {
+                    label: text(o, "label"),
+                    description: text(o, "description"),
+                })
+                .collect(),
+        })
+        .collect();
+    let questions = UserQuestion::bounded(questions);
+    (!questions.is_empty()).then_some(questions)
+}
+
+/// The hook output that hands the user's Chat answers to the provider's question tool,
+/// one answer per question in order. Claude takes them as the tool's own answers; Codex
+/// accepts no replacement input, so its call is declined with the answers as the reason.
+fn answer_output(provider: Adapter, input: &Value, answers: &[String]) -> Option<Value> {
+    let tool_input = input.get("tool_input")?;
+    let asked = tool_input.get("questions")?.as_array()?;
+    if asked.is_empty()
+        || asked.len() != answers.len()
+        || answers.iter().any(|a| a.trim().is_empty())
+    {
+        return None;
+    }
+    let pairs: Vec<(&str, &str)> = asked
+        .iter()
+        .zip(answers)
+        .map(|(q, a)| {
+            let question = q
+                .get("question")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            (question, a.as_str())
+        })
+        .collect();
+    Some(match provider {
+        Adapter::Claude => {
+            let answers: serde_json::Map<_, _> = pairs
+                .iter()
+                .map(|(q, a)| ((*q).to_owned(), Value::from(*a)))
+                .collect();
+            // Claude keys answers by question text, so repeated questions can't be told apart.
+            if answers.len() != asked.len() {
+                return None;
+            }
+            let mut updated = tool_input.as_object()?.clone();
+            updated.insert("answers".into(), Value::Object(answers));
+            json!({"hookSpecificOutput":{
+                "hookEventName":"PreToolUse",
+                "permissionDecision":"allow",
+                "updatedInput":updated,
+            }})
+        }
+        Adapter::Codex => {
+            let mut reason = String::from(
+                "The user already answered in Patchbay Chat. Use these answers and don't ask again:",
+            );
+            for (question, answer) in pairs {
+                reason.push_str("\n- ");
+                reason.push_str(question);
+                reason.push_str("\n  Answer: ");
+                reason.push_str(answer);
+            }
+            json!({"hookSpecificOutput":{
+                "hookEventName":"PreToolUse",
+                "permissionDecision":"deny",
+                "permissionDecisionReason":reason,
+            }})
+        }
+    })
+}
+
+/// Offer a question to Chat and wait, within the hook's timeout, for the user's answer.
+/// Any failure, a skip, or no answer in time leaves the provider's own menu to ask.
+fn ask_in_chat(provider: Adapter, input: &Value, questions: Vec<UserQuestion>) -> Option<Value> {
+    use crate::agent_bridge::{Action, call_from_env_within};
+    let conversation = input
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let response = call_from_env_within(
+        Action::AskUser {
+            conversation,
+            questions,
+        },
+        ANSWER_WAIT,
+    )
+    .ok()?;
+    if !response.ok {
+        return None;
+    }
+    let answers: Vec<String> =
+        serde_json::from_value(response.result?.get("answers")?.clone()).ok()?;
+    answer_output(provider, input, &answers)
 }
 
 /// What a planner's hook event says about Claude's native plan dialog.
@@ -205,9 +412,11 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
             "read_file" => "Read".into(),
             "write_file" => "Write".into(),
             "edit_file" => "Edit".into(),
+            "request_user_input" => "AskUserQuestion".into(),
             _ => name,
         }),
         file_target: file_path.is_some(),
+        questions: (event == "PreToolUse").then(|| questions(input)).flatten(),
         target: file_path
             .map(|s| s.chars().take(4096).collect())
             .or_else(|| {
@@ -318,12 +527,25 @@ pub fn reporter(provider: &str) {
             return Ok(());
         }
         let input: Value = serde_json::from_slice(&bytes)?;
+        let mut asked = None;
         if let Some(mut event) = normalize(provider, &input) {
             event.at_ms = invoked_ms;
             event.session = session;
             event.generation = generation;
-            // Status first: handing over a plan waits on the desktop.
-            let _ = journal(&dir, event);
+            let questions = event.questions.clone();
+            // Status first: handing over a plan or a question waits on the desktop,
+            // and Chat shows a question from the reported status.
+            if journal(&dir, event).is_ok() {
+                asked = questions;
+            }
+        }
+        if let Some(questions) = asked {
+            if let Some(output) = ask_in_chat(provider, &input, questions) {
+                let mut stdout = std::io::stdout().lock();
+                serde_json::to_writer(&mut stdout, &output)?;
+                stdout.flush()?;
+            }
+            return Ok(());
         }
         // Plans are captured even when older Claude versions omit turn identity.
         if std::env::var(crate::context::COMPONENT_ENV).ok().as_deref() == Some("plan")
@@ -553,7 +775,7 @@ fn handler(provider: Adapter, reporter: &Path) -> Result<Value> {
     let path = reporter.to_str().context("Reporter path must be UTF-8")?;
     Ok(match provider {
         Adapter::Claude => {
-            json!({"type":"command", "command": path, "args":["report-status", "claude"], "timeout": 3, "statusMessage":MARKER})
+            json!({"type":"command", "command": path, "args":["report-status", "claude"], "timeout": HOOK_TIMEOUT, "statusMessage":MARKER})
         }
         Adapter::Codex => {
             // Codex command hooks use a shell. Windows launches through PowerShell explicitly.
@@ -568,9 +790,16 @@ fn handler(provider: Adapter, reporter: &Path) -> Result<Value> {
             } else {
                 format!("'{}' report-status codex", path.replace('\'', "'\\''"))
             };
-            json!({"type":"command", "command":command, "timeout":3, "statusMessage":MARKER})
+            json!({"type":"command", "command":command, "timeout":HOOK_TIMEOUT, "statusMessage":MARKER})
         }
     })
+}
+
+/// The handler installed for `event`, with that event's timeout.
+fn event_handler(provider: Adapter, reporter: &Path, event: &str) -> Result<Value> {
+    let mut value = handler(provider, reporter)?;
+    value["timeout"] = json!(hook_timeout(event));
+    Ok(value)
 }
 
 fn events(provider: Adapter) -> Vec<&'static str> {
@@ -622,7 +851,7 @@ fn json_update(
                 .or_insert_with(|| json!([]))
                 .as_array_mut()
                 .unwrap()
-                .push(json!({"hooks":[handler(provider, reporter)?]}));
+                .push(json!({"hooks":[event_handler(provider, reporter, event)?]}));
         }
     }
     Ok(value)
@@ -683,8 +912,13 @@ pub fn inspect(provider: Adapter, source_override: Option<&Path>) -> Result<Inte
             .is_some_and(|groups| {
                 groups.iter().any(|g| {
                     g.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
-                        hs.iter()
-                            .any(|h| owned(h, provider, &stable_reporter().unwrap_or_default()))
+                        // An older install's short PreToolUse timeout would cut off
+                        // a question waiting for its Chat answer: reinstall it.
+                        hs.iter().any(|h| {
+                            owned(h, provider, &stable_reporter().unwrap_or_default())
+                                && h.get("timeout").and_then(Value::as_u64)
+                                    == Some(hook_timeout(event))
+                        })
                     })
                 })
             })
@@ -1263,5 +1497,123 @@ mod tests {
         let event = normalize(Adapter::Claude, &input).unwrap();
         assert_eq!(event.message.as_deref(), Some("Which behavior?"));
         assert_eq!(event.tool.as_deref(), Some("AskUserQuestion"));
+    }
+    fn claude_question() -> Value {
+        json!({"hook_event_name":"PreToolUse", "session_id":"12345678-session", "turn_id":"12345678-turn",
+            "tool_name":"AskUserQuestion", "tool_input":{"questions":[
+                {"question":"Pick a color","header":"Color","multiSelect":false,
+                    "options":[{"label":"Red","description":"Warm"},{"label":"Blue"}]},
+                {"question":"Which sizes?","header":"Size","multiSelect":true,
+                    "options":[{"label":"S"},{"label":"M"}]}]}})
+    }
+    #[test]
+    fn question_tools_relay_every_question_and_option_for_both_providers() {
+        let event = normalize(Adapter::Claude, &claude_question()).unwrap();
+        let questions = event.questions.unwrap();
+        assert_eq!(questions.len(), 2);
+        assert_eq!(questions[0].header, "Color");
+        assert_eq!(questions[0].options[0].description, "Warm");
+        assert_eq!(questions[1].options.len(), 2);
+        assert!(questions[1].multi_select);
+
+        // Codex `request_user_input`, reported as the same question tool.
+        let codex = json!({"hook_event_name":"PreToolUse", "session_id":"12345678-session", "turn_id":"12345678-turn",
+            "tool_name":"request_user_input", "tool_input":{"questions":[
+                {"id":"color","header":"Color","question":"Pick a color",
+                    "options":[{"label":"Red","description":"Warm"}]}]}});
+        let event = normalize(Adapter::Codex, &codex).unwrap();
+        assert_eq!(event.tool.as_deref(), Some("AskUserQuestion"));
+        assert_eq!(event.message.as_deref(), Some("Pick a color"));
+        assert_eq!(event.questions.unwrap()[0].options[0].label, "Red");
+
+        // Bounded, and only the question tool's own payload.
+        let mut long = claude_question();
+        long["tool_input"]["questions"] = json!(
+            (0..9)
+                .map(
+                    |i| json!({"question": "q".repeat(900), "header": i.to_string(),
+                "options": (0..9).map(|o| json!({"label": o.to_string()})).collect::<Vec<_>>()})
+                )
+                .collect::<Vec<_>>()
+        );
+        let questions = normalize(Adapter::Claude, &long)
+            .unwrap()
+            .questions
+            .unwrap();
+        assert_eq!(questions.len(), QUESTION_LIMIT);
+        assert_eq!(questions[0].options.len(), OPTION_LIMIT);
+        assert_eq!(questions[0].question.chars().count(), QUESTION_CHARS);
+        let mut other = claude_question();
+        other["tool_name"] = json!("Bash");
+        assert!(
+            normalize(Adapter::Claude, &other)
+                .unwrap()
+                .questions
+                .is_none()
+        );
+        let mut posted = claude_question();
+        posted["hook_event_name"] = json!("PostToolUse");
+        assert!(
+            normalize(Adapter::Claude, &posted)
+                .unwrap()
+                .questions
+                .is_none()
+        );
+    }
+    #[test]
+    fn chat_answers_become_the_providers_own_answers() {
+        let input = claude_question();
+        let answers = ["Blue".to_string(), "S, M".to_string()];
+        let output = answer_output(Adapter::Claude, &input, &answers).unwrap();
+        let specific = &output["hookSpecificOutput"];
+        assert_eq!(specific["permissionDecision"], "allow");
+        assert_eq!(
+            specific["updatedInput"]["questions"],
+            input["tool_input"]["questions"]
+        );
+        assert_eq!(
+            specific["updatedInput"]["answers"],
+            json!({"Pick a color":"Blue","Which sizes?":"S, M"})
+        );
+
+        let output = answer_output(Adapter::Codex, &input, &answers).unwrap();
+        let specific = &output["hookSpecificOutput"];
+        assert_eq!(specific["permissionDecision"], "deny");
+        let reason = specific["permissionDecisionReason"].as_str().unwrap();
+        assert!(reason.contains("Pick a color\n  Answer: Blue"), "{reason}");
+
+        // Anything incomplete leaves the provider's own menu to ask.
+        assert!(answer_output(Adapter::Claude, &input, &answers[..1]).is_none());
+        assert!(answer_output(Adapter::Claude, &input, &["Blue".into(), " ".into()]).is_none());
+        let mut repeated = input.clone();
+        repeated["tool_input"]["questions"][1]["question"] = json!("Pick a color");
+        assert!(answer_output(Adapter::Claude, &repeated, &answers).is_none());
+    }
+    #[test]
+    fn question_hooks_wait_long_enough_and_older_installs_need_reinstalling() {
+        let fixture = Fixture::new();
+        let source = fixture.0.join("settings.json");
+        let reporter = stable_reporter().unwrap();
+        let installed = json_update(json!({}), Adapter::Claude, &reporter, true).unwrap();
+        assert_eq!(
+            installed["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"],
+            QUESTION_HOOK_TIMEOUT
+        );
+        assert_eq!(
+            installed["hooks"]["Stop"][0]["hooks"][0]["timeout"],
+            HOOK_TIMEOUT
+        );
+        std::fs::write(&source, installed.to_string()).unwrap();
+        assert!(inspect(Adapter::Claude, Some(&source)).unwrap().installed);
+
+        let mut older = installed;
+        older["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"] = json!(3);
+        std::fs::write(&source, older.to_string()).unwrap();
+        assert!(!inspect(Adapter::Claude, Some(&source)).unwrap().installed);
+        // Reinstalling replaces the owned handler rather than adding another.
+        let reinstalled = json_update(older, Adapter::Claude, &reporter, true).unwrap();
+        let handlers = reinstalled["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0]["hooks"][0]["timeout"], QUESTION_HOOK_TIMEOUT);
     }
 }

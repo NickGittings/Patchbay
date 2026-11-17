@@ -21,6 +21,12 @@ import {
   type HookProvider,
 } from '../lib/agentHooks'
 import { chatRecipient, chatBusy, chatAutoActive, chatInputRequests } from '../lib/chat'
+import {
+  claimQuestions,
+  listenAgentQuestions,
+  releaseQuestions,
+  useAgentQuestions,
+} from '../lib/agentQuestions'
 import { useChatModeWorkflow } from '../lib/useChatModeWorkflow'
 import ChatModeTimeline from './ChatModeTimeline'
 import ChatCoordination from './ChatCoordination'
@@ -131,14 +137,23 @@ export default function ChatMode({
     now,
   }
   const state = flow(flowSnapshot, model)
-  const questions = chatInputRequests(
-    model.records.filter(
-      (r) => !model.foreign.has(r.id) && (!team || r.id === team.lead.sessionId),
-    ),
-    s.sessions,
-    ui.inputRequests,
+  const askers = model.records.filter(
+    (r) => !model.foreign.has(r.id) && (!team || r.id === team.lead.sessionId),
   )
+  const questions = chatInputRequests(askers, s.sessions, ui.inputRequests)
   const inputKey = JSON.stringify(questions)
+  // Chat answers the questions of the agents it shows; others go to their terminals.
+  const askerKey = JSON.stringify(askers.map((r) => r.id).sort())
+  const offered = useAgentQuestions((q) => Object.keys(q.pending).sort().join())
+  useEffect(() => {
+    void listenAgentQuestions()
+  }, [])
+  useEffect(() => {
+    const ids = new Set<string>(JSON.parse(askerKey))
+    releaseQuestions(ids)
+    void claimQuestions(ids)
+  }, [askerKey, offered])
+  useEffect(() => () => releaseQuestions(null), [])
   useEffect(() => {
     const previous = useSimpleUi.getState().worktrees[key]?.inputRequests ?? []
     if (JSON.stringify(previous) !== inputKey)

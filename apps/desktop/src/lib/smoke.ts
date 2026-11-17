@@ -104,6 +104,13 @@ import { attentionItems, revealTerminal } from './attention'
 import { restoredLayout, workspaceDocument } from './workspace'
 import type { NotificationDelivery } from './notifications'
 import { CHAT_LAYOUT, CHAT_PANEL } from './panelLayout'
+import * as agentQuestionsModule from './agentQuestions'
+const agentQuestions = {
+  store: agentQuestionsModule.useAgentQuestions,
+  listen: agentQuestionsModule.listenAgentQuestions,
+  claim: (ids: string[]) => agentQuestionsModule.claimQuestions(new Set(ids)),
+  answer: agentQuestionsModule.answerQuestion,
+}
 
 /** Polls `check` until it holds, for the pointer-driven panel helpers below. */
 async function waitFor(label: string, check: () => boolean, timeout = 25000) {
@@ -151,6 +158,7 @@ const chatPanel = {
 const hooks = {
   simpleUi: useSimpleUi,
   chatTeams: useChatTeams,
+  agentQuestions,
   refreshChatTeams,
   simpleKey,
   startTaskAgent,

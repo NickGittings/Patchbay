@@ -3,6 +3,7 @@ use crate::{AppState, CmdResult, Project, blocking, err, for_task};
 use patchbay_core::agent_bridge::{LaunchContext, Role, Server};
 pub use patchbay_core::agent_commands::Activity;
 use patchbay_core::agent_commands::{Host, ProjectScope};
+use patchbay_core::agent_questions::Pending;
 use patchbay_core::session::{AgentSession, Request};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -64,6 +65,61 @@ impl Host for Desktop {
             serde_json::json!({"projectId":launch.project_id}),
         );
     }
+    /// Runs on the bridge's connection thread, so waiting blocks only this hook.
+    fn ask_user(
+        &self,
+        launch: &LaunchContext,
+        questions: Vec<patchbay_core::agent_hooks::UserQuestion>,
+        wait: std::time::Duration,
+    ) -> Option<Vec<String>> {
+        let pending = Pending {
+            id: String::new(),
+            project_id: launch.project_id.clone(),
+            task: launch.task.clone(),
+            session_id: launch.agent_session.clone(),
+            generation: launch.generation,
+            questions,
+            deadline_ms: 0,
+            claimed: false,
+        };
+        let mut id = String::new();
+        let answer = self.0.state::<AppState>().questions.ask(
+            pending,
+            patchbay_core::agent_questions::CLAIM_WAIT,
+            wait,
+            |offered| {
+                id.clone_from(&offered.id);
+                let _ = self.0.emit("patchbay://agent-question", offered);
+            },
+        );
+        let _ = self.0.emit(
+            "patchbay://agent-question-closed",
+            serde_json::json!({"id":id,"answered":answer.is_some()}),
+        );
+        answer
+    }
+}
+
+/// Agent questions waiting for Chat, for a window that opened after they were asked.
+#[tauri::command]
+pub fn agent_questions(state: State<'_, AppState>) -> Vec<Pending> {
+    state.questions.list()
+}
+
+/// Chat shows the question, so its hook keeps waiting for the answer.
+#[tauri::command]
+pub fn agent_question_claim(id: String, state: State<'_, AppState>) -> bool {
+    state.questions.claim(&id)
+}
+
+/// The user's answers, one per question, or `None` to answer in the agent's terminal.
+#[tauri::command]
+pub fn agent_question_answer(
+    id: String,
+    answers: Option<Vec<String>>,
+    state: State<'_, AppState>,
+) -> bool {
+    state.questions.answer(&id, answers)
 }
 
 pub fn run_action(
