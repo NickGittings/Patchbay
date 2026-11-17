@@ -1,5 +1,6 @@
 import { useStore } from '../store'
 import { controlTeam, RESTART_NOTICE, useChatTeams, type ChatTeam } from '../lib/chatTeams'
+import type { ScanReport } from '../lib/orchestration'
 import { selectPanel, useRail } from '../lib/rail'
 import { useState } from 'react'
 import type { SessionRecord } from '../types'
@@ -47,14 +48,31 @@ export default function ChatCoordination({
   }
   // The restart notice is informational; it replaces "Paused" instead of raising an alert.
   const restartNotice = team.error === RESTART_NOTICE
-  const failures = jobs.filter((j) => j.state === 'failed' || (j.state === 'launching' && j.error))
+  const failed = (j: (typeof jobs)[number]) =>
+    j.state === 'failed' || (j.state === 'launching' && !!j.error)
+  const rank = (job: (typeof jobs)[number]) =>
+    workerStatus(job, sessions) === 'complete' ? 2 : failed(job) ? 1 : 0
   const asking = jobs.filter((j) => workerStatus(j, sessions) === 'awaiting input')
+  const failures = jobs.filter(failed)
+  // Problems open the list so a failure is never hidden behind a closed disclosure.
+  const urgent = [...failures, ...asking].map((job) => job.id).join(' ')
+  const [open, setOpen] = useState(!!urgent)
+  const [seenUrgent, setSeenUrgent] = useState(urgent)
+  if (urgent !== seenUrgent) {
+    setSeenUrgent(urgent)
+    if (urgent) setOpen(true)
+  }
+  const flagged = [
+    failures.length && `${failures.length} failed`,
+    asking.length && `${asking.length} awaiting input`,
+  ].filter(Boolean)
   return (
     <div className="chat-coordination" aria-label="Work status">
       <p role="status">
         {team.state === 'running'
           ? active.length
             ? Object.entries(counts)
+                .filter(([, count]) => count > 0)
                 .map(([status, count]) => `${count} ${status}`)
                 .join(' · ')
             : 'Ready'
@@ -66,29 +84,9 @@ export default function ChatCoordination({
               ? 'Stopped'
               : 'Complete'}
       </p>
-      {active.length > 0 && (
-        <details className="chat-workers">
-          <summary>Workers ({active.length})</summary>
-          <ul>
-            {active.map((job) => (
-              <li key={job.id}>
-                <strong>{job.terminal.name}</strong> · {workerStatus(job, sessions)}
-                {workerStatus(job, sessions) === 'working' && workerStep(job) && (
-                  <> · {workerStep(job)}</>
-                )}
-                <p>{job.instructions}</p>
-                {terminalAction(job)}
-              </li>
-            ))}
-          </ul>
-          <button onClick={() => selectPanel('sessions')}>Open Sessions</button>
-        </details>
-      )}
-      {team.reset && <p role="status">{team.reset.error ?? 'Restoring context…'}</p>}
-      {team.error && !restartNotice && <p role="alert">{team.error}</p>}
       {failures.map((job) => (
         <p role="alert" key={job.id}>
-          {job.terminal.name}: {job.error ?? 'Work failed'} {terminalAction(job)}
+          {job.terminal.name} · failed{' '}
           <button disabled={busy} onClick={() => void act({ kind: 'retry', assignment: job.id })}>
             Retry work
           </button>
@@ -97,10 +95,58 @@ export default function ChatCoordination({
       ))}
       {asking.map((job) => (
         <p role="alert" key={job.id}>
-          {job.terminal.name} needs permission or input. {terminalAction(job)}{' '}
-          <button onClick={() => selectPanel('sessions')}>Open Sessions</button>
+          {job.terminal.name} · awaiting input {terminalAction(job)}
         </p>
       ))}
+      {jobs.length > 0 && (
+        <details
+          className="chat-workers"
+          open={open}
+          onToggle={(e) => setOpen(e.currentTarget.open)}
+        >
+          <summary>
+            Assignments ({jobs.length})
+            {flagged.length > 0 && (
+              <span className="chat-workers-flag"> · {flagged.join(' · ')}</span>
+            )}
+          </summary>
+          <ul>
+            {jobs
+              .sort((a, b) => rank(a) - rank(b))
+              .map((job) => {
+                const status = workerStatus(job, sessions)
+                const step = workerStep(job)
+                const done = status === 'complete'
+                return (
+                  <li key={job.id} data-status={failed(job) ? 'failed' : status}>
+                    <strong>{job.terminal.name}</strong> · {status}
+                    {step && <> · {step}</>}
+                    {job.summary && <p>{job.summary}</p>}
+                    {!(done && job.summary) && (
+                      <p className="assignment-instructions" title={job.instructions}>
+                        {job.instructions}
+                      </p>
+                    )}
+                    {job.report && <AssignmentReport report={job.report} />}
+                    {job.error && <p>{job.error}</p>}
+                    {terminalAction(job)}
+                    {failed(job) && (
+                      <button
+                        disabled={busy}
+                        onClick={() => void act({ kind: 'retry', assignment: job.id })}
+                      >
+                        Retry work
+                      </button>
+                    )}
+                  </li>
+                )
+              })}
+          </ul>
+          <button onClick={() => selectPanel('sessions')}>Open Sessions</button>
+        </details>
+      )}
+      {team.reset && <p role="status">{team.reset.error ?? 'Restoring context…'}</p>}
+      {team.error && !restartNotice && <p role="alert">{team.error}</p>}
       {(team.requests ?? [])
         .filter((r) => ['failed', 'uncertain'].includes(r.state))
         .map((r) => (
@@ -132,5 +178,34 @@ export default function ChatCoordination({
         ))}
       {error && <p role="alert">{error}</p>}
     </div>
+  )
+}
+
+const REPORT_FIELDS: [keyof Omit<ScanReport, 'references'>, string][] = [
+  ['findings', 'Findings'],
+  ['uncertainties', 'Uncertainties'],
+  ['suggestedWork', 'Suggested work'],
+]
+
+/** A finished assignment's report, read as labelled sections rather than raw data. */
+function AssignmentReport({ report }: { report: ScanReport }) {
+  return (
+    <details className="assignment-report">
+      <summary>Report</summary>
+      <dl>
+        {REPORT_FIELDS.filter(([field]) => report[field].trim()).map(([field, label]) => (
+          <div key={field}>
+            <dt>{label}</dt>
+            <dd>{report[field]}</dd>
+          </div>
+        ))}
+        {report.references.length > 0 && (
+          <div>
+            <dt>References</dt>
+            <dd>{report.references.join('\n')}</dd>
+          </div>
+        )}
+      </dl>
+    </details>
   )
 }

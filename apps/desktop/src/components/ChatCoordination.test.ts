@@ -30,6 +30,12 @@ test.each([
       state: jobState,
       error,
     } as ProviderJob,
+    {
+      id: 'done',
+      terminal: { name: 'Finished worker' },
+      state: 'integrated',
+      summary: 'Completed task',
+    } as ProviderJob,
   ]
   const html = renderToStaticMarkup(
     createElement(ChatCoordination, {
@@ -37,10 +43,23 @@ test.each([
       team: { id: 'team', projectId: 'p', state: 'running', messages: [] } as unknown as ChatTeam,
     }),
   )
+  expect(html).toContain('Assignments (2)')
+  // A finished job shows its summary on its row, not behind another disclosure.
+  expect(html).toContain(
+    '<li data-status="complete"><strong>Finished worker</strong> · complete<p>Completed task</p>',
+  )
+  expect(html).not.toContain('0 ')
   if (retryable) {
-    expect(html).toContain('Retry work')
+    // The failure is announced and opens the list, with its retry in the alert and its row.
+    expect(html).toContain('<p role="alert">Codex · failed')
+    expect(html).toContain('<details class="chat-workers" open="">')
+    expect(html).toContain('· 1 failed</span>')
+    expect(html.slice(html.indexOf('<li'), html.indexOf('</li>'))).toContain('Retry work')
     expect(html).toContain(error)
-  } else expect(html).not.toContain('Retry work')
+  } else {
+    expect(html).not.toContain('Retry work')
+    expect(html).not.toContain('open=""')
+  }
 })
 
 test('a restored team shows the restart notice once, as status rather than an alert', () => {

@@ -27,7 +27,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import type { SessionRecord } from '../types'
-import { type SimpleStage } from '../lib/simple'
+import { recordStage, type SimpleStage } from '../lib/simple'
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
   composerStatus,
@@ -212,7 +212,7 @@ export default function SimpleComposer({
           text,
           draft,
           mentions,
-          stage,
+          stage: recordStage(recipient),
           atMs: Date.now(),
         })
       } catch (error) {
@@ -327,7 +327,7 @@ export default function SimpleComposer({
           text,
           draft,
           mentions,
-          stage,
+          stage: recordStage(target!),
           atMs: Date.now(),
         })
         return
@@ -339,7 +339,7 @@ export default function SimpleComposer({
         generation,
         text,
         mentions: mentions.map((m) => m.id),
-        stage,
+        stage: recordStage(target!),
         force,
         current: stillCurrent,
       })

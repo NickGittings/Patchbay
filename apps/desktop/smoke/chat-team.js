@@ -173,15 +173,12 @@
     await until('new lead conversation', () => team()?.lead.generation > originalGeneration)
     state().setSimpleMode(false)
     state().setView('implementation')
-    const assignments = await until('read-only chat assignments in Full view', () =>
-      document.querySelector('[aria-label="Implementation assignments"]'),
-    )
-    assert(
-      assignments.textContent.includes('Use the Chat menu') &&
-        !['Pause', 'Resume', 'Stop', 'Retry'].some((text) => button(text, assignments)),
-      'Full view exposed manual controls for chat-owned assignments',
-    )
     await until('worker results retained in background', () => jobs().every((j) => j.summary))
+    await until('Build view mounted', () => document.querySelector('.implementation-view'))
+    assert(
+      !document.querySelector('[aria-label="Implementation assignments"]'),
+      'Build showed chat assignments',
+    )
     state().setSimpleMode(true)
     await until('chat restored', () => document.querySelector('[aria-label="Work status"]'))
     assert(state().simple.selectedAgent === team().lead.sessionId, 'lead selection lost')
@@ -190,8 +187,8 @@
       'worker reply entered main transcript',
     )
     assert(
-      !document.querySelector('.chat-workers')?.textContent.includes('Inspect baseline'),
-      'Completed report remains in active list',
+      document.querySelector('.chat-workers')?.textContent.includes('Inspect baseline'),
+      'Completed assignment missing from Chat',
     )
     assert(
       document.querySelector('.chat-workers')?.textContent.includes('Implement worker file'),
@@ -211,7 +208,27 @@
         state().simple.log.some((e) => e.kind === 'prompt' && e.text === text),
       )
     }
+    smoke.store.setState({
+      simple: {
+        ...state().simple,
+        log: [
+          ...state().simple.log,
+          {
+            kind: 'action',
+            action: 'merge',
+            stage: 'merge',
+            id: 'previous-merge',
+            atMs: Date.now(),
+          },
+        ],
+      },
+    })
     await send('ask-fixture')
+    assert(
+      state().simple.log.find((e) => e.kind === 'prompt' && e.text === 'ask-fixture')?.stage ===
+        'build',
+      'Lead message inherited the prior merge stage',
+    )
     await until('durable information request', () => team().informationRequests?.length === 1)
     assert(!team().informationRequests[0].response, 'Paused scheduling delivered a worker request')
     assert(team().state === 'paused', 'Lead messaging resumed worker scheduling')
@@ -228,7 +245,8 @@
       document.querySelector(`.simple-agent[data-session="${team().lead.sessionId}"] header`),
     )
     assert(
-      leadHeader.textContent.includes('Lead · Codex · Team agent') &&
+      leadHeader.querySelector('.chat-role')?.textContent === 'Lead' &&
+        leadHeader.querySelector('.chat-role-detail')?.textContent === 'Codex · Team agent' &&
         button('View Lead terminal', leadHeader),
       'Message header mixed the Lead role, provider or preset',
     )

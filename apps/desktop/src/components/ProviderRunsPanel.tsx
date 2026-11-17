@@ -35,7 +35,8 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
     const load = () =>
       void providerRuns(projectId)
         .then((runs) => {
-          if (!disposed) setRuns(runs.filter((r) => r.task === task && r.kind === kind))
+          if (!disposed)
+            setRuns(runs.filter((r) => !r.chatTeam && r.task === task && r.kind === kind))
         })
         .catch((e) => {
           if (!disposed) setError(String(e))
@@ -102,7 +103,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
             <strong>
               {kind === 'scan' ? 'Scans' : 'Assignments'} · {run.state}
             </strong>
-            {active && !run.chatTeam && (
+            {active && (
               <button
                 disabled={busy}
                 onClick={() =>
@@ -116,7 +117,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
                 {run.state === 'paused' ? 'Resume' : 'Pause'}
               </button>
             )}
-            {active && !run.chatTeam && (
+            {active && (
               <button
                 disabled={busy}
                 onClick={() =>
@@ -173,11 +174,6 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
               </button>
             )}
           </div>
-          {run.chatTeam && (
-            <p>
-              Use the Chat menu to pause, continue or stop work. Failures appear inline in Chat.
-            </p>
-          )}
           {run.error && <p role="status">{run.error}</p>}
           <table>
             <thead>
@@ -210,8 +206,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
                     {job.state}
                     {(job.state === 'failed' ||
                       (job.state === 'launching' && run.state === 'paused')) &&
-                      run.state !== 'stopped' &&
-                      !run.chatTeam && (
+                      run.state !== 'stopped' && (
                         <button
                           disabled={busy}
                           onClick={() =>

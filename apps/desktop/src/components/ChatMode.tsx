@@ -6,7 +6,8 @@ import { useChatTeams } from '../lib/chatTeams'
 import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { recordStage, pendingLaunch, LAUNCH_RECORD_GRACE_MS, thread } from '../lib/simple'
-import { flow, workflowPromptKey } from '../lib/simpleFlow'
+import { chatStepper, flow, workflowPromptKey } from '../lib/simpleFlow'
+import { inPlace } from '../lib/auto'
 import type { useSimpleData } from '../lib/useSimpleData'
 import { useExpiredDeadline } from '../lib/clock'
 import { simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
@@ -41,6 +42,7 @@ import SimpleComposer from './SimpleComposer'
 import ChatAgentPicker from './ChatAgentPicker'
 import Dialog from './Dialog'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
+import './auto/auto.css'
 import './simple.css'
 
 export default function ChatMode({
@@ -144,6 +146,18 @@ export default function ChatMode({
     now,
   }
   const state = flow(flowSnapshot, model)
+  const verdict = findings?.findings?.verdict
+  const autoActive = chatAutoActive(s.auto?.status)
+  const autoStatus = s.auto?.status
+  const autoHalt = autoStatus === 'paused' || autoStatus === 'failed' ? autoStatus : undefined
+  const stepper = chatStepper(state.step, {
+    issues: verdict ? Object.values(verdict.counts).reduce((sum, n) => sum + n, 0) : undefined,
+    inPlace: !!s.auto && !['stopped', 'failed'].includes(s.auto.status) && inPlace(s.auto),
+    // A stopped Auto run hands the worktree back to you, so only a paused or failed one halts it.
+    halt:
+      autoHalt ?? (team?.state === 'paused' || team?.state === 'stopped' ? team.state : undefined),
+    note: autoActive || autoHalt ? s.auto?.reason || undefined : undefined,
+  })
   const runs = useChatTeams((state) => (team ? state.runs[team.projectId] : undefined))
   const offered = useAgentQuestions((q) => q.pending)
   // The lead, and the workers it is running: their approvals and questions are answered here too.
@@ -389,6 +403,34 @@ export default function ChatMode({
           <p>Stop the lead and workers for this task? You can continue work later.</p>
         </Dialog>
       )}
+      {(state.step !== 'idle' || autoActive || autoHalt) && (
+        <div className="chat-progress">
+          <ol className="auto-stepper chat-stepper" aria-label="Workflow stages">
+            {stepper.map((item) => (
+              <li
+                key={item.stage}
+                aria-current={
+                  ['current', 'ready', 'attention', 'stopped', 'failed'].includes(item.state)
+                    ? 'step'
+                    : undefined
+                }
+                data-state={item.state}
+                title={item.note}
+              >
+                <span>
+                  {CHAT_STAGE_LABELS[item.stage]}
+                  {item.note && <small> · {item.note}</small>}
+                </span>
+              </li>
+            ))}
+          </ol>
+          {autoActive && (
+            <button className="chat-auto-pause" onClick={workflow.pauseAuto}>
+              Pause Auto
+            </button>
+          )}
+        </div>
+      )}
       {team && (
         <ChatCoordination
           key={team.id}
@@ -404,14 +446,6 @@ export default function ChatMode({
             })
           }
         />
-      )}
-      {s.auto && (
-        <p role="status">
-          Auto · {s.auto.stage} · {s.auto.status} {s.auto.reason}
-          {chatAutoActive(s.auto.status) && (
-            <button onClick={workflow.pauseAuto}>Pause Auto</button>
-          )}
-        </p>
       )}
       <ActivityHooksNotice providers={hookProviders} reporting={reporting} />
       {error && <p role="alert">{error}</p>}
@@ -549,3 +583,10 @@ function ActivityHooksNotice({
     </p>
   )
 }
+
+const CHAT_STAGE_LABELS = {
+  plan: 'Plan',
+  build: 'Build',
+  review: 'Review',
+  merge: 'Merge',
+} as const

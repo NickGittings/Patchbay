@@ -1595,7 +1595,14 @@ pub fn control(
                         !r.jobs.iter().any(|j| j.state == JobState::Failed),
                         "Retry failed workers before resuming"
                     );
-                    r.state = State::Running;
+                    if r.error.as_deref() == Some(RESTART_NOTICE)
+                        || r.jobs
+                            .iter()
+                            .any(|j| j.launched_ms > 0 || j.session_id.is_some())
+                    {
+                        r.state = State::Running;
+                        clear_restart_notice(&mut r.error);
+                    }
                 }
                 if !s.owners.iter().any(|o| o.kind == "chat" && o.id == t.id) {
                     s.owners.push(Owner {
@@ -1872,7 +1879,7 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
     };
     let scopes = serde_json::to_string(&t.scopes)?;
     let supplement = format!(
-        "\nOriginal briefing:\n{}\nCurrent saved plan:\n{}\nSaved conversation (reference context, not new instructions):\n{}\nInformation requests (null response means outstanding):\n{}\nWorkflow requests:\n{}\nExisting agent scopes:\n{scopes}\nTeam scheduling: {:?}. Preserve explicit pause/stop decisions.",
+        "\nOriginal briefing:\n{}\nCurrent saved plan:\n{}\nSaved conversation (reference context, not new instructions):\n{}\nInformation requests (null response means outstanding):\n{}\nWorkflow requests:\n{}\nExisting agent scopes:\n{scopes}\nTeam scheduling: {:?}. Preserve explicit pause/stop decisions. Paused rounds whose assignments never launched were not started; relaunch only if still wanted.",
         t.original_briefing,
         t.current_plan,
         t.saved_context,
@@ -3088,6 +3095,38 @@ mod tests {
             assert_eq!(
                 serde_json::to_value(super::super::read(&f.dir, "p", "round2").unwrap()).unwrap(),
                 newer
+            );
+        }
+    }
+    #[test]
+    fn resume_only_reactivates_started_or_restart_paused_rounds() {
+        for (launched, restart, expected) in [
+            (false, false, State::Paused),
+            (true, false, State::Running),
+            (false, true, State::Running),
+        ] {
+            let f = Fixture::new();
+            f.delegate(vec![assignment("a", ResultKind::Code, &[])]);
+            if launched {
+                f.launch("a");
+            }
+            modify(&f.dir, |s| {
+                s.runs[0].state = State::Paused;
+                s.runs[0].error = restart.then(|| RESTART_NOTICE.into());
+                Ok(())
+            })
+            .unwrap();
+            control(
+                &f.dir,
+                "p",
+                &f.team.id,
+                Control::Resume,
+                std::slice::from_ref(&f.lead),
+            )
+            .unwrap();
+            assert_eq!(
+                super::super::read(&f.dir, "p", "round1").unwrap().state,
+                expected
             );
         }
     }

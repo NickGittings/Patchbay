@@ -350,3 +350,83 @@ export function workflowPromptKey(
     promptType,
   ])
 }
+
+export type ChatStepperStage = 'plan' | 'build' | 'review' | 'merge'
+/**
+ * `ready`: the stage waits for your go and nothing is wrong. `attention`: it needs you because of
+ * a problem (issues, no verdict). `stopped`/`failed`: work on the current stage is halted.
+ */
+export type ChatStepperState =
+  'done' | 'current' | 'ready' | 'attention' | 'stopped' | 'failed' | 'upcoming'
+export interface ChatStepperItem {
+  stage: ChatStepperStage
+  state: ChatStepperState
+  /** A short qualifier for the stage, such as why it is waiting on you. */
+  note?: string
+}
+/** Why the stage in progress is not moving. */
+export type ChatStepperHalt = 'paused' | 'stopped' | 'failed'
+
+const HALT_NOTES: Record<ChatStepperHalt, string> = {
+  paused: 'Paused',
+  stopped: 'Stopped',
+  failed: 'Failed',
+}
+
+/**
+ * Where a worktree's chat is in Plan → Build → Review → Merge, projected from its `flow` step.
+ * Fixing is a pass inside Review, as Auto folds fix into its build stage. `issues` counts the
+ * latest review verdict's findings (undefined without a verdict); `inPlace` drops Merge. `halt`
+ * marks the stage in progress as paused, stopped or failed; `note` (Auto's reason) qualifies the
+ * stage in progress when the flow step gives it none, and follows a halt's label.
+ */
+export function chatStepper(
+  step: SimpleStep,
+  {
+    issues,
+    inPlace = false,
+    halt,
+    note: fallback,
+  }: { issues?: number; inPlace?: boolean; halt?: ChatStepperHalt; note?: string } = {},
+): ChatStepperItem[] {
+  const progress: Record<SimpleStep, [index: number, state: ChatStepperState, note?: string]> = {
+    idle: [-1, 'upcoming'],
+    planning: [0, 'current'],
+    planReady: [1, 'ready', 'Ready'],
+    building: [1, 'current'],
+    built: [2, 'ready', 'Ready'],
+    reviewing: [2, 'current'],
+    reviewed:
+      issues === undefined
+        ? [2, 'attention', 'No verdict']
+        : issues > 0
+          ? [2, 'attention', `${issues} ${issues === 1 ? 'issue' : 'issues'}`]
+          : [3, 'ready', 'Ready'],
+    fixing: [2, 'current', 'Fixing'],
+    fixed: [2, 'ready', 'Re-review'],
+    merging: [3, 'current'],
+    merged: [4, 'done'],
+  }
+  const stages: ChatStepperStage[] = [
+    'plan',
+    'build',
+    'review',
+    ...(inPlace ? [] : ['merge' as const]),
+  ]
+  // A run in place ends at review: a clean verdict completes it.
+  const [at, state, note] =
+    inPlace && progress[step][0] >= 3 ? ([4, 'done'] as const) : progress[step]
+  const shown: Pick<ChatStepperItem, 'state' | 'note'> = halt
+    ? {
+        state: halt === 'failed' ? 'failed' : 'stopped',
+        note: [HALT_NOTES[halt], fallback].filter(Boolean).join(' · '),
+      }
+    : { state, note: note ?? fallback }
+  return stages.map((stage, i) =>
+    i < at
+      ? { stage, state: 'done' }
+      : i === at
+        ? { stage, ...shown }
+        : { stage, state: 'upcoming' },
+  )
+}

@@ -88,7 +88,12 @@ test('waits during work and permission dialogs, then flushes once on ready even 
     expect(logSimple).toHaveBeenCalledWith(
       'p',
       't',
-      expect.objectContaining({ kind: 'prompt', text: 'follow  up', mentions: ['app'] }),
+      expect.objectContaining({
+        kind: 'prompt',
+        stage: 'build',
+        text: 'follow  up',
+        mentions: ['app'],
+      }),
     ),
   )
   update(session('review'))

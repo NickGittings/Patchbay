@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { flow, workflowPromptKey, type FlowSnapshot } from './simpleFlow'
+import { chatStepper, flow, workflowPromptKey, type FlowSnapshot } from './simpleFlow'
 import { LAUNCH_RECORD_GRACE_MS, pendingLaunch, thread } from './simple'
 import type { AutoRun, ReviewFindings, SessionRecord, SessionState } from '../types'
 const worktree = { projectId: 'p', task: 't', path: '/t', branch: 'feature' }
@@ -420,4 +420,100 @@ test('prompt identity survives loading and activity, but changes for new attempt
   expect(key({ ...s, records: [replacement], sessions: {} })).not.toBe(launched)
   s.simple!.log.push({ ...s.simple!.log[0], id: 'next-attempt', atMs: 12 })
   expect(key(s)).not.toBe(launched)
+})
+
+test('a build lead prompt advances a merged chat to the build stage', () => {
+  const s = snapshot('@merge')
+  s.outcome = 'merged'
+  expect(flow(s).step).toBe('merged')
+  const lead = record('@task')
+  s.records = [...s.records, lead]
+  s.simple!.log.push({
+    id: 'next',
+    atMs: 40,
+    kind: 'prompt',
+    stage: 'build',
+    sessionId: lead.id,
+    text: 'Continue',
+    mentions: [],
+  })
+  expect(thread(s, s.worktree).stage).toBe('build')
+  s.sessions = { ...s.sessions, [lead.id]: session('working') }
+  expect(flow(s).step).toBe('building')
+  const finished = session('review')
+  finished.status!.agent!.sinceMs = 50
+  s.sessions = { ...s.sessions, [lead.id]: finished }
+  expect(flow(s).prompt?.text).toBe('Building done. Review the changes?')
+})
+
+const states = (items: ReturnType<typeof chatStepper>) =>
+  items.map((i) => `${i.stage}:${i.state}${i.note ? `(${i.note})` : ''}`).join(' ')
+
+test('the chat stepper places each flow step in plan, build, review and merge', () => {
+  expect(states(chatStepper('idle'))).toBe(
+    'plan:upcoming build:upcoming review:upcoming merge:upcoming',
+  )
+  expect(states(chatStepper('planning'))).toBe(
+    'plan:current build:upcoming review:upcoming merge:upcoming',
+  )
+  expect(states(chatStepper('planReady'))).toBe(
+    'plan:done build:ready(Ready) review:upcoming merge:upcoming',
+  )
+  expect(states(chatStepper('building'))).toBe(
+    'plan:done build:current review:upcoming merge:upcoming',
+  )
+  expect(states(chatStepper('built'))).toBe(
+    'plan:done build:done review:ready(Ready) merge:upcoming',
+  )
+  expect(states(chatStepper('reviewing'))).toBe(
+    'plan:done build:done review:current merge:upcoming',
+  )
+  expect(states(chatStepper('fixing'))).toBe(
+    'plan:done build:done review:current(Fixing) merge:upcoming',
+  )
+  expect(states(chatStepper('fixed'))).toBe(
+    'plan:done build:done review:ready(Re-review) merge:upcoming',
+  )
+  expect(states(chatStepper('merging'))).toBe('plan:done build:done review:done merge:current')
+  expect(states(chatStepper('merged'))).toBe('plan:done build:done review:done merge:done')
+})
+
+test('the chat stepper reads the review verdict and drops merge for a run in place', () => {
+  expect(states(chatStepper('reviewed'))).toBe(
+    'plan:done build:done review:attention(No verdict) merge:upcoming',
+  )
+  expect(states(chatStepper('reviewed', { issues: 1 }))).toBe(
+    'plan:done build:done review:attention(1 issue) merge:upcoming',
+  )
+  expect(states(chatStepper('reviewed', { issues: 3 }))).toBe(
+    'plan:done build:done review:attention(3 issues) merge:upcoming',
+  )
+  expect(states(chatStepper('reviewed', { issues: 0 }))).toBe(
+    'plan:done build:done review:done merge:ready(Ready)',
+  )
+  expect(states(chatStepper('reviewed', { issues: 0, inPlace: true }))).toBe(
+    'plan:done build:done review:done',
+  )
+  expect(states(chatStepper('merged', { inPlace: true }))).toBe('plan:done build:done review:done')
+})
+
+test('the chat stepper halts the stage in progress and falls back to a given note', () => {
+  expect(states(chatStepper('building', { halt: 'paused' }))).toBe(
+    'plan:done build:stopped(Paused) review:upcoming merge:upcoming',
+  )
+  expect(states(chatStepper('reviewed', { issues: 2, halt: 'failed' }))).toBe(
+    'plan:done build:done review:failed(Failed) merge:upcoming',
+  )
+  expect(states(chatStepper('merged', { halt: 'stopped' }))).toBe(
+    'plan:done build:done review:done merge:done',
+  )
+  expect(states(chatStepper('building', { note: 'Waiting on builder' }))).toBe(
+    'plan:done build:current(Waiting on builder) review:upcoming merge:upcoming',
+  )
+  expect(states(chatStepper('building', { halt: 'failed', note: 'Builder exited' }))).toBe(
+    'plan:done build:failed(Failed · Builder exited) review:upcoming merge:upcoming',
+  )
+  expect(states(chatStepper('fixing', { note: 'Auto reason' }))).toBe(
+    'plan:done build:done review:current(Fixing) merge:upcoming',
+  )
 })

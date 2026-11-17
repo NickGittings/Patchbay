@@ -153,7 +153,8 @@ assignments or open a worker's terminal.
 
 Replies support Markdown, code blocks and links. Mention components with `@` to include their
 context. Saved plans and workflow cards let you move through Build, Review and Merge while
-keeping the conversation open. **Auto mode** can coordinate those stages with its configured
+keeping the conversation open. A stage strip above the conversation shows where the worktree is
+in Plan → Build → Review → Merge, and the workflow card offers the next step. **Auto mode** can coordinate those stages with its configured
 validation and merge approval gates.
 
 Use **Terminal** beside the composer to open the current agent's live terminal. Questions and

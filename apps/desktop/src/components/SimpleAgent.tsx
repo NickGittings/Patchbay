@@ -35,9 +35,10 @@ export default function SimpleAgent({
   const steps = latest && busy ? turnSteps(session) : []
   const current = steps.at(-1)
   return (
-    <article className="simple-agent" data-session={sessionId}>
+    <article className="simple-agent" data-session={sessionId} data-role={identity.roleKey}>
       <header>
-        <strong>{identity.title}</strong>
+        <strong className="chat-role">{identity.role}</strong>
+        {identity.detail && <span className="chat-role-detail">{identity.detail}</span>}
         {latest && <SimpleStatus sessions={[session]} />}
         {record && (
           <button
