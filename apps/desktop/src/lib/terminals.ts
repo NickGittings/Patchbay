@@ -253,7 +253,9 @@ export function restoreOutput(
  */
 export function restoreModes(sessionId: string) {
   const { term } = entry(sessionId)
-  term.write('\x1b[?1049l\x1b[!p\x1b[?1000l\x1b[?1006l\x1b[2 q\r')
+  // Clearing from the cursor down removes what the dead TUI drew below it (its input box and
+  // status lines), which the next run would otherwise draw over line by line.
+  term.write('\x1b[?1049l\x1b[!p\x1b[?1000l\x1b[?1006l\x1b[2 q\x1b[J\r')
 }
 
 export function writeNote(sessionId: string, text: string) {
