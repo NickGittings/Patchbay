@@ -223,3 +223,43 @@ export function activityRoot(record: SessionRecord, tasks: readonly Task[], fall
     fallback
   )
 }
+
+const VERBS: Record<string, string> = {
+  Bash: 'Running',
+  Read: 'Reading',
+  read_file: 'Reading',
+  Edit: 'Editing',
+  MultiEdit: 'Editing',
+  edit_file: 'Editing',
+  Write: 'Writing',
+  write_file: 'Writing',
+  Grep: 'Searching',
+  Glob: 'Finding',
+  WebFetch: 'Fetching',
+  WebSearch: 'Searching the web for',
+}
+/**
+ * One tool step as Chat shows it: a verb and what it acts on, with files named relative to the
+ * agent's folder. A tool without a known verb or a target keeps its own name.
+ */
+export function activityLabel(activity: Activity, cwd?: string) {
+  const verb = VERBS[activity.tool]
+  let target = activity.target?.trim() ?? ''
+  if (target && activity.fileTarget && cwd && absolute(target)) {
+    const file = normalizedPath(target)
+    const base = normalizedPath(cwd)
+    if (inside(file, base) && file !== base) target = relativeTo(file, base)
+  }
+  if (!target) return verb ? `${verb}…` : activity.tool
+  return `${verb ?? activity.tool} ${target}`
+}
+/**
+ * The steps of the turn a session is working on, oldest first: those reported under its current
+ * turn, or every retained step when the provider names no turn.
+ */
+export function turnSteps(session: Pick<SessionState, 'activity' | 'status'> | undefined) {
+  const turn = session?.status?.agent?.turnId
+  return (session?.activity ?? [])
+    .filter((a) => !turn || !a.turn || a.turn === turn)
+    .toSorted((a, b) => a.sequence - b.sequence)
+}

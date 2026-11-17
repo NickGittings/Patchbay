@@ -76,6 +76,28 @@
   color: var(--muted);
   margin: 16px 0;
 }
+.simple-working p {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.simple-steps summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.simple-steps ol {
+  max-height: 200px;
+  margin: 4px 0 0;
+  padding-left: 24px;
+  overflow: auto;
+  font-size: 12px;
+}
+.simple-steps li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .simple-result {
   padding: 12px;
   margin: 16px 0;

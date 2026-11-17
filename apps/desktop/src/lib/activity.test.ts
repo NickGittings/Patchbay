@@ -276,3 +276,33 @@ test('newestWrite can skip writes the change list no longer shows', () => {
   ).toEqual({ componentId: 'src', path: 'src/listed.ts' })
   expect(newestWrite(record(), session, components, '/task', [])).toBeUndefined()
 })
+
+test('chat names a step by its verb and target, with files relative to the agent’s folder', async () => {
+  const { activityLabel, turnSteps } = await import('./activity')
+  const step = (sequence: number, tool: string, target: string | null, turn = 't1') => ({
+    ...activity(sequence, target ?? '', tool),
+    target,
+    fileTarget: ['Edit', 'Read', 'Write'].includes(tool),
+    turn,
+  })
+  expect(activityLabel(step(1, 'Bash', 'npm test'))).toBe('Running npm test')
+  expect(activityLabel(step(1, 'Edit', '/task/src/a.ts'), '/task')).toBe('Editing src/a.ts')
+  expect(activityLabel(step(1, 'Read', '/elsewhere/b.ts'), '/task')).toBe('Reading /elsewhere/b.ts')
+  // A command that looks like a path is never rewritten, and unknown tools keep their name.
+  expect(activityLabel(step(1, 'Bash', '/task/run.sh'), '/task')).toBe('Running /task/run.sh')
+  expect(activityLabel(step(1, 'mcp__docs__search', 'hooks'))).toBe('mcp__docs__search hooks')
+  expect(activityLabel(step(1, 'Edit', null))).toBe('Editing…')
+  expect(activityLabel(step(1, 'TodoWrite', null))).toBe('TodoWrite')
+
+  const session = {
+    activity: [step(3, 'Bash', 'c'), step(1, 'Read', 'a', 't0'), step(2, 'Edit', 'b')],
+    status: { agent: { turnId: 't1' } },
+  } as unknown as Parameters<typeof turnSteps>[0]
+  expect(turnSteps(session).map((a) => a.sequence)).toEqual([2, 3])
+  expect(
+    turnSteps({ ...session!, status: undefined } as Parameters<typeof turnSteps>[0]).map(
+      (a) => a.sequence,
+    ),
+  ).toEqual([1, 2, 3])
+  expect(turnSteps(undefined)).toEqual([])
+})
