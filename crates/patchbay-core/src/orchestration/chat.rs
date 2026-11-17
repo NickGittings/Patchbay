@@ -51,6 +51,9 @@ pub struct Message {
     pub text: String,
     pub state: DeliveryState,
     pub generation: Option<u64>,
+    /// Waits for the recipient's next turn instead of starting one.
+    #[serde(default)]
+    pub passive: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -208,6 +211,9 @@ pub struct Team {
     pub original_briefing: String,
     #[serde(default)]
     pub observed_agents: BTreeMap<String, u64>,
+    /// Sessions the user started from Chat's workflow buttons; their finish does not wake the lead.
+    #[serde(default)]
+    pub noted_agents: std::collections::BTreeSet<String>,
     pub checkpoint: Checkpoint,
     pub messages: Vec<Message>,
     pub deliveries: Vec<Delivery>,
@@ -332,6 +338,12 @@ pub enum Control {
     Note {
         id: String,
         text: String,
+        #[serde(default)]
+        sessions: Vec<String>,
+    },
+    /// Passive lead messages the user's own prompt carried to the lead.
+    NotesDelivered {
+        ids: Vec<String>,
     },
 }
 fn team<'a>(store: &'a mut Store, project: &str, id: &str) -> Result<&'a mut Team> {
@@ -537,6 +549,7 @@ pub fn initialize(
             current_plan: String::new(),
             original_briefing: retained_briefing(briefing),
             observed_agents: BTreeMap::new(),
+            noted_agents: Default::default(),
             messages: vec![],
             deliveries: vec![],
             reset: None,
@@ -604,7 +617,16 @@ fn append(
         text,
         state: DeliveryState::Pending,
         generation: None,
+        passive: false,
     });
+    Ok(())
+}
+/// Queue a lead message that rides with its next delivery rather than starting a turn.
+fn append_passive(t: &mut Team, id: String, text: String) -> Result<()> {
+    append(t, id.clone(), "patchbay", "lead", None, text)?;
+    if let Some(m) = t.messages.iter_mut().find(|m| m.id == id) {
+        m.passive = true;
+    }
     Ok(())
 }
 fn actor(s: &Store, launch: &LaunchContext, records: &[Record]) -> Result<(usize, String)> {
@@ -1510,8 +1532,16 @@ pub fn control(
                 }
             }
             Control::HistoryBoundary => t.saved_context.clear(),
-            Control::Note { id, text } => {
-                append(&mut t, format!("note-{id}"), "patchbay", "lead", None, text)?;
+            Control::Note { id, text, sessions } => {
+                append_passive(&mut t, format!("note-{id}"), text)?;
+                t.noted_agents.extend(sessions);
+            }
+            Control::NotesDelivered { ids } => {
+                for m in &mut t.messages {
+                    if m.passive && m.state == DeliveryState::Pending && ids.contains(&m.id) {
+                        m.state = DeliveryState::Delivered;
+                    }
+                }
             }
             Control::Pause => t.state = State::Paused,
             Control::Block { reason } => {
@@ -1998,17 +2028,18 @@ pub fn reconcile(
                 if t.observed_agents.get(&record.id) == Some(&snapshot.generation)
                     && (ready(record) || !snapshot.running)
                 {
-                    append(
-                        &mut t,
-                        format!("external-finished-{}-{}", record.id, snapshot.generation),
-                        "patchbay",
-                        "lead",
-                        None,
-                        format!(
-                            "Existing agent {} reached a ready prompt or exited. Inspect its results and validation before treating the work as complete.",
-                            record.metadata.name
-                        ),
-                    )?;
+                    let notice_id =
+                        format!("external-finished-{}-{}", record.id, snapshot.generation);
+                    let notice = format!(
+                        "Existing agent {} reached a ready prompt or exited. Inspect its results and validation before treating the work as complete.",
+                        record.metadata.name
+                    );
+                    // The step card already reports work the user started from it.
+                    if t.noted_agents.remove(&record.id) {
+                        append_passive(&mut t, notice_id, notice)?;
+                    } else {
+                        append(&mut t, notice_id, "patchbay", "lead", None, notice)?;
+                    }
                     t.observed_agents.remove(&record.id);
                 } else if snapshot.running && !ready(record) {
                     t.observed_agents
@@ -2559,7 +2590,7 @@ pub fn deliver(
         let recipients: HashSet<_> = t
             .messages
             .iter()
-            .filter(|m| m.state == DeliveryState::Pending)
+            .filter(|m| m.state == DeliveryState::Pending && !m.passive)
             .map(|m| m.recipient.clone())
             .collect();
         // The durable reserve blocks another desktop drive even if the transport loses its reply.
@@ -4029,6 +4060,7 @@ mod tests {
         let note = || Control::Note {
             id: "build-1".into(),
             text: "The user started Build from Chat.".into(),
+            sessions: vec![],
         };
         for _ in 0..2 {
             control(
@@ -4052,6 +4084,94 @@ mod tests {
             ("patchbay", "lead")
         );
         assert_eq!(notes[0].state, DeliveryState::Pending);
+    }
+
+    #[test]
+    fn workflow_button_work_waits_for_the_leads_next_turn() {
+        let f = Fixture::new();
+        let finish = |name: &str, records: &mut Vec<Record>| {
+            let mut agent = session(&f.dir, name);
+            let state = |agent: &mut Record, state| {
+                let report = agent.snapshot.as_mut().unwrap().status.agent.as_mut();
+                report.unwrap().state = state;
+            };
+            state(&mut agent, AgentState::Working);
+            records.push(agent.clone());
+            reconcile(&f.dir, "p", records, false).unwrap();
+            state(&mut agent, AgentState::Idle);
+            *records.last_mut().unwrap() = agent;
+            reconcile(&f.dir, "p", records, false).unwrap();
+        };
+        let mut records = vec![f.lead.clone()];
+        // The fixture's lead starts owing a recovery turn; take it first.
+        deliver(&f.dir, "p", &f.team.id, &records, |_| {
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        let lead = records[0].snapshot.as_mut().unwrap();
+        lead.status.agent.as_mut().unwrap().since_ms = 20;
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Note {
+                id: "review-1".into(),
+                text: "The user started a review from Chat.".into(),
+                sessions: vec!["reviewer".into()],
+            },
+            &records,
+        )
+        .unwrap();
+        finish("reviewer", &mut records);
+        let t = f.state();
+        assert!(t.noted_agents.is_empty());
+        assert_eq!(t.messages.iter().filter(|m| m.passive).count(), 2);
+        deliver(&f.dir, "p", &f.team.id, &records, |_| {
+            panic!("workflow-button work started a lead turn")
+        })
+        .unwrap();
+
+        f.send("next", "what happened?");
+        let mut prompts = Vec::new();
+        deliver(&f.dir, "p", &f.team.id, &records, |r| {
+            if let Request::Prompt { text, .. } = r {
+                prompts.push(text);
+            }
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        assert_eq!(prompts.len(), 1);
+        for part in ["started a review", "Existing agent", "what happened?"] {
+            assert!(prompts[0].contains(part), "{part}");
+        }
+
+        // An agent the user did not start from the step card still wakes the lead.
+        finish("stranger", &mut records);
+        let t = f.state();
+        let notice = t.messages.last().unwrap();
+        assert!(notice.id.starts_with("external-finished-stranger"));
+        assert!(!notice.passive && notice.state == DeliveryState::Pending);
+
+        // The user's own prompt can carry a waiting note; only passive messages are settled.
+        let note = |id: &str| Control::Note {
+            id: id.into(),
+            text: "The user started a merge from Chat.".into(),
+            sessions: vec![],
+        };
+        control(&f.dir, "p", &f.team.id, note("merge-1"), &records).unwrap();
+        let ids = vec!["note-merge-1".to_string(), notice.id.clone()];
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::NotesDelivered { ids },
+            &records,
+        )
+        .unwrap();
+        let t = f.state();
+        let state = |id: &str| t.messages.iter().find(|m| m.id == id).unwrap().state;
+        assert_eq!(state("note-merge-1"), DeliveryState::Delivered);
+        assert_eq!(state(&notice.id), DeliveryState::Pending);
     }
 
     #[test]

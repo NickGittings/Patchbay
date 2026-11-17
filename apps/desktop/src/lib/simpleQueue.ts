@@ -3,6 +3,7 @@ import { leadDeliveryPending, teamFor, useChatTeams } from './chatTeams'
 import { chatAutoActive } from './chat'
 import {
   forceable,
+  forcedSettleAt,
   followDeliveries,
   isSending,
   lastSubmission,
@@ -43,8 +44,20 @@ export function cancelQueued(key: string) {
   restore(key, queued)
 }
 
+// A forced message steered into its turn leaves no later hook to follow: look again once
+// that stopped turn has settled.
+const settling = new Map<string, ReturnType<typeof setTimeout>>()
+function clearSettling(key?: string) {
+  for (const [k, timer] of settling)
+    if (key === undefined || k === key) {
+      clearTimeout(timer)
+      settling.delete(k)
+    }
+}
+
 /** Remove before attempting delivery: a failed or uncertain write is never retried. */
 export async function flushQueued(key: string, force = false) {
+  clearSettling(key)
   const queued = useSimpleUi.getState().worktrees[key]?.queued
   if (!queued) return
   const state = useStore.getState()
@@ -80,11 +93,16 @@ export async function flushQueued(key: string, force = false) {
     return
   }
   if (!state.serviceConnected || session.disconnected || session.interrupted) return
-  if (
-    !promptReady(session, lastSubmission(queued.sessionId, queued.generation)) &&
-    !(force && forceable(session))
-  )
+  const submission = lastSubmission(queued.sessionId, queued.generation)
+  if (!promptReady(session, submission) && !(force && forceable(session))) {
+    const settleAt = forcedSettleAt(session, submission)
+    if (settleAt !== undefined)
+      settling.set(
+        key,
+        setTimeout(() => void flushQueued(key), Math.max(0, settleAt - Date.now())),
+      )
     return
+  }
   useSimpleUi.getState().patch(key, { queued: undefined })
   useSimpleUi.getState().patch(key, { pendingAction: true })
   try {
@@ -145,6 +163,7 @@ export function followQueuedPrompts() {
   const stopDeliveries = followDeliveries(follow)
   follow()
   return () => {
+    clearSettling()
     stopSessions()
     stopQueues()
     stopDeliveries()

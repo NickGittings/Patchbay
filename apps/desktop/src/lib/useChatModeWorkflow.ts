@@ -113,7 +113,7 @@ export function useChatModeWorkflow({
       throw new Error('The worktree changed. Choose Build in the intended chat.')
     const launched = await implementPlannerPlan(planner, undefined, undefined, 'stay')
     await log('implement', 'build', launched, destinationTask)
-    await noteLead(team, 'a build of the saved plan', launched.requestId ?? launched.sessionId)
+    await noteLead(team, 'a build of the saved plan', [launched.sessionId], launched.requestId)
   }
   const act = (action: FlowAction) =>
     void run(action, async () => {
@@ -146,13 +146,14 @@ export function useChatModeWorkflow({
           await noteLead(
             team,
             `a review of ${source?.branch ?? 'this worktree'}`,
-            started[0].requestId ?? started[0].sessionId,
+            started.map((r) => r.sessionId),
+            started[0].requestId,
           )
         if (errors.length) setFailure(errors.join('\n'))
       } else if (action === 'fix' && reviewer) {
         const fixing = await fixReviewFindings(reviewer, undefined, undefined, 'stay')
         await log('fix', 'build', fixing)
-        await noteLead(team, 'fixes for the review findings', fixing.requestId ?? fixing.sessionId)
+        await noteLead(team, 'fixes for the review findings', [fixing.sessionId], fixing.requestId)
       } else if (action === 'checkMerge') {
         if (!target?.branch || !source?.branch) {
           setDialog('merge')
@@ -185,6 +186,7 @@ export function useChatModeWorkflow({
         await noteLead(
           team,
           `a merge of ${request.sourceBranch} into ${request.destinationBranch}`,
+          [sid],
           requestId,
         )
       } else if (action === 'resumeAuto') {

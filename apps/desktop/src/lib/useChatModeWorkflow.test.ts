@@ -102,8 +102,11 @@ test('duplicate launches share a scope lock and release it after failure', async
   await idle()
   expect(implementPlannerPlan).toHaveBeenCalledTimes(2)
   expect(render().failure).toBe('')
-  // The lead hears of work started beside it, identified by the launch's request.
-  expect(vi.mocked(noteLead).mock.calls.at(-1)?.[1]).toBe('a build of the saved plan')
+  // The lead hears of work started beside it, with the session whose finish must not wake it.
+  expect(vi.mocked(noteLead).mock.calls.at(-1)?.slice(1, 3)).toEqual([
+    'a build of the saved plan',
+    ['builder'],
+  ])
 })
 test('late failure stays scoped to its original chat', async () => {
   let reject!: (error: Error) => void

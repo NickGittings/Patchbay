@@ -26,6 +26,8 @@ export interface TeamMessage {
   text: string
   state: 'pending' | 'sending' | 'delivered' | 'uncertain'
   generation: number | null
+  /** Waits for the recipient's next coordination delivery instead of starting a turn. */
+  passive?: boolean
 }
 export interface ChatTeam {
   scopes?: Record<string, { generation: number; components: string[]; paths?: string[] }>
@@ -105,7 +107,8 @@ export type TeamControl =
   | { kind: 'reset'; id: string; session: string; clearHistory: boolean }
   | { kind: 'resolveDelivery'; id: string; delivered: boolean }
   | { kind: 'handoffApplied'; id: string }
-  | { kind: 'note'; id: string; text: string }
+  | { kind: 'note'; id: string; text: string; sessions: string[] }
+  | { kind: 'notesDelivered'; ids: string[] }
 
 export const useChatTeams = create<{
   teams: Record<string, ChatTeam[]>
@@ -219,7 +222,11 @@ export function leadDeliveryPending(
   return (
     !!team.reset ||
     !!team.recovery ||
-    (team.messages ?? []).some((m) => m.recipient === 'lead' && m.state !== 'delivered') ||
+    // A waiting passive message has no delivery coming, so it must not hold the user's prompt.
+    (team.messages ?? []).some(
+      (m) =>
+        m.recipient === 'lead' && m.state !== 'delivered' && !(m.passive && m.state === 'pending'),
+    ) ||
     (team.deliveries ?? []).some(
       (d) =>
         d.recipient === 'lead' &&
@@ -227,6 +234,28 @@ export function leadDeliveryPending(
         d.readySince >= (session?.status?.agent?.sinceMs ?? 0),
     )
   )
+}
+/**
+ * Notes waiting for the lead (`noteLead`), for the user's own prompt to carry: nothing else
+ * delivers them until the lead's next coordination batch. `delivered` settles them once sent.
+ */
+export function leadNotes(projectId: string, task: string | null, sid: string) {
+  const team = teamFor(projectId, task)
+  const waiting =
+    team?.lead.sessionId === sid
+      ? (team.messages ?? []).filter(
+          (m) => m.recipient === 'lead' && m.passive && m.state === 'pending',
+        )
+      : []
+  return {
+    text: waiting.map((m) => `[Patchbay note, no reply needed]\n${m.text}`).join('\n\n'),
+    delivered: async () => {
+      if (team && waiting.length)
+        await controlTeam(team, { kind: 'notesDelivered', ids: waiting.map((m) => m.id) }).catch(
+          () => {},
+        )
+    },
+  }
 }
 export type ChatFailureKind =
   'authentication' | 'access' | 'configuration' | 'connection' | 'uncertain'
@@ -629,13 +658,21 @@ async function driveLeadRequests(team: ChatTeam) {
 
 /**
  * Tell the lead about work the user started with Chat's workflow buttons, so it neither repeats
- * nor contradicts it. Best effort: the launch already happened.
+ * nor contradicts it. The note and the finish of `sessions` wait for the lead's next coordination
+ * delivery rather than starting a turn: the step card already reports them. Best effort: the
+ * launch already happened.
  */
-export async function noteLead(team: ChatTeam | undefined, what: string, id: string) {
+export async function noteLead(
+  team: ChatTeam | undefined,
+  what: string,
+  sessions: string[],
+  id: string = crypto.randomUUID(),
+) {
   if (!team) return
   await controlTeam(team, {
     kind: 'note',
     id,
-    text: `The user started ${what} with Chat’s workflow buttons. It is running in its own agent: don’t start or repeat it, and take its result into account when it finishes. No reply is needed.`,
+    text: `The user started ${what} with Chat’s workflow buttons. It runs in its own agent: don’t start or repeat it, and take its result into account.`,
+    sessions,
   }).catch(() => {})
 }

@@ -127,14 +127,32 @@ impl UserQuestion {
     }
 }
 
+/// The provider tools that ask the user questions. Codex's `request_user_input_async`
+/// (outside Plan mode) names each question `title` and lists its options as plain strings.
+fn question_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "AskUserQuestion" | "request_user_input" | "request_user_input_async"
+    )
+}
+
+/// A question's text: `question`, or `title` from Codex's asynchronous tool.
+fn question_text(question: &Value) -> Option<&str> {
+    ["question", "title"]
+        .iter()
+        .find_map(|field| question.get(field)?.as_str())
+}
+
 /// Every question of a Claude `AskUserQuestion` or Codex `request_user_input` call.
 fn questions(input: &Value) -> Option<Vec<UserQuestion>> {
-    if !matches!(
-        input.get("tool_name").and_then(Value::as_str),
-        Some("AskUserQuestion" | "request_user_input")
-    ) {
+    if !input
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .is_some_and(question_tool)
+    {
         return None;
     }
+    let clip_text = |value: &str| value.chars().take(QUESTION_CHARS).collect::<String>();
     let text = |value: &Value, field: &str| {
         value
             .get(field)
@@ -151,7 +169,7 @@ fn questions(input: &Value) -> Option<Vec<UserQuestion>> {
         .iter()
         .take(QUESTION_LIMIT + 1)
         .map(|q| UserQuestion {
-            question: text(q, "question"),
+            question: clip_text(question_text(q).unwrap_or_default()),
             header: text(q, "header"),
             multi_select: q
                 .get("multiSelect")
@@ -165,7 +183,7 @@ fn questions(input: &Value) -> Option<Vec<UserQuestion>> {
                 .flatten()
                 .take(OPTION_LIMIT + 1)
                 .map(|o| QuestionOption {
-                    label: text(o, "label"),
+                    label: o.as_str().map_or_else(|| text(o, "label"), clip_text),
                     description: text(o, "description"),
                 })
                 .collect(),
@@ -190,13 +208,7 @@ fn answer_output(provider: Adapter, input: &Value, answers: &[String]) -> Option
     let pairs: Vec<(&str, &str)> = asked
         .iter()
         .zip(answers)
-        .map(|(q, a)| {
-            let question = q
-                .get("question")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            (question, a.as_str())
-        })
+        .map(|(q, a)| (question_text(q).unwrap_or_default(), a.as_str()))
         .collect();
     Some(match provider {
         Adapter::Claude => {
@@ -278,10 +290,7 @@ pub const DENY: &str = "Deny";
 /// question tool, a plan) or can't describe.
 fn permission_question(input: &Value) -> Option<UserQuestion> {
     let tool = input.get("tool_name")?.as_str()?;
-    if matches!(
-        tool,
-        "AskUserQuestion" | "request_user_input" | "ExitPlanMode"
-    ) {
+    if question_tool(tool) || tool == "ExitPlanMode" {
         return None;
     }
     let field = |name: &str| {
@@ -529,7 +538,7 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
             "read_file" => "Read".into(),
             "write_file" => "Write".into(),
             "edit_file" => "Edit".into(),
-            "request_user_input" => "AskUserQuestion".into(),
+            "request_user_input" | "request_user_input_async" => "AskUserQuestion".into(),
             _ => name,
         }),
         file_target: file_path.is_some(),
@@ -559,9 +568,8 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
                     .get("tool_input")?
                     .get("questions")?
                     .as_array()?
-                    .first()?
-                    .get("question")?
-                    .as_str()
+                    .first()
+                    .and_then(question_text)
                     .map(|s| s.chars().take(200).collect())
             })
             .or_else(|| {
@@ -1649,7 +1657,12 @@ mod tests {
             "Use this tool"
         );
         // Question tools and plans have their own Chat surfaces.
-        for tool in ["AskUserQuestion", "request_user_input", "ExitPlanMode"] {
+        for tool in [
+            "AskUserQuestion",
+            "request_user_input",
+            "request_user_input_async",
+            "ExitPlanMode",
+        ] {
             input["tool_name"] = json!(tool);
             assert!(permission_question(&input).is_none());
         }
@@ -1704,6 +1717,27 @@ mod tests {
         assert_eq!(event.tool.as_deref(), Some("AskUserQuestion"));
         assert_eq!(event.message.as_deref(), Some("Pick a color"));
         assert_eq!(event.questions.unwrap()[0].options[0].label, "Red");
+
+        // Codex's asynchronous tool: `title` for the text, options as plain strings.
+        let asynchronous = json!({"hook_event_name":"PreToolUse", "session_id":"12345678-session", "turn_id":"12345678-turn",
+            "tool_name":"request_user_input_async", "tool_input":{"questions":[
+                {"title":"May I edit directly?","options":["Yes, fix directly","Keep read-only"]},
+                {"title":"Which pages fail?"}]}});
+        let event = normalize(Adapter::Codex, &asynchronous).unwrap();
+        assert_eq!(event.tool.as_deref(), Some("AskUserQuestion"));
+        assert_eq!(event.message.as_deref(), Some("May I edit directly?"));
+        let questions = event.questions.unwrap();
+        assert_eq!(questions[0].question, "May I edit directly?");
+        let labels: Vec<_> = questions[0].options.iter().map(|o| &o.label).collect();
+        assert_eq!(labels, ["Yes, fix directly", "Keep read-only"]);
+        assert!(questions[1].options.is_empty());
+        let answers = ["Yes, fix directly".to_string(), "Home pages".to_string()];
+        let output = answer_output(Adapter::Codex, &asynchronous, &answers).unwrap();
+        let specific = &output["hookSpecificOutput"];
+        assert_eq!(specific["permissionDecision"], "deny");
+        let reason = specific["permissionDecisionReason"].as_str().unwrap();
+        assert!(reason.contains("- May I edit directly?\n  Answer: Yes, fix directly"));
+        assert!(reason.contains("- Which pages fail?\n  Answer: Home pages"));
 
         // Bounded, and only the question tool's own payload.
         let mut long = claude_question();

@@ -1,6 +1,11 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 vi.mock('./sessions', () => ({ startTerminal: vi.fn(), reconcileFreshSessions: vi.fn() }))
-vi.mock('./chatTeams', () => ({ initializeTeam: vi.fn(), newLead: vi.fn(), teamFor: vi.fn() }))
+vi.mock('./chatTeams', () => ({
+  initializeTeam: vi.fn(),
+  newLead: vi.fn(),
+  teamFor: vi.fn(),
+  leadNotes: () => ({ text: '', delivered: async () => {} }),
+}))
 vi.mock('./terminals', () => ({ hasVisibleTerminal: () => false }))
 vi.mock('./ipc', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./ipc')>()),

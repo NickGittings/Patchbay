@@ -5,6 +5,8 @@ import {
   deliverPrompt,
   editedMentions,
   forceable,
+  FORCED_SETTLE_MS,
+  forcedSettleAt,
   promptReady,
   transmittedText,
   waitForPrompt,
@@ -474,7 +476,14 @@ test('force skips readiness but still rejects changed generations and failed cla
 test('a forced submission waits for its new turn, even if the interrupted turn stops later', () => {
   const submitted = { atMs: 100, previousTurnId: 'old' }
   const stopped = withAgent({ state: 'review', sinceMs: 200, turnId: 'old' })
-  expect(promptReady(stopped, submitted)).toBe(false)
+  expect(promptReady(stopped, submitted, 200 + FORCED_SETTLE_MS - 1)).toBe(false)
+  // Codex steered the message into that turn: no new turn follows its Stop.
+  expect(forcedSettleAt(stopped, submitted)).toBe(200 + FORCED_SETTLE_MS)
+  expect(promptReady(stopped, submitted, 200 + FORCED_SETTLE_MS)).toBe(true)
+  // A Stop from before the forced message says nothing about it.
+  const earlier = withAgent({ state: 'review', sinceMs: 50, turnId: 'old' })
+  expect(promptReady(earlier, submitted, 50 + FORCED_SETTLE_MS)).toBe(false)
+  expect(forcedSettleAt(earlier, submitted)).toBeUndefined()
   expect(promptReady(withAgent({ state: 'working', sinceMs: 300, turnId: 'new' }), submitted)).toBe(
     false,
   )
@@ -558,6 +567,9 @@ test('the agent’s own prompt hook settles an unconfirmed delivery', async () =
       status: { agent: { authoritative: true, sinceMs: 150, prompt: 'Fix the parser', ...agent } },
     }) as unknown as SessionState
   expect(deliveryConfirmed(message, session({}))).toBe(true)
+  // Notes sent after the message run on in the reported prompt.
+  const carried = `${message.text}\n\n[Patchbay note, no reply needed]\nA merge started.`
+  expect(deliveryConfirmed(message, session({ prompt: carried }))).toBe(true)
   // An earlier turn, another process, another prompt or an unconfirmed report settle nothing.
   expect(deliveryConfirmed(message, session({ sinceMs: 50 }))).toBe(false)
   expect(deliveryConfirmed(message, session({}, 3))).toBe(false)

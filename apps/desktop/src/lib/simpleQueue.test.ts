@@ -25,7 +25,7 @@ import { useStore } from '../store'
 import { terminalAttach, terminalDetach, terminalPrompt } from './ipc'
 import { cancelQueued, enqueuePrompt, flushQueued, followQueuedPrompts } from './simpleQueue'
 import { appendDraft, simpleKey, useSimpleUi } from './simpleUi'
-import { sendToSession, transmittedText } from './simpleComposer'
+import { FORCED_SETTLE_MS, sendToSession, transmittedText } from './simpleComposer'
 import { logSimple } from './simpleActions'
 
 const key = simpleKey('p', 't')
@@ -300,6 +300,37 @@ test('the interrupted turn Stop does not release a queue after a forced send', a
     },
   })
   await vi.waitFor(() => expect(terminalPrompt).toHaveBeenCalledTimes(2))
+})
+
+test('a forced message steered into its turn releases the queue once that turn has settled', async () => {
+  vi.useFakeTimers()
+  try {
+    await sendToSession({
+      projectId: 'p',
+      task: 't',
+      sid,
+      generation: 1,
+      text: 'forced',
+      mentions: [],
+      stage: 'build',
+      force: true,
+    })
+    stop = followQueuedPrompts()
+    queue()
+    // Codex ends the same turn: no later hook reports a new one.
+    const stopped = session('review')
+    update(stopped)
+    await flushQueued(key)
+    expect(terminalPrompt).toHaveBeenCalledTimes(1)
+    const settled = stopped.status!.agent!.sinceMs + FORCED_SETTLE_MS - Date.now()
+    await vi.advanceTimersByTimeAsync(settled - 1)
+    expect(terminalPrompt).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(terminalPrompt).toHaveBeenCalledTimes(2)
+    expect(useSimpleUi.getState().worktrees[key].queued).toBeUndefined()
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 test('queued chat waits while Auto controls its workspace, then follows its original agent', async () => {

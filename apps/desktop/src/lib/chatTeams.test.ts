@@ -20,6 +20,8 @@ import {
   continuationContext,
   cacheTeam,
   initializeTeam,
+  leadDeliveryPending,
+  leadNotes,
   refreshChatTeams,
   resetLead,
   sendWorkerMessage,
@@ -250,6 +252,26 @@ test('failed handoff acknowledgement does not clear newly arrived visible histor
   })
   await applyTeamHandoff(confirmed)
   expect(useStore.getState().simple?.log.at(-1)?.text).toBe('new user message')
+})
+test('a waiting note rides the user’s prompt to the lead and never holds it', async () => {
+  const message = { sequence: 1, sender: 'patchbay', recipient: 'lead', assignment: null }
+  const note = { ...message, id: 'note-1', text: 'The user started a merge.', generation: null }
+  cacheTeam(team({ messages: [{ ...note, state: 'pending', passive: true }] }))
+  expect(leadDeliveryPending('p', null, 'lead', 1)).toBe(false)
+  // Another session is not the lead, so it carries nothing.
+  expect(leadNotes('p', null, 'worker').text).toBe('')
+  const notes = leadNotes('p', null, 'lead')
+  expect(notes.text).toBe('[Patchbay note, no reply needed]\nThe user started a merge.')
+  vi.mocked(invoke).mockResolvedValue(team())
+  await notes.delivered()
+  expect(invoke).toHaveBeenCalledWith('chat_team_control', {
+    projectId: 'p',
+    id: 'team',
+    control: { kind: 'notesDelivered', ids: ['note-1'] },
+  })
+  // An ordinary undelivered message still holds the prompt.
+  cacheTeam(team({ messages: [{ ...note, state: 'pending' }] }))
+  expect(leadDeliveryPending('p', null, 'lead', 1)).toBe(true)
 })
 test('side messages address the stored team and assignment and preserve their text', async () => {
   vi.mocked(invoke).mockResolvedValue(team())
