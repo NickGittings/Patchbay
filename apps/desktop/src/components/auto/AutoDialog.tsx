@@ -1,7 +1,7 @@
-import { PanelDetails } from '../PanelSection'
+import PanelSection, { PanelDetails } from '../PanelSection'
 import { linkAutoStory } from '../../lib/stories'
 import { logSimple } from '../../lib/simpleActions'
-import { useContext, useEffect, useMemo, useState } from 'react'
+import { useContext, useEffect, useId, useMemo, useState } from 'react'
 import ReviewerPicker from '../ReviewerPicker'
 import MergeFields from './MergeFields'
 import { useStore } from '../../store'
@@ -289,200 +289,236 @@ export default function AutoDialog({
       },
       true,
     )
+  const detectedId = useId()
   const detected = decision
     ? `${STAGE_LABELS[decision.stage]} (${decision.reason})`
     : 'Detecting current work…'
 
   return (
     <div className="auto-content">
-      <label>
-        Task goal
-        <textarea value={goal} onChange={(e) => edit({ goal: e.target.value })} rows={4} />
-      </label>
-      <span className="worktree-tag" title={detected}>
-        Starting at: {decision ? STAGE_LABELS[decision.stage] : 'Detecting…'}
-      </span>
-      <label>
-        Starting stage
-        <select value={stage} onChange={(e) => edit({ stage: e.target.value as AutoStage | '' })}>
-          <option value="">Use detected stage</option>
-          {STAGES.filter(
-            (s) => s !== 'done' && !(inPlaceSnapshot && (s === 'mergeGate' || s === 'merge')),
-          ).map((s) => (
-            <option key={s} value={s}>
-              {STAGE_LABELS[s]}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Fix effort
-        <select
-          disabled={simple}
-          value={simple ? 'light' : effort}
-          onChange={(e) => edit({ effort: e.target.value as AutoRun['effort'], overrides: {} })}
-        >
-          <option value="light">Light (1 fix round)</option>
-          <option value="standard">Standard (3 fix rounds)</option>
-          <option value="thorough">Thorough (5 fix rounds)</option>
-        </select>
-      </label>
-      <details hidden={simple}>
-        <summary>Advanced</summary>
+      <div className="auto-goal-field">
         <label>
-          Maximum fix rounds
-          <input
-            type="number"
-            min={0}
-            max={MAX_ROUNDS}
-            value={settings.maxRounds}
-            onChange={(e) =>
-              edit({
-                overrides: {
-                  ...overrides,
-                  maxRounds: Math.max(
-                    0,
-                    Math.min(MAX_ROUNDS, Math.round(Number(e.target.value) || 0)),
-                  ),
-                },
-              })
-            }
+          Task goal
+          <textarea
+            value={goal}
+            onChange={(e) => edit({ goal: e.target.value })}
+            rows={4}
+            aria-describedby={detectedId}
           />
         </label>
-        <label>
-          Lowest severity to fix
-          <select
-            value={settings.severityFloor}
-            onChange={(e) =>
-              edit({ overrides: { ...overrides, severityFloor: e.target.value as Severity } })
-            }
-          >
-            {SEVERITIES.map((s) => (
-              <option key={s} value={s}>
-                {s}
+        {/* Described by, not part of the label, so the field's name stays "Task goal". */}
+        <small id={detectedId} className="auto-hint" title={detected}>
+          {decision ? (
+            <>
+              Starts at <strong>{STAGE_LABELS[decision.stage]}</strong> · {decision.reason}
+            </>
+          ) : (
+            'Detecting current work…'
+          )}
+        </small>
+      </div>
+      <PanelSection title="Run">
+        <div className="auto-fields">
+          <label>
+            Starting stage
+            <select
+              value={stage}
+              onChange={(e) => edit({ stage: e.target.value as AutoStage | '' })}
+            >
+              <option value="">
+                {decision ? `Detected (${STAGE_LABELS[decision.stage]})` : 'Use detected stage'}
               </option>
-            ))}
-          </select>
-        </label>
-        <label>
+              {STAGES.filter(
+                (s) => s !== 'done' && !(inPlaceSnapshot && (s === 'mergeGate' || s === 'merge')),
+              ).map((s) => (
+                <option key={s} value={s}>
+                  {STAGE_LABELS[s]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Fix effort
+            <select
+              disabled={simple}
+              value={simple ? 'light' : effort}
+              onChange={(e) => edit({ effort: e.target.value as AutoRun['effort'], overrides: {} })}
+            >
+              <option value="light">Light (1 fix round)</option>
+              <option value="standard">Standard (3 fix rounds)</option>
+              <option value="thorough">Thorough (5 fix rounds)</option>
+            </select>
+          </label>
+        </div>
+        <label className="auto-toggle">
           <input
             type="checkbox"
-            checked={settings.validate}
-            onChange={(e) => edit({ overrides: { ...overrides, validate: e.target.checked } })}
+            checked={draft.autonomous === true}
+            onChange={(e) => edit({ autonomous: e.target.checked })}
           />
-          Validate after implementation and fixes
+          Autonomous execution
         </label>
-      </details>
-      <label>
-        <input
-          type="checkbox"
-          checked={draft.autonomous === true}
-          onChange={(e) => edit({ autonomous: e.target.checked })}
-        />
-        Autonomous execution
-      </label>
-      <MergeFields
-        inPlaceBase={
-          inPlaceSnapshot && {
-            branch: inPlaceSnapshot.source.branch ?? '',
-            head: inPlaceSnapshot.base,
+        <label className="auto-toggle">
+          <input
+            type="checkbox"
+            disabled={draft.autonomous === true}
+            checked={draft.autonomous === true || draft.background === true}
+            onChange={(e) => edit({ background: e.target.checked })}
+          />
+          Keep going in background
+        </label>
+        <label className="auto-toggle">
+          <input
+            type="checkbox"
+            checked={draft.resumeOnUsageReset === true}
+            onChange={(e) => edit({ resumeOnUsageReset: e.target.checked })}
+          />
+          Resume when usage resets
+        </label>
+      </PanelSection>
+      <PanelSection title="Merge">
+        <MergeFields
+          inPlaceBase={
+            inPlaceSnapshot && {
+              branch: inPlaceSnapshot.source.branch ?? '',
+              head: inPlaceSnapshot.base,
+            }
           }
-        }
-        mode={mode}
-        onMode={(mode) => edit({ mode })}
-        cleanup={cleanupChoice}
-        destination={destination}
-        destinations={destinations}
-        onDestination={(destination) => edit({ destination })}
-      />
-      {inPlaceSnapshot && (
-        <button
-          onClick={() => {
-            // Close the popover first, as the worktree picker does, so activating the new worktree
-            // can't remount this dialog under the New worktree dialog before its draft moves.
-            closeMenu()
-            seedAutoTask(draftKey, goal, goal === filled.goal)
-          }}
-        >
-          New worktree…
-        </button>
-      )}
-      <PanelDetails title="Agents">
-        <fieldset className="auto-agents">
-          <legend>Agents</legend>
-          {AGENT_ROLES.map((stage) =>
-            stage === 'scan' || stage === 'worker' ? (
-              <div
-                key={stage}
-                className="auto-reviewers"
-                role="group"
-                aria-label={ROLE_LABELS[stage]}
-              >
-                {ROLE_LABELS[stage]}
-                <ReviewerPicker
-                  label={ROLE_LABELS[stage]}
-                  agents={agents}
-                  selected={stage === 'scan' ? scanners : workers}
-                  dropdown
-                  emptyLabel="Off"
-                  onChange={(ids) => edit(stage === 'scan' ? { scanners: ids } : { workers: ids })}
-                />
-              </div>
-            ) : stage === 'review' ? (
-              <div key={stage} className="auto-reviewers" role="group" aria-label="Reviewers">
-                {ROLE_LABELS[stage]}
-                <ReviewerPicker
-                  agents={agents}
-                  selected={reviewers}
-                  onChange={(reviewers) => edit({ reviewers })}
-                  dropdown
-                />
-              </div>
-            ) : (
-              <label key={stage}>
-                {ROLE_LABELS[stage]}
-                <select
-                  value={runAgents[stage]}
-                  onChange={(e) => edit({ picked: { ...picked, [stage]: e.target.value } })}
+          mode={mode}
+          onMode={(mode) => edit({ mode })}
+          cleanup={cleanupChoice}
+          destination={destination}
+          destinations={destinations}
+          onDestination={(destination) => edit({ destination })}
+        />
+        {inPlaceSnapshot && (
+          <button
+            className="auto-inline-action"
+            onClick={() => {
+              // Close the popover first, as the worktree picker does, so activating the new worktree
+              // can't remount this dialog under the New worktree dialog before its draft moves.
+              closeMenu()
+              seedAutoTask(draftKey, goal, goal === filled.goal)
+            }}
+          >
+            New worktree…
+          </button>
+        )}
+      </PanelSection>
+      <div className="auto-disclosures">
+        <PanelDetails title="Agents">
+          <fieldset className="auto-agents" aria-label="Agents">
+            {AGENT_ROLES.map((stage) =>
+              stage === 'scan' || stage === 'worker' ? (
+                <div
+                  key={stage}
+                  className="auto-reviewers"
+                  role="group"
+                  aria-label={ROLE_LABELS[stage]}
                 >
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ),
-          )}
-        </fieldset>
-      </PanelDetails>
+                  {ROLE_LABELS[stage]}
+                  <ReviewerPicker
+                    label={ROLE_LABELS[stage]}
+                    agents={agents}
+                    selected={stage === 'scan' ? scanners : workers}
+                    dropdown
+                    emptyLabel="Off"
+                    onChange={(ids) =>
+                      edit(stage === 'scan' ? { scanners: ids } : { workers: ids })
+                    }
+                  />
+                </div>
+              ) : stage === 'review' ? (
+                <div key={stage} className="auto-reviewers" role="group" aria-label="Reviewers">
+                  {ROLE_LABELS[stage]}
+                  <ReviewerPicker
+                    agents={agents}
+                    selected={reviewers}
+                    onChange={(reviewers) => edit({ reviewers })}
+                    dropdown
+                  />
+                </div>
+              ) : (
+                <label key={stage}>
+                  {ROLE_LABELS[stage]}
+                  <select
+                    value={runAgents[stage]}
+                    onChange={(e) => edit({ picked: { ...picked, [stage]: e.target.value } })}
+                  >
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ),
+            )}
+          </fieldset>
+        </PanelDetails>
+        {!simple && (
+          <PanelDetails title="Advanced">
+            <label>
+              Maximum fix rounds
+              <input
+                type="number"
+                min={0}
+                max={MAX_ROUNDS}
+                value={settings.maxRounds}
+                onChange={(e) =>
+                  edit({
+                    overrides: {
+                      ...overrides,
+                      maxRounds: Math.max(
+                        0,
+                        Math.min(MAX_ROUNDS, Math.round(Number(e.target.value) || 0)),
+                      ),
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              Lowest severity to fix
+              <select
+                value={settings.severityFloor}
+                onChange={(e) =>
+                  edit({ overrides: { ...overrides, severityFloor: e.target.value as Severity } })
+                }
+              >
+                {SEVERITIES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="auto-toggle">
+              <input
+                type="checkbox"
+                checked={settings.validate}
+                onChange={(e) => edit({ overrides: { ...overrides, validate: e.target.checked } })}
+              />
+              Validate after implementation and fixes
+            </label>
+          </PanelDetails>
+        )}
+      </div>
       {!integration && (
-        <p>
+        <p className="auto-callout" data-tone="attention">
           Auto needs authoritative agent status.{' '}
           <button onClick={() => onIntegrations(integrationCheck?.provider)}>
             Agent status integration
           </button>
         </p>
       )}
-      {error && <p role="alert">{error}</p>}
-      <label>
-        <input
-          type="checkbox"
-          disabled={draft.autonomous === true}
-          checked={draft.autonomous === true || draft.background === true}
-          onChange={(e) => edit({ background: e.target.checked })}
-        />
-        Keep going in background
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={draft.resumeOnUsageReset === true}
-          onChange={(e) => edit({ resumeOnUsageReset: e.target.checked })}
-        />
-        Resume when usage resets
-      </label>
+      {error && (
+        <p className="auto-callout" data-tone="bad" role="alert">
+          {error}
+        </p>
+      )}
       <button
+        className="primary auto-start"
         disabled={
           loading ||
           starting ||

@@ -1,3 +1,4 @@
+/* Auto mode panel: one column, grouped by purpose, status carried by tone rather than text. */
 .auto-popover {
   width: min(420px, calc(100vw - 24px));
   max-height: 80vh;
@@ -7,36 +8,41 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 16px;
+  min-width: 0;
 }
-.auto-content label {
+.auto-content .rail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.auto-content .rail-section + .rail-section {
+  margin-top: 0;
+}
+.auto-content .rail-section-header {
+  margin-bottom: 0;
+}
+/* Field labels only; option lists such as the reviewer picker keep their own label style. */
+.auto-content label:where(:not(.reviewer-options > label)) {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
 }
 .auto-content textarea,
 .auto-content select,
-.auto-content input[type='number'] {
+.auto-content input[type='number'],
+.auto-content input[type='datetime-local'] {
   width: 100%;
   box-sizing: border-box;
   font: inherit;
+  font-size: 13px;
+  color: var(--text);
 }
-.auto-agents {
-  margin: 0;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: 8px;
-}
-.auto-reviewers {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.auto-agents legend {
-  padding: 0 4px;
+.auto-content textarea {
+  resize: vertical;
+  line-height: 1.45;
 }
 .auto-content p {
   margin: 0;
@@ -46,23 +52,331 @@
 .auto-content button {
   cursor: pointer;
 }
-.auto-controls {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+.auto-content button:active:not(:disabled) {
+  transform: scale(0.97);
+  transition: transform 100ms ease-out;
 }
-.auto-log {
-  max-height: 220px;
-  overflow: auto;
-  padding-left: 20px;
+
+/* Checkbox rows: the box sits beside its label, never above it. */
+.auto-toggle,
+.auto-content label.auto-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.auto-toggle input {
+  /* Panel-wide input widths would otherwise stretch the box across the row. */
+  width: auto;
+  margin: 0;
+  flex: none;
+}
+.auto-toggle:has(input:disabled) {
+  color: var(--muted);
+  cursor: default;
+}
+
+.auto-hint,
+.auto-content small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.auto-hint strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Setup form */
+.auto-goal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.auto-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+.auto-inline-action {
+  align-self: flex-start;
+}
+.auto-disclosures > .rail-details:last-child {
+  border-bottom: 1px solid var(--border);
+}
+.auto-agents {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px 8px;
+  min-width: 0;
+}
+.auto-reviewers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
   font-size: 12px;
 }
-.auto-log time {
-  opacity: 0.65;
+.auto-start {
+  width: 100%;
+  padding-block: 7px;
+  font-weight: 600;
+}
+
+/* Callouts: a tinted surface and a rule in the tone of what needs attention. */
+.auto-callout {
+  --tone: var(--accent);
+  padding: 8px 10px;
+  border-left: 2px solid var(--tone);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: color-mix(in srgb, var(--tone) 9%, transparent);
+  line-height: 1.45;
+}
+.auto-callout[data-tone='attention'] {
+  --tone: var(--input);
+}
+.auto-callout[data-tone='bad'] {
+  --tone: var(--bad);
+}
+.auto-callout button {
+  margin-top: 6px;
+  display: block;
+}
+
+/* Run view */
+.auto-run-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.auto-run-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.auto-content .worktree-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.auto-content .worktree-tag.ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+}
+.auto-session-link {
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  padding: 0;
+  font-size: 12px;
+}
+.auto-session-link:hover {
+  text-decoration: underline;
+}
+.auto-goal {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  white-space: normal !important;
+}
+
+/* Stepper: a segmented track with the stage name under each segment. */
+.auto-stepper {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.auto-stepper li {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  color: var(--faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 150ms ease-out;
+}
+.auto-stepper li::before {
+  content: '';
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  transition: background-color 150ms ease-out;
+}
+.auto-stepper li[data-state='done'] {
+  color: var(--muted);
+}
+.auto-stepper li[data-state='done']::before {
+  background: color-mix(in srgb, var(--ok) 70%, transparent);
+}
+.auto-stepper li[data-state='current'] {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.auto-stepper li[data-state='current']::before {
+  background: var(--accent);
+}
+.auto-stepper li[data-state='attention'] {
+  color: var(--input);
+  font-weight: 600;
+}
+.auto-stepper li[data-state='attention']::before {
+  background: var(--input);
+}
+.auto-stepper li[data-state='failed'] {
+  color: var(--bad);
+  font-weight: 600;
+}
+.auto-stepper li[data-state='failed']::before {
+  background: var(--bad);
+}
+.auto-stepper li[data-state='stopped'] {
+  color: var(--muted);
+  font-weight: 600;
+}
+.auto-stepper li[data-state='stopped']::before {
+  background: var(--muted);
+}
+
+.auto-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: -8px;
 }
 .auto-findings {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.auto-findings > button {
+  margin-left: auto;
+}
+.auto-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.auto-controls .auto-stop {
+  margin-left: auto;
+  border-color: transparent;
+  color: var(--bad);
+}
+.auto-controls .auto-stop:hover {
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  background: color-mix(in srgb, var(--bad) 8%, transparent);
+}
+.auto-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.auto-schedule {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.auto-schedule strong {
+  font-weight: 600;
+}
+.auto-schedule button {
+  flex: none;
+}
+.auto-schedule-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.auto-schedule-form label {
+  flex: 1 1 180px;
+}
+.auto-schedule-form .auto-callout {
+  flex-basis: 100%;
+  margin: 0;
+}
+.auto-content > .rail-details {
+  border-bottom: 1px solid var(--border);
+}
+.auto-values {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+.auto-values dt {
+  color: var(--muted);
+}
+.auto-values dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.auto-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+  list-style: none;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.auto-log li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+}
+.auto-log time {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding-top: 1px;
+}
+
+/* Power sits apart from the run: a device preference, not part of the task. */
+.auto-content + .rail-details {
+  margin-top: 16px;
+}
+.auto-content + .rail-details .rail-details-body {
+  gap: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auto-content button:active:not(:disabled) {
+    transform: none;
+  }
+  .auto-stepper li,
+  .auto-stepper li::before {
+    transition: none;
+  }
 }

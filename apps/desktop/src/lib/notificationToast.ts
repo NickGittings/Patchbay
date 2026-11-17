@@ -1,4 +1,4 @@
-import type { NotificationLink, NotificationToast } from '../types'
+import type { NotificationLink, NotificationToast, ToastPosition } from '../types'
 import type { Notice } from './notificationHistory'
 
 export function mergeNotificationToast(
@@ -107,3 +107,12 @@ export function removeToastCards(cards: Notice[], drop: (card: Notice) => boolea
 }
 
 export const MAX_TOAST_CARDS = 5
+
+/** The corner toast cards use; `auto` moves them to the top in Chat so the composer stays clear. */
+export function toastPlacement(
+  position: ToastPosition,
+  chat: boolean,
+): Exclude<ToastPosition, 'auto'> {
+  if (position !== 'auto') return position
+  return chat ? 'top-right' : 'bottom-right'
+}

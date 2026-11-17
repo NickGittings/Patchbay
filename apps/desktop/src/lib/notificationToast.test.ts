@@ -5,6 +5,7 @@ import {
   removeToastCards,
   notificationLinkLabel,
   removeNotificationSession,
+  toastPlacement,
 } from './notificationToast'
 import type { NotificationToast } from '../types'
 import { toastNotices, type Notice } from './notificationHistory'
@@ -119,4 +120,10 @@ test('removing cards for one session keeps the others', () => {
     'three',
   ])
   expect(removeToastCards(cards, () => false)).toBe(cards)
+})
+
+test('auto toast placement moves to the top in Chat and keeps explicit corners', () => {
+  expect(toastPlacement('auto', true)).toBe('top-right')
+  expect(toastPlacement('auto', false)).toBe('bottom-right')
+  for (const chat of [true, false]) expect(toastPlacement('bottom-left', chat)).toBe('bottom-left')
 })

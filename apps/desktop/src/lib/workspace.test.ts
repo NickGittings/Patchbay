@@ -118,6 +118,7 @@ test('notification settings stay global, persist without projects and never dirt
     needsInput: false,
     failed: true,
     usageLimits: true,
+    toastPosition: 'top-left' as const,
   }
   expect(useStore.getState().dirty).toBe(false)
   useStore.getState().setNotifications(settings)

@@ -3,21 +3,28 @@ import { linkEventId, linkKind, type Notice } from '../lib/notificationHistory'
 import { useEffect, useRef } from 'react'
 import { useStore } from '../store'
 import { revealNotification } from '../lib/notifications'
-import { notificationLinkLabel } from '../lib/notificationToast'
+import { notificationLinkLabel, toastPlacement } from '../lib/notificationToast'
 import { focusTerminal } from '../lib/terminals'
 
 const HIDE_AFTER_MS = 8000
 
 /**
- * Each incoming notice, agent link and app message gets its own card above the footer. Every card
+ * Each incoming notice, agent link and app message gets its own card in the chosen corner. Every card
  * hides on its own after a few seconds, paused while hovered or while the window is in the
  * background; the inbox keeps the full history and the links' View buttons. The live region stays
  * mounted so screen readers announce each new card.
  */
 export default function Toast() {
   const cards = useStore((s) => s.toastCards)
+  const placement = useStore((s) => toastPlacement(s.notifications.toastPosition, s.simpleMode))
+  const region = useRef<HTMLDivElement>(null)
+  const newest = cards.at(-1)?.id
+  // A stack taller than the window scrolls; keep the newest card, nearest the edge, in view.
+  useEffect(() => {
+    region.current?.lastElementChild?.scrollIntoView({ block: 'nearest' })
+  }, [newest, placement])
   return (
-    <div className="toast-region" aria-live="polite">
+    <div ref={region} className="toast-region" data-position={placement} aria-live="polite">
       {cards.map((card) => (
         <ToastCard key={card.id} card={card} />
       ))}

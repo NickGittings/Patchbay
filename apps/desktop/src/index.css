@@ -1,4 +1,9 @@
 :root {
+  /* Workspace chrome sizes; fixed overlays such as toast cards place themselves from these. */
+  --top-bar-height: 40px;
+  --rail-width: 52px;
+  --rail-expanded-width: 168px;
+  --footer-height: 36px;
   --bg: #121215;
   --panel: #17171a;
   --panel-2: #1e1e22;
@@ -3049,7 +3054,7 @@ kbd {
   justify-content: center;
   align-items: center;
   padding: 5px 16px;
-  height: 40px;
+  height: var(--top-bar-height);
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
@@ -3073,7 +3078,7 @@ kbd {
   align-items: center;
   flex: none;
   min-width: 0;
-  height: 36px;
+  height: var(--footer-height);
   padding: 3px 12px;
   border-top: 1px solid var(--border);
   background: var(--bg);
@@ -3208,8 +3213,8 @@ kbd {
   overflow: hidden;
 }
 .workspace-rail {
-  width: 52px;
-  flex: 0 0 52px;
+  width: var(--rail-width);
+  flex: 0 0 var(--rail-width);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3524,29 +3529,6 @@ kbd {
   }
 }
 
-.auto-stepper {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  padding: 0;
-  list-style: none;
-  color: var(--muted);
-  font-size: 12px;
-}
-.auto-stepper [aria-current] {
-  color: var(--accent);
-  font-weight: 600;
-}
-.auto-goal {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.panel-callout {
-  border-left: 2px solid var(--accent);
-  padding-left: 8px;
-}
 .dialog-body .agent-role-field {
   display: grid;
   grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr);
@@ -3596,22 +3578,6 @@ kbd {
 }
 .component-groups .rail-details-body {
   gap: 16px;
-}
-.auto-values {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 12px;
-  margin: 0;
-}
-.auto-values dd {
-  margin: 0;
-}
-.auto-session-link {
-  border: 0;
-  background: none;
-  color: var(--accent);
-  padding: 0;
-  font-size: 12px;
 }
 .terminal-row > summary {
   align-items: center;
@@ -4009,10 +3975,6 @@ kbd {
 .utility-panel .worktree-list {
   gap: 0;
 }
-.utility-panel .auto-content > details {
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
-}
 .utility-panel .usage-source {
   overflow-wrap: anywhere;
   white-space: normal;
@@ -4067,11 +4029,41 @@ kbd {
   color: var(--bg);
   background: var(--accent);
 }
+/* A stack taller than the window scrolls; Toast keeps the newest card in view. */
 .notification-center .toast-region {
   top: auto;
   bottom: 38px;
   right: 0;
   width: min(440px, calc(100vw - 24px));
+  max-height: calc(100dvh - var(--top-bar-height) - var(--footer-height) - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Other corners sit over the workspace: below the top bar, beside the rail, above the footer.
+   They stack under the top bar (z-index 30) so its menus and search results stay on top. */
+.notification-center .toast-region[data-position='bottom-left'],
+.notification-center .toast-region[data-position^='top-'] {
+  position: fixed;
+  z-index: 29;
+  width: min(440px, calc(100vw - var(--rail-width) - 24px));
+}
+.notification-center .toast-region[data-position='bottom-left'] {
+  right: auto;
+  bottom: calc(var(--footer-height) + 8px);
+  left: calc(var(--rail-width) + 12px);
+}
+/* Newest cards sit nearest the edge they come from. */
+.notification-center .toast-region[data-position^='top-'] {
+  flex-direction: column-reverse;
+  top: calc(var(--top-bar-height) + 8px);
+  bottom: auto;
+}
+.notification-center .toast-region[data-position='top-right'] {
+  right: 12px;
+}
+.notification-center .toast-region[data-position='top-left'] {
+  right: auto;
+  left: calc(var(--rail-width) + 12px);
 }
 .notice-content {
   display: flex;
@@ -4662,9 +4654,13 @@ kbd {
 }
 
 /* Navigation labels are optional; narrow windows retain the saved preference. */
+/* The whole app sees the expanded width, so overlays beside the rail move with it. */
+.app:has(> .workspace-body > .workspace-rail[data-expanded='true']) {
+  --rail-width: var(--rail-expanded-width);
+}
 .workspace-rail[data-expanded='true'] {
-  width: 168px;
-  flex-basis: 168px;
+  width: var(--rail-expanded-width);
+  flex-basis: var(--rail-expanded-width);
   align-items: stretch;
 }
 .workspace-rail[data-expanded='true'] > button {
