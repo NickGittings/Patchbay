@@ -44,12 +44,7 @@ import {
 } from '../lib/simpleComposer'
 import { logLaunch, logSimple } from '../lib/simpleActions'
 import { cancelQueued, enqueuePrompt, flushQueued } from '../lib/simpleQueue'
-import {
-  refreshSession,
-  reconcileFreshSessions,
-  restartTerminal,
-  stopTerminal,
-} from '../lib/sessions'
+import { refreshSession, reconcileFreshSessions, restartTerminal } from '../lib/sessions'
 import { openIntegrations, useAgentHooksInstalled } from '../lib/agentHooks'
 
 export default function SimpleComposer({
@@ -528,47 +523,28 @@ export default function SimpleComposer({
             Interrupt
           </button>
         )}
-        {recipient && running && !autoActive && (
-          <button disabled={pending} onClick={() => stopTerminal(recipient.id)}>
-            Stop {identity.role}
-          </button>
-        )}
         <button
+          className="chat-terminal-toggle"
           disabled={!recipient && !open}
           aria-expanded={open}
+          aria-label={`${open ? 'Hide' : 'View'} ${terminalIdentity.role} terminal`}
+          title={`${open ? 'Hide' : 'View'} ${terminalIdentity.role} terminal`}
           onClick={() => {
             const record = open ? shown : recipient
             if (record) openTerminal(record)
           }}
         >
-          {open ? 'Hide' : 'View'} {terminalIdentity.role} terminal
+          Terminal
         </button>
-        <button
-          aria-label="Chat agent settings"
-          title="Chat agent settings"
-          onClick={() => useRail.setState({ settings: 'roles' })}
-        >
-          ⚙
-        </button>
-        {asking
-          ? recipient &&
-            !(open && shown?.id === recipient.id) && (
-              <button onClick={() => openTerminal(recipient)}>Answer in terminal</button>
-            )
-          : running &&
-            !ready && (
-              <button
-                disabled={pending || !canForce || !ui.draft.trim()}
-                title={
-                  canForce
-                    ? 'Types into the agent now, even mid-turn'
-                    : 'Only Codex with a confirmed working turn and no pending approval can be messaged mid-turn'
-                }
-                onClick={() => void send(true)}
-              >
-                Send anyway
-              </button>
-            )}
+        {!asking && canForce && (
+          <button
+            disabled={pending || !ui.draft.trim()}
+            title="Types into the agent now, even mid-turn"
+            onClick={() => void send(true)}
+          >
+            Send anyway
+          </button>
+        )}
         <button
           className="primary"
           disabled={!!ui.unconfirmed || !status.sendable || !ui.draft.trim()}

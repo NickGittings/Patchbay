@@ -105,6 +105,7 @@ export type TeamControl =
   | { kind: 'reset'; id: string; session: string; clearHistory: boolean }
   | { kind: 'resolveDelivery'; id: string; delivered: boolean }
   | { kind: 'handoffApplied'; id: string }
+  | { kind: 'note'; id: string; text: string }
 
 export const useChatTeams = create<{
   teams: Record<string, ChatTeam[]>
@@ -624,4 +625,17 @@ async function driveLeadRequests(team: ChatTeam) {
       })
     }
   }
+}
+
+/**
+ * Tell the lead about work the user started with Chat's workflow buttons, so it neither repeats
+ * nor contradicts it. Best effort: the launch already happened.
+ */
+export async function noteLead(team: ChatTeam | undefined, what: string, id: string) {
+  if (!team) return
+  await controlTeam(team, {
+    kind: 'note',
+    id,
+    text: `The user started ${what} with Chat’s workflow buttons. It is running in its own agent: don’t start or repeat it, and take its result into account when it finishes. No reply is needed.`,
+  }).catch(() => {})
 }

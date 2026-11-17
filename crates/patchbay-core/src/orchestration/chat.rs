@@ -328,6 +328,11 @@ pub enum Control {
     HandoffApplied {
         id: String,
     },
+    /// Work the user started outside the lead (Chat's workflow buttons), for its inbox.
+    Note {
+        id: String,
+        text: String,
+    },
 }
 fn team<'a>(store: &'a mut Store, project: &str, id: &str) -> Result<&'a mut Team> {
     store
@@ -1505,6 +1510,9 @@ pub fn control(
                 }
             }
             Control::HistoryBoundary => t.saved_context.clear(),
+            Control::Note { id, text } => {
+                append(&mut t, format!("note-{id}"), "patchbay", "lead", None, text)?;
+            }
             Control::Pause => t.state = State::Paused,
             Control::Block { reason } => {
                 t.state = State::Paused;
@@ -4013,6 +4021,37 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn a_note_reaches_the_lead_inbox_once() {
+        let f = Fixture::new();
+        let note = || Control::Note {
+            id: "build-1".into(),
+            text: "The user started Build from Chat.".into(),
+        };
+        for _ in 0..2 {
+            control(
+                &f.dir,
+                "p",
+                &f.team.id,
+                note(),
+                std::slice::from_ref(&f.lead),
+            )
+            .unwrap();
+        }
+        let notes: Vec<_> = f
+            .state()
+            .messages
+            .into_iter()
+            .filter(|m| m.text.contains("started Build"))
+            .collect();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            (notes[0].sender.as_str(), notes[0].recipient.as_str()),
+            ("patchbay", "lead")
+        );
+        assert_eq!(notes[0].state, DeliveryState::Pending);
     }
 
     #[test]

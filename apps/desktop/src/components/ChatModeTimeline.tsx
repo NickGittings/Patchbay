@@ -224,25 +224,26 @@ export default function ChatModeTimeline({
           </p>
         )}
         {failure && <p role="alert">{failure}</p>}
-        {drawerShown && drawerRecord && (
-          <div className="simple-terminal-drawer" aria-label={`${drawerIdentity.role} terminal`}>
-            <p>{drawerIdentity.title}</p>
-            <TerminalPane
-              key={drawerRecord.id}
-              componentId={drawerRecord.metadata.componentId}
-              terminal={{
-                id: drawerRecord.metadata.terminalId,
-                name: drawerRecord.metadata.name,
-                kind: 'agent',
-                command: drawerRecord.spec.command,
-              }}
-              task={drawerRecord.metadata.task ?? null}
-              existingSessionId={drawerRecord.id}
-              focus={false}
-            />
-          </div>
-        )}
       </div>
+      {/* Beside the thread, not in it: the terminal stays put while messages scroll. */}
+      {drawerShown && drawerRecord && (
+        <div className="simple-terminal-drawer" aria-label={`${drawerIdentity.role} terminal`}>
+          <p>{drawerIdentity.title}</p>
+          <TerminalPane
+            key={drawerRecord.id}
+            componentId={drawerRecord.metadata.componentId}
+            terminal={{
+              id: drawerRecord.metadata.terminalId,
+              name: drawerRecord.metadata.name,
+              kind: 'agent',
+              command: drawerRecord.spec.command,
+            }}
+            task={drawerRecord.metadata.task ?? null}
+            existingSessionId={drawerRecord.id}
+            focus={false}
+          />
+        </div>
+      )}
       {!following && (
         <div className="simple-jump">
           <button onClick={jump}>

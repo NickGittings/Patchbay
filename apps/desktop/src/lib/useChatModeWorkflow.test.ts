@@ -15,7 +15,7 @@ vi.mock('react', async (original) => ({
 }))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
 vi.mock('./reviewAgents', () => ({ startMergeAgent: vi.fn() }))
-vi.mock('./chatTeams', () => ({ controlTeam: vi.fn(), resetLead: vi.fn() }))
+vi.mock('./chatTeams', () => ({ controlTeam: vi.fn(), noteLead: vi.fn(), resetLead: vi.fn() }))
 vi.mock('./auto', () => ({
   mergeNow: vi.fn(),
   resumeAuto: vi.fn(),
@@ -37,6 +37,7 @@ import { useStore } from '../store'
 import { simpleKey, useSimpleUi } from './simpleUi'
 import { useChatModeWorkflow } from './useChatModeWorkflow'
 import { implementPlannerPlan } from './planHandoff'
+import { noteLead } from './chatTeams'
 import { clearSimpleChat, logLaunch } from './simpleActions'
 import { gitBranches } from './ipc'
 import { startSimpleReview } from './simpleReview'
@@ -101,6 +102,8 @@ test('duplicate launches share a scope lock and release it after failure', async
   await idle()
   expect(implementPlannerPlan).toHaveBeenCalledTimes(2)
   expect(render().failure).toBe('')
+  // The lead hears of work started beside it, identified by the launch's request.
+  expect(vi.mocked(noteLead).mock.calls.at(-1)?.[1]).toBe('a build of the saved plan')
 })
 test('late failure stays scoped to its original chat', async () => {
   let reject!: (error: Error) => void

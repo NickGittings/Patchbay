@@ -30,6 +30,9 @@ import {
 import { listenAgentQuestions, useAgentQuestions, watchQuestions } from '../lib/agentQuestions'
 import { teamJobs, workerSession, workerStatus } from '../lib/chatProgress'
 import { useChatModeWorkflow } from '../lib/useChatModeWorkflow'
+import { useChatIdentity } from '../lib/chatIdentity'
+import { stopTerminal } from '../lib/sessions'
+import { useRail } from '../lib/rail'
 import ChatModeTimeline from './ChatModeTimeline'
 import ChatCoordination from './ChatCoordination'
 import ReviewAgentDialog from './ReviewAgentDialog'
@@ -129,6 +132,7 @@ export default function ChatMode({
   const { pending, failure, dialog, setDialog, check, act, logReviewers, logMerge } = workflow
   const checkKey = JSON.stringify([key, source?.head, target?.head])
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
+  const identity = useChatIdentity(recipient)
   const flowSnapshot = {
     ...snapshot,
     worktree,
@@ -270,6 +274,21 @@ export default function ChatMode({
               </MenuItem>
             </>
           )}
+          {recipient &&
+            s.sessions[recipient.id]?.running &&
+            (team || !chatAutoActive(s.auto?.status)) && (
+              <MenuItem
+                disabled={!!ui.pendingAction}
+                title="Ends this agent’s process. Send a message to start it again."
+                onClick={() => void stopTerminal(recipient.id)}
+              >
+                Stop {identity.role}
+              </MenuItem>
+            )}
+          <MenuItem onClick={() => useRail.setState({ settings: 'roles' })}>
+            Agent settings
+          </MenuItem>
+          <MenuSeparator />
           <MenuItem
             disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
             onClick={() => setConfirm({ kind: 'clear', key })}
