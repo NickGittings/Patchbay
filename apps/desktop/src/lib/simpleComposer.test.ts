@@ -559,12 +559,25 @@ test('Interrupt needs a hook-reporting process away from a ready prompt', async 
 
 test('the agent’s own prompt hook settles an unconfirmed delivery', async () => {
   const { deliveryConfirmed } = await import('./simpleComposer')
-  const message = { generation: 2, text: 'Fix the parser\nand its tests', atMs: 100 }
+  const message = {
+    generation: 2,
+    text: 'Fix the parser\nand its tests',
+    atMs: 100,
+    previousTurnId: 'before' as string | null,
+  }
   const session = (agent: object, generation = 2) =>
     ({
       running: true,
       generation,
-      status: { agent: { authoritative: true, sinceMs: 150, prompt: 'Fix the parser', ...agent } },
+      status: {
+        agent: {
+          authoritative: true,
+          sinceMs: 150,
+          turnId: 'after',
+          prompt: 'Fix the parser',
+          ...agent,
+        },
+      },
     }) as unknown as SessionState
   expect(deliveryConfirmed(message, session({}))).toBe(true)
   // Notes sent after the message run on in the reported prompt.
@@ -577,4 +590,11 @@ test('the agent’s own prompt hook settles an unconfirmed delivery', async () =
   expect(deliveryConfirmed(message, session({ prompt: null }))).toBe(false)
   expect(deliveryConfirmed(message, session({ authoritative: false }))).toBe(false)
   expect(deliveryConfirmed(message, undefined)).toBe(false)
+  // The turn the message was written in may hold an earlier prompt reading the same, and its
+  // state changes (an interrupt, a notification) move `sinceMs` on without a new prompt.
+  expect(deliveryConfirmed(message, session({ turnId: 'before', sinceMs: 900 }))).toBe(false)
+  expect(deliveryConfirmed(message, session({ turnId: null }))).toBe(false)
+  expect(deliveryConfirmed({ ...message, previousTurnId: null }, session({}))).toBe(true)
+  // A message stored before turns were recorded waits for the user.
+  expect(deliveryConfirmed({ ...message, previousTurnId: undefined }, session({}))).toBe(false)
 })

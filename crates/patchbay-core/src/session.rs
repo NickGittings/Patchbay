@@ -56,6 +56,8 @@ const SLOW_TIMEOUT: Duration = Duration::from_secs(90);
 const SHUTDOWN_REFUSED: &str = "Work is running; shutdown requires --stop-running";
 /// Between a chat paste and its Enter.
 const PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(50);
+/// How long Claude gets to restore an interrupted prompt before its input is cleared.
+const INTERRUPT_CLEAR_DELAY: Duration = Duration::from_millis(150);
 
 /// Chat sends only at a hook-confirmed end of turn.
 fn prompt_ready(status: &crate::status::SessionStatus) -> bool {
@@ -2085,9 +2087,16 @@ impl Service {
                     snapshot.chat_startup != Some(crate::status::ChatStartup::Pending),
                     "Lead startup is pending; nothing was interrupted"
                 );
-                self.pty.interrupt_generation(&id, generation)?;
+                let restored = self.pty.interrupt_generation(&id, generation)?;
                 // The interrupted turn no longer owns the prompt it was given.
                 self.submissions.lock().unwrap().remove(&id);
+                if restored {
+                    // Claude puts a prompt interrupted before any output back in its input,
+                    // where the next message would be pasted after it. Ctrl+C clears a
+                    // filled input and only hints at exiting on an empty one.
+                    std::thread::sleep(INTERRUPT_CLEAR_DELAY);
+                    let _ = self.pty.write_generation(&id, generation, b"\x03");
+                }
                 serde_json::Value::Null
             }
             Request::ChatPrompt {

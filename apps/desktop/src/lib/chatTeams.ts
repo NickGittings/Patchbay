@@ -237,7 +237,7 @@ export function leadDeliveryPending(
 }
 /**
  * Notes waiting for the lead (`noteLead`), for the user's own prompt to carry: nothing else
- * delivers them until the lead's next coordination batch. `delivered` settles them once sent.
+ * delivers them until the lead's next coordination batch. `settleLeadNotes` settles them once sent.
  */
 export function leadNotes(projectId: string, task: string | null, sid: string) {
   const team = teamFor(projectId, task)
@@ -247,15 +247,16 @@ export function leadNotes(projectId: string, task: string | null, sid: string) {
           (m) => m.recipient === 'lead' && m.passive && m.state === 'pending',
         )
       : []
+  const ids = waiting.map((m) => m.id)
   return {
     text: waiting.map((m) => `[Patchbay note, no reply needed]\n${m.text}`).join('\n\n'),
-    delivered: async () => {
-      if (team && waiting.length)
-        await controlTeam(team, { kind: 'notesDelivered', ids: waiting.map((m) => m.id) }).catch(
-          () => {},
-        )
-    },
+    ids,
   }
+}
+/** Settle notes a prompt carried to the lead, however that delivery came to be confirmed. */
+export async function settleLeadNotes(projectId: string, task: string | null, ids: string[]) {
+  const team = teamFor(projectId, task)
+  if (team && ids.length) await controlTeam(team, { kind: 'notesDelivered', ids }).catch(() => {})
 }
 export type ChatFailureKind =
   'authentication' | 'access' | 'configuration' | 'connection' | 'uncertain'

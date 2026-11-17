@@ -1113,18 +1113,19 @@ impl PtyManager {
     }
 
     /// Interrupt the captured process incarnation's turn with Esc, on the user's behalf.
+    /// Returns whether the provider may have put the interrupted prompt back in its input.
     ///
     /// # Errors
     /// Fails when that process ended or restarted, when its agent's hooks don't report its
     /// turns (so the interrupt couldn't be confirmed), or when the write fails.
     /// # Panics
     /// Panics if an internal lock is poisoned.
-    pub fn interrupt_generation(&self, id: &str, generation: u64) -> Result<()> {
+    pub fn interrupt_generation(&self, id: &str, generation: u64) -> Result<bool> {
         self.write_tracked(id, Some(generation), b"\x1b", true)
     }
 
     fn write_checked(&self, id: &str, generation: Option<u64>, data: &[u8]) -> Result<()> {
-        self.write_tracked(id, generation, data, false)
+        self.write_tracked(id, generation, data, false).map(|_| ())
     }
 
     fn write_tracked(
@@ -1133,7 +1134,7 @@ impl PtyManager {
         generation: Option<u64>,
         data: &[u8],
         interrupt: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let (run, writer) = {
             let sessions = self.sessions.lock().unwrap();
             let session = sessions
@@ -1157,12 +1158,12 @@ impl PtyManager {
         );
         // Before writing, so the echo isn't taken for activity.
         let backlog = self.backlogs.lock().unwrap().get(id).cloned();
-        if let Some(backlog) = backlog {
+        if let Some(backlog) = &backlog {
             let mut backlog = backlog.lock().unwrap();
             anyhow::ensure!(backlog.generation == run, "The session generation changed");
             if interrupt {
                 anyhow::ensure!(
-                    backlog.tracker.on_interrupt(now_ms()),
+                    backlog.tracker.interruptible(),
                     "This agent doesn't report its turns; interrupt it in its terminal"
                 );
             } else {
@@ -1173,7 +1174,15 @@ impl PtyManager {
         }
         writer.write_all(data)?;
         writer.flush()?;
-        Ok(())
+        // Only an Esc that reached the process ends its turn.
+        let mut restored = false;
+        if interrupt && let Some(backlog) = backlog {
+            let mut backlog = backlog.lock().unwrap();
+            if backlog.generation == run {
+                restored = backlog.tracker.on_interrupt(now_ms());
+            }
+        }
+        Ok(restored)
     }
 
     /// Remember the size for future sessions and resize the live one, if any.

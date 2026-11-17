@@ -4,7 +4,8 @@ vi.mock('./chatTeams', () => ({
   initializeTeam: vi.fn(),
   newLead: vi.fn(),
   teamFor: vi.fn(),
-  leadNotes: () => ({ text: '', delivered: async () => {} }),
+  leadNotes: () => ({ text: '', ids: [] }),
+  settleLeadNotes: async () => {},
 }))
 vi.mock('./terminals', () => ({ hasVisibleTerminal: () => false }))
 vi.mock('./ipc', async (importOriginal) => ({

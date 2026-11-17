@@ -22,6 +22,7 @@ import {
   initializeTeam,
   leadDeliveryPending,
   leadNotes,
+  settleLeadNotes,
   refreshChatTeams,
   resetLead,
   sendWorkerMessage,
@@ -263,7 +264,7 @@ test('a waiting note rides the user’s prompt to the lead and never holds it', 
   const notes = leadNotes('p', null, 'lead')
   expect(notes.text).toBe('[Patchbay note, no reply needed]\nThe user started a merge.')
   vi.mocked(invoke).mockResolvedValue(team())
-  await notes.delivered()
+  await settleLeadNotes('p', null, notes.ids)
   expect(invoke).toHaveBeenCalledWith('chat_team_control', {
     projectId: 'p',
     id: 'team',

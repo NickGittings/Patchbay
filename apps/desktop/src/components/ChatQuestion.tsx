@@ -21,6 +21,10 @@ import TerminalPane from './TerminalPane'
  * back through the hook; anything else is answered in the agent's own terminal. Native input
  * stays in its originating PTY: never synthesize menu/approval keystrokes.
  */
+// A card re-keyed while its question waits (the session starts reporting the input wait)
+// keeps the reason typed so far.
+const denyNotes = new Map<string, string>()
+
 export default function ChatQuestion({
   record,
   request,
@@ -36,7 +40,14 @@ export default function ChatQuestion({
   const [choices, setChoices] = useState<(QuestionChoice | undefined)[]>([])
   const [sent, setSent] = useState<'chat' | 'terminal' | 'failed'>()
   const [terminalOpen, setTerminalOpen] = useState(false)
-  const [note, setNote] = useState('')
+  const [note, setNoteState] = useState(() => (pending && denyNotes.get(pending.id)) || '')
+  const setNote = (value: string) => {
+    setNoteState(value)
+    // Reasons of questions that ended some other way go with the next keystroke.
+    const waiting = useAgentQuestions.getState().pending
+    for (const id of denyNotes.keys()) if (!waiting[id]) denyNotes.delete(id)
+    if (pending) denyNotes.set(pending.id, value)
+  }
   // A newer question in the same input wait (a replaced one, or Codex asking again after
   // a declined call) starts over: earlier picks and a sent answer belong to the old one.
   const [askedId, setAskedId] = useState(pending?.id)
@@ -44,7 +55,7 @@ export default function ChatQuestion({
     setAskedId(pending.id)
     setChoices([])
     setSent(undefined)
-    setNote('')
+    setNoteState(denyNotes.get(pending.id) ?? '')
   }
   // Shown on screen, so its hook waits for the answer; leaving hands it back.
   const pendingId = pending?.id
@@ -66,6 +77,7 @@ export default function ChatQuestion({
     })
   const send = async (value: string[] | null) => {
     if (!pending) return
+    denyNotes.delete(pending.id)
     const ok = await answerQuestion(pending.id, value)
     setSent(ok ? (value ? 'chat' : 'terminal') : 'failed')
     if (!ok || !value) setTerminalOpen(true)
@@ -91,7 +103,14 @@ export default function ChatQuestion({
           <button className="primary" onClick={() => void send([PERMISSION_ALLOW])}>
             Allow
           </button>
-          <button onClick={() => void send([note.trim() || PERMISSION_DENY])}>Deny</button>
+          <button
+            onClick={() =>
+              // Prefixed, so no reason can read as the Allow answer.
+              void send([note.trim() ? `${PERMISSION_DENY}: ${note.trim()}` : PERMISSION_DENY])
+            }
+          >
+            Deny
+          </button>
           <button onClick={() => void send(null)}>Answer in terminal</button>
         </div>
       </section>

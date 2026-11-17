@@ -9,7 +9,7 @@ import {
   sessionResume,
 } from './ipc'
 import { logSimple } from './simpleActions'
-import { leadNotes } from './chatTeams'
+import { leadNotes, settleLeadNotes } from './chatTeams'
 import { persistReplies } from './simpleReplies'
 import type { SimpleStage } from './simple'
 import { simpleKey, useSimpleUi, type Mention } from './simpleUi'
@@ -151,11 +151,13 @@ export async function interruptSession(sid: string, generation: number) {
 }
 /**
  * Whether the agent's hooks confirm a message whose delivery reply was lost: its process reports
- * a prompt beginning as that message does, submitted no earlier than it was sent. The prompt may
- * run on into notes sent after the message (`leadNotes`).
+ * a prompt beginning as that message does, in a turn begun after the message was written. An
+ * earlier turn's prompt may read the same, and its report carries over, so the same turn (or a
+ * message stored without one) confirms nothing. The prompt may run on into notes sent after the
+ * message (`leadNotes`).
  */
 export function deliveryConfirmed(
-  message: { generation: number; text: string; atMs: number },
+  message: { generation: number; text: string; atMs: number; previousTurnId?: string | null },
   session: SessionState | undefined,
 ) {
   const agent = session?.status?.agent
@@ -164,6 +166,9 @@ export function deliveryConfirmed(
     !!prompt &&
     !!agent?.authoritative &&
     session?.generation === message.generation &&
+    message.previousTurnId !== undefined &&
+    !!agent.turnId &&
+    agent.turnId !== message.previousTurnId &&
     agent.sinceMs >= message.atMs &&
     (message.text.trim().startsWith(prompt) || prompt.startsWith(message.text.trim()))
   )
@@ -422,6 +427,8 @@ export async function sendToSession({
       session: () => useStore.getState().sessions[sid],
       claim: () => terminalAttach(sid, true),
       write: async (message) => {
+        // Work started from the step card reaches the lead here, after the user's own words.
+        const notes = leadNotes(projectId, task, sid)
         useSimpleUi.getState().patch(key, {
           unconfirmed: {
             sessionId: sid,
@@ -430,10 +437,10 @@ export async function sendToSession({
             stage,
             mentions,
             atMs: Date.now(),
+            previousTurnId: useStore.getState().sessions[sid]?.status?.agent?.turnId ?? null,
+            noteIds: notes.ids,
           },
         })
-        // Work started from the step card reaches the lead here, after the user's own words.
-        const notes = leadNotes(projectId, task, sid)
         try {
           await terminalPrompt(
             sid,
@@ -442,7 +449,7 @@ export async function sendToSession({
             force,
           )
           useSimpleUi.getState().patch(key, { unconfirmed: undefined })
-          void notes.delivered()
+          void settleLeadNotes(projectId, task, notes.ids)
         } catch (error) {
           const failure = error as { uncertain?: boolean; message?: string }
           if (!failure?.uncertain) useSimpleUi.getState().patch(key, { unconfirmed: undefined })

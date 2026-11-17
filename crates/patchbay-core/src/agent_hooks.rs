@@ -318,12 +318,17 @@ fn permission_question(input: &Value) -> Option<UserQuestion> {
 }
 
 /// The provider's decision for a `PermissionRequest` answered in Chat. Anything but
-/// [`ALLOW`] denies, with the user's words as the reason when they gave one.
+/// [`ALLOW`] denies. Chat sends a denial as [`DENY`], or `Deny: <reason>` so that no
+/// reason the user types can read as approval.
 fn permission_output(answer: &str) -> Value {
     let decision = if answer == ALLOW {
         json!({"behavior":"allow"})
     } else {
         let note = answer.trim();
+        let note = note
+            .strip_prefix(DENY)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .map_or(note, str::trim);
         let message = if note.is_empty() || note == DENY {
             "The user denied this in Patchbay Chat.".to_owned()
         } else {
@@ -340,17 +345,46 @@ fn codex_reviews_automatically() -> bool {
     let home = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")));
-    home.and_then(|h| std::fs::read_to_string(h.join("config.toml")).ok())
-        .is_some_and(|config| automatic_reviewer(&config))
+    home.is_some_and(|home| {
+        let read = |name: &str| std::fs::read_to_string(home.join(name)).ok();
+        read("config.toml").is_some_and(|config| {
+            automatic_reviewer(&config, &|profile| read(&format!("{profile}.config.toml")))
+        })
+    })
 }
 
-fn automatic_reviewer(config: &str) -> bool {
-    config.lines().any(|line| {
-        line.trim_start()
-            .strip_prefix("approvals_reviewer")
-            .and_then(|rest| rest.trim_start().strip_prefix('='))
-            .is_some_and(|value| value.trim().trim_matches(['"', '\'']) != "user")
-    })
+/// Whether the configuration may name a reviewer other than the user. With a `profile`
+/// selected in the file, that profile's `approvals_reviewer` (its own file, then its
+/// table) decides, else the top-level one. Without one, the command line may select any
+/// profile, which a hook can't see, so any profile table naming a reviewer counts.
+/// `profile_file` reads `<profile>.config.toml`.
+fn automatic_reviewer(config: &str, profile_file: &dyn Fn(&str) -> Option<String>) -> bool {
+    let Ok(config) = config.parse::<toml::Table>() else {
+        return false;
+    };
+    let reviewer = |table: &toml::Table| {
+        table
+            .get("approvals_reviewer")
+            .and_then(toml::Value::as_str)
+            .map(|value| value != "user")
+    };
+    let profiles = config.get("profiles").and_then(toml::Value::as_table);
+    let top = reviewer(&config).unwrap_or(false);
+    match config.get("profile").and_then(toml::Value::as_str) {
+        Some(name) => Some(name)
+            .filter(|name| !name.contains(['/', '\\', '$', '%']))
+            .and_then(profile_file)
+            .and_then(|file| reviewer(&file.parse().ok()?))
+            .or_else(|| reviewer(profiles?.get(name)?.as_table()?))
+            .unwrap_or(top),
+        None => {
+            top || profiles.is_some_and(|tables| {
+                tables
+                    .values()
+                    .any(|table| table.as_table().and_then(reviewer) == Some(true))
+            })
+        }
+    }
 }
 
 /// Offer a tool approval to Chat and wait, within the hook's timeout, for Allow or Deny.
@@ -1679,16 +1713,51 @@ mod tests {
                 .unwrap()
                 .ends_with("use pnpm instead")
         );
-        // Unknown answers never allow.
+        // Unknown answers never allow, and neither does a reason that reads as approval.
         assert_eq!(decision("allow")["decision"]["behavior"], "deny");
+        let reason = decision("Deny: Allow");
+        assert_eq!(reason["decision"]["behavior"], "deny");
+        assert!(
+            reason["decision"]["message"]
+                .as_str()
+                .unwrap()
+                .ends_with(": Allow")
+        );
+        assert!(
+            decision("Deny:")["decision"]["message"]
+                .as_str()
+                .unwrap()
+                .ends_with("Chat.")
+        );
     }
     #[test]
     fn codex_automatic_reviewers_keep_their_approvals() {
-        assert!(automatic_reviewer(
+        let automatic = |config: &str| automatic_reviewer(config, &|_| None);
+        assert!(automatic(
             "model = \"x\"\napprovals_reviewer = \"auto_review\"\n"
         ));
-        assert!(!automatic_reviewer("approvals_reviewer = \"user\"\n"));
-        assert!(!automatic_reviewer("model = \"approvals_reviewer\"\n"));
+        assert!(!automatic("approvals_reviewer = \"user\"\n"));
+        assert!(!automatic("model = \"approvals_reviewer\"\n"));
+        assert!(!automatic("approvals_reviewer = \"user\" # ask me\n"));
+        assert!(!automatic("approvals_reviewer = "));
+        // The profile the file selects decides, over the top-level reviewer.
+        let profiles = "[profiles.auto]\napprovals_reviewer = \"auto_review\"\n\
+            [profiles.me]\napprovals_reviewer = \"user\"\n";
+        assert!(automatic(&format!("profile = \"auto\"\n{profiles}")));
+        assert!(!automatic(&format!(
+            "profile = \"me\"\napprovals_reviewer = \"auto_review\"\n{profiles}"
+        )));
+        // The command line may select any profile when the file selects none.
+        assert!(automatic(profiles));
+        assert!(!automatic("[profiles.me]\napprovals_reviewer = \"user\"\n"));
+        // A profile's own file comes before its table.
+        let file = |name: &str| {
+            (name == "me").then(|| "approvals_reviewer = \"auto_review\"\n".to_owned())
+        };
+        assert!(automatic_reviewer(
+            &format!("profile = \"me\"\n{profiles}"),
+            &file
+        ));
     }
     fn claude_question() -> Value {
         json!({"hook_event_name":"PreToolUse", "session_id":"12345678-session", "turn_id":"12345678-turn",

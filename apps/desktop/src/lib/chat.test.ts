@@ -143,4 +143,12 @@ test('a question a hook holds for Chat shows without a reported input wait', asy
   expect(
     withOfferedQuestions([], { b: offer('worker', 3) }, records, { worker: { running: false } }),
   ).toEqual([])
+  // An interrupted turn's question has nothing left to answer.
+  const ended = (state: string, authoritative = true) => ({
+    worker: { ...running, status: { agent: { state, authoritative } } } as SessionState,
+  })
+  for (const state of ['idle', 'ended'])
+    expect(withOfferedQuestions([], { b: offer('worker', 3) }, records, ended(state))).toEqual([])
+  for (const sessions of [ended('working'), ended('review'), ended('idle', false)])
+    expect(withOfferedQuestions([], { b: offer('worker', 3) }, records, sessions)).toHaveLength(1)
 })

@@ -214,6 +214,9 @@ pub struct Team {
     /// Sessions the user started from Chat's workflow buttons; their finish does not wake the lead.
     #[serde(default)]
     pub noted_agents: std::collections::BTreeSet<String>,
+    /// When each noted session's work was noted, in Unix milliseconds.
+    #[serde(default)]
+    pub noted_since: BTreeMap<String, u64>,
     pub checkpoint: Checkpoint,
     pub messages: Vec<Message>,
     pub deliveries: Vec<Delivery>,
@@ -550,6 +553,7 @@ pub fn initialize(
             original_briefing: retained_briefing(briefing),
             observed_agents: BTreeMap::new(),
             noted_agents: Default::default(),
+            noted_since: BTreeMap::new(),
             messages: vec![],
             deliveries: vec![],
             reset: None,
@@ -1534,7 +1538,11 @@ pub fn control(
             Control::HistoryBoundary => t.saved_context.clear(),
             Control::Note { id, text, sessions } => {
                 append_passive(&mut t, format!("note-{id}"), text)?;
-                t.noted_agents.extend(sessions);
+                let now = crate::pty::now_ms();
+                for session in sessions {
+                    t.noted_since.entry(session.clone()).or_insert(now);
+                    t.noted_agents.insert(session);
+                }
             }
             Control::NotesDelivered { ids } => {
                 for m in &mut t.messages {
@@ -2025,9 +2033,20 @@ pub fn reconcile(
                 let Some(snapshot) = &record.snapshot else {
                     continue;
                 };
-                if t.observed_agents.get(&record.id) == Some(&snapshot.generation)
-                    && (ready(record) || !snapshot.running)
-                {
+                let observed = t.observed_agents.get(&record.id) == Some(&snapshot.generation);
+                // Noted work that ended before any pass saw it working: its process exited,
+                // or stopped a turn since the note (a reused agent may still show the turn
+                // before it). Left noted, it would quiet a later finish.
+                let noted_ms = t.noted_since.get(&record.id).copied();
+                let unseen = !observed
+                    && t.noted_agents.contains(&record.id)
+                    && (!snapshot.running
+                        || (ready(record)
+                            && snapshot.status.agent.as_ref().is_some_and(|a| {
+                                a.state == crate::status::AgentState::Review
+                                    && noted_ms.is_some_and(|at| a.since_ms >= at)
+                            })));
+                if unseen || (observed && (ready(record) || !snapshot.running)) {
                     let notice_id =
                         format!("external-finished-{}-{}", record.id, snapshot.generation);
                     let notice = format!(
@@ -2035,6 +2054,7 @@ pub fn reconcile(
                         record.metadata.name
                     );
                     // The step card already reports work the user started from it.
+                    t.noted_since.remove(&record.id);
                     if t.noted_agents.remove(&record.id) {
                         append_passive(&mut t, notice_id, notice)?;
                     } else {
@@ -4144,6 +4164,41 @@ mod tests {
         for part in ["started a review", "Existing agent", "what happened?"] {
             assert!(prompts[0].contains(part), "{part}");
         }
+
+        // Noted work that ended before any pass saw it working is settled the same way, so
+        // the session's later work wakes the lead again.
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Note {
+                id: "review-2".into(),
+                text: "The user started another review from Chat.".into(),
+                sessions: vec!["quick".into()],
+            },
+            &records,
+        )
+        .unwrap();
+        let mut quick = session(&f.dir, "quick");
+        let report = |quick: &mut Record, since_ms| {
+            let agent = quick.snapshot.as_mut().unwrap().status.agent.as_mut();
+            let agent = agent.unwrap();
+            agent.state = AgentState::Review;
+            agent.since_ms = since_ms;
+        };
+        // A reused agent still shows the turn it stopped before the note.
+        report(&mut quick, 10);
+        records.push(quick.clone());
+        reconcile(&f.dir, "p", &records, false).unwrap();
+        assert!(f.state().noted_agents.contains("quick"));
+        report(&mut quick, u64::MAX);
+        *records.last_mut().unwrap() = quick;
+        reconcile(&f.dir, "p", &records, false).unwrap();
+        let t = f.state();
+        assert!(t.noted_agents.is_empty() && t.noted_since.is_empty());
+        let settled = t.messages.last().unwrap();
+        assert!(settled.id.starts_with("external-finished-quick") && settled.passive);
+        records.pop();
 
         // An agent the user did not start from the step card still wakes the lead.
         finish("stranger", &mut records);

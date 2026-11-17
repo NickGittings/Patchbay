@@ -17,6 +17,7 @@ import {
   continueChat,
   leadDeliveryPending,
   refreshChatTeams,
+  settleLeadNotes,
   teamFor,
   useChatTeams,
 } from '../lib/chatTeams'
@@ -38,6 +39,8 @@ import {
   interruptible,
   interruptSession,
   deliveryConfirmed,
+  followDeliveries,
+  isSending,
   promptReady,
   transmittedText,
   waitForPrompt,
@@ -393,6 +396,8 @@ export default function SimpleComposer({
       mentions: message.mentions,
       atMs: message.atMs,
     })
+    // The lead read the notes that message carried.
+    void settleLeadNotes(s.project.id, s.activeTask, message.noteIds ?? [])
     const latest = useSimpleUi.getState().worktrees[scopeKey]
     const matches = !!latest && transmittedText(latest.draft, latest.mentions) === message.text
     patch({ unconfirmed: undefined, ...(matches ? { draft: '', mentions: [] } : {}) })
@@ -406,9 +411,13 @@ export default function SimpleComposer({
   useEffect(() => {
     markSentRef.current = markSent
   })
+  // A send still in flight settles its own message; look again once it has finished.
+  const [settled, setSettled] = useState(0)
+  useEffect(() => followDeliveries(() => setSettled((n) => n + 1)), [])
+  const unconfirmedId = ui.unconfirmed?.sessionId
   useEffect(() => {
-    if (confirmed) markSentRef.current()
-  }, [confirmed])
+    if (confirmed && unconfirmedId && !isSending(unconfirmedId)) markSentRef.current()
+  }, [confirmed, unconfirmedId, settled])
   const queuedSession = useStore((s) => (ui.queued ? s.sessions[ui.queued.sessionId] : undefined))
   return (
     <div className="simple-composer">

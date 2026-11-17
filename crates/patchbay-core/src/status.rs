@@ -25,6 +25,10 @@ const APPROVAL_QUIET_MS: u64 = 3_000;
 /// interrupted agent may never report that it stopped, while a working one
 /// keeps animating.
 const STALE_WORKING_MS: u64 = 15_000;
+/// After Chat's interrupt, a tool the turn starts later than this shows the turn went on.
+const INTERRUPT_START_GRACE_MS: u64 = 500;
+/// How long a tool that was running when Chat interrupted may take to report its end.
+const INTERRUPT_SETTLE_MS: u64 = 3_000;
 /// Between health probes of a service's port.
 pub const PROBE_INTERVAL_MS: u64 = 5_000;
 /// Consecutive failed probes before a service is shown as unreachable.
@@ -443,6 +447,10 @@ pub struct Tracker {
     retired_turns: std::collections::HashSet<String>,
     retired_conversations: std::collections::HashSet<String>,
     turn_closed: bool,
+    /// When Chat's interrupt closed the current turn, until a hook shows whether it held.
+    interrupted_ms: Option<u64>,
+    /// Whether the current turn reported anything after its prompt.
+    turn_progressed: bool,
     /// The status file write `report` came from.
     report_stamp: Option<Stamp>,
     /// When the agent last reported or was resumed, in Unix milliseconds.
@@ -635,8 +643,21 @@ impl Tracker {
                     self.retired_turns.insert(previous);
                 }
                 self.turn_closed = false;
-            } else if self.hook_turn.as_ref() != Some(turn) || self.turn_closed {
+                self.interrupted_ms = None;
+                self.turn_progressed = false;
+            } else if self.hook_turn.as_ref() != Some(turn) {
                 return;
+            } else if self.turn_closed {
+                if !self.outlived_interrupt(&event) {
+                    return;
+                }
+                // Esc only closed provider UI: the turn it was meant to end is still going.
+                self.turn_closed = false;
+                self.interrupted_ms = None;
+                self.resolved = None;
+            }
+            if event.event != "UserPromptSubmit" {
+                self.turn_progressed = true;
             }
         }
         if event.event == "SessionStart" {
@@ -871,17 +892,42 @@ impl Tracker {
         }
     }
 
-    /// Chat interrupted the turn for the user. A typed Esc may only close provider UI, so it
-    /// leaves a guess; this is a deliberate end of the turn, after which the prompt is ready
-    /// and the interrupted turn's late hooks are ignored. Only agents whose hooks report in
-    /// this run qualify. Returns whether the agent now reads as idle.
+    /// Whether an interrupted turn's hook shows the turn went on: an approval it asked for
+    /// or a tool it started after the interrupt, or any report once a tool that was already
+    /// running had time to finish. An approval gets no grace: reading ready over its dialog
+    /// would let the next message's Enter answer it.
+    fn outlived_interrupt(&self, event: &crate::agent_hooks::HookEvent) -> bool {
+        self.interrupted_ms.is_some_and(|at| {
+            let grace = match event.event.as_str() {
+                "PermissionRequest" => 0,
+                "PreToolUse" => INTERRUPT_START_GRACE_MS,
+                _ => INTERRUPT_SETTLE_MS,
+            };
+            event.at_ms > at.saturating_add(grace)
+        })
+    }
+
+    /// Whether Chat's interrupt can be confirmed: only agents whose hooks report in this run.
+    #[must_use]
+    pub fn interruptible(&self) -> bool {
+        self.hook_conversation.is_some() && self.report.is_some()
+    }
+
+    /// Chat interrupted the turn for the user, and the Esc reached the process. A typed Esc
+    /// may only close provider UI, so it leaves a guess; this is a deliberate end of the turn,
+    /// after which the prompt is ready. The turn's hooks still in flight are ignored, and a
+    /// later one reopens it (`outlived_interrupt`). Does nothing unless [`Self::interruptible`].
+    /// Returns whether the provider may have put the interrupted prompt back in its input:
+    /// Claude does when the turn had reported nothing yet.
     pub fn on_interrupt(&mut self, now: u64) -> bool {
-        if self.hook_conversation.is_none() {
-            return false;
-        }
-        let Some(report) = self.report.as_mut() else {
+        let reporting = self.hook_conversation.is_some();
+        let Some(report) = self.report.as_mut().filter(|_| reporting) else {
             return false;
         };
+        let restored = report.provider == Some(crate::adapters::Adapter::Claude)
+            && report.state == AgentState::Working
+            && !self.turn_closed
+            && !self.turn_progressed;
         report.state = AgentState::Idle;
         report.message = None;
         report.questions = None;
@@ -891,8 +937,9 @@ impl Tracker {
         self.last_input_ms = Some(now);
         self.heard_ms = now;
         self.turn_closed = true;
+        self.interrupted_ms = Some(now);
         self.resolved = Some((now, AgentState::Idle));
-        true
+        restored
     }
 
     /// The user asked the process to stop.
@@ -1501,10 +1548,14 @@ mod tests {
     fn a_chat_interrupt_confirms_a_ready_prompt_and_ignores_the_turns_late_hooks() {
         let mut tracker = Tracker::new("ready", true).with_identity("session", 42);
         // Without hooks in this run there is nothing to confirm.
-        assert!(!tracker.on_interrupt(50));
+        assert!(!tracker.interruptible());
+        tracker.on_interrupt(50);
+        assert!(tracker.status(50).agent.is_none());
         tracker.on_hook(hook("UserPromptSubmit", Some("turn"), 1), 100);
         tracker.on_hook(hook("PermissionRequest", Some("turn"), 2), 200);
-        assert!(tracker.on_interrupt(300));
+        assert!(tracker.interruptible());
+        // The turn reported after its prompt, so Claude doesn't put the prompt back.
+        assert!(!tracker.on_interrupt(300));
         let agent = tracker.status(300 + APPROVAL_QUIET_MS).agent.unwrap();
         assert_eq!((agent.state, agent.since_ms), (AgentState::Idle, 300));
         assert!(agent.authoritative && !agent.approval_pending);
@@ -1519,9 +1570,82 @@ mod tests {
         // A typed Esc left only a guess; the interrupt confirms it.
         tracker.on_input(&[0x1b], 600);
         assert!(!tracker.status(600).agent.unwrap().authoritative);
-        assert!(tracker.on_interrupt(700));
+        tracker.on_interrupt(700);
         let agent = tracker.status(700).agent.unwrap();
         assert!(agent.authoritative && agent.state == AgentState::Idle);
+    }
+
+    #[test]
+    fn an_interrupt_that_did_not_end_the_turn_is_undone_by_its_later_hooks() {
+        let at = |name: &str, sequence, at_ms| {
+            let mut event = hook(name, Some("turn"), sequence);
+            event.at_ms = at_ms;
+            event
+        };
+        let mut tracker = Tracker::new("ready", true).with_identity("session", 42);
+        tracker.on_hook(at("UserPromptSubmit", 1, 100), 100);
+        tracker.on_hook(at("PreToolUse", 2, 200), 200);
+        tracker.on_interrupt(1000);
+        // A tool that was already running may still report.
+        tracker.on_hook(at("PostToolUse", 3, 1100), 1100);
+        assert_eq!(tracker.status(1100).agent.unwrap().state, AgentState::Idle);
+        // A tool started after the interrupt means Esc only closed provider UI.
+        let started = 1000 + INTERRUPT_START_GRACE_MS + 1;
+        tracker.on_hook(at("PreToolUse", 4, started), started);
+        let agent = tracker.status(started).agent.unwrap();
+        assert!(agent.authoritative && agent.state == AgentState::Working);
+        tracker.on_hook(at("Stop", 5, started + 10), started + 10);
+        assert_eq!(
+            tracker.status(started + 10).agent.unwrap().state,
+            AgentState::Review
+        );
+
+        // An approval asked for after the interrupt reopens the turn at once.
+        let mut tracker = Tracker::new("ready", true).with_identity("session", 42);
+        let claude = |name: &str, sequence, at_ms| {
+            let mut event = at(name, sequence, at_ms);
+            event.provider = crate::adapters::Adapter::Claude;
+            event
+        };
+        tracker.on_hook(claude("UserPromptSubmit", 1, 100), 100);
+        tracker.on_interrupt(1000);
+        tracker.on_hook(claude("PermissionRequest", 2, 1001), 1001);
+        let agent = tracker.status(1001).agent.unwrap();
+        assert!(agent.authoritative && agent.state == AgentState::NeedsInput);
+
+        // So does any report long after a running tool would have finished.
+        let mut tracker = Tracker::new("ready", true).with_identity("session", 42);
+        tracker.on_hook(at("UserPromptSubmit", 1, 100), 100);
+        tracker.on_interrupt(1000);
+        let late = 1000 + INTERRUPT_SETTLE_MS + 1;
+        tracker.on_hook(at("PostToolUse", 2, late), late);
+        assert_eq!(
+            tracker.status(late).agent.unwrap().state,
+            AgentState::Working
+        );
+    }
+
+    #[test]
+    fn only_a_claude_turn_interrupted_before_any_report_may_restore_its_prompt() {
+        for (provider, progressed, restored) in [
+            (crate::adapters::Adapter::Claude, false, true),
+            (crate::adapters::Adapter::Claude, true, false),
+            (crate::adapters::Adapter::Codex, false, false),
+        ] {
+            let event = |name: &str, sequence| {
+                let mut event = hook(name, Some("turn"), sequence);
+                event.provider = provider;
+                event
+            };
+            let mut tracker = Tracker::new("ready", true).with_identity("session", 42);
+            tracker.on_hook(event("UserPromptSubmit", 1), 100);
+            if progressed {
+                tracker.on_hook(event("PreToolUse", 2), 200);
+            }
+            assert_eq!(tracker.on_interrupt(300), restored);
+            // Nothing is left to restore once the turn is over.
+            assert!(!tracker.on_interrupt(400));
+        }
     }
 
     #[test]
