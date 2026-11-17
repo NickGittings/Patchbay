@@ -80,6 +80,10 @@
         state().notificationToast.sessions[0].sid === notificationSid,
     )
     document.querySelector('[aria-label="Dismiss notification"]').click()
+    // Closing a card hides it; its link stays live in the inbox until cleared.
+    await until('notification card dismissed', () => !state().toastCards.some((c) => c.link))
+    assert(state().notificationToast?.sessions.length === 1, 'Closing a card dropped its live link')
+    state().setNotificationToast(null)
     await until('notification dismissed', () => !state().notificationToast)
     assert(
       state().message === 'Notification regression: keep this error',
@@ -108,7 +112,7 @@
       notificationRows
         .map((row) => row.querySelector('.notification-message').textContent)
         .join('|') === `${rootNotificationMessage}|Planner finished`,
-      'Notification messages lost their separate rows',
+      'Notifications lost their separate cards',
     )
     assert(
       notificationRows.every((row) => row.querySelector('button').textContent === 'View'),
@@ -148,6 +152,11 @@
       'Following notification cleared the persistent error',
     )
     document.querySelector('[aria-label="Dismiss notification"]').click()
+    await until(
+      'remaining notification card dismissed',
+      () => !state().toastCards.some((c) => c.link),
+    )
+    state().setNotificationToast(null)
     await until('remaining notification dismissed', () => !state().notificationToast)
     // An alert left with no links hides itself.
     state().setNotificationToast({

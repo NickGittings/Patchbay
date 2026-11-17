@@ -18,9 +18,11 @@ import {
 } from '@xyflow/react'
 import { create, type StateCreator } from 'zustand'
 import {
+  addToastCards,
   mergeNotificationToast,
   removeNotificationNotice,
   removeNotificationSession,
+  removeToastCards,
 } from './lib/notificationToast'
 import { liveDeclined } from './lib/validators'
 import { forgetAutoDrafts } from './lib/autoDrafts'
@@ -254,6 +256,9 @@ interface State {
   setNotificationToast: (toast: State['notificationToast']) => void
   dismissNotificationSession: (sid: string) => void
   dismissNotificationNotice: (id: string) => void
+  /** Cards shown by `Toast`, one per notice or link; each hides on its own after a few seconds. */
+  toastCards: Notice[]
+  dismissToastCard: (id: string) => void
   usageSettings: UsageSettings
   setUsageSettings: (settings: UsageSettings) => void
   notifications: NotificationSettings
@@ -767,25 +772,39 @@ const createState: StateCreator<State> = (set, get) => ({
   notificationToast: null,
   notificationToastId: 0,
   setNotificationToast: (notificationToast) =>
-    set((s) => ({
-      notificationToast: mergeNotificationToast(
-        s.notificationToast,
-        notificationToast && (!notificationToast.sessions.length || notificationToast.notice)
-          ? { ...notificationToast, noticeId: `notice-${s.notificationToastId + 1}` }
-          : notificationToast,
-      ),
-      notificationToastId: s.notificationToastId + 1,
-      notificationHistory: notificationToast
-        ? appendNotices(
-            s.notificationHistory,
-            toastNotices(notificationToast, s.notificationToastId + 1, Date.now()),
-          )
-        : s.notificationHistory,
-    })),
+    set((s) => {
+      const notices = notificationToast
+        ? toastNotices(notificationToast, s.notificationToastId + 1, Date.now())
+        : []
+      return {
+        notificationToast: mergeNotificationToast(
+          s.notificationToast,
+          notificationToast && (!notificationToast.sessions.length || notificationToast.notice)
+            ? { ...notificationToast, noticeId: `notice-${s.notificationToastId + 1}` }
+            : notificationToast,
+        ),
+        notificationToastId: s.notificationToastId + 1,
+        notificationHistory: notificationToast
+          ? appendNotices(s.notificationHistory, notices)
+          : s.notificationHistory,
+        toastCards: notificationToast
+          ? addToastCards(s.toastCards, notices)
+          : removeToastCards(s.toastCards, (card) => card.messageId === undefined),
+      }
+    }),
   dismissNotificationSession: (sid) =>
-    set((s) => ({ notificationToast: removeNotificationSession(s.notificationToast, sid) })),
+    set((s) => ({
+      notificationToast: removeNotificationSession(s.notificationToast, sid),
+      toastCards: removeToastCards(s.toastCards, (card) => card.link?.sid === sid),
+    })),
   dismissNotificationNotice: (id) =>
-    set((s) => ({ notificationToast: removeNotificationNotice(s.notificationToast, id) })),
+    set((s) => ({
+      notificationToast: removeNotificationNotice(s.notificationToast, id),
+      toastCards: removeToastCards(s.toastCards, (card) => card.id === id),
+    })),
+  toastCards: [],
+  dismissToastCard: (id) =>
+    set((s) => ({ toastCards: removeToastCards(s.toastCards, (card) => card.id === id) })),
   usageSettings: { ...DEFAULT_USAGE },
   setUsageSettings: (usageSettings) => set({ usageSettings }),
   notifications: { ...DEFAULT_NOTIFICATIONS },
@@ -1184,25 +1203,25 @@ const createState: StateCreator<State> = (set, get) => ({
         message && s.messageAction?.persist && s.messageAction.projectId === s.project?.id
           ? s.messageAction
           : null
+      const notice: Notice = {
+        id: `message-${s.messageId + 1}`,
+        kind,
+        heading,
+        message,
+        at: Date.now(),
+        read: false,
+        messageId: s.messageId + 1,
+        project: s.project ? { id: s.project.id, name: s.project.name } : undefined,
+      }
       return {
         message,
         messageActionId: action ? s.messageId + 1 : kept ? s.messageActionId : undefined,
         messageKind: kind,
         messageHeading: heading,
         notificationHistory: message
-          ? appendNotices(s.notificationHistory, [
-              {
-                id: `message-${s.messageId + 1}`,
-                kind,
-                heading,
-                message,
-                at: Date.now(),
-                read: false,
-                messageId: s.messageId + 1,
-                project: s.project ? { id: s.project.id, name: s.project.name } : undefined,
-              },
-            ])
+          ? appendNotices(s.notificationHistory, [notice])
           : s.notificationHistory,
+        toastCards: message ? addToastCards(s.toastCards, [notice]) : s.toastCards,
         messageTransient: transient,
         messageAction: action
           ? {

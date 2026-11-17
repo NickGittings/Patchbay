@@ -1,4 +1,5 @@
 import type { NotificationLink, NotificationToast } from '../types'
+import type { Notice } from './notificationHistory'
 
 export function mergeNotificationToast(
   current: NotificationToast | null,
@@ -90,3 +91,19 @@ export function notificationLinkLabel(link: NotificationLink, activeProjectId: s
     ? `${link.label} · ${link.project.name}`
     : link.label
 }
+
+/** Visible toast cards: one per notice or link, newest last, at most `max`. */
+export function addToastCards(
+  cards: Notice[],
+  incoming: Notice[],
+  max = MAX_TOAST_CARDS,
+): Notice[] {
+  const ids = new Set(incoming.map((card) => card.id))
+  return [...cards.filter((card) => !ids.has(card.id)), ...incoming].slice(-max)
+}
+
+export function removeToastCards(cards: Notice[], drop: (card: Notice) => boolean): Notice[] {
+  return cards.some(drop) ? cards.filter((card) => !drop(card)) : cards
+}
+
+export const MAX_TOAST_CARDS = 5

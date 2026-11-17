@@ -1,10 +1,13 @@
 import { expect, test } from 'vitest'
 import {
+  addToastCards,
   mergeNotificationToast,
+  removeToastCards,
   notificationLinkLabel,
   removeNotificationSession,
 } from './notificationToast'
 import type { NotificationToast } from '../types'
+import { toastNotices, type Notice } from './notificationHistory'
 
 const batch: NotificationToast = {
   message: '3 agents need input',
@@ -90,4 +93,30 @@ test('usage warnings survive viewing or dropping every agent link until explicit
     expect(last).toEqual(usage)
     expect(mergeNotificationToast(last, null)).toBeNull()
   }
+})
+
+const card = (id: string): Notice => ({ id, kind: 'info', message: id, at: 0, read: false })
+
+test('each link and the notice in a batch gets its own card', () => {
+  const cards = addToastCards([], toastNotices({ ...batch, notice: 'Usage warning' }, 1, 0))
+  expect(cards.map((c) => c.link?.sid ?? c.message)).toEqual([
+    'one',
+    'two',
+    'three',
+    'Usage warning',
+  ])
+})
+
+test('cards keep the newest within the cap and replace a repeated id', () => {
+  const cards = addToastCards([card('a'), card('b'), card('c')], [card('a'), card('d')], 3)
+  expect(cards.map((c) => c.id)).toEqual(['c', 'a', 'd'])
+})
+
+test('removing cards for one session keeps the others', () => {
+  const cards = toastNotices(batch, 1, 0)
+  expect(removeToastCards(cards, (c) => c.link?.sid === 'two').map((c) => c.link?.sid)).toEqual([
+    'one',
+    'three',
+  ])
+  expect(removeToastCards(cards, () => false)).toBe(cards)
 })
