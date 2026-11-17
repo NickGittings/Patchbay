@@ -28,6 +28,8 @@ import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
 import ChatAgentPicker from './ChatAgentPicker'
+import Dialog from './Dialog'
+import Menu, { MenuItem, MenuSeparator } from './Menu'
 import './simple.css'
 
 export default function ChatMode({
@@ -66,10 +68,9 @@ export default function ChatMode({
     state.teams[s.project?.id ?? '']?.find((t) => t.task === s.activeTask),
   )
   const ui = useSimpleUi((u) => u.worktrees[key] ?? EMPTY_SIMPLE_UI)
-  const [clearKey, setClearKey] = useState<string>()
-  if (clearKey !== undefined && clearKey !== key) setClearKey(undefined)
-  const [freshKey, setFreshKey] = useState<string>()
-  if (freshKey !== undefined && freshKey !== key) setFreshKey(undefined)
+  const [confirm, setConfirm] = useState<{ kind: 'clear' | 'fresh' | 'stop'; key: string }>()
+  if (confirm && confirm.key !== key) setConfirm(undefined)
+  const closeConfirm = () => setConfirm(undefined)
   const projectId = s.project?.id ?? '',
     task = s.activeTask
   const snapshot = {
@@ -212,55 +213,45 @@ export default function ChatMode({
         >
           Auto mode
         </button>
-        <details className="chat-menu">
-          <summary aria-label="Chat menu">•••</summary>
-          <div className="chat-menu-items">
-            {team && (
-              <div>
-                <button
-                  disabled={!!pending || team.state !== 'running'}
-                  onClick={() => void workflow.pauseWork()}
-                >
-                  Pause work
-                </button>
-                <button
-                  disabled={!!pending || team.state === 'running'}
-                  onClick={() => void workflow.continueWork()}
-                >
-                  Continue work
-                </button>
-                <button
-                  disabled={!!pending || team.state === 'stopped'}
-                  onClick={() => void workflow.stopWork()}
-                >
-                  Stop work
-                </button>
-              </div>
-            )}
-            {team && (
-              <button
+        <Menu label="•••" triggerLabel="Chat menu" caret={false} align="right" portal>
+          {team && (
+            <>
+              <MenuItem
+                disabled={!!pending || team.state !== 'running'}
+                onClick={() => void workflow.pauseWork()}
+              >
+                Pause work
+              </MenuItem>
+              <MenuItem
+                disabled={!!pending || team.state === 'running'}
+                onClick={() => void workflow.continueWork()}
+              >
+                Continue work
+              </MenuItem>
+              <MenuItem
+                disabled={!!pending || team.state === 'stopped'}
+                onClick={() => setConfirm({ kind: 'stop', key })}
+              >
+                Stop work…
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem
                 disabled={!!team.reset || !!ui.pendingAction || !!ui.pendingWorkflow}
                 title="Start a fresh provider conversation. Workers and a concise work handoff are retained."
-                onClick={() => {
-                  setClearKey(undefined)
-                  setFreshKey(key)
-                }}
+                onClick={() => setConfirm({ kind: 'fresh', key })}
               >
-                Start fresh conversation
-              </button>
-            )}
-            <button
-              disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
-              onClick={() => {
-                setFreshKey(undefined)
-                setClearKey(key)
-              }}
-              title="Clear Patchbay’s saved history. Provider transcripts and terminal history remain available."
-            >
-              Clear visible history
-            </button>
-          </div>
-        </details>
+                Start fresh conversation…
+              </MenuItem>
+            </>
+          )}
+          <MenuItem
+            disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
+            onClick={() => setConfirm({ kind: 'clear', key })}
+            title="Clear Patchbay’s saved history. Provider transcripts and terminal history remain available."
+          >
+            Clear visible history…
+          </MenuItem>
+        </Menu>
         <button
           className="inspector-close simple-hide-chat"
           aria-label="Hide chat"
@@ -270,46 +261,85 @@ export default function ChatMode({
           ×
         </button>
       </header>
-      {clearKey === key && (
-        <div
-          className="simple-clear-confirm"
-          role="group"
-          aria-label="Clear visible history confirmation"
+      {confirm?.kind === 'clear' && (
+        <Dialog
+          title="Clear visible history"
+          onClose={closeConfirm}
+          footer={
+            <>
+              <button autoFocus onClick={closeConfirm}>
+                Cancel
+              </button>
+              <button
+                className="danger"
+                disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
+                onClick={async () => {
+                  if (await workflow.clearHistory(confirm.key)) closeConfirm()
+                }}
+              >
+                Clear
+              </button>
+            </>
+          }
         >
-          <span>Clear this worktree’s chat history? Agents keep their context.</span>
-          <button
-            disabled={!!ui.pendingWorkflow || !!ui.pendingAction}
-            onClick={async () => {
-              if (await workflow.clearHistory(clearKey)) setClearKey(undefined)
-            }}
-          >
-            Clear
-          </button>
-          <button onClick={() => setClearKey(undefined)}>Cancel</button>
-        </div>
+          <p>Clear this worktree’s chat history? Agents keep their context.</p>
+          <p>Provider transcripts and terminal history remain available.</p>
+        </Dialog>
       )}
-      {team && freshKey === key && (
-        <div
-          className="simple-fresh-confirm"
-          role="group"
-          aria-label="Start fresh conversation confirmation"
+      {team && confirm?.kind === 'fresh' && (
+        <Dialog
+          title="Start fresh conversation"
+          onClose={closeConfirm}
+          footer={
+            <>
+              <button autoFocus onClick={closeConfirm}>
+                Cancel
+              </button>
+              <button
+                className="danger"
+                disabled={!!team.reset || !!pending || !!ui.pendingAction || !!ui.pendingWorkflow}
+                onClick={() => {
+                  const target = confirm.key
+                  void workflow.startFresh(target, () => {
+                    setConfirm((value) => (value?.key === target ? undefined : value))
+                  })
+                }}
+              >
+                Start fresh
+              </button>
+            </>
+          }
         >
-          <span>
+          <p>
             Start a fresh provider conversation? Provider context resets and visible history is
             replaced with a concise handoff. Workers and results are retained.
-          </span>
-          <button
-            disabled={!!team.reset || !!pending || !!ui.pendingAction || !!ui.pendingWorkflow}
-            onClick={() => {
-              void workflow.startFresh(freshKey, () => {
-                setFreshKey((value) => (value === key ? undefined : value))
-              })
-            }}
-          >
-            Start fresh
-          </button>
-          <button onClick={() => setFreshKey(undefined)}>Cancel</button>
-        </div>
+          </p>
+        </Dialog>
+      )}
+      {team && confirm?.kind === 'stop' && (
+        <Dialog
+          title="Stop work"
+          onClose={closeConfirm}
+          footer={
+            <>
+              <button autoFocus onClick={closeConfirm}>
+                Cancel
+              </button>
+              <button
+                className="danger"
+                disabled={!!pending || team.state === 'stopped'}
+                onClick={() => {
+                  closeConfirm()
+                  void workflow.stopWork()
+                }}
+              >
+                Stop work
+              </button>
+            </>
+          }
+        >
+          <p>Stop the lead and workers for this task? You can continue work later.</p>
+        </Dialog>
       )}
       {team && (
         <ChatCoordination

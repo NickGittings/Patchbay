@@ -11,8 +11,9 @@ use tauri::{Builder, Emitter, Listener, Manager, Wry};
 const REPORT_EVENT: &str = "patchbay://smoke-report";
 /// The launcher's answers to reports, one line each, read from stdin in screenshot runs.
 const ACK_EVENT: &str = "patchbay://smoke-ack";
-/// The full Chat flow (`simple`) runs about 90s with its fake agents' turns.
-const TIMEOUT: Duration = Duration::from_secs(120);
+/// The full Chat flow (`simple`) runs about two minutes with its fake agents' turns; failing
+/// checks report sooner through their own waits, so this only bounds a hung run.
+const TIMEOUT: Duration = Duration::from_secs(240);
 /// Screenshot runs stage much more and may wait on a macOS permission prompt.
 const FOREGROUND_TIMEOUT: Duration = Duration::from_secs(600);
 

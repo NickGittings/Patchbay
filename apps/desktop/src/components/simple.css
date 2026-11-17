@@ -368,14 +368,6 @@
   border-radius: 6px;
   font-size: 12px;
 }
-.simple-clear-confirm {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  font-size: 12px;
-}
 .simple-result > time {
   display: block;
   color: var(--muted);
@@ -418,33 +410,6 @@
   flex: none;
 }
 
-.chat-menu {
-  position: relative;
-}
-.chat-menu summary {
-  cursor: pointer;
-  list-style: none;
-  padding: 0.25rem 0.5rem;
-}
-.chat-menu[open] {
-  z-index: 10;
-}
-.chat-menu-items {
-  position: absolute;
-  right: 0;
-  top: 100%;
-  min-width: 180px;
-  padding: 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
-}
-.chat-menu-items,
-.chat-menu-items > div {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
 .chat-coordination {
   padding: 0 0.75rem;
   font-size: 0.85rem;
@@ -479,13 +444,6 @@
   justify-content: center;
   padding: 6px;
   border-top: 1px solid var(--border);
-}
-.simple-fresh-confirm {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 12px;
-  border-bottom: 1px solid var(--border);
 }
 .chat-coordination {
   max-height: 30%;

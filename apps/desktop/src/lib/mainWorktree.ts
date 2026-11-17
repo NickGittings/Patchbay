@@ -72,6 +72,9 @@ export function scheduleBranchRefresh(
   )
 }
 
+/** Whether a branch refresh for `projectId` is waiting for its burst of signals to settle. */
+export const branchRefreshScheduled = (projectId: string) => scheduled.has(projectId)
+
 /** Cancel every scheduled branch refresh (the listener is going away). */
 export function cancelBranchRefreshes() {
   for (const timer of scheduled.values()) clearTimeout(timer)

@@ -20,6 +20,21 @@
   }
   const button = (text, root = document) =>
     [...root.querySelectorAll('button')].find((b) => b.textContent.trim() === text)
+  // React commits a click's update in a microtask; checking right after it avoids a polling round,
+  // which background smoke windows throttle to about a second.
+  const soon = async (label, check) => {
+    await Promise.resolve()
+    return check() || until(label, check)
+  }
+  // Chat's ••• menu renders its items only while open.
+  const chatMenu = async (text) => {
+    const trigger = document.querySelector('[aria-label="Chat menu"]')
+    if (trigger?.getAttribute('aria-expanded') !== 'true') trigger?.click()
+    return soon(`chat menu: ${text}`, () =>
+      button(text, document.querySelector('[role="menu"]') ?? document),
+    )
+  }
+  const confirmDialog = (title) => document.querySelector(`[role="dialog"][aria-label="${title}"]`)
   const click = (el) => {
     assert(el, 'missing click target')
     const details = el.closest('details')
@@ -102,8 +117,8 @@
     await until('planner selected', () => state().simple?.selectedAgent === plannerRecord.id)
     // Adopt the legacy manual session, then release coordination for this workflow fixture.
     await smoke.refreshChatTeams(projectId)
-    document.querySelector('.chat-menu').open = true
-    click(await until('team stop control', () => button('Stop work')))
+    click(await chatMenu('Stop work…'))
+    click(button('Stop work', await until('stop confirmation', () => confirmDialog('Stop work'))))
     await until(
       'coordination stopped for manual workflow',
       () =>
@@ -358,11 +373,17 @@
     const toggle = group.querySelector('.review-toggle')
     assert(toggle.getAttribute('aria-expanded') === 'true', 'group did not start expanded')
     await until('selected diff loaded', () => pane.querySelector('.diff-view [data-new-line]'))
-    const openDiff = pane.querySelector('.diff-view')?.textContent
+    // The file stepper only counts expanded groups, so compare the diff without it.
+    const diffText = () => {
+      const view = pane.querySelector('.diff-view')?.cloneNode(true)
+      view?.querySelector('.diff-nav')?.remove()
+      return view?.textContent
+    }
+    const openDiff = diffText()
     click(toggle)
     await until('collapsed change group', () => !group.querySelector('.change-list'))
     assert(toggle.getAttribute('aria-expanded') === 'false', 'collapse state not exposed')
-    assert(pane.querySelector('.diff-view')?.textContent === openDiff, 'collapse changed the diff')
+    assert(diffText() === openDiff, 'collapse changed the diff')
     click(toggle)
     await until('expanded change group', () => group.querySelector('.change-list'))
     click(pane.querySelector('[aria-label="Refresh changes"]'))
@@ -409,6 +430,11 @@
       asideBounds.left >= paneBounds.left && asideBounds.right <= paneBounds.right,
       'Changes list is clipped',
     )
+    // The history's open state persists across launches, so open it if a run left it collapsed.
+    const historyToggle = await until('history header', () =>
+      pane.querySelector('.commit-history header button'),
+    )
+    if (historyToggle.getAttribute('aria-expanded') !== 'true') click(historyToggle)
     click(await until('recent commit', () => pane.querySelector('.commit-row')))
     await until('commit details', () => pane.querySelector('.commit-details'))
     click(pane.querySelector('.change-row[data-path="src/app.txt"]'))
@@ -418,9 +444,13 @@
       pane.querySelector('.review-toggle[aria-expanded="false"]'),
     )
     state().setActiveTask(null, true)
+    // Root Chat stays hidden from the earlier cross-worktree reveal check; only the switch matters.
     await until(
       'root conversation',
-      () => state().activeTask === null && document.querySelector('.simple-chat'),
+      () =>
+        state().activeTask === null &&
+        document.querySelector('.simple-chat, .simple-show-chat') &&
+        !document.querySelector('.simple-diff'),
     )
     state().setActiveTask(task)
     await until('worktree conversation', () => document.querySelector('.simple-chat'))

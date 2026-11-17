@@ -41,6 +41,9 @@
       }
       toggle.click()
       await until('graph collapsed', () => !root.querySelector('.commit-row'))
+      // The open state persists across launches; leave it as other smoke scripts expect.
+      toggle.click()
+      await until('graph reopened', () => root.querySelector('.commit-row'))
     }
     await checkHistory('.review-view')
     state().setSimpleMode(true)

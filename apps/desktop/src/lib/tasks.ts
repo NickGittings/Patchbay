@@ -89,6 +89,16 @@ export async function refreshTasks(
   }
 }
 
+/** Resolves once `projectId`'s task list requests, including any started meanwhile, settle. */
+export async function tasksSettled(projectId: string) {
+  for (let current = pending.get(projectId); current;) {
+    await current
+    const next = pending.get(projectId)
+    if (next === current) return
+    current = next
+  }
+}
+
 /** Set a project's tasks, whether or not its tab is active, dropping a vanished active task. */
 function applyTasks(projectId: string, tasks: Task[]) {
   const map = projectOf(projectId)

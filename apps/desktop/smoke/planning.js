@@ -16,6 +16,21 @@
   }
   const button = (text, root = document) =>
     [...root.querySelectorAll('button')].find((b) => b.textContent.trim() === text)
+  // React commits a click's update in a microtask; checking right after it avoids a polling round,
+  // which background smoke windows throttle to about a second.
+  const soon = async (label, check) => {
+    await Promise.resolve()
+    return check() || until(label, check)
+  }
+  // Chat's ••• menu renders its items only while open.
+  const chatMenu = async (text) => {
+    const trigger = document.querySelector('[aria-label="Chat menu"]')
+    if (trigger?.getAttribute('aria-expanded') !== 'true') trigger?.click()
+    return soon(`chat menu: ${text}`, () =>
+      button(text, document.querySelector('[role="menu"]') ?? document),
+    )
+  }
+  const confirmDialog = (title) => document.querySelector(`[role="dialog"][aria-label="${title}"]`)
   const input = (el, value) => {
     assert(el, 'missing input')
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set.call(el, value)
@@ -83,10 +98,8 @@
       'first planner working',
       () => state().sessions[sid]?.status?.agent?.state === 'working',
     )
-    button('Clear visible history').click()
-    const confirm = await until('clear confirmation', () =>
-      document.querySelector('.simple-clear-confirm'),
-    )
+    ;(await chatMenu('Clear visible history…')).click()
+    const confirm = await soon('clear confirmation', () => confirmDialog('Clear visible history'))
     button('Cancel', confirm).click()
     assert(
       state().simple.log.some((e) => e.text === 'Original prompt to clear'),
@@ -105,9 +118,9 @@
     const chatKey = smoke.simpleKey(pid, first.id)
     const queued = smoke.simpleUi.getState().worktrees[chatKey].queued
     assert(queued, 'message was not queued')
-    button('Clear visible history').click()
-    const confirm2 = await until('second clear confirmation', () =>
-      document.querySelector('.simple-clear-confirm'),
+    ;(await chatMenu('Clear visible history…')).click()
+    const confirm2 = await soon('second clear confirmation', () =>
+      confirmDialog('Clear visible history'),
     )
     smoke.simpleUi.getState().patch(chatKey, { pendingAction: true })
     await until('confirmation guard', () => button('Clear', confirm2).disabled)

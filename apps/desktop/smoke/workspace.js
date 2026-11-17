@@ -334,8 +334,14 @@
           throw new Error(`Footer controls clip or search is off center at ${width}px`)
         for (const button of rail.querySelectorAll(':scope > button')) {
           const box = button.getBoundingClientRect()
-          if (box.width < 30 || box.height < 30 || box.bottom > innerHeight || !button.title)
-            throw new Error('Rail clips a hit target or lacks a tooltip')
+          // Rail tooltips render on hover or focus (RailTooltip), so check the name they show.
+          if (
+            box.width < 30 ||
+            box.height < 30 ||
+            box.bottom > innerHeight ||
+            !button.getAttribute('aria-label')
+          )
+            throw new Error('Rail clips a hit target or lacks a name')
         }
         smoke.selectPanel('usage')
         const panel = await until('docked usage panel', () =>

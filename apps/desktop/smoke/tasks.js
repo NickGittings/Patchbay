@@ -399,7 +399,9 @@
     click(button(document.querySelector('.worktree-row.active'), 'Review'))
     await until(
       'Review action',
-      () => state().view === 'review' && !!document.querySelector('.review-banner'),
+      () =>
+        state().view === 'review' &&
+        document.querySelector('.review-context')?.textContent.includes(task.branch),
     )
 
     // A plan saved in Plan belongs to the project and reaches its component agents there;

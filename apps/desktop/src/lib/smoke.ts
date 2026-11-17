@@ -77,7 +77,8 @@ import { requestGitRefresh } from './git'
 import { syncCurrentRoots } from './access'
 import { runGraphAction, stopGroup } from './actions'
 import { graphActionPlan } from './ipc'
-import { createTask, refreshTasks, removeTask } from './tasks'
+import { createTask, refreshTasks, removeTask, tasksSettled } from './tasks'
+import { branchRefreshScheduled } from './mainWorktree'
 import { useDependencies } from './dependencies'
 import { mapLinksRead, stackProposalRead } from './ipc'
 
@@ -301,6 +302,11 @@ const hooks = {
   openComponentWindow,
   createTask,
   refreshTasks,
+  /** Resolves once watcher-driven branch and task refreshes for `projectId` have landed. */
+  settleTaskRefreshes: async (projectId: string) => {
+    while (branchRefreshScheduled(projectId)) await new Promise((done) => setTimeout(done, 50))
+    await tasksSettled(projectId)
+  },
   removeTask,
   report: (message: string) => emit('patchbay://smoke-report', message),
   /**

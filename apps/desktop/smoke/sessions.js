@@ -620,16 +620,16 @@
       )
     })
     await choose(first, 0, 'running')
-    // Render the record-before-snapshot state while its real process remains stoppable.
-    smoke.store.setState({
-      sessionRecords: state().sessionRecords.map((r) =>
-        r.id === idsOne[0] ? { ...r, snapshot: undefined, interrupted: false } : r,
-      ),
+    // Render the record-before-snapshot state while its real process remains stoppable. A late
+    // service update can restore the snapshot first, so re-apply it until the row shows it.
+    await until('starting row has menu', () => {
+      if (row(first, 'Live A')?.querySelector('.status-dot')?.title === 'Starting') return true
+      smoke.store.setState({
+        sessionRecords: state().sessionRecords.map((r) =>
+          r.id === idsOne[0] ? { ...r, snapshot: undefined, interrupted: false } : r,
+        ),
+      })
     })
-    await until(
-      'starting row has menu',
-      () => row(first, 'Live A')?.querySelector('.status-dot')?.title === 'Starting',
-    )
     await click(() => row(first, 'Live A'), 'Stop')
     await until('starting session stopped', async () => {
       await smoke.reconcileSessions()
@@ -739,6 +739,9 @@
     // A read-only panel must preserve inactive task layouts and Git badges, even disconnected.
     document.querySelector('[aria-label="Close Sessions panel"]').click()
     await until('panel closed before restart check', () => !panel())
+    // Worktree changes earlier in this script signal a background task refresh; let it land
+    // first, so the checks below only see what the Sessions panel does.
+    await smoke.settleTaskRefreshes(one.id)
     const original = state().projects[one.id].state
     state().patchProject(one.id, {
       tasks: [],

@@ -181,8 +181,13 @@
         'sessions closed after reconnect',
         () => !document.querySelector('.sessions-content'),
       )
-      await until('terminal returned to dock', () =>
-        document.querySelector('.terminal-dock .terminal-host .xterm-host'),
+      // Reconnect reveals a mapped component's terminal in Implementation, as revealTerminal does.
+      await until(
+        'terminal revealed after reconnect',
+        () =>
+          state().view === 'implementation' &&
+          state().activeSession === sid &&
+          document.querySelector('.terminal-area .terminal-host .xterm-host'),
       )
       state().setView('plan')
       const secondId = state().projectOrder[1]

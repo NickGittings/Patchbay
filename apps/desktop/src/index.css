@@ -1844,17 +1844,6 @@ input[type='radio'] {
   background: transparent;
   border: 1.5px solid var(--muted);
 }
-.review-banner {
-  margin: 10px 12px 0;
-  padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
 .review-empty {
   display: flex;
   flex-direction: column;
