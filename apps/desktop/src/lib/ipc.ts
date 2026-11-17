@@ -556,6 +556,24 @@ export const onProposal = (
   handler: (event: { projectId: string; task: string | null }) => void,
 ): Promise<UnlistenFn> =>
   listen<{ projectId: string; task: string | null }>(PROPOSAL_EVENT, (e) => handler(e.payload))
+/** An agent's question waits for Chat (`agent_commands.rs` emits it); closed when it ends. */
+export const onAgentQuestion = (
+  handler: (question: import('../types').AgentQuestion) => void,
+): Promise<UnlistenFn> =>
+  listen<import('../types').AgentQuestion>('patchbay://agent-question', (e) => handler(e.payload))
+export const onAgentQuestionClosed = (
+  handler: (event: { id: string; answered: boolean }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ id: string; answered: boolean }>('patchbay://agent-question-closed', (e) =>
+    handler(e.payload),
+  )
+export const agentQuestions = () => invoke<import('../types').AgentQuestion[]>('agent_questions')
+export const agentQuestionsWatch = (sessionIds: string[]) =>
+  invoke<void>('agent_questions_watch', { sessionIds })
+export const agentQuestionClaim = (id: string) => invoke<boolean>('agent_question_claim', { id })
+/** `null` leaves the question to the agent's own terminal menu. */
+export const agentQuestionAnswer = (id: string, answers: string[] | null) =>
+  invoke<boolean>('agent_question_answer', { id, answers })
 export const MAP_LINKS_EVENT = 'patchbay://map-links'
 export const onMapLinks = (handler: (event: { projectId: string }) => void): Promise<UnlistenFn> =>
   listen<{ projectId: string }>(MAP_LINKS_EVENT, (e) => handler(e.payload))

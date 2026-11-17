@@ -3,11 +3,12 @@ use crate::actions::{ActionPlan, ActionReport, ActionRequest};
 use crate::agent_bridge::{Action, LaunchContext, Proposes, Role};
 use crate::session::{Record, Request};
 use crate::{Project, access::AccessSnapshot, context, tasks};
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 /// Desktop-owned state supplied at the integration boundary.
 pub trait Host {
@@ -27,6 +28,17 @@ pub trait Host {
     fn links_proposed(&self, launch: &LaunchContext);
     fn stack_proposed(&self, launch: &LaunchContext);
     fn validation_proposed(&self, _launch: &LaunchContext) {}
+    /// Offer an agent's questions to the user in Chat and wait for answers, one per
+    /// question, until `wait` ends. `None` when Chat doesn't take the question, the
+    /// user skips it, or no answer arrives in time.
+    fn ask_user(
+        &self,
+        _launch: &LaunchContext,
+        _questions: Vec<crate::agent_hooks::UserQuestion>,
+        _wait: std::time::Duration,
+    ) -> Option<Vec<String>> {
+        None
+    }
 }
 
 pub struct ProjectScope {
@@ -442,6 +454,36 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
             }
             Ok(json!({"withdrawn":withdrawn}))
         }
+        Action::AskUser {
+            conversation,
+            questions,
+        } => {
+            let questions = crate::agent_hooks::UserQuestion::bounded(questions);
+            anyhow::ensure!(!questions.is_empty(), "The question is empty");
+            // A nested run (`claude -p`) inherits the capability but not the conversation.
+            let snapshot: Option<crate::pty::Snapshot> = call(
+                state,
+                Request::Snapshot {
+                    id: launch.agent_session.clone(),
+                    output_limit: Some(0),
+                },
+            )?;
+            let snapshot = snapshot.context("The agent's session has ended")?;
+            // Unlike plans, both must be known: an agent whose conversation isn't reported
+            // yet asks in its terminal rather than risk showing a nested run's question.
+            let current = snapshot
+                .status
+                .agent
+                .as_ref()
+                .and_then(|a| a.conversation_id.as_deref());
+            anyhow::ensure!(
+                snapshot.running && current.is_some() && current == conversation.as_deref(),
+                "Only the agent's own conversation can ask in Chat"
+            );
+            // Leave the provider time to show its own menu once the hook stops waiting.
+            let wait = crate::agent_hooks::ANSWER_WAIT.saturating_sub(Duration::from_secs(10));
+            Ok(json!({"answers": app.ask_user(launch, questions, wait)}))
+        }
         Action::ProposeLinks { proposal } => {
             anyhow::ensure!(
                 launch.role == Role::Mapper(Proposes::Links),
@@ -596,7 +638,8 @@ impl TryFrom<Action> for ActionRequest {
             | Action::ProposeValidation { .. }
             | Action::ProposeStack { .. }
             | Action::SavePlan { .. }
-            | Action::WithdrawPlan { .. } => anyhow::bail!("Unsupported graph command"),
+            | Action::WithdrawPlan { .. }
+            | Action::AskUser { .. } => anyhow::bail!("Unsupported graph command"),
         }
     }
 }
@@ -694,6 +737,124 @@ mod tests {
             "componentId":"web","terminalId":"agent","task":task,"name":"Agent","kind":"agent"},
             "spec":{"id":id,"command":"cat","cwd":"/missing","env":{},"ready_when":"","service":false,"notice":null,"dirs":[]},
             "snapshot":null,"history":[],"interrupted":false,"requestIds":[]})
+    }
+    /// A host whose session `one` runs conversation `mine` and whose Chat answers "Blue".
+    struct Asking {
+        running: bool,
+        asked: Mutex<Vec<(String, usize)>>,
+    }
+    impl Host for Asking {
+        fn project(&self, _: &str) -> Result<ProjectScope> {
+            Ok(ProjectScope {
+                access: AccessSnapshot::default(),
+                project: None,
+                roots: vec![],
+            })
+        }
+        fn request(&self, request: Request) -> Result<Value> {
+            let Request::Snapshot { id, .. } = request else {
+                panic!("unexpected service request")
+            };
+            assert_eq!(id, "one");
+            let agent = crate::status::AgentReport {
+                state: crate::status::AgentState::NeedsInput,
+                since_ms: 0,
+                message: None,
+                prompt: None,
+                provider: None,
+                conversation_id: Some("mine".into()),
+                turn_id: None,
+                authoritative: true,
+                approval_pending: false,
+                questions: None,
+            };
+            Ok(json!(crate::pty::Snapshot {
+                chat_startup: None,
+                launch_directory: None,
+                truncated: false,
+                data: vec![],
+                end: 0,
+                generation: 1,
+                running: self.running,
+                exit_code: None,
+                started_ms: 0,
+                exited_ms: None,
+                status: crate::status::SessionStatus {
+                    agent: Some(agent),
+                    ..Default::default()
+                },
+                activity: vec![],
+                replies: vec![],
+                last_reply: None,
+                notice: None,
+            }))
+        }
+        fn activities(&self) -> Vec<Activity> {
+            vec![]
+        }
+        fn emit_activity(&self, _: &Activity) {}
+        fn proposal_submitted(&self, _: &LaunchContext) {}
+        fn stack_proposed(&self, _: &LaunchContext) {}
+        fn links_proposed(&self, _: &LaunchContext) {}
+        fn ask_user(
+            &self,
+            launch: &LaunchContext,
+            questions: Vec<crate::agent_hooks::UserQuestion>,
+            _: Duration,
+        ) -> Option<Vec<String>> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((launch.agent_session.clone(), questions.len()));
+            Some(vec!["Blue".into()])
+        }
+    }
+    #[test]
+    fn only_the_agents_own_running_conversation_asks_in_chat() {
+        let ask = |conversation: &str, questions: usize| Action::AskUser {
+            conversation: Some(conversation.into()),
+            questions: (0..questions)
+                .map(|i| crate::agent_hooks::UserQuestion {
+                    question: format!("Question {i}"),
+                    header: String::new(),
+                    multi_select: false,
+                    options: vec![],
+                })
+                .collect(),
+        };
+        let host = Asking {
+            running: true,
+            asked: Mutex::default(),
+        };
+        assert_eq!(
+            dispatch(&host, &launch(), ask("mine", 1)).unwrap(),
+            json!({"answers":["Blue"]})
+        );
+        // A nested run inherits the capability but not the conversation.
+        assert!(dispatch(&host, &launch(), ask("nested", 1)).is_err());
+        let mut unknown = ask("mine", 1);
+        if let Action::AskUser { conversation, .. } = &mut unknown {
+            *conversation = None;
+        }
+        assert!(dispatch(&host, &launch(), unknown).is_err());
+        assert!(dispatch(&host, &launch(), ask("mine", 0)).is_err());
+        dispatch(&host, &launch(), ask("mine", 9)).unwrap();
+        assert_eq!(
+            *host.asked.lock().unwrap(),
+            vec![
+                ("one".into(), 1),
+                ("one".into(), crate::agent_hooks::QUESTION_LIMIT)
+            ]
+        );
+        let mut mapper = launch();
+        mapper.role = Role::Mapper(Proposes::Links);
+        assert!(dispatch(&host, &mapper, ask("mine", 1)).is_err());
+        let ended = Asking {
+            running: false,
+            asked: Mutex::default(),
+        };
+        assert!(dispatch(&ended, &launch(), ask("mine", 1)).is_err());
+        assert!(ended.asked.lock().unwrap().is_empty());
     }
     fn launch() -> LaunchContext {
         LaunchContext {

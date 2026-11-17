@@ -81,4 +81,20 @@ for line in sys.stdin:
         hook('Stop', identity=retired_turn)
     elif command == 'stop-turn':
         hook('Stop')
+    elif command == 'question':
+        # The provider's question tool; its hook may answer for the user from Chat.
+        payload = dict(hook_event_name='PreToolUse', session_id=conversation, turn_id=turn,
+            tool_name='AskUserQuestion' if provider == 'claude' else 'request_user_input',
+            tool_input=dict(questions=[dict(question='Pick a color', header='Color', multiSelect=False,
+                options=[dict(label='Red', description='Warm'), dict(label='Blue')])]))
+        answer = subprocess.run([str(reporter), 'report-status', provider], input=json.dumps(payload),
+            text=True, capture_output=True, check=True).stdout.strip()
+        summary = 'none'
+        if answer:
+            decision = json.loads(answer)['hookSpecificOutput']
+            given = decision.get('updatedInput', {}).get('answers', {}).get('Pick a color')
+            if not given and 'Answer: Blue' in decision.get('permissionDecisionReason', ''):
+                given = 'Blue'
+            summary = decision['permissionDecision'] + ':' + str(given)
+        print('fixture-answer ' + summary, flush=True)
     print('fixture-handled ' + command, flush=True)

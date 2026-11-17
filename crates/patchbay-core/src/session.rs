@@ -6190,6 +6190,7 @@ mod tests {
             turn_id: None,
             authoritative: true,
             approval_pending: false,
+            questions: None,
         });
         assert_eq!(
             restart_conversation(Adapter::Claude, &snapshot).as_deref(),
@@ -6217,6 +6218,7 @@ mod tests {
                 turn_id: None,
                 authoritative,
                 approval_pending: false,
+                questions: None,
             }),
             ..SessionStatus::default()
         };
@@ -6246,6 +6248,7 @@ mod tests {
                 turn_id: Some("turn".into()),
                 authoritative,
                 approval_pending,
+                questions: None,
             }),
             ..SessionStatus::default()
         };

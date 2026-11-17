@@ -93,6 +93,9 @@ pub struct AgentReport {
     /// state reads `working`, but an approval dialog may be on screen.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approval_pending: bool,
+    /// Every question of the provider's question tool while it waits for the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questions: Option<Vec<crate::agent_hooks::UserQuestion>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -780,10 +783,14 @@ impl Tracker {
         };
         let same_report = same_turn.filter(|r| r.state == state);
         let since_ms = same_report.map_or(now, |r| r.since_ms);
-        let message = if state == AgentState::NeedsInput {
-            event.message
+        let (message, questions) = if state == AgentState::NeedsInput {
+            // The menu's own notification in the same wait keeps the questions it shows.
+            let questions = event
+                .questions
+                .or_else(|| same_report.and_then(|r| r.questions.clone()));
+            (event.message, questions)
         } else {
-            None
+            (None, None)
         };
         self.report = Some(AgentReport {
             state,
@@ -795,6 +802,7 @@ impl Tracker {
             turn_id: turn,
             authoritative: true,
             approval_pending: false,
+            questions,
         });
         self.heard_ms = now;
     }
@@ -819,6 +827,7 @@ impl Tracker {
                 if effect == AgentState::Working
                     && resolve(&mut report.state, &mut report.message, effect)
                 {
+                    report.questions = None;
                     report.since_ms = now;
                     report.authoritative = false;
                     self.heard_ms = now;
@@ -840,6 +849,7 @@ impl Tracker {
                     if report.state == AgentState::NeedsInput || pending.is_some() {
                         report.state = AgentState::Idle;
                         report.message = None;
+                        report.questions = None;
                         report.since_ms = now;
                     }
                     report.authoritative = false;
@@ -853,6 +863,7 @@ impl Tracker {
         if let Some(report) = &mut self.report
             && resolve(&mut report.state, &mut report.message, effect)
         {
+            report.questions = None;
             report.since_ms = now;
             self.heard_ms = now;
         }
@@ -873,6 +884,7 @@ impl Tracker {
             report.state = AgentState::Ended;
             report.since_ms = now;
             report.message = None;
+            report.questions = None;
         }
     }
 
@@ -978,6 +990,7 @@ impl Tracker {
             turn_id: None,
             authoritative: false,
             approval_pending: false,
+            questions: None,
         });
     }
 
@@ -1445,6 +1458,7 @@ mod tests {
             sequence,
             tool: None,
             file_target: false,
+            questions: None,
             target: None,
             at_ms: sequence * 100,
             event: event.into(),
@@ -2278,12 +2292,27 @@ mod tests {
         let mut question = hook("PreToolUse", Some("turn"), 2);
         question.tool = Some("AskUserQuestion".into());
         question.message = Some("Which behavior?".into());
+        question.questions = Some(vec![crate::agent_hooks::UserQuestion {
+            question: "Which behavior?".into(),
+            header: String::new(),
+            multi_select: false,
+            options: vec![],
+        }]);
         tracker.on_hook(question, 200);
+        let report = tracker.report.as_ref().unwrap();
+        assert_eq!(report.state, AgentState::NeedsInput);
         assert_eq!(
-            tracker.report.as_ref().unwrap().state,
-            AgentState::NeedsInput
+            report.questions.as_ref().unwrap()[0].question,
+            "Which behavior?"
         );
-        tracker.on_hook(hook("PostToolUse", Some("turn"), 3), 300);
-        assert_eq!(tracker.report.as_ref().unwrap().state, AgentState::Working);
+        // Claude's menu notification, once Chat hands the question back, keeps it.
+        tracker.on_hook(hook("Notification", Some("turn"), 3), 250);
+        let report = tracker.report.as_ref().unwrap();
+        assert_eq!(report.state, AgentState::NeedsInput);
+        assert!(report.questions.is_some());
+        tracker.on_hook(hook("PostToolUse", Some("turn"), 4), 300);
+        let report = tracker.report.as_ref().unwrap();
+        assert_eq!(report.state, AgentState::Working);
+        assert!(report.questions.is_none());
     }
 }
