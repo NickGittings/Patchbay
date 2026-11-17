@@ -35,6 +35,7 @@ pub trait Host {
         &self,
         _launch: &LaunchContext,
         _questions: Vec<crate::agent_hooks::UserQuestion>,
+        _permission: bool,
         _wait: std::time::Duration,
     ) -> Option<Vec<String>> {
         None
@@ -457,6 +458,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
         Action::AskUser {
             conversation,
             questions,
+            permission,
         } => {
             let questions = crate::agent_hooks::UserQuestion::bounded(questions);
             anyhow::ensure!(!questions.is_empty(), "The question is empty");
@@ -482,7 +484,7 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
             );
             // Leave the provider time to show its own menu once the hook stops waiting.
             let wait = crate::agent_hooks::ANSWER_WAIT.saturating_sub(Duration::from_secs(10));
-            Ok(json!({"answers": app.ask_user(launch, questions, wait)}))
+            Ok(json!({"answers": app.ask_user(launch, questions, permission, wait)}))
         }
         Action::ProposeLinks { proposal } => {
             anyhow::ensure!(
@@ -800,6 +802,7 @@ mod tests {
             &self,
             launch: &LaunchContext,
             questions: Vec<crate::agent_hooks::UserQuestion>,
+            _: bool,
             _: Duration,
         ) -> Option<Vec<String>> {
             self.asked
@@ -821,6 +824,7 @@ mod tests {
                     options: vec![],
                 })
                 .collect(),
+            permission: false,
         };
         let host = Asking {
             running: true,

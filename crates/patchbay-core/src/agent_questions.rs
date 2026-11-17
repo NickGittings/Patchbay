@@ -21,6 +21,8 @@ pub struct Asked {
     pub session_id: String,
     pub generation: Option<u64>,
     pub questions: Vec<UserQuestion>,
+    /// A tool approval: its one question is answered Allow or Deny.
+    pub permission: bool,
 }
 
 /// A question offered to Chat.
@@ -33,6 +35,8 @@ pub struct Pending {
     pub session_id: String,
     pub generation: Option<u64>,
     pub questions: Vec<UserQuestion>,
+    #[serde(default)]
+    pub permission: bool,
     /// When the provider's own menu takes over, in Unix milliseconds.
     pub deadline_ms: u64,
 }
@@ -78,6 +82,7 @@ impl Questions {
             session_id: asked.session_id,
             generation: asked.generation,
             questions: asked.questions,
+            permission: asked.permission,
             deadline_ms: crate::pty::now_ms()
                 .saturating_add(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)),
         };
@@ -200,6 +205,7 @@ mod tests {
                 multi_select: false,
                 options: vec![],
             }],
+            permission: false,
         }
     }
 

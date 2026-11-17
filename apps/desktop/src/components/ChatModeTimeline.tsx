@@ -23,6 +23,8 @@ interface TimelineProps {
   items: TimelineItem[]
   state: SimpleFlow
   questions: ReturnType<typeof chatInputRequests>
+  /** The sessions whose input requests Chat shows: the conversation's agents and running workers. */
+  askers: SessionRecord[]
   simple: SimpleState | null | undefined
   revealed: ReturnType<typeof useStore.getState>['revealed']
   terminal: SimpleUi['terminal']
@@ -42,6 +44,7 @@ export default function ChatModeTimeline({
   items,
   state,
   questions,
+  askers,
   simple,
   revealed,
   terminal,
@@ -205,7 +208,8 @@ export default function ChatModeTimeline({
           )
         })}
         {questions.map((request) => {
-          const record = model.records.find((r) => r.id === request.sessionId)!
+          const record = askers.find((r) => r.id === request.sessionId)
+          if (!record) return null
           return (
             <ChatQuestion
               key={`${request.sessionId}:${request.generation}:${request.sinceMs}`}

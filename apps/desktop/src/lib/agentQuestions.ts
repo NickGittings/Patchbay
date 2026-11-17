@@ -128,6 +128,9 @@ export interface QuestionChoice {
 }
 
 export const OTHER = '\u0000other'
+/** Answers to a tool approval, as `agent_hooks::ALLOW` / `DENY`; any other text denies with it as the reason. */
+export const PERMISSION_ALLOW = 'Allow'
+export const PERMISSION_DENY = 'Deny'
 
 /**
  * One answer per question, as the provider's own menu would give it: the chosen labels

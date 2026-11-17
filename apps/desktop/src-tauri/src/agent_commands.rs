@@ -70,6 +70,7 @@ impl Host for Desktop {
         &self,
         launch: &LaunchContext,
         questions: Vec<patchbay_core::agent_hooks::UserQuestion>,
+        permission: bool,
         wait: std::time::Duration,
     ) -> Option<Vec<String>> {
         let asked = Asked {
@@ -78,6 +79,7 @@ impl Host for Desktop {
             session_id: launch.agent_session.clone(),
             generation: launch.generation,
             questions,
+            permission,
         };
         let mut id = None;
         let answer = self.0.state::<AppState>().questions.ask(

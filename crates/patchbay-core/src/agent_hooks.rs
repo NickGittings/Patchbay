@@ -53,6 +53,8 @@ pub struct HookEvent {
     pub questions: Option<Vec<UserQuestion>>,
 }
 
+/// Journaled by the reporter once Chat answered a `PermissionRequest`; no provider sends it.
+pub(crate) const PERMISSION_DECIDED: &str = "PermissionDecided";
 /// Questions relayed from one question tool call, and options per question.
 pub const QUESTION_LIMIT: usize = 4;
 pub const OPTION_LIMIT: usize = 6;
@@ -65,7 +67,8 @@ const QUESTION_HOOK_TIMEOUT: u64 = 150;
 const HOOK_TIMEOUT: u64 = 3;
 
 fn hook_timeout(event: &str) -> u64 {
-    if event == "PreToolUse" {
+    // Both may wait for the user: a question's answer, or a tool approval.
+    if matches!(event, "PreToolUse" | "PermissionRequest") {
         QUESTION_HOOK_TIMEOUT
     } else {
         HOOK_TIMEOUT
@@ -254,6 +257,7 @@ fn ask_in_chat(provider: Adapter, input: &Value, questions: Vec<UserQuestion>) -
         Action::AskUser {
             conversation,
             questions,
+            permission: false,
         },
         ANSWER_WAIT,
     )
@@ -264,6 +268,109 @@ fn ask_in_chat(provider: Adapter, input: &Value, questions: Vec<UserQuestion>) -
     let answers: Vec<String> =
         serde_json::from_value(response.result?.get("answers")?.clone()).ok()?;
     answer_output(provider, input, &answers)
+}
+
+pub const ALLOW: &str = "Allow";
+pub const DENY: &str = "Deny";
+
+/// A tool approval as the one question Chat shows: the tool as its header, what it
+/// would run or change as its text. `None` for dialogs Chat answers elsewhere (a
+/// question tool, a plan) or can't describe.
+fn permission_question(input: &Value) -> Option<UserQuestion> {
+    let tool = input.get("tool_name")?.as_str()?;
+    if matches!(
+        tool,
+        "AskUserQuestion" | "request_user_input" | "ExitPlanMode"
+    ) {
+        return None;
+    }
+    let field = |name: &str| {
+        input
+            .get("tool_input")?
+            .get(name)?
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+    };
+    let subject = ["command", "file_path", "path", "url", "description"]
+        .iter()
+        .find_map(|name| field(name))
+        .unwrap_or("Use this tool");
+    Some(UserQuestion {
+        question: clip(subject, QUESTION_CHARS),
+        header: clip(tool, LABEL_CHARS),
+        multi_select: false,
+        options: [ALLOW, DENY]
+            .map(|label| QuestionOption {
+                label: label.into(),
+                description: String::new(),
+            })
+            .into(),
+    })
+}
+
+/// The provider's decision for a `PermissionRequest` answered in Chat. Anything but
+/// [`ALLOW`] denies, with the user's words as the reason when they gave one.
+fn permission_output(answer: &str) -> Value {
+    let decision = if answer == ALLOW {
+        json!({"behavior":"allow"})
+    } else {
+        let note = answer.trim();
+        let message = if note.is_empty() || note == DENY {
+            "The user denied this in Patchbay Chat.".to_owned()
+        } else {
+            format!("The user denied this in Patchbay Chat: {note}")
+        };
+        json!({"behavior":"deny","message":message})
+    };
+    json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":decision}})
+}
+
+/// Codex hands approvals to an automatic reviewer when its configuration names one;
+/// a card would only hold that reviewer up, so those requests stay with Codex.
+fn codex_reviews_automatically() -> bool {
+    let home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")));
+    home.and_then(|h| std::fs::read_to_string(h.join("config.toml")).ok())
+        .is_some_and(|config| automatic_reviewer(&config))
+}
+
+fn automatic_reviewer(config: &str) -> bool {
+    config.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix("approvals_reviewer")
+            .and_then(|rest| rest.trim_start().strip_prefix('='))
+            .is_some_and(|value| value.trim().trim_matches(['"', '\'']) != "user")
+    })
+}
+
+/// Offer a tool approval to Chat and wait, within the hook's timeout, for Allow or Deny.
+/// Any failure, a skip, or no answer in time leaves the provider's own dialog to ask.
+fn ask_permission_in_chat(provider: Adapter, input: &Value) -> Option<Value> {
+    use crate::agent_bridge::{Action, call_from_env_within};
+    if provider == Adapter::Codex && codex_reviews_automatically() {
+        return None;
+    }
+    let question = permission_question(input)?;
+    let conversation = input
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let response = call_from_env_within(
+        Action::AskUser {
+            conversation,
+            questions: vec![question],
+            permission: true,
+        },
+        ANSWER_WAIT,
+    )
+    .ok()?;
+    if !response.ok {
+        return None;
+    }
+    let answers: Vec<String> =
+        serde_json::from_value(response.result?.get("answers")?.clone()).ok()?;
+    Some(permission_output(answers.first()?))
 }
 
 /// What a planner's hook event says about Claude's native plan dialog.
@@ -538,16 +645,33 @@ pub fn reporter(provider: &str) {
         }
         let input: Value = serde_json::from_slice(&bytes)?;
         let mut asked = None;
+        let mut approval = None;
         if let Some(mut event) = normalize(provider, &input) {
             event.at_ms = invoked_ms;
             event.session = session;
             event.generation = generation;
             let questions = event.questions.clone();
+            let permission = (event.event == "PermissionRequest").then(|| event.clone());
             // Status first: handing over a plan or a question waits on the desktop,
             // and Chat shows a question from the reported status.
             if journal(&dir, event).is_ok() {
                 asked = questions;
+                approval = permission;
             }
+        }
+        if let Some(mut decided) = approval
+            && let Some(output) = ask_permission_in_chat(provider, &input)
+        {
+            // The answer ends the input wait; no provider hook reports that until the
+            // tool finishes.
+            decided.event = PERMISSION_DECIDED.into();
+            decided.at_ms = crate::pty::now_ms();
+            decided.message = None;
+            let _ = journal(&dir, decided);
+            let mut stdout = std::io::stdout().lock();
+            serde_json::to_writer(&mut stdout, &output)?;
+            stdout.flush()?;
+            return Ok(());
         }
         if let Some(questions) = asked {
             if let Some(output) = ask_in_chat(provider, &input, questions) {
@@ -1507,6 +1631,51 @@ mod tests {
         let event = normalize(Adapter::Claude, &input).unwrap();
         assert_eq!(event.message.as_deref(), Some("Which behavior?"));
         assert_eq!(event.tool.as_deref(), Some("AskUserQuestion"));
+    }
+    #[test]
+    fn tool_approvals_become_one_allow_or_deny_question_with_a_provider_decision() {
+        let mut input = json!({"hook_event_name":"PermissionRequest", "session_id":"12345678-session", "turn_id":"12345678-turn",
+            "tool_name":"Bash", "tool_input":{"command":"npm test", "description":"Run tests"}});
+        let question = permission_question(&input).unwrap();
+        assert_eq!(question.header, "Bash");
+        assert_eq!(question.question, "npm test");
+        let labels: Vec<_> = question.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, [ALLOW, DENY]);
+        input["tool_input"] = json!({"file_path":"src/a.rs", "content":"x".repeat(5000)});
+        assert_eq!(permission_question(&input).unwrap().question, "src/a.rs");
+        input["tool_input"] = json!({});
+        assert_eq!(
+            permission_question(&input).unwrap().question,
+            "Use this tool"
+        );
+        // Question tools and plans have their own Chat surfaces.
+        for tool in ["AskUserQuestion", "request_user_input", "ExitPlanMode"] {
+            input["tool_name"] = json!(tool);
+            assert!(permission_question(&input).is_none());
+        }
+
+        let decision = |answer| permission_output(answer)["hookSpecificOutput"].clone();
+        assert_eq!(decision(ALLOW)["hookEventName"], "PermissionRequest");
+        assert_eq!(decision(ALLOW)["decision"], json!({"behavior":"allow"}));
+        assert_eq!(decision(DENY)["decision"]["behavior"], "deny");
+        let noted = decision("use pnpm instead");
+        assert_eq!(noted["decision"]["behavior"], "deny");
+        assert!(
+            noted["decision"]["message"]
+                .as_str()
+                .unwrap()
+                .ends_with("use pnpm instead")
+        );
+        // Unknown answers never allow.
+        assert_eq!(decision("allow")["decision"]["behavior"], "deny");
+    }
+    #[test]
+    fn codex_automatic_reviewers_keep_their_approvals() {
+        assert!(automatic_reviewer(
+            "model = \"x\"\napprovals_reviewer = \"auto_review\"\n"
+        ));
+        assert!(!automatic_reviewer("approvals_reviewer = \"user\"\n"));
+        assert!(!automatic_reviewer("model = \"approvals_reviewer\"\n"));
     }
     fn claude_question() -> Value {
         json!({"hook_event_name":"PreToolUse", "session_id":"12345678-session", "turn_id":"12345678-turn",

@@ -20,8 +20,15 @@ import {
   usePresetProviders,
   type HookProvider,
 } from '../lib/agentHooks'
-import { chatRecipient, chatBusy, chatAutoActive, chatInputRequests } from '../lib/chat'
-import { listenAgentQuestions, watchQuestions } from '../lib/agentQuestions'
+import {
+  chatRecipient,
+  chatBusy,
+  chatAutoActive,
+  chatInputRequests,
+  withOfferedQuestions,
+} from '../lib/chat'
+import { listenAgentQuestions, useAgentQuestions, watchQuestions } from '../lib/agentQuestions'
+import { teamJobs, workerSession, workerStatus } from '../lib/chatProgress'
 import { useChatModeWorkflow } from '../lib/useChatModeWorkflow'
 import ChatModeTimeline from './ChatModeTimeline'
 import ChatCoordination from './ChatCoordination'
@@ -133,11 +140,25 @@ export default function ChatMode({
     now,
   }
   const state = flow(flowSnapshot, model)
-  const askers = model.records.filter(
+  const runs = useChatTeams((state) => (team ? state.runs[team.projectId] : undefined))
+  const offered = useAgentQuestions((q) => q.pending)
+  // The lead, and the workers it is running: their approvals and questions are answered here too.
+  const conversation = model.records.filter(
     (r) => !model.foreign.has(r.id) && (!team || r.id === team.lead.sessionId),
   )
-  const questions = chatInputRequests(askers, s.sessions, ui.inputRequests)
-  const inputKey = JSON.stringify(questions)
+  const workers = team
+    ? teamJobs(runs ?? [], team.id).flatMap((job) => {
+        const record =
+          workerStatus(job, s.sessions) === 'complete'
+            ? undefined
+            : workerSession(job, s.sessionRecords, team.projectId)
+        return record && !conversation.includes(record) ? [record] : []
+      })
+    : []
+  const askers = [...conversation, ...workers]
+  const waits = chatInputRequests(askers, s.sessions, ui.inputRequests)
+  const inputKey = JSON.stringify(waits)
+  const questions = withOfferedQuestions(waits, offered, askers, s.sessions)
   // Chat answers the questions of the agents it shows; others ask in their terminals.
   const askerKey = JSON.stringify(askers.map((r) => r.id).sort())
   useEffect(() => {
@@ -405,6 +426,7 @@ export default function ChatMode({
         items={items}
         state={state}
         questions={questions}
+        askers={askers}
         simple={s.simple}
         revealed={s.revealed}
         terminal={ui.terminal}

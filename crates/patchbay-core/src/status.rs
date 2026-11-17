@@ -681,6 +681,8 @@ impl Tracker {
             "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
                 AgentState::Working
             }
+            // Chat answered the approval: the turn goes on, whichever way it was decided.
+            crate::agent_hooks::PERMISSION_DECIDED => AgentState::Working,
             "PermissionRequest" | "Notification" => AgentState::NeedsInput,
             "Stop" => AgentState::Review,
             _ => return,
@@ -1468,6 +1470,29 @@ mod tests {
             message: (event == "PermissionRequest").then(|| "Allow Bash?".into()),
             reply: None,
             source: None,
+        }
+    }
+
+    #[test]
+    fn an_approval_answered_in_chat_ends_the_input_wait_for_both_providers() {
+        for provider in [
+            crate::adapters::Adapter::Claude,
+            crate::adapters::Adapter::Codex,
+        ] {
+            let event = |name: &str, sequence| {
+                let mut event = hook(name, Some("turn"), sequence);
+                event.provider = provider;
+                event
+            };
+            let mut tracker = Tracker::new("ready", true).with_identity("session", 42);
+            tracker.on_hook(event("UserPromptSubmit", 1), 100);
+            tracker.on_hook(event("PermissionRequest", 2), 200);
+            tracker.on_hook(event(crate::agent_hooks::PERMISSION_DECIDED, 3), 300);
+            // Past Codex's automatic-review grace, nothing is left to ask.
+            let agent = tracker.status(300 + APPROVAL_QUIET_MS).agent.unwrap();
+            assert_eq!(agent.state, AgentState::Working);
+            assert!(!agent.approval_pending);
+            assert!(agent.message.is_none());
         }
     }
 

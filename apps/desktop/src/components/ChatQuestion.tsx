@@ -7,6 +7,8 @@ import {
   claimQuestion,
   composeAnswers,
   OTHER,
+  PERMISSION_ALLOW,
+  PERMISSION_DENY,
   pendingQuestion,
   releaseQuestion,
   useAgentQuestions,
@@ -34,6 +36,7 @@ export default function ChatQuestion({
   const [choices, setChoices] = useState<(QuestionChoice | undefined)[]>([])
   const [sent, setSent] = useState<'chat' | 'terminal' | 'failed'>()
   const [terminalOpen, setTerminalOpen] = useState(false)
+  const [note, setNote] = useState('')
   // A newer question in the same input wait (a replaced one, or Codex asking again after
   // a declined call) starts over: earlier picks and a sent answer belong to the old one.
   const [askedId, setAskedId] = useState(pending?.id)
@@ -41,6 +44,7 @@ export default function ChatQuestion({
     setAskedId(pending.id)
     setChoices([])
     setSent(undefined)
+    setNote('')
   }
   // Shown on screen, so its hook waits for the answer; leaving hands it back.
   const pendingId = pending?.id
@@ -51,6 +55,7 @@ export default function ChatQuestion({
   }, [pendingId])
   const answers = composeAnswers(questions, choices)
   const answerable = !!pending && !sent && questions.length > 0
+  const permission = pending?.permission ? questions[0] : undefined
   const name = record.metadata.name
 
   const choose = (index: number, choice: QuestionChoice) =>
@@ -66,13 +71,38 @@ export default function ChatQuestion({
     if (!ok || !value) setTerminalOpen(true)
   }
 
+  if (permission && answerable)
+    return (
+      <section className="chat-question" aria-label={`${name} asks permission`}>
+        <p className="chat-question-title">
+          <strong>
+            {name} asks permission to use {permission.header || 'a tool'}
+          </strong>
+        </p>
+        <pre className="chat-permission-subject">{permission.question}</pre>
+        <input
+          className="chat-question-other"
+          aria-label="Reason for denying (optional)"
+          placeholder="Reason for denying (optional)"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+        <div className="chat-question-actions">
+          <button className="primary" onClick={() => void send([PERMISSION_ALLOW])}>
+            Allow
+          </button>
+          <button onClick={() => void send([note.trim() || PERMISSION_DENY])}>Deny</button>
+          <button onClick={() => void send(null)}>Answer in terminal</button>
+        </div>
+      </section>
+    )
   return (
     <section className="chat-question" aria-label={`${name} needs your input`}>
       <p className="chat-question-title">
         <strong>{name} needs your input</strong>
         {!questions.length && <>: {session?.status?.agent?.message ?? 'Open to respond'}</>}
       </p>
-      {questions.map((question, index) => (
+      {(permission ? [] : questions).map((question, index) => (
         <QuestionField
           key={index}
           group={`chat-question-${record.id}-${request.generation}-${index}`}
@@ -99,7 +129,9 @@ export default function ChatQuestion({
       ) : (
         <p className="chat-question-note" role="status">
           {sent === 'chat'
-            ? `Answer sent to ${name}.`
+            ? permission
+              ? `Decision sent to ${name}.`
+              : `Answer sent to ${name}.`
             : sent === 'failed'
               ? `${name} stopped waiting for a Chat answer. Respond in its terminal below.`
               : `Respond directly to ${name} in its terminal below.`}

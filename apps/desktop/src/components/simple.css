@@ -436,6 +436,16 @@
   display: block;
   color: var(--muted);
 }
+.chat-permission-subject {
+  max-height: 160px;
+  margin: 0 0 8px;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .chat-question-other {
   width: 100%;
   box-sizing: border-box;

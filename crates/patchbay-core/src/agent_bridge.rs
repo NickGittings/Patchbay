@@ -150,9 +150,12 @@ pub enum Action {
     },
     /// The agent's own question tool, offered to Chat until the hook's wait ends.
     /// Answers `{"answers": [one per question] | null}`; null leaves the native menu.
+    /// With `permission`, the one question is a tool approval answered Allow or Deny.
     AskUser {
         conversation: Option<String>,
         questions: Vec<crate::agent_hooks::UserQuestion>,
+        #[serde(default)]
+        permission: bool,
     },
     /// Dependencies a detection agent proposes for the user to review.
     ProposeLinks {
