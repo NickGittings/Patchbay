@@ -85,22 +85,20 @@
       await questions.listen()
       const offered = () =>
         Object.values(questions.store.getState().pending).find((q) => q.sessionId === sid)
-      const answered = (from) =>
-        smoke
-          .terminalText(sid)
-          .text.slice(from)
-          .match(/fixture-answer (.*)/)?.[1]
-      let from = smoke.terminalText(sid).text.length
+      // The buffer keeps its blank screen rows, so count answers rather than offsets.
+      const answers = () => [...smoke.terminalText(sid).text.matchAll(/fixture-answer (\S*)/g)]
+      const answered = (from) => answers()[from]?.[1]
+      let from = answers().length
       await smoke.terminalWrite(sid, 'question\r')
       await until('unwatched question asks in the terminal', () => answered(from) === 'none')
       assert(!offered(), 'Unwatched question was offered to Chat')
       questions.watch([sid])
-      from = smoke.terminalText(sid).text.length
+      from = answers().length
       await smoke.terminalWrite(sid, 'question\r')
       const first = await until('question offered', offered)
       assert(first.questions[0].options[1].label === 'Blue', 'Question lost its options')
       await until('unclaimed question falls back', () => answered(from) === 'none')
-      from = smoke.terminalText(sid).text.length
+      from = answers().length
       await smoke.terminalWrite(sid, 'question\r')
       const second = await until(
         'question offered again',
