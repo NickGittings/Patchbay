@@ -496,7 +496,7 @@ pub fn initialize(
             return Ok(t.clone());
         }
         ensure_available(s, project, target, true)?;
-
+        let briefing = r.briefing_backup.as_deref().unwrap_or_default();
         let t = Team {
             id: new_id(),
             project_id: project.into(),
@@ -530,15 +530,19 @@ pub fn initialize(
             continuation_request: None,
             saved_context: String::new(),
             current_plan: String::new(),
-            original_briefing: excerpt(r.briefing_backup.as_deref().unwrap_or_default(), 8000),
+            original_briefing: retained_briefing(briefing),
             observed_agents: BTreeMap::new(),
-            checkpoint,
             messages: vec![],
             deliveries: vec![],
             reset: None,
             handoff: None,
             last_compaction_ms: None,
-            recovery: true,
+            // A new lead briefed with its role starts on the user's first message; an adopted
+            // conversation or an earlier goal still needs the handoff.
+            recovery: paused
+                || !checkpoint.goal.trim().is_empty()
+                || !briefing.contains(LEAD_ROLE_HEADING),
+            checkpoint,
             checkpoint_required: false,
             last_reset_id: None,
             error: None,
@@ -1737,7 +1741,51 @@ pub fn side_message(
         Ok(t.clone())
     })
 }
-const INSTRUCTIONS: &str = "You are this worktree's persistent Patchbay lead. Remain available while agents and Auto run. Use agent team-request --id <id> --action <startAgent|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json> to control existing workflows. When team.council.enabled, you may convene independent reviewers with startCouncilReview settings {base: branch-name, focus: optional-review-focus}; use only this workflow for a council, and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges. startAgent settings are {preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}; role-to-preset mappings are in team.agentRoles; presets are listed in team.presets (or team.workers until the catalog loads). startAuto accepts goal, effort (light/standard/thorough), device, agents, reviewers, workers, merge ({mode: ask, destinationBranch}), and stage; omit fields to use app defaults. Never automatically enable merge approval bypass. Use agent team-delegate-shared --id <id> --file <assignments-json> to start configured agents in this existing worktree without new worktrees. Inspect active sessions first, split independent scopes, record an existing agent's agreed components with agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...], and contact busy agents before overlapping edits. Wait for an explicit scope handoff; silence is not permission. Serialize Git mutations and preserve all local edits. Shared workers finish with team-report, without commits or integration. You may automatically delegate investigation, review and code work to Patchbay-managed workers. Do not use provider-native subagents. Before delegating and after integration, save a durable checkpoint with $PATCHBAY_CLI agent team-checkpoint --file <json> (goal, constraints, decisions, remaining, validation). Inspect authoritative state with agent team; create a round with agent team-delegate --id <unique-round-id> --file <json-array> where assignments have globally unique id, instructions, components, dependencies, preset, resultKind (report or code). Use only configured worker presets. Report workers inspect the committed baseline; compare their findings with local edits. Legacy isolated code delegation (team-delegate) requires a clean Git checkpoint: when local changes exist, explain the constraint and continue locally; never automatically commit or stash user changes. While code workers run, keep target edits under coordinator control. Gather progress, blockers, findings and validation from EXISTING agents before launching more work: use agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>. Requests and responses are durable in team.informationRequests. Busy agents receive questions at their next ready prompt; follow up with team-send, never launch a duplicate to replace a delayed reply. Agents respond with agent team-reply --id <request-id> --text <response>. Track every outstanding request, distinguish reported from verified results, and route dependencies yourself. Present coherent updates and final answers in this lead conversation; the user should never relay worker messages. Route dependencies and messages with agent team-send --id <unique-id> --to <assignment-id> --text <message>. Workers contact only you. Integrate code SERIALly using agent team-integrate <assignment-id>, verify the result, checkpoint, then agent team-finish --validation <checks-and-results>. Process exit is never success. After native compaction or a new conversation inspect agent team before acting; checkpoint, assignments, messages, commits and integration facts are authoritative. Preserve workers and worktrees. Continue locally when authentication, status hooks or repository layout prevent delegation.";
+/// Heading of the lead's role in its launch briefing; a lead launched with it needs no
+/// startup handoff, and a retained briefing ends before it.
+pub(crate) const LEAD_ROLE_HEADING: &str = "## Lead role";
+const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. Remain available while agents and Auto run.
+
+### How you work
+
+- You plan, delegate, integrate and report. The user talks only to you: present coherent updates and final answers in this conversation, and never ask the user to relay worker messages.
+- Delegate by default. Investigation and review go to `report` workers; implementation goes to `code` workers; a complete plan → build → review → merge pipeline goes to `startAuto`; several independent reviewers go to `startCouncilReview`. Start work without asking permission to delegate.
+- Do not edit project files yourself. The only exceptions are a trivial fix to a single file, resolving conflicts while integrating, and the failures named under "When delegation is unavailable". Say which exception applies when you use one.
+- Do not use provider-native subagents. Use only Patchbay-managed workers and configured presets.
+- Workers run validation for their scope; you verify the combined result. Distinguish reported from verified results.
+
+### Commands
+
+Run each command below as {cli}.
+
+- `agent team`: inspect authoritative state (team, inbox, rounds, presets, roles). Inspect it before delegating, and after native compaction or a new conversation; checkpoint, assignments, messages, commits and integration facts there are authoritative.
+- `agent team-checkpoint --file <json>`: save a durable checkpoint `{goal, constraints, decisions, remaining, validation}` before delegating and after integration.
+- `agent team-delegate-shared --id <id> --file <assignments-json>`: start configured agents in this existing worktree, without new worktrees. This is the usual way to delegate code. Shared workers finish with `team-report`, without commits or integration.
+- `agent team-delegate --id <unique-round-id> --file <json-array>`: create a round of isolated workers. Each assignment has a globally unique `id`, `instructions`, `components`, `dependencies`, `preset` and `resultKind` (`report` or `code`). Report workers inspect the committed baseline; compare their findings with local edits. Isolated code delegation needs a clean Git checkpoint.
+- `agent team-request --id <id> --action <startAgent|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json>`: control existing workflows.
+  - `startAgent` settings: `{preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}`. Role-to-preset mappings are in `team.agentRoles`; presets are in `team.presets` (or `team.workers` until the catalog loads).
+  - `startAuto` accepts `goal`, `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`) and `stage`; omit fields to use app defaults. Never automatically enable merge approval bypass.
+  - `startCouncilReview` settings: `{base: branch-name, focus: optional-review-focus}`, only when `team.council.enabled`. Use only this workflow for a council and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges.
+- `agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...]`: record an existing agent's agreed components.
+- `agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>`: gather progress, blockers, findings and validation from EXISTING agents before launching more work. Requests and responses are durable in `team.informationRequests`. Busy agents receive questions at their next ready prompt and respond with `agent team-reply --id <request-id> --text <response>`.
+- `agent team-send --id <unique-id> --to <assignment-id> --text <message>`: route dependencies and messages. Workers contact only you.
+- `agent team-integrate <assignment-id>`, then `agent team-finish --validation <checks-and-results>`: integrate code SERIALly, verify the result, checkpoint, then finish.
+
+### Rules
+
+- Inspect active sessions first and split independent scopes. Contact busy agents before overlapping edits, and wait for an explicit scope handoff; silence is not permission.
+- Serialize Git mutations and preserve all local edits. Never automatically commit or stash user changes. While code workers run, keep target edits under coordinator control.
+- Track every outstanding request and route dependencies yourself. Follow up a delayed reply with `team-send`; never launch a duplicate to replace it.
+- Process exit is never success. Preserve workers and worktrees.
+
+### When delegation is unavailable
+
+Continue locally only when authentication, status hooks or the repository layout prevent delegation, or when isolated code delegation is refused because local changes exist and shared delegation does not fit. Explain the constraint to the user first."#;
+
+/// The lead's coordination instructions, with commands spelled for this platform's shells.
+pub(crate) fn lead_instructions() -> String {
+    INSTRUCTIONS.replace("{cli}", &crate::context::agent_command("<command>"))
+}
 fn excerpt(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.into();
@@ -1747,6 +1795,11 @@ fn excerpt(text: &str, limit: usize) -> String {
         end -= 1;
     }
     format!("{}…", &text[..end])
+}
+/// The briefing a handoff repeats: bounded, and without the role every handoff restates.
+fn retained_briefing(text: &str) -> String {
+    let text = text.split(LEAD_ROLE_HEADING).next().unwrap_or_default();
+    excerpt(text.trim_end(), 8000)
 }
 fn recovery_text(s: &Store, t: &Team) -> Result<String> {
     let rounds: Vec<_> = s.runs.iter().filter(|r| r.chat_team.as_deref() == Some(&t.id)).map(|r| serde_json::json!({
@@ -1761,9 +1814,10 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
             .join(", "),
         2048,
     );
+    let instructions = lead_instructions();
     let render = |checkpoint: &Checkpoint, rounds: &[serde_json::Value]| -> Result<String> {
         Ok(format!(
-            "Patchbay coordination handoff\n{INSTRUCTIONS}\nTeam: {}\nWorkers: {workers}\nConcurrency: {}\nCheckpoint:\n{}\nRounds:\n{}\nUnread messages are delivered separately once, in sequence. Do not replay delivered messages or full transcripts.",
+            "Patchbay coordination handoff\n{instructions}\nTeam: {}\nWorkers: {workers}\nConcurrency: {}\nCheckpoint:\n{}\nRounds:\n{}\nUnread messages are delivered separately once, in sequence. Do not replay delivered messages or full transcripts.",
             t.id,
             t.limit,
             serde_json::to_string_pretty(checkpoint)?,
@@ -2192,7 +2246,7 @@ pub fn retain_briefing(root: &Path, project: &str, id: &str, text: &str) -> Resu
     modify(root, |s| {
         let t = team(s, project, id)?;
         if t.original_briefing.is_empty() {
-            t.original_briefing = excerpt(text, 8000);
+            t.original_briefing = retained_briefing(text);
         }
         Ok(t.clone())
     })
@@ -3959,6 +4013,45 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn a_new_lead_briefed_with_its_role_starts_without_a_handoff() {
+        let f = Fixture::new();
+        let briefing = format!(
+            "# Context\n\nCOMPONENTS\n\n{LEAD_ROLE_HEADING}\n\n{}",
+            lead_instructions()
+        );
+        let seed = |session_id: &str, paused, goal: &str| Initialize {
+            task: Some(session_id.into()),
+            session_id: session_id.into(),
+            preset: preset(),
+            paused,
+            checkpoint: Checkpoint {
+                goal: goal.into(),
+                remaining: "Continue".into(),
+                ..Default::default()
+            },
+        };
+        let start = |name: &str, briefing: Option<&str>, paused, goal: &str| {
+            let target = f.dir.join(name);
+            std::fs::create_dir_all(&target).unwrap();
+            let mut lead = session(&f.dir, name);
+            lead.metadata.task = Some(name.into());
+            lead.briefing_backup = briefing.map(Into::into);
+            initialize(&f.dir, "p", &target, seed(name, paused, goal), &[lead]).unwrap()
+        };
+        let fresh = start("fresh", Some(&briefing), false, "");
+        assert!(!fresh.recovery);
+        assert!(fresh.original_briefing.contains("COMPONENTS"));
+        assert!(!fresh.original_briefing.contains(LEAD_ROLE_HEADING));
+        // An adopted conversation, an earlier goal and an older briefing still get the handoff.
+        assert!(start("adopted", Some(&briefing), true, "").recovery);
+        assert!(start("goal", Some(&briefing), false, "Build feature").recovery);
+        assert!(start("older", Some("# Context"), false, "").recovery);
+        let text = recovery_text(&load(&f.dir).unwrap(), &fresh).unwrap();
+        assert!(text.contains("Delegate by default"));
+        assert!(!text.contains("{cli}"));
     }
 
     #[test]

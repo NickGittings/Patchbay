@@ -1994,8 +1994,22 @@ fn chat_context(project: &Project, ids: &[String], sections: &[ContextSection]) 
     for component in plan_components(project, ids) {
         describe_component(&mut out, project, component);
     }
-    out.push_str(&implementation_actions(Shell::current()));
+    let shell = Shell::current();
+    let _ = writeln!(
+        out,
+        "\nUse {}, {} and {} for configured IDs, sessions and preview URLs. These commands stay bound to your launch project and task.",
+        shell.agent_command("context"),
+        shell.agent_command("status"),
+        shell.agent_command("logs <sessionId>"),
+    );
     append_sections(&mut out, sections);
+    // Last, so a retained copy of this briefing can end before it.
+    let _ = writeln!(
+        out,
+        "\n{}\n\n{}",
+        crate::orchestration::chat::LEAD_ROLE_HEADING,
+        crate::orchestration::chat::lead_instructions()
+    );
     out
 }
 
@@ -3071,6 +3085,10 @@ mod tests {
             let text = std::fs::read_to_string(&spec.env[CONTEXT_ENV]).unwrap();
             assert!(text.contains("persistent Lead"));
             assert!(text.contains("Await the user's next message"));
+            assert!(text.contains("## Lead role"));
+            assert!(text.contains("Delegate by default"));
+            assert!(text.contains("`\"$PATCHBAY_CLI\" agent <command>`") || cfg!(windows));
+            assert!(!text.contains("After changing a component"));
             assert!(text.contains("**API**"));
             assert!(!text.contains("using the saved plan and applied assignments below"));
             assert!(!spec.command.contains(CHAT_BOOTSTRAP));

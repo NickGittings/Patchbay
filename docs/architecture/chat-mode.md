@@ -68,6 +68,15 @@ assignments and conversation context are reference material until the user asks 
 Ordinary implementation/planning launches keep their existing handoff behavior. Restarts,
 resumes and conversation resets retain the launch purpose.
 
+The briefing ends with `## Lead role` (`chat::LEAD_ROLE_HEADING`): `chat::lead_instructions`, the
+same structured coordination instructions every handoff repeats. They make delegation the default
+(report workers investigate and review, code workers implement, `startAuto` runs a whole pipeline)
+and let the lead edit files itself only for a trivial single-file fix, integration conflicts, or a
+named delegation failure it explains first. A new lead launched with that section, without an
+earlier goal and not adopted paused, starts with `recovery: false`, so the user's first message is
+its first turn; adopted conversations, older briefings and every restart, resume, compaction or
+replacement still receive the handoff. The team's retained `originalBriefing` ends before the role.
+
 Session protocol 24 bootstraps each Codex chat process with one internal CLI prompt requesting
 only “Ready”, without tools, edits, commits or delegation. The stored launch and resume commands
 exclude that prompt; the PTY appends it once per process, including resumed and reset conversations.
