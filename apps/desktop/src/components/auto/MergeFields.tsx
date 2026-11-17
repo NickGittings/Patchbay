@@ -22,14 +22,14 @@ export default function MergeFields({
 }) {
   if (inPlaceBase)
     return (
-      <p className="muted">
+      <p className="auto-hint">
         Runs in place on {inPlaceBase.branch}, reviewing against {shortSha(inPlaceBase.head)}, no
         merge.
       </p>
     )
   return (
     <>
-      <label>
+      <label className="auto-toggle">
         <input
           type="checkbox"
           checked={mode === 'auto'}
@@ -51,7 +51,7 @@ export default function MergeFields({
           <option value="keep">Keep worktree and branch</option>
           <option value="delete">Delete worktree and branch</option>
         </select>
-        <small>Remembered for new Auto runs in all projects.</small>
+        <small className="auto-hint">Remembered for new Auto runs in all projects.</small>
       </label>
       <label>
         Destination branch

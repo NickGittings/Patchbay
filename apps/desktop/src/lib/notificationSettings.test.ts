@@ -38,3 +38,23 @@ test('sameNotifications compares every field', () => {
       sameNotifications(DEFAULT_NOTIFICATIONS, { ...DEFAULT_NOTIFICATIONS, [key]: false }),
     ).toBe(false)
 })
+
+test('restore keeps a known toast position and defaults anything else', () => {
+  expect(restoredNotifications({ toastPosition: 'top-left' }).toastPosition).toBe('top-left')
+  for (const toastPosition of ['middle', true, 3, null])
+    expect(restoredNotifications({ toastPosition }).toastPosition).toBe('auto')
+  const initial = { ...DEFAULT_NOTIFICATIONS }
+  expect(
+    mergeRestoredNotifications(
+      { toastPosition: 'bottom-left' },
+      { ...initial, toastPosition: 'top-right' },
+      initial,
+    ).toastPosition,
+  ).toBe('top-right')
+  expect(
+    sameNotifications(DEFAULT_NOTIFICATIONS, {
+      ...DEFAULT_NOTIFICATIONS,
+      toastPosition: 'bottom-right',
+    }),
+  ).toBe(false)
+})

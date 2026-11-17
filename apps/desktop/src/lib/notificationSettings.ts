@@ -1,15 +1,49 @@
-import { DEFAULT_NOTIFICATIONS, type NotificationSettings } from '../types'
+import {
+  DEFAULT_NOTIFICATIONS,
+  TOAST_POSITIONS,
+  type NotificationSettings,
+  type ToastPosition,
+} from '../types'
 
 const KEYS = Object.keys(DEFAULT_NOTIFICATIONS) as (keyof NotificationSettings)[]
 
-/** Saved settings with every boolean field kept and anything else defaulted. */
+const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean'
+
+/** One check per field; a new setting must add its own before this compiles. */
+const VALID: {
+  [K in keyof NotificationSettings]: (value: unknown) => value is NotificationSettings[K]
+} = {
+  enabled: isBoolean,
+  finished: isBoolean,
+  needsInput: isBoolean,
+  failed: isBoolean,
+  usageLimits: isBoolean,
+  toastPosition: (value): value is ToastPosition =>
+    TOAST_POSITIONS.some((position) => position === value),
+}
+
+function restoreField<K extends keyof NotificationSettings>(
+  settings: NotificationSettings,
+  saved: Record<string, unknown>,
+  key: K,
+) {
+  const field = saved[key]
+  if (VALID[key](field)) settings[key] = field
+}
+
+function copyField<K extends keyof NotificationSettings>(
+  to: NotificationSettings,
+  from: NotificationSettings,
+  key: K,
+) {
+  to[key] = from[key]
+}
+
+/** Saved settings with every valid field kept and anything else defaulted. */
 export function restoredNotifications(value: unknown): NotificationSettings {
   const settings = { ...DEFAULT_NOTIFICATIONS }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return settings
-  for (const key of KEYS) {
-    const field = (value as Record<string, unknown>)[key]
-    if (typeof field === 'boolean') settings[key] = field
-  }
+  for (const key of KEYS) restoreField(settings, value as Record<string, unknown>, key)
   return settings
 }
 
@@ -26,6 +60,6 @@ export function mergeRestoredNotifications(
   initial: NotificationSettings,
 ): NotificationSettings {
   const settings = restoredNotifications(saved)
-  for (const key of KEYS) if (current[key] !== initial[key]) settings[key] = current[key]
+  for (const key of KEYS) if (current[key] !== initial[key]) copyField(settings, current, key)
   return settings
 }

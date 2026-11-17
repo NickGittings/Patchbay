@@ -3,6 +3,15 @@ import { useEffect, useState } from 'react'
 import { isPermissionGranted } from '@tauri-apps/plugin-notification'
 import { sendTestNotification } from '../lib/notifications'
 import { useStore } from '../store'
+import { TOAST_POSITIONS, type ToastPosition } from '../types'
+
+const POSITION_LABELS: Record<ToastPosition, string> = {
+  auto: 'Automatic (top right in Chat)',
+  'top-right': 'Top right',
+  'top-left': 'Top left',
+  'bottom-right': 'Bottom right',
+  'bottom-left': 'Bottom left',
+}
 
 export default function NotificationsPanel({ onClose }: { onClose: () => void }) {
   const settings = useStore((s) => s.notifications)
@@ -67,6 +76,24 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
           </p>
         ))}
       </fieldset>
+      {/* Outside the fieldset: app messages still toast while notifications are off. */}
+      <SettingsSection title="Toasts">
+        <label className="settings-field">
+          Toast position
+          <select
+            value={settings.toastPosition}
+            onChange={(e) =>
+              setNotifications({ ...settings, toastPosition: e.target.value as ToastPosition })
+            }
+          >
+            {TOAST_POSITIONS.map((value) => (
+              <option key={value} value={value}>
+                {POSITION_LABELS[value]}
+              </option>
+            ))}
+          </select>
+        </label>
+      </SettingsSection>
       <SettingsSection title="Notification delivery">
         <div className="settings-actions">
           <span className="settings-feedback" role="status" title="Native notification permission">

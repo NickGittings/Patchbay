@@ -877,12 +877,22 @@ export interface AutoPauseTarget {
   /** The run, status, stage and wait the alert was for; a later pause gets a new one. */
   signature: string
 }
+/** Where toast cards appear; `auto` keeps them clear of the Chat composer. */
+export const TOAST_POSITIONS = [
+  'auto',
+  'top-right',
+  'top-left',
+  'bottom-right',
+  'bottom-left',
+] as const
+export type ToastPosition = (typeof TOAST_POSITIONS)[number]
 export interface NotificationSettings {
   enabled: boolean
   finished: boolean
   needsInput: boolean
   failed: boolean
   usageLimits: boolean
+  toastPosition: ToastPosition
 }
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   enabled: true,
@@ -890,6 +900,7 @@ export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
   needsInput: true,
   failed: true,
   usageLimits: true,
+  toastPosition: 'auto',
 }
 export interface WorkspaceDocument {
   settings?: Record<string, unknown> & {
