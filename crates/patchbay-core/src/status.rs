@@ -871,6 +871,30 @@ impl Tracker {
         }
     }
 
+    /// Chat interrupted the turn for the user. A typed Esc may only close provider UI, so it
+    /// leaves a guess; this is a deliberate end of the turn, after which the prompt is ready
+    /// and the interrupted turn's late hooks are ignored. Only agents whose hooks report in
+    /// this run qualify. Returns whether the agent now reads as idle.
+    pub fn on_interrupt(&mut self, now: u64) -> bool {
+        if self.hook_conversation.is_none() {
+            return false;
+        }
+        let Some(report) = self.report.as_mut() else {
+            return false;
+        };
+        report.state = AgentState::Idle;
+        report.message = None;
+        report.questions = None;
+        report.since_ms = now;
+        report.authoritative = true;
+        self.approval_pending = None;
+        self.last_input_ms = Some(now);
+        self.heard_ms = now;
+        self.turn_closed = true;
+        self.resolved = Some((now, AgentState::Idle));
+        true
+    }
+
     /// The user asked the process to stop.
     pub fn on_stop(&mut self) {
         self.status.stopped = true;
@@ -1471,6 +1495,33 @@ mod tests {
             reply: None,
             source: None,
         }
+    }
+
+    #[test]
+    fn a_chat_interrupt_confirms_a_ready_prompt_and_ignores_the_turns_late_hooks() {
+        let mut tracker = Tracker::new("ready", true).with_identity("session", 42);
+        // Without hooks in this run there is nothing to confirm.
+        assert!(!tracker.on_interrupt(50));
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn"), 1), 100);
+        tracker.on_hook(hook("PermissionRequest", Some("turn"), 2), 200);
+        assert!(tracker.on_interrupt(300));
+        let agent = tracker.status(300 + APPROVAL_QUIET_MS).agent.unwrap();
+        assert_eq!((agent.state, agent.since_ms), (AgentState::Idle, 300));
+        assert!(agent.authoritative && !agent.approval_pending);
+        // The interrupted turn's tool finishing doesn't bring it back; the next prompt does.
+        tracker.on_hook(hook("PostToolUse", Some("turn"), 4), 400);
+        assert_eq!(tracker.status(400).agent.unwrap().state, AgentState::Idle);
+        tracker.on_hook(hook("UserPromptSubmit", Some("next"), 5), 500);
+        assert_eq!(
+            tracker.status(500).agent.unwrap().state,
+            AgentState::Working
+        );
+        // A typed Esc left only a guess; the interrupt confirms it.
+        tracker.on_input(&[0x1b], 600);
+        assert!(!tracker.status(600).agent.unwrap().authoritative);
+        assert!(tracker.on_interrupt(700));
+        let agent = tracker.status(700).agent.unwrap();
+        assert!(agent.authoritative && agent.state == AgentState::Idle);
     }
 
     #[test]

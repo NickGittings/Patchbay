@@ -35,13 +35,21 @@ import {
   lastSubmission,
   editedMentions,
   forceable,
+  interruptible,
+  interruptSession,
+  deliveryConfirmed,
   promptReady,
   transmittedText,
   waitForPrompt,
 } from '../lib/simpleComposer'
 import { logLaunch, logSimple } from '../lib/simpleActions'
 import { cancelQueued, enqueuePrompt, flushQueued } from '../lib/simpleQueue'
-import { refreshSession, reconcileFreshSessions, stopTerminal } from '../lib/sessions'
+import {
+  refreshSession,
+  reconcileFreshSessions,
+  restartTerminal,
+  stopTerminal,
+} from '../lib/sessions'
 import { openIntegrations, useAgentHooksInstalled } from '../lib/agentHooks'
 
 export default function SimpleComposer({
@@ -368,6 +376,44 @@ export default function SimpleComposer({
       input.current?.setSelectionRange(start + token.length, start + token.length),
     )
   }
+  const canInterrupt = !autoActive && s.serviceConnected && interruptible(state, ready)
+  const interrupt = async () => {
+    if (!recipient || state?.generation === undefined) return
+    setError('')
+    try {
+      await interruptSession(recipient.id, state.generation)
+    } catch (e) {
+      setError(String((e as { message?: string })?.message ?? e))
+    }
+  }
+  const markSent = () => {
+    const message = useSimpleUi.getState().worktrees[scopeKey]?.unconfirmed
+    if (!message || !s.project) return
+    logSimple(s.project.id, s.activeTask, {
+      kind: 'prompt',
+      sessionId: message.sessionId,
+      generation: message.generation,
+      text: message.text,
+      stage: message.stage,
+      mentions: message.mentions,
+      atMs: message.atMs,
+    })
+    const latest = useSimpleUi.getState().worktrees[scopeKey]
+    const matches = !!latest && transmittedText(latest.draft, latest.mentions) === message.text
+    patch({ unconfirmed: undefined, ...(matches ? { draft: '', mentions: [] } : {}) })
+  }
+  // The agent's own hook naming the message settles a delivery whose reply was lost.
+  const unconfirmedSession = useStore((s) =>
+    ui.unconfirmed ? s.sessions[ui.unconfirmed.sessionId] : undefined,
+  )
+  const confirmed = !!ui.unconfirmed && deliveryConfirmed(ui.unconfirmed, unconfirmedSession)
+  const markSentRef = useRef(markSent)
+  useEffect(() => {
+    markSentRef.current = markSent
+  })
+  useEffect(() => {
+    if (confirmed) markSentRef.current()
+  }, [confirmed])
   const queuedSession = useStore((s) => (ui.queued ? s.sessions[ui.queued.sessionId] : undefined))
   return (
     <div className="simple-composer">
@@ -473,6 +519,15 @@ export default function SimpleComposer({
             ? `${identity.title} · ${ui.connection ?? status.label}`
             : (ui.connection ?? status.label)}
         </span>
+        {canInterrupt && (
+          <button
+            disabled={pending}
+            title="Ends the current turn so you can send; the agent keeps running"
+            onClick={() => void interrupt()}
+          >
+            Interrupt
+          </button>
+        )}
         {recipient && running && !autoActive && (
           <button disabled={pending} onClick={() => stopTerminal(recipient.id)}>
             Stop {identity.role}
@@ -537,7 +592,8 @@ export default function SimpleComposer({
       )}
       {ui.unconfirmed && (
         <p role="alert">
-          Message delivery was not confirmed. Inspect the terminal before retrying.{' '}
+          Message delivery was not confirmed. Chat marks it sent once the agent reports it;
+          otherwise inspect the terminal before retrying.{' '}
           <button
             onClick={() => {
               const record = records.find((r) => r.id === ui.unconfirmed?.sessionId)
@@ -546,24 +602,7 @@ export default function SimpleComposer({
           >
             Inspect terminal
           </button>
-          <button
-            onClick={() => {
-              const message = ui.unconfirmed!
-              logSimple(s.project!.id, s.activeTask, {
-                kind: 'prompt',
-                sessionId: message.sessionId,
-                generation: message.generation,
-                text: message.text,
-                stage: message.stage,
-                mentions: message.mentions,
-                atMs: message.atMs,
-              })
-              const matches = transmittedText(ui.draft, ui.mentions) === message.text
-              patch({ unconfirmed: undefined, ...(matches ? { draft: '', mentions: [] } : {}) })
-            }}
-          >
-            Mark sent
-          </button>
+          <button onClick={markSent}>Mark sent</button>
           <button onClick={() => patch({ unconfirmed: undefined })}>Retry delivery</button>
         </p>
       )}
@@ -582,6 +621,22 @@ export default function SimpleComposer({
           <button disabled={!!ui.unconfirmed} onClick={() => void send()}>
             {errorResult.kind === 'authentication' ? 'Sign in and retry' : 'Retry connection'}
           </button>
+          {!errorResult.kind && recipient && running && !autoActive && (
+            <button
+              disabled={pending || !!ui.unconfirmed}
+              title="Stops this agent’s process and starts it again; its conversation resumes"
+              onClick={() => {
+                setError('')
+                void restartTerminal(
+                  recipient.metadata.componentId,
+                  recipient.metadata.terminalId,
+                  recipient.metadata.task ?? null,
+                )
+              }}
+            >
+              Restart agent
+            </button>
+          )}
         </p>
       )}
     </div>

@@ -724,6 +724,9 @@ export const terminalPrompt = (
   text: string,
   force?: boolean,
 ) => invoke<void>('terminal_prompt', { sessionId, generation, text, force })
+/** Chat's Interrupt: Esc for this process, after which its prompt reads as ready. */
+export const terminalInterrupt = (sessionId: string, generation: number) =>
+  invoke<void>('terminal_interrupt', { sessionId, generation })
 
 export interface NativeMenuEntry {
   id: string

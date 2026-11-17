@@ -2552,6 +2552,24 @@ fn terminal_resize(
         rows,
     })
 }
+/// Chat's Interrupt: Esc for one generation, after which its prompt reads as ready.
+#[tauri::command]
+async fn terminal_interrupt(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    session_id: String,
+    generation: u64,
+) -> CmdResult<()> {
+    service(
+        &state,
+        Request::Interrupt {
+            id: session_id,
+            viewer: window.label().into(),
+            generation,
+        },
+    )
+    .await
+}
 #[tauri::command]
 async fn terminal_stop(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
     service(&state, Request::Stop { id: session_id }).await
@@ -3253,6 +3271,7 @@ pub fn run() {
                 graph_validation_cancel,
                 terminal_write,
                 terminal_prompt,
+                terminal_interrupt,
                 terminal_resize,
                 terminal_stop,
                 sessions_stop_all,

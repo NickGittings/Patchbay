@@ -1,7 +1,13 @@
 import { hasVisibleTerminal } from './terminals'
 import type { SessionState } from '../types'
 import { useStore } from '../store'
-import { terminalAttach, terminalDetach, terminalPrompt, sessionResume } from './ipc'
+import {
+  terminalAttach,
+  terminalDetach,
+  terminalInterrupt,
+  terminalPrompt,
+  sessionResume,
+} from './ipc'
 import { logSimple } from './simpleActions'
 import { persistReplies } from './simpleReplies'
 import type { SimpleStage } from './simple'
@@ -90,6 +96,48 @@ export function forceable(session: SessionState | undefined) {
     !agent.approvalPending
   )
 }
+/**
+ * Whether Chat's Interrupt can end the agent's turn: a Claude or Codex process whose hooks
+ * reported in this run and that isn't at a confirmed ready prompt. The service ends the turn with
+ * Esc and confirms the prompt as ready, which a typed Esc never does.
+ */
+export function interruptible(session: SessionState | undefined, ready: boolean) {
+  return (
+    !!session?.running &&
+    !ready &&
+    !session.disconnected &&
+    !session.interrupted &&
+    session.chatStartup !== 'pending' &&
+    (sessionReportedHooks(session) || !!session.status?.agent?.authoritative)
+  )
+}
+/** Interrupt one process generation's turn under this window's terminal authority. */
+export async function interruptSession(sid: string, generation: number) {
+  await terminalAttach(sid, true)
+  try {
+    await terminalInterrupt(sid, generation)
+  } finally {
+    if (!hasVisibleTerminal(sid)) await terminalDetach(sid).catch(() => {})
+  }
+}
+/**
+ * Whether the agent's hooks confirm a message whose delivery reply was lost: its process reports
+ * a prompt beginning as that message does, submitted no earlier than it was sent.
+ */
+export function deliveryConfirmed(
+  message: { generation: number; text: string; atMs: number },
+  session: SessionState | undefined,
+) {
+  const agent = session?.status?.agent
+  const prompt = agent?.prompt?.trim()
+  return (
+    !!prompt &&
+    !!agent?.authoritative &&
+    session?.generation === message.generation &&
+    agent.sinceMs >= message.atMs &&
+    message.text.trim().startsWith(prompt)
+  )
+}
 /** Why chat may ask for status hooks beside the composer: missing, unreadable, or never possible. */
 export type HooksNotice = 'missing' | 'failed' | 'unsupported'
 /**
@@ -158,7 +206,7 @@ export function composerStatus({
           : !reporting && installed === false
             ? needsHooks
             : agent
-              ? 'Not confirmed ready: continue in its terminal'
+              ? 'Not confirmed ready: Interrupt to send'
               : 'Waiting for the agent',
     sendable: queueable,
     action: queueable ? 'queue' : 'none',
@@ -291,7 +339,7 @@ export async function waitForPrompt(
           ? 'Couldn’t confirm Lead readiness. Your message hasn’t been sent.'
           : port.provider === null
             ? 'No ready prompt after 30 seconds. Chat can message only Claude and Codex agents; open the terminal to continue.'
-            : 'No ready prompt after 30 seconds. Open the terminal to continue.',
+            : 'No ready prompt after 30 seconds. Retry, or restart the agent.',
       )
     await (port.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(
       100,

@@ -249,7 +249,7 @@ test('Esc during startup times out without claiming hooks are missing', async ()
         now += ms
       },
     }),
-  ).rejects.toThrow(/^No ready prompt after 30 seconds\. Open the terminal to continue\.$/)
+  ).rejects.toThrow(/^No ready prompt after 30 seconds\. Retry, or restart the agent\.$/)
   expect(now).toBe(30000)
 })
 
@@ -329,12 +329,12 @@ test('installed hooks refuse only starting or resuming, and the label says why S
   const escaped = ready()
   escaped.status!.agent!.authoritative = false
   expect(composerStatus({ ...base, installed: true, session: escaped })).toMatchObject({
-    label: 'Not confirmed ready: continue in its terminal',
+    label: 'Not confirmed ready: Interrupt to send',
     sendable: false,
     action: 'none',
   })
   expect(composerStatus({ ...base, installed: false, session: escaped })).toMatchObject({
-    label: 'Not confirmed ready: continue in its terminal',
+    label: 'Not confirmed ready: Interrupt to send',
     sendable: false,
     action: 'none',
     notice: undefined,
@@ -529,4 +529,40 @@ test('startup can queue behind the lead coordination turn without waiting for it
     allowWorking: true,
   })
   expect(promptReady(working)).toBe(false)
+})
+
+test('Interrupt needs a hook-reporting process away from a ready prompt', async () => {
+  const { interruptible } = await import('./simpleComposer')
+  const working = {
+    running: true,
+    generation: 1,
+    status: { agent: { state: 'working', authoritative: true, sinceMs: 1 } },
+  } as unknown as SessionState
+  expect(interruptible(working, false)).toBe(true)
+  expect(interruptible(working, true)).toBe(false)
+  expect(interruptible({ ...working, running: false }, false)).toBe(false)
+  expect(interruptible({ ...working, chatStartup: 'pending' }, false)).toBe(false)
+  expect(interruptible({ ...working, disconnected: true }, false)).toBe(false)
+  // Without hooks in this run, the service could not confirm the interrupt.
+  expect(interruptible({ running: true, generation: 1 } as SessionState, false)).toBe(false)
+  expect(interruptible(undefined, false)).toBe(false)
+})
+
+test('the agent’s own prompt hook settles an unconfirmed delivery', async () => {
+  const { deliveryConfirmed } = await import('./simpleComposer')
+  const message = { generation: 2, text: 'Fix the parser\nand its tests', atMs: 100 }
+  const session = (agent: object, generation = 2) =>
+    ({
+      running: true,
+      generation,
+      status: { agent: { authoritative: true, sinceMs: 150, prompt: 'Fix the parser', ...agent } },
+    }) as unknown as SessionState
+  expect(deliveryConfirmed(message, session({}))).toBe(true)
+  // An earlier turn, another process, another prompt or an unconfirmed report settle nothing.
+  expect(deliveryConfirmed(message, session({ sinceMs: 50 }))).toBe(false)
+  expect(deliveryConfirmed(message, session({}, 3))).toBe(false)
+  expect(deliveryConfirmed(message, session({ prompt: 'Something else' }))).toBe(false)
+  expect(deliveryConfirmed(message, session({ prompt: null }))).toBe(false)
+  expect(deliveryConfirmed(message, session({ authoritative: false }))).toBe(false)
+  expect(deliveryConfirmed(message, undefined)).toBe(false)
 })
