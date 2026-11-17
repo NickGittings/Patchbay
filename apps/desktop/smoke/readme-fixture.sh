@@ -229,6 +229,10 @@ HTML
 # the plan, and waits at a prompt.
 cat > "$dir/claude" <<'SH'
 #!/bin/sh
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  printf '{"loggedIn":true}\n'
+  exit 0
+fi
 printf '\033[1m> Plan product search for the storefront\033[0m\n\n'
 sleep 0.3
 printf '  Reading Web app, Catalog and their links…\n'
@@ -256,6 +260,8 @@ printf '    1. Catalog: case- and whitespace-insensitive search\n'
 printf '    2. Catalog: tests for empty, unknown, mixed-case queries\n'
 printf '    3. Web app: search field above the product list\n\n'
 printf '\033[2m  Agreed? Implement → hands this plan to a fresh agent.\033[0m\n\n> '
+printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"readme-planner","turn_id":"readme-planning-turn","prompt":"Plan product search for the storefront"}' | "${PATCHBAY_CLI%/*}/patchbay-sessiond" report-status claude
+printf '%s' '{"hook_event_name":"Stop","session_id":"readme-planner","turn_id":"readme-planning-turn"}' | "${PATCHBAY_CLI%/*}/patchbay-sessiond" report-status claude
 exec cat >/dev/null
 SH
 chmod +x "$dir/claude"

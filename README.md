@@ -1,6 +1,6 @@
 # Patchbay
 
-See your application one component at a time. Patchbay maps a repo's main parts (frontend, API, libraries, services) as nodes on a canvas. Each node has its own live terminals (shell, dev server, tests, an AI agent) plus health at a glance. Links show what depends on what, and agents get that as context.
+See your application one component at a time. Patchbay maps a repo's main parts (frontend, API, libraries, services) as nodes on a canvas. Each node has its own live terminals (shell, dev server, tests, an AI agent) plus health at a glance. Links show what depends on what, and agents get that as context. Chat mode puts the conversation beside the map, with a persistent lead agent coordinating work across the project.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -11,6 +11,14 @@ See your application one component at a time. Patchbay maps a repo's main parts 
 
 The current desktop app, shown with the Northstar demo project. The icon rail on the left
 switches views and opens the Project, Worktree, Auto mode, Activity, Stack and Sessions panels.
+
+### Chat
+
+Talk to a lead agent beside the component map, follow its replies, and work from saved plans.
+Each worktree keeps its own conversation. Open the agent's terminal when you need it, or use
+the Changes tab to inspect its work without leaving Chat.
+
+![Chat mode showing the Northstar component map beside a product-search conversation and saved implementation plan](docs/screenshots/chat.png)
 
 ### Navigation
 
@@ -42,8 +50,8 @@ conversation. Saved findings and Auto’s verdict stay unchanged until you start
 ![Review view showing the worktree's changes by component, the catalog search diff, and the API as possibly affected](docs/screenshots/review.png)
 
 To retake these screenshots on macOS, stop `tauri dev` and run `npm run screenshots` in
-`apps/desktop`; it stages the Northstar demo with stand-in agents and overwrites
-`docs/screenshots/`.
+`apps/desktop`; it stages the Northstar demo with stand-in agents and a sample Chat conversation,
+then refreshes all five images in `docs/screenshots/`.
 
 ## Layout
 
@@ -127,15 +135,38 @@ Activity or Sessions. Click a selected utility icon again to close its panel. Pa
 remembered locally, and panels stay open while switching workspace views.
 
 Use the Chat toggle in the rail to enable Chat mode for the current project. In Chat mode,
-the four workspace buttons filter the thread: Navigation shows every stage, Plan shows planning,
-Build shows building, and Review shows review plus merge. Agents asking for input stay visible.
-Cmd/Ctrl+1–4 follows those buttons in either mode. Each worktree keeps its chat filter, and
-leaving Chat restores the last full workspace view.
+the conversation sits beside the map or story board. The Navigation, Plan, Build and Review
+buttons, and Cmd/Ctrl+1–4, leave Chat and open the corresponding full workspace view.
+Toggling Chat off restores the last full workspace view.
 
 On macOS, Project and Settings commands are in the native menu bar. On Windows and Linux,
 Project commands are in its panel and Settings is at the rail's foot. Project contains map-save
 status and recovery actions; Activity contains agents needing attention. Project and Sessions
 remain available without an active project.
+
+## Chat mode
+
+Enable **Chat mode** in the rail, choose an agent, and send a message. A persistent lead keeps
+the conversation for that worktree and can delegate research, implementation and review to
+workers. Their progress and requests for input appear in Chat; expand **Workers** to inspect
+assignments or open a worker's terminal.
+
+Replies support Markdown, code blocks and links. Mention components with `@` to include their
+context. Saved plans and workflow cards let you move through Build, Review and Merge while
+keeping the conversation open. **Auto mode** can coordinate those stages with its configured
+validation and merge approval gates.
+
+Use **Terminal** beside the composer to open the current agent's live terminal. Questions and
+supported tool approvals can be answered in Chat; **Answer in terminal** opens the provider's
+own interface. Enter sends a message, Shift+Enter adds a line, and messages sent while the agent
+is busy queue for its next ready prompt. **Interrupt** ends the current turn while keeping the
+agent's process available.
+
+Chat requires Claude or Codex status hooks installed through **Settings → Agent providers**.
+For Codex, review and trust the hook definitions through `/hooks`. Configure worker presets and
+concurrency through **Settings → Agent roles**. The Chat menu offers **Pause work**,
+**Continue work** and **Stop work**, along with **Clear chat** for visible history and
+**Clear lead context** for a fresh provider conversation with a concise work handoff.
 
 ## Concepts
 

@@ -60,6 +60,14 @@
     const standIn = await until('stand-in Claude preset', () =>
       state().devices.find((d) => d.id === 'claude' && d.command.endsWith('/claude"')),
     )
+    state().setAgentRoles({
+      plan: ['claude'],
+      implement: ['claude'],
+      review: ['claude'],
+      fix: ['claude'],
+      merge: ['claude'],
+    })
+    await smoke.agentHooksConfigure('claude', true)
     const fit = async () => {
       click(await until('fit view', () => query('.react-flow__controls-fitview')))
       await sleep(400)
@@ -86,6 +94,7 @@
       throw new Error('the stand-in planner is not the Claude preset')
     await smoke.startTerminal('@plan', 'claude')
     const planner = await running('@plan', 'claude')
+    const planningStartedMs = Date.now()
     // Only the stand-in prints this; stop anything else at once.
     await until(
       'stand-in planner',
@@ -166,6 +175,53 @@
     )
     await until('diff', () => query('.diff-file-header'))
     await shot('review')
+
+    // Chat: the same demo plan and stand-in conversation beside the component map. Seed saved
+    // messages explicitly: the stand-in reports status without generating model replies.
+    state().setActiveTask(null)
+    state().select(null)
+    state().setActiveSession(null)
+    state().dropFromDock(web)
+    await until('planner ready', () => state().sessions[planner]?.status?.agent?.state === 'review')
+    const generation = state().sessions[planner].generation
+    if (generation === undefined) throw new Error('planner generation missing')
+    state().patchTask(state().project.id, null, {
+      simple: {
+        version: 2,
+        startedMs: planningStartedMs,
+        selectedAgent: planner,
+        log: [
+          {
+            id: 'demo-search-prompt',
+            kind: 'prompt',
+            stage: 'plan',
+            atMs: planningStartedMs,
+            sessionId: planner,
+            generation,
+            text: 'Plan product search for the storefront. Ignore case and surrounding whitespace, and test the edge cases.',
+            mentions: ['web', 'catalog'],
+          },
+          {
+            id: 'demo-search-reply',
+            kind: 'reply',
+            stage: 'plan',
+            atMs: planningStartedMs + 100,
+            sessionId: planner,
+            generation,
+            sequence: 1,
+            text: 'The Web app calls the API, which uses **Catalog** for search.\n\n- Normalize queries with `trim().toLowerCase()` and test the edge cases.\n- Add a search field to the **Web app**.\n\nThe implementation plan is saved below.',
+          },
+        ],
+      },
+    })
+    state().setPanelLayout('App-simple', { 'App-pane-2': 52, 'App-simple-chat': 48 })
+    click(viewButton('Chat mode'))
+    await until('chat conversation', () =>
+      query('.simple-thread')?.textContent.includes('The implementation plan is saved below.'),
+    )
+    await fit()
+    query('.simple-thread').scrollTop = 0
+    await shot('chat')
     smoke.report('PASS readme screenshots')
   } catch (e) {
     smoke.report(`FAIL ${e?.message ?? e}`)

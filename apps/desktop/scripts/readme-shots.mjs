@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { deferSignals, launchApp, prebuilt, root, stopService } from './smoke-lib.mjs'
 
-const EXPECTED = ['navigation', 'plan', 'build', 'review']
+const EXPECTED = ['navigation', 'plan', 'build', 'review', 'chat']
 // The window size smoke/readme.js sets, in points.
 const WIDTH = 1440
 const HEIGHT = 900
@@ -52,6 +52,9 @@ mkdirSync(shots)
 const extensions = join(state, 'extensions')
 mkdirSync(extensions)
 mkdirSync(join(state, 'devices'))
+// Hook setup belongs to this demo too; never change the user's provider configuration.
+const providerConfig = join(state, 'claude-config')
+mkdirSync(providerConfig)
 const builtin = JSON.parse(readFileSync(join(root, 'devices/claude.device.json'), 'utf8'))
 writeFileSync(
   join(state, 'devices/claude.device.json'),
@@ -62,6 +65,7 @@ const env = {
   PATCHBAY_STATE_DIR: state,
   PATCHBAY_EXTENSIONS_DIR: extensions,
   PATCHBAY_SMOKE_FOREGROUND: '1',
+  CLAUDE_CONFIG_DIR: providerConfig,
 }
 const interrupted = deferSignals()
 const app = launchApp(env, undefined, ['pipe', 'inherit', 'pipe'])
