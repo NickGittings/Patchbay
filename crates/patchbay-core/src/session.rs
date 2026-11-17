@@ -37,7 +37,7 @@ pub use briefing::with_pending_briefing;
 // Protocol 25 applies chat startup to retained legacy leads on resume and recovery.
 // Protocol 26 serializes branch mutations with terminal launches.
 // Protocol 27 serializes merge cleanup and restoration with terminal launches.
-pub const PROTOCOL: u32 = 27;
+pub const PROTOCOL: u32 = 28;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -56,6 +56,8 @@ const SLOW_TIMEOUT: Duration = Duration::from_secs(90);
 const SHUTDOWN_REFUSED: &str = "Work is running; shutdown requires --stop-running";
 /// Between a chat paste and its Enter.
 const PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(50);
+/// How long Claude gets to restore an interrupted prompt before its input is cleared.
+const INTERRUPT_CLEAR_DELAY: Duration = Duration::from_millis(150);
 
 /// Chat sends only at a hook-confirmed end of turn.
 fn prompt_ready(status: &crate::status::SessionStatus) -> bool {
@@ -419,6 +421,12 @@ pub enum Request {
         text: String,
         #[serde(default)]
         force: bool,
+    },
+    /// Interrupt the agent's turn from Chat (Esc), confirming its prompt as ready.
+    Interrupt {
+        id: String,
+        viewer: String,
+        generation: u64,
     },
     ChatPrompt {
         id: String,
@@ -2055,6 +2063,40 @@ impl Service {
                 force,
             } => {
                 self.submit_prompt(client, id, viewer, generation, text, force)?;
+                serde_json::Value::Null
+            }
+            Request::Interrupt {
+                id,
+                viewer,
+                generation,
+            } => {
+                let _operation = self.operation.lock().unwrap();
+                anyhow::ensure!(
+                    self.owns(client, &id, &viewer),
+                    "Viewer does not have terminal authority"
+                );
+                let snapshot = self
+                    .pty
+                    .snapshot_with(&id, 0)
+                    .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+                anyhow::ensure!(
+                    snapshot.running && snapshot.generation == generation,
+                    "The session generation changed"
+                );
+                anyhow::ensure!(
+                    snapshot.chat_startup != Some(crate::status::ChatStartup::Pending),
+                    "Lead startup is pending; nothing was interrupted"
+                );
+                let restored = self.pty.interrupt_generation(&id, generation)?;
+                // The interrupted turn no longer owns the prompt it was given.
+                self.submissions.lock().unwrap().remove(&id);
+                if restored {
+                    // Claude puts a prompt interrupted before any output back in its input,
+                    // where the next message would be pasted after it. Ctrl+C clears a
+                    // filled input and only hints at exiting on an empty one.
+                    std::thread::sleep(INTERRUPT_CLEAR_DELAY);
+                    let _ = self.pty.write_generation(&id, generation, b"\x03");
+                }
                 serde_json::Value::Null
             }
             Request::ChatPrompt {
@@ -6340,6 +6382,24 @@ mod tests {
         // may be a permission dialog that the pasted Enter would approve.
         assert!(prompt(generation, "main", true).contains("not confirmed working"));
         assert!(!String::from_utf8_lossy(&service.snapshot(&id).unwrap().data).contains("hello"));
+        // Interrupt shares the authority and generation gates, and never types Esc into an
+        // agent whose hooks can't confirm the turn ended.
+        let interrupt = |generation, viewer: &str| {
+            service
+                .handle(
+                    "client",
+                    Request::Interrupt {
+                        id: id.clone(),
+                        viewer: viewer.into(),
+                        generation,
+                    },
+                )
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(interrupt(generation, "other").contains("authority"));
+        assert!(interrupt(generation + 1, "main").contains("generation"));
+        assert!(interrupt(generation, "main").contains("doesn't report its turns"));
         service.pty.stop_generation(&id, generation).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }

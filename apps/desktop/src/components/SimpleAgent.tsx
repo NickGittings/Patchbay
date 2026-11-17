@@ -5,6 +5,7 @@ import type { SimpleEntry } from '../lib/simple'
 import { useChatIdentity } from '../lib/chatIdentity'
 import { chatReplyId } from '../lib/chatNavigation'
 import { useStore } from '../store'
+import { activityLabel, turnSteps } from '../lib/activity'
 import type { SessionRecord } from '../types'
 import Markdown from './findings/Markdown'
 import SimpleStatus from './SimpleStatus'
@@ -30,6 +31,9 @@ export default function SimpleAgent({
   const edited = latest ? changes.bySession.get(sessionId) : undefined
   const busy = working || (session?.running && session.status?.agent?.state === 'working')
   const identity = useChatIdentity(record)
+  // What the agent is doing now, from its hooks, so progress doesn't need its terminal.
+  const steps = latest && busy ? turnSteps(session) : []
+  const current = steps.at(-1)
   return (
     <article className="simple-agent" data-session={sessionId}>
       <header>
@@ -70,7 +74,21 @@ export default function SimpleAgent({
           Edited {edited.path}
         </button>
       )}
-      {latest && busy && <p className="simple-working">Working…</p>}
+      {latest && busy && (
+        <div className="simple-working" role="status">
+          <p>{current ? activityLabel(current, record?.spec.cwd) : 'Working…'}</p>
+          {steps.length > 1 && (
+            <details className="simple-steps">
+              <summary>{steps.length} steps</summary>
+              <ol>
+                {steps.map((step) => (
+                  <li key={step.sequence}>{activityLabel(step, record?.spec.cwd)}</li>
+                ))}
+              </ol>
+            </details>
+          )}
+        </div>
+      )}
     </article>
   )
 }

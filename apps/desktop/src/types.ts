@@ -602,6 +602,8 @@ export interface AgentQuestion {
   sessionId: string
   generation: number | null
   questions: UserQuestion[]
+  /** A tool approval: its one question (tool as header, subject as text) takes Allow or Deny. */
+  permission?: boolean
   /** When the agent's own menu takes over, in Unix milliseconds. */
   deadlineMs: number
 }

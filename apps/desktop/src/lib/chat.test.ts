@@ -113,3 +113,42 @@ test('input remains mounted while typing invalidates hooks, but closes on confir
     ),
   ).toEqual([])
 })
+
+test('a question a hook holds for Chat shows without a reported input wait', async () => {
+  const { withOfferedQuestions } = await import('./chat')
+  const records = [record('lead'), record('worker')]
+  const running = { running: true, generation: 3 } as SessionState
+  const offer = (sessionId: string, generation: number | null) => ({
+    id: `q-${sessionId}`,
+    projectId: 'p',
+    task: null,
+    sessionId,
+    generation,
+    questions: [],
+    permission: true,
+    deadlineMs: 900,
+  })
+  const sessions = { lead: running, worker: running, other: running }
+  const waiting = [{ sessionId: 'lead', generation: 3, sinceMs: 5 }]
+  // A reported wait keeps its own request; an unshown session and a stale process add none.
+  expect(
+    withOfferedQuestions(
+      waiting,
+      { a: offer('lead', 3), b: offer('worker', null), c: offer('other', 3) },
+      records,
+      sessions,
+    ),
+  ).toEqual([...waiting, { sessionId: 'worker', generation: 3, sinceMs: 900 }])
+  expect(withOfferedQuestions([], { b: offer('worker', 2) }, records, sessions)).toEqual([])
+  expect(
+    withOfferedQuestions([], { b: offer('worker', 3) }, records, { worker: { running: false } }),
+  ).toEqual([])
+  // An interrupted turn's question has nothing left to answer.
+  const ended = (state: string, authoritative = true) => ({
+    worker: { ...running, status: { agent: { state, authoritative } } } as SessionState,
+  })
+  for (const state of ['idle', 'ended'])
+    expect(withOfferedQuestions([], { b: offer('worker', 3) }, records, ended(state))).toEqual([])
+  for (const sessions of [ended('working'), ended('review'), ended('idle', false)])
+    expect(withOfferedQuestions([], { b: offer('worker', 3) }, records, sessions)).toHaveLength(1)
+})

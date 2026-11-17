@@ -29,6 +29,10 @@ export interface SimpleUi {
     stage: import('./simple').SimpleStage
     mentions: string[]
     atMs: number
+    /** The recipient's turn when the message was written (`null` for none): only a later turn's prompt can confirm it. */
+    previousTurnId?: string | null
+    /** Lead notes the message carried, settled once it counts as sent. */
+    noteIds?: string[]
   }
   connection?: 'Connecting…' | 'Restoring context…'
   chatPreset?: string

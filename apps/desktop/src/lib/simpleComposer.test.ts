@@ -5,6 +5,8 @@ import {
   deliverPrompt,
   editedMentions,
   forceable,
+  FORCED_SETTLE_MS,
+  forcedSettleAt,
   promptReady,
   transmittedText,
   waitForPrompt,
@@ -249,7 +251,7 @@ test('Esc during startup times out without claiming hooks are missing', async ()
         now += ms
       },
     }),
-  ).rejects.toThrow(/^No ready prompt after 30 seconds\. Open the terminal to continue\.$/)
+  ).rejects.toThrow(/^No ready prompt after 30 seconds\. Retry, or restart the agent\.$/)
   expect(now).toBe(30000)
 })
 
@@ -329,12 +331,12 @@ test('installed hooks refuse only starting or resuming, and the label says why S
   const escaped = ready()
   escaped.status!.agent!.authoritative = false
   expect(composerStatus({ ...base, installed: true, session: escaped })).toMatchObject({
-    label: 'Not confirmed ready: continue in its terminal',
+    label: 'Not confirmed ready: Interrupt to send',
     sendable: false,
     action: 'none',
   })
   expect(composerStatus({ ...base, installed: false, session: escaped })).toMatchObject({
-    label: 'Not confirmed ready: continue in its terminal',
+    label: 'Not confirmed ready: Interrupt to send',
     sendable: false,
     action: 'none',
     notice: undefined,
@@ -474,7 +476,14 @@ test('force skips readiness but still rejects changed generations and failed cla
 test('a forced submission waits for its new turn, even if the interrupted turn stops later', () => {
   const submitted = { atMs: 100, previousTurnId: 'old' }
   const stopped = withAgent({ state: 'review', sinceMs: 200, turnId: 'old' })
-  expect(promptReady(stopped, submitted)).toBe(false)
+  expect(promptReady(stopped, submitted, 200 + FORCED_SETTLE_MS - 1)).toBe(false)
+  // Codex steered the message into that turn: no new turn follows its Stop.
+  expect(forcedSettleAt(stopped, submitted)).toBe(200 + FORCED_SETTLE_MS)
+  expect(promptReady(stopped, submitted, 200 + FORCED_SETTLE_MS)).toBe(true)
+  // A Stop from before the forced message says nothing about it.
+  const earlier = withAgent({ state: 'review', sinceMs: 50, turnId: 'old' })
+  expect(promptReady(earlier, submitted, 50 + FORCED_SETTLE_MS)).toBe(false)
+  expect(forcedSettleAt(earlier, submitted)).toBeUndefined()
   expect(promptReady(withAgent({ state: 'working', sinceMs: 300, turnId: 'new' }), submitted)).toBe(
     false,
   )
@@ -529,4 +538,63 @@ test('startup can queue behind the lead coordination turn without waiting for it
     allowWorking: true,
   })
   expect(promptReady(working)).toBe(false)
+})
+
+test('Interrupt needs a hook-reporting process away from a ready prompt', async () => {
+  const { interruptible } = await import('./simpleComposer')
+  const working = {
+    running: true,
+    generation: 1,
+    status: { agent: { state: 'working', authoritative: true, sinceMs: 1 } },
+  } as unknown as SessionState
+  expect(interruptible(working, false)).toBe(true)
+  expect(interruptible(working, true)).toBe(false)
+  expect(interruptible({ ...working, running: false }, false)).toBe(false)
+  expect(interruptible({ ...working, chatStartup: 'pending' }, false)).toBe(false)
+  expect(interruptible({ ...working, disconnected: true }, false)).toBe(false)
+  // Without hooks in this run, the service could not confirm the interrupt.
+  expect(interruptible({ running: true, generation: 1 } as SessionState, false)).toBe(false)
+  expect(interruptible(undefined, false)).toBe(false)
+})
+
+test('the agent’s own prompt hook settles an unconfirmed delivery', async () => {
+  const { deliveryConfirmed } = await import('./simpleComposer')
+  const message = {
+    generation: 2,
+    text: 'Fix the parser\nand its tests',
+    atMs: 100,
+    previousTurnId: 'before' as string | null,
+  }
+  const session = (agent: object, generation = 2) =>
+    ({
+      running: true,
+      generation,
+      status: {
+        agent: {
+          authoritative: true,
+          sinceMs: 150,
+          turnId: 'after',
+          prompt: 'Fix the parser',
+          ...agent,
+        },
+      },
+    }) as unknown as SessionState
+  expect(deliveryConfirmed(message, session({}))).toBe(true)
+  // Notes sent after the message run on in the reported prompt.
+  const carried = `${message.text}\n\n[Patchbay note, no reply needed]\nA merge started.`
+  expect(deliveryConfirmed(message, session({ prompt: carried }))).toBe(true)
+  // An earlier turn, another process, another prompt or an unconfirmed report settle nothing.
+  expect(deliveryConfirmed(message, session({ sinceMs: 50 }))).toBe(false)
+  expect(deliveryConfirmed(message, session({}, 3))).toBe(false)
+  expect(deliveryConfirmed(message, session({ prompt: 'Something else' }))).toBe(false)
+  expect(deliveryConfirmed(message, session({ prompt: null }))).toBe(false)
+  expect(deliveryConfirmed(message, session({ authoritative: false }))).toBe(false)
+  expect(deliveryConfirmed(message, undefined)).toBe(false)
+  // The turn the message was written in may hold an earlier prompt reading the same, and its
+  // state changes (an interrupt, a notification) move `sinceMs` on without a new prompt.
+  expect(deliveryConfirmed(message, session({ turnId: 'before', sinceMs: 900 }))).toBe(false)
+  expect(deliveryConfirmed(message, session({ turnId: null }))).toBe(false)
+  expect(deliveryConfirmed({ ...message, previousTurnId: null }, session({}))).toBe(true)
+  // A message stored before turns were recorded waits for the user.
+  expect(deliveryConfirmed({ ...message, previousTurnId: undefined }, session({}))).toBe(false)
 })

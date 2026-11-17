@@ -13,7 +13,7 @@ import { startMergeAgent } from './reviewAgents'
 import { simpleReviewRequest, startSimpleReview, type StartedReviewer } from './simpleReview'
 import { gitBranches, gitWorktrees, mergeConflicts } from './ipc'
 import { mergeNow, resumeAuto, pauseAuto, stopAuto } from './auto'
-import { controlTeam, resetLead, type ChatTeam } from './chatTeams'
+import { controlTeam, noteLead, resetLead, type ChatTeam } from './chatTeams'
 import { chatAutoActive, chatHandoff } from './chat'
 import { autoDrafts, autoDraftKey, emptyAutoDraft } from './autoDrafts'
 
@@ -113,6 +113,7 @@ export function useChatModeWorkflow({
       throw new Error('The worktree changed. Choose Build in the intended chat.')
     const launched = await implementPlannerPlan(planner, undefined, undefined, 'stay')
     await log('implement', 'build', launched, destinationTask)
+    await noteLead(team, 'a build of the saved plan', [launched.sessionId], launched.requestId)
   }
   const act = (action: FlowAction) =>
     void run(action, async () => {
@@ -141,9 +142,18 @@ export function useChatModeWorkflow({
           roleDevices(devices, agentRoles, 'review'),
         )
         await logReviewers(started)
+        if (started.length)
+          await noteLead(
+            team,
+            `a review of ${source?.branch ?? 'this worktree'}`,
+            started.map((r) => r.sessionId),
+            started[0].requestId,
+          )
         if (errors.length) setFailure(errors.join('\n'))
       } else if (action === 'fix' && reviewer) {
-        await log('fix', 'build', await fixReviewFindings(reviewer, undefined, undefined, 'stay'))
+        const fixing = await fixReviewFindings(reviewer, undefined, undefined, 'stay')
+        await log('fix', 'build', fixing)
+        await noteLead(team, 'fixes for the review findings', [fixing.sessionId], fixing.requestId)
       } else if (action === 'checkMerge') {
         if (!target?.branch || !source?.branch) {
           setDialog('merge')
@@ -173,6 +183,12 @@ export function useChatModeWorkflow({
           requestId,
         )
         await logMerge(request, sid, requestId)
+        await noteLead(
+          team,
+          `a merge of ${request.sourceBranch} into ${request.destinationBranch}`,
+          [sid],
+          requestId,
+        )
       } else if (action === 'resumeAuto') {
         await resumeAuto(projectId, task)
         logSimple(projectId, task, { kind: 'action', action: 'resumeAuto', stage: stage })

@@ -76,6 +76,28 @@
   color: var(--muted);
   margin: 16px 0;
 }
+.simple-working p {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.simple-steps summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.simple-steps ol {
+  max-height: 200px;
+  margin: 4px 0 0;
+  padding-left: 24px;
+  overflow: auto;
+  font-size: 12px;
+}
+.simple-steps li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .simple-result {
   padding: 12px;
   margin: 16px 0;
@@ -97,8 +119,8 @@
 .simple-step {
   position: relative;
   flex-shrink: 0;
-  margin: 0 12px 12px;
-  padding: 14px;
+  margin: 0 12px 8px;
+  padding: 10px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 12px;
   background: linear-gradient(var(--accent-soft), transparent 72px), var(--panel);
@@ -120,7 +142,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 .simple-step-icon {
   display: grid;
@@ -139,7 +161,7 @@
   font-weight: 600;
 }
 .simple-step > p {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -436,6 +458,16 @@
   display: block;
   color: var(--muted);
 }
+.chat-permission-subject {
+  max-height: 160px;
+  margin: 0 0 8px;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .chat-question-other {
   width: 100%;
   box-sizing: border-box;
@@ -463,9 +495,18 @@
 .chat-question .simple-terminal-drawer {
   height: 300px;
 }
-.simple-thread .simple-terminal-drawer {
+.simple-chat > .simple-terminal-drawer {
   height: 320px;
   flex: none;
+}
+.simple-chat > .simple-terminal-drawer > p {
+  margin: 0;
+  padding: 4px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.chat-terminal-toggle {
+  color: var(--muted);
 }
 
 .chat-coordination {

@@ -51,6 +51,9 @@ pub struct Message {
     pub text: String,
     pub state: DeliveryState,
     pub generation: Option<u64>,
+    /// Waits for the recipient's next turn instead of starting one.
+    #[serde(default)]
+    pub passive: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -208,6 +211,12 @@ pub struct Team {
     pub original_briefing: String,
     #[serde(default)]
     pub observed_agents: BTreeMap<String, u64>,
+    /// Sessions the user started from Chat's workflow buttons; their finish does not wake the lead.
+    #[serde(default)]
+    pub noted_agents: std::collections::BTreeSet<String>,
+    /// When each noted session's work was noted, in Unix milliseconds.
+    #[serde(default)]
+    pub noted_since: BTreeMap<String, u64>,
     pub checkpoint: Checkpoint,
     pub messages: Vec<Message>,
     pub deliveries: Vec<Delivery>,
@@ -327,6 +336,17 @@ pub enum Control {
     },
     HandoffApplied {
         id: String,
+    },
+    /// Work the user started outside the lead (Chat's workflow buttons), for its inbox.
+    Note {
+        id: String,
+        text: String,
+        #[serde(default)]
+        sessions: Vec<String>,
+    },
+    /// Passive lead messages the user's own prompt carried to the lead.
+    NotesDelivered {
+        ids: Vec<String>,
     },
 }
 fn team<'a>(store: &'a mut Store, project: &str, id: &str) -> Result<&'a mut Team> {
@@ -496,7 +516,7 @@ pub fn initialize(
             return Ok(t.clone());
         }
         ensure_available(s, project, target, true)?;
-
+        let briefing = r.briefing_backup.as_deref().unwrap_or_default();
         let t = Team {
             id: new_id(),
             project_id: project.into(),
@@ -530,15 +550,21 @@ pub fn initialize(
             continuation_request: None,
             saved_context: String::new(),
             current_plan: String::new(),
-            original_briefing: excerpt(r.briefing_backup.as_deref().unwrap_or_default(), 8000),
+            original_briefing: retained_briefing(briefing),
             observed_agents: BTreeMap::new(),
-            checkpoint,
+            noted_agents: Default::default(),
+            noted_since: BTreeMap::new(),
             messages: vec![],
             deliveries: vec![],
             reset: None,
             handoff: None,
             last_compaction_ms: None,
-            recovery: true,
+            // A new lead briefed with its role starts on the user's first message; an adopted
+            // conversation or an earlier goal still needs the handoff.
+            recovery: paused
+                || !checkpoint.goal.trim().is_empty()
+                || !briefing.contains(LEAD_ROLE_HEADING),
+            checkpoint,
             checkpoint_required: false,
             last_reset_id: None,
             error: None,
@@ -595,7 +621,16 @@ fn append(
         text,
         state: DeliveryState::Pending,
         generation: None,
+        passive: false,
     });
+    Ok(())
+}
+/// Queue a lead message that rides with its next delivery rather than starting a turn.
+fn append_passive(t: &mut Team, id: String, text: String) -> Result<()> {
+    append(t, id.clone(), "patchbay", "lead", None, text)?;
+    if let Some(m) = t.messages.iter_mut().find(|m| m.id == id) {
+        m.passive = true;
+    }
     Ok(())
 }
 fn actor(s: &Store, launch: &LaunchContext, records: &[Record]) -> Result<(usize, String)> {
@@ -1501,6 +1536,21 @@ pub fn control(
                 }
             }
             Control::HistoryBoundary => t.saved_context.clear(),
+            Control::Note { id, text, sessions } => {
+                append_passive(&mut t, format!("note-{id}"), text)?;
+                let now = crate::pty::now_ms();
+                for session in sessions {
+                    t.noted_since.entry(session.clone()).or_insert(now);
+                    t.noted_agents.insert(session);
+                }
+            }
+            Control::NotesDelivered { ids } => {
+                for m in &mut t.messages {
+                    if m.passive && m.state == DeliveryState::Pending && ids.contains(&m.id) {
+                        m.state = DeliveryState::Delivered;
+                    }
+                }
+            }
             Control::Pause => t.state = State::Paused,
             Control::Block { reason } => {
                 t.state = State::Paused;
@@ -1737,7 +1787,51 @@ pub fn side_message(
         Ok(t.clone())
     })
 }
-const INSTRUCTIONS: &str = "You are this worktree's persistent Patchbay lead. Remain available while agents and Auto run. Use agent team-request --id <id> --action <startAgent|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json> to control existing workflows. When team.council.enabled, you may convene independent reviewers with startCouncilReview settings {base: branch-name, focus: optional-review-focus}; use only this workflow for a council, and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges. startAgent settings are {preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}; role-to-preset mappings are in team.agentRoles; presets are listed in team.presets (or team.workers until the catalog loads). startAuto accepts goal, effort (light/standard/thorough), device, agents, reviewers, workers, merge ({mode: ask, destinationBranch}), and stage; omit fields to use app defaults. Never automatically enable merge approval bypass. Use agent team-delegate-shared --id <id> --file <assignments-json> to start configured agents in this existing worktree without new worktrees. Inspect active sessions first, split independent scopes, record an existing agent's agreed components with agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...], and contact busy agents before overlapping edits. Wait for an explicit scope handoff; silence is not permission. Serialize Git mutations and preserve all local edits. Shared workers finish with team-report, without commits or integration. You may automatically delegate investigation, review and code work to Patchbay-managed workers. Do not use provider-native subagents. Before delegating and after integration, save a durable checkpoint with $PATCHBAY_CLI agent team-checkpoint --file <json> (goal, constraints, decisions, remaining, validation). Inspect authoritative state with agent team; create a round with agent team-delegate --id <unique-round-id> --file <json-array> where assignments have globally unique id, instructions, components, dependencies, preset, resultKind (report or code). Use only configured worker presets. Report workers inspect the committed baseline; compare their findings with local edits. Legacy isolated code delegation (team-delegate) requires a clean Git checkpoint: when local changes exist, explain the constraint and continue locally; never automatically commit or stash user changes. While code workers run, keep target edits under coordinator control. Gather progress, blockers, findings and validation from EXISTING agents before launching more work: use agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>. Requests and responses are durable in team.informationRequests. Busy agents receive questions at their next ready prompt; follow up with team-send, never launch a duplicate to replace a delayed reply. Agents respond with agent team-reply --id <request-id> --text <response>. Track every outstanding request, distinguish reported from verified results, and route dependencies yourself. Present coherent updates and final answers in this lead conversation; the user should never relay worker messages. Route dependencies and messages with agent team-send --id <unique-id> --to <assignment-id> --text <message>. Workers contact only you. Integrate code SERIALly using agent team-integrate <assignment-id>, verify the result, checkpoint, then agent team-finish --validation <checks-and-results>. Process exit is never success. After native compaction or a new conversation inspect agent team before acting; checkpoint, assignments, messages, commits and integration facts are authoritative. Preserve workers and worktrees. Continue locally when authentication, status hooks or repository layout prevent delegation.";
+/// Heading of the lead's role in its launch briefing; a lead launched with it needs no
+/// startup handoff, and a retained briefing ends before it.
+pub(crate) const LEAD_ROLE_HEADING: &str = "## Lead role";
+const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. Remain available while agents and Auto run.
+
+### How you work
+
+- You plan, delegate, integrate and report. The user talks only to you: present coherent updates and final answers in this conversation, and never ask the user to relay worker messages.
+- Delegate by default. Investigation and review go to `report` workers; implementation goes to `code` workers; a complete plan → build → review → merge pipeline goes to `startAuto`; several independent reviewers go to `startCouncilReview`. Start work without asking permission to delegate.
+- Do not edit project files yourself. The only exceptions are a trivial fix to a single file, resolving conflicts while integrating, and the failures named under "When delegation is unavailable". Say which exception applies when you use one.
+- Do not use provider-native subagents. Use only Patchbay-managed workers and configured presets.
+- Workers run validation for their scope; you verify the combined result. Distinguish reported from verified results.
+
+### Commands
+
+Run each command below as {cli}.
+
+- `agent team`: inspect authoritative state (team, inbox, rounds, presets, roles). Inspect it before delegating, and after native compaction or a new conversation; checkpoint, assignments, messages, commits and integration facts there are authoritative.
+- `agent team-checkpoint --file <json>`: save a durable checkpoint `{goal, constraints, decisions, remaining, validation}` before delegating and after integration.
+- `agent team-delegate-shared --id <id> --file <assignments-json>`: start configured agents in this existing worktree, without new worktrees. This is the usual way to delegate code. Shared workers finish with `team-report`, without commits or integration.
+- `agent team-delegate --id <unique-round-id> --file <json-array>`: create a round of isolated workers. Each assignment has a globally unique `id`, `instructions`, `components`, `dependencies`, `preset` and `resultKind` (`report` or `code`). Report workers inspect the committed baseline; compare their findings with local edits. Isolated code delegation needs a clean Git checkpoint.
+- `agent team-request --id <id> --action <startAgent|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json>`: control existing workflows.
+  - `startAgent` settings: `{preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}`. Role-to-preset mappings are in `team.agentRoles`; presets are in `team.presets` (or `team.workers` until the catalog loads).
+  - `startAuto` accepts `goal`, `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`) and `stage`; omit fields to use app defaults. Never automatically enable merge approval bypass.
+  - `startCouncilReview` settings: `{base: branch-name, focus: optional-review-focus}`, only when `team.council.enabled`. Use only this workflow for a council and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges.
+- `agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...]`: record an existing agent's agreed components.
+- `agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>`: gather progress, blockers, findings and validation from EXISTING agents before launching more work. Requests and responses are durable in `team.informationRequests`. Busy agents receive questions at their next ready prompt and respond with `agent team-reply --id <request-id> --text <response>`.
+- `agent team-send --id <unique-id> --to <assignment-id> --text <message>`: route dependencies and messages. Workers contact only you.
+- `agent team-integrate <assignment-id>`, then `agent team-finish --validation <checks-and-results>`: integrate code SERIALly, verify the result, checkpoint, then finish.
+
+### Rules
+
+- Inspect active sessions first and split independent scopes. Contact busy agents before overlapping edits, and wait for an explicit scope handoff; silence is not permission.
+- Serialize Git mutations and preserve all local edits. Never automatically commit or stash user changes. While code workers run, keep target edits under coordinator control.
+- Track every outstanding request and route dependencies yourself. Follow up a delayed reply with `team-send`; never launch a duplicate to replace it.
+- Process exit is never success. Preserve workers and worktrees.
+
+### When delegation is unavailable
+
+Continue locally only when authentication, status hooks or the repository layout prevent delegation, or when isolated code delegation is refused because local changes exist and shared delegation does not fit. Explain the constraint to the user first."#;
+
+/// The lead's coordination instructions, with commands spelled for this platform's shells.
+pub(crate) fn lead_instructions() -> String {
+    INSTRUCTIONS.replace("{cli}", &crate::context::agent_command("<command>"))
+}
 fn excerpt(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.into();
@@ -1747,6 +1841,11 @@ fn excerpt(text: &str, limit: usize) -> String {
         end -= 1;
     }
     format!("{}…", &text[..end])
+}
+/// The briefing a handoff repeats: bounded, and without the role every handoff restates.
+fn retained_briefing(text: &str) -> String {
+    let text = text.split(LEAD_ROLE_HEADING).next().unwrap_or_default();
+    excerpt(text.trim_end(), 8000)
 }
 fn recovery_text(s: &Store, t: &Team) -> Result<String> {
     let rounds: Vec<_> = s.runs.iter().filter(|r| r.chat_team.as_deref() == Some(&t.id)).map(|r| serde_json::json!({
@@ -1761,9 +1860,10 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
             .join(", "),
         2048,
     );
+    let instructions = lead_instructions();
     let render = |checkpoint: &Checkpoint, rounds: &[serde_json::Value]| -> Result<String> {
         Ok(format!(
-            "Patchbay coordination handoff\n{INSTRUCTIONS}\nTeam: {}\nWorkers: {workers}\nConcurrency: {}\nCheckpoint:\n{}\nRounds:\n{}\nUnread messages are delivered separately once, in sequence. Do not replay delivered messages or full transcripts.",
+            "Patchbay coordination handoff\n{instructions}\nTeam: {}\nWorkers: {workers}\nConcurrency: {}\nCheckpoint:\n{}\nRounds:\n{}\nUnread messages are delivered separately once, in sequence. Do not replay delivered messages or full transcripts.",
             t.id,
             t.limit,
             serde_json::to_string_pretty(checkpoint)?,
@@ -1933,20 +2033,33 @@ pub fn reconcile(
                 let Some(snapshot) = &record.snapshot else {
                     continue;
                 };
-                if t.observed_agents.get(&record.id) == Some(&snapshot.generation)
-                    && (ready(record) || !snapshot.running)
-                {
-                    append(
-                        &mut t,
-                        format!("external-finished-{}-{}", record.id, snapshot.generation),
-                        "patchbay",
-                        "lead",
-                        None,
-                        format!(
-                            "Existing agent {} reached a ready prompt or exited. Inspect its results and validation before treating the work as complete.",
-                            record.metadata.name
-                        ),
-                    )?;
+                let observed = t.observed_agents.get(&record.id) == Some(&snapshot.generation);
+                // Noted work that ended before any pass saw it working: its process exited,
+                // or stopped a turn since the note (a reused agent may still show the turn
+                // before it). Left noted, it would quiet a later finish.
+                let noted_ms = t.noted_since.get(&record.id).copied();
+                let unseen = !observed
+                    && t.noted_agents.contains(&record.id)
+                    && (!snapshot.running
+                        || (ready(record)
+                            && snapshot.status.agent.as_ref().is_some_and(|a| {
+                                a.state == crate::status::AgentState::Review
+                                    && noted_ms.is_some_and(|at| a.since_ms >= at)
+                            })));
+                if unseen || (observed && (ready(record) || !snapshot.running)) {
+                    let notice_id =
+                        format!("external-finished-{}-{}", record.id, snapshot.generation);
+                    let notice = format!(
+                        "Existing agent {} reached a ready prompt or exited. Inspect its results and validation before treating the work as complete.",
+                        record.metadata.name
+                    );
+                    // The step card already reports work the user started from it.
+                    t.noted_since.remove(&record.id);
+                    if t.noted_agents.remove(&record.id) {
+                        append_passive(&mut t, notice_id, notice)?;
+                    } else {
+                        append(&mut t, notice_id, "patchbay", "lead", None, notice)?;
+                    }
                     t.observed_agents.remove(&record.id);
                 } else if snapshot.running && !ready(record) {
                     t.observed_agents
@@ -2192,7 +2305,7 @@ pub fn retain_briefing(root: &Path, project: &str, id: &str, text: &str) -> Resu
     modify(root, |s| {
         let t = team(s, project, id)?;
         if t.original_briefing.is_empty() {
-            t.original_briefing = excerpt(text, 8000);
+            t.original_briefing = retained_briefing(text);
         }
         Ok(t.clone())
     })
@@ -2497,7 +2610,7 @@ pub fn deliver(
         let recipients: HashSet<_> = t
             .messages
             .iter()
-            .filter(|m| m.state == DeliveryState::Pending)
+            .filter(|m| m.state == DeliveryState::Pending && !m.passive)
             .map(|m| m.recipient.clone())
             .collect();
         // The durable reserve blocks another desktop drive even if the transport loses its reply.
@@ -3959,6 +4072,200 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn a_note_reaches_the_lead_inbox_once() {
+        let f = Fixture::new();
+        let note = || Control::Note {
+            id: "build-1".into(),
+            text: "The user started Build from Chat.".into(),
+            sessions: vec![],
+        };
+        for _ in 0..2 {
+            control(
+                &f.dir,
+                "p",
+                &f.team.id,
+                note(),
+                std::slice::from_ref(&f.lead),
+            )
+            .unwrap();
+        }
+        let notes: Vec<_> = f
+            .state()
+            .messages
+            .into_iter()
+            .filter(|m| m.text.contains("started Build"))
+            .collect();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            (notes[0].sender.as_str(), notes[0].recipient.as_str()),
+            ("patchbay", "lead")
+        );
+        assert_eq!(notes[0].state, DeliveryState::Pending);
+    }
+
+    #[test]
+    fn workflow_button_work_waits_for_the_leads_next_turn() {
+        let f = Fixture::new();
+        let finish = |name: &str, records: &mut Vec<Record>| {
+            let mut agent = session(&f.dir, name);
+            let state = |agent: &mut Record, state| {
+                let report = agent.snapshot.as_mut().unwrap().status.agent.as_mut();
+                report.unwrap().state = state;
+            };
+            state(&mut agent, AgentState::Working);
+            records.push(agent.clone());
+            reconcile(&f.dir, "p", records, false).unwrap();
+            state(&mut agent, AgentState::Idle);
+            *records.last_mut().unwrap() = agent;
+            reconcile(&f.dir, "p", records, false).unwrap();
+        };
+        let mut records = vec![f.lead.clone()];
+        // The fixture's lead starts owing a recovery turn; take it first.
+        deliver(&f.dir, "p", &f.team.id, &records, |_| {
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        let lead = records[0].snapshot.as_mut().unwrap();
+        lead.status.agent.as_mut().unwrap().since_ms = 20;
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Note {
+                id: "review-1".into(),
+                text: "The user started a review from Chat.".into(),
+                sessions: vec!["reviewer".into()],
+            },
+            &records,
+        )
+        .unwrap();
+        finish("reviewer", &mut records);
+        let t = f.state();
+        assert!(t.noted_agents.is_empty());
+        assert_eq!(t.messages.iter().filter(|m| m.passive).count(), 2);
+        deliver(&f.dir, "p", &f.team.id, &records, |_| {
+            panic!("workflow-button work started a lead turn")
+        })
+        .unwrap();
+
+        f.send("next", "what happened?");
+        let mut prompts = Vec::new();
+        deliver(&f.dir, "p", &f.team.id, &records, |r| {
+            if let Request::Prompt { text, .. } = r {
+                prompts.push(text);
+            }
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        assert_eq!(prompts.len(), 1);
+        for part in ["started a review", "Existing agent", "what happened?"] {
+            assert!(prompts[0].contains(part), "{part}");
+        }
+
+        // Noted work that ended before any pass saw it working is settled the same way, so
+        // the session's later work wakes the lead again.
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Note {
+                id: "review-2".into(),
+                text: "The user started another review from Chat.".into(),
+                sessions: vec!["quick".into()],
+            },
+            &records,
+        )
+        .unwrap();
+        let mut quick = session(&f.dir, "quick");
+        let report = |quick: &mut Record, since_ms| {
+            let agent = quick.snapshot.as_mut().unwrap().status.agent.as_mut();
+            let agent = agent.unwrap();
+            agent.state = AgentState::Review;
+            agent.since_ms = since_ms;
+        };
+        // A reused agent still shows the turn it stopped before the note.
+        report(&mut quick, 10);
+        records.push(quick.clone());
+        reconcile(&f.dir, "p", &records, false).unwrap();
+        assert!(f.state().noted_agents.contains("quick"));
+        report(&mut quick, u64::MAX);
+        *records.last_mut().unwrap() = quick;
+        reconcile(&f.dir, "p", &records, false).unwrap();
+        let t = f.state();
+        assert!(t.noted_agents.is_empty() && t.noted_since.is_empty());
+        let settled = t.messages.last().unwrap();
+        assert!(settled.id.starts_with("external-finished-quick") && settled.passive);
+        records.pop();
+
+        // An agent the user did not start from the step card still wakes the lead.
+        finish("stranger", &mut records);
+        let t = f.state();
+        let notice = t.messages.last().unwrap();
+        assert!(notice.id.starts_with("external-finished-stranger"));
+        assert!(!notice.passive && notice.state == DeliveryState::Pending);
+
+        // The user's own prompt can carry a waiting note; only passive messages are settled.
+        let note = |id: &str| Control::Note {
+            id: id.into(),
+            text: "The user started a merge from Chat.".into(),
+            sessions: vec![],
+        };
+        control(&f.dir, "p", &f.team.id, note("merge-1"), &records).unwrap();
+        let ids = vec!["note-merge-1".to_string(), notice.id.clone()];
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::NotesDelivered { ids },
+            &records,
+        )
+        .unwrap();
+        let t = f.state();
+        let state = |id: &str| t.messages.iter().find(|m| m.id == id).unwrap().state;
+        assert_eq!(state("note-merge-1"), DeliveryState::Delivered);
+        assert_eq!(state(&notice.id), DeliveryState::Pending);
+    }
+
+    #[test]
+    fn a_new_lead_briefed_with_its_role_starts_without_a_handoff() {
+        let f = Fixture::new();
+        let briefing = format!(
+            "# Context\n\nCOMPONENTS\n\n{LEAD_ROLE_HEADING}\n\n{}",
+            lead_instructions()
+        );
+        let seed = |session_id: &str, paused, goal: &str| Initialize {
+            task: Some(session_id.into()),
+            session_id: session_id.into(),
+            preset: preset(),
+            paused,
+            checkpoint: Checkpoint {
+                goal: goal.into(),
+                remaining: "Continue".into(),
+                ..Default::default()
+            },
+        };
+        let start = |name: &str, briefing: Option<&str>, paused, goal: &str| {
+            let target = f.dir.join(name);
+            std::fs::create_dir_all(&target).unwrap();
+            let mut lead = session(&f.dir, name);
+            lead.metadata.task = Some(name.into());
+            lead.briefing_backup = briefing.map(Into::into);
+            initialize(&f.dir, "p", &target, seed(name, paused, goal), &[lead]).unwrap()
+        };
+        let fresh = start("fresh", Some(&briefing), false, "");
+        assert!(!fresh.recovery);
+        assert!(fresh.original_briefing.contains("COMPONENTS"));
+        assert!(!fresh.original_briefing.contains(LEAD_ROLE_HEADING));
+        // An adopted conversation, an earlier goal and an older briefing still get the handoff.
+        assert!(start("adopted", Some(&briefing), true, "").recovery);
+        assert!(start("goal", Some(&briefing), false, "Build feature").recovery);
+        assert!(start("older", Some("# Context"), false, "").recovery);
+        let text = recovery_text(&load(&f.dir).unwrap(), &fresh).unwrap();
+        assert!(text.contains("Delegate by default"));
+        assert!(!text.contains("{cli}"));
     }
 
     #[test]

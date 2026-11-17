@@ -3,6 +3,7 @@ import { controlTeam, RESTART_NOTICE, useChatTeams, type ChatTeam } from '../lib
 import { selectPanel, useRail } from '../lib/rail'
 import { useState } from 'react'
 import type { SessionRecord } from '../types'
+import { activityLabel, turnSteps } from '../lib/activity'
 import { teamJobs, workerCounts, workerSession, workerStatus } from '../lib/chatProgress'
 
 /** Only coordination status and actionable exceptions belong beside the lead conversation. */
@@ -26,6 +27,10 @@ export default function ChatCoordination({
         View worker terminal
       </button>
     )
+  }
+  const workerStep = (job: (typeof jobs)[number]) => {
+    const step = job.sessionId ? turnSteps(sessions[job.sessionId]).at(-1) : undefined
+    return step && activityLabel(step, workerSession(job, records, team.projectId)?.spec.cwd)
   }
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -68,6 +73,9 @@ export default function ChatCoordination({
             {active.map((job) => (
               <li key={job.id}>
                 <strong>{job.terminal.name}</strong> · {workerStatus(job, sessions)}
+                {workerStatus(job, sessions) === 'working' && workerStep(job) && (
+                  <> · {workerStep(job)}</>
+                )}
                 <p>{job.instructions}</p>
                 {terminalAction(job)}
               </li>

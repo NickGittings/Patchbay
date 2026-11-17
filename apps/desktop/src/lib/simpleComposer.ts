@@ -1,8 +1,15 @@
 import { hasVisibleTerminal } from './terminals'
 import type { SessionState } from '../types'
 import { useStore } from '../store'
-import { terminalAttach, terminalDetach, terminalPrompt, sessionResume } from './ipc'
+import {
+  terminalAttach,
+  terminalDetach,
+  terminalInterrupt,
+  terminalPrompt,
+  sessionResume,
+} from './ipc'
 import { logSimple } from './simpleActions'
+import { leadNotes, settleLeadNotes } from './chatTeams'
 import { persistReplies } from './simpleReplies'
 import type { SimpleStage } from './simple'
 import { simpleKey, useSimpleUi, type Mention } from './simpleUi'
@@ -46,10 +53,36 @@ export function editedMentions(
  */
 export interface Submission {
   atMs: number
-  /** A forced send must finish a new turn, not the turn it interrupted. */
+  /**
+   * The turn a forced send landed in. Codex either steers the message into that turn, which
+   * then stops under the same identity, or starts a new turn with it once that one stops.
+   */
   previousTurnId?: string
 }
-export function promptReady(session: SessionState | undefined, submitted?: number | Submission) {
+/**
+ * How long a stopped turn that took a forced message must stay stopped before it counts as
+ * ready: a new turn carrying the message starts well inside this.
+ */
+export const FORCED_SETTLE_MS = 3000
+/** When a forced submission's still-stopped turn counts as ready, else `undefined`. */
+export function forcedSettleAt(session: SessionState | undefined, submitted?: number | Submission) {
+  const agent = session?.status?.agent
+  if (
+    typeof submitted !== 'object' ||
+    !submitted.previousTurnId ||
+    !agent ||
+    agent.turnId !== submitted.previousTurnId ||
+    !['idle', 'review'].includes(agent.state) ||
+    agent.sinceMs <= submitted.atMs
+  )
+    return undefined
+  return agent.sinceMs + FORCED_SETTLE_MS
+}
+export function promptReady(
+  session: SessionState | undefined,
+  submitted?: number | Submission,
+  now = Date.now(),
+) {
   if (
     !session?.running ||
     session.disconnected ||
@@ -65,7 +98,9 @@ export function promptReady(session: SessionState | undefined, submitted?: numbe
       (agent.sinceMs > (typeof submitted === 'number' ? submitted : submitted.atMs) &&
         (typeof submitted === 'number' ||
           !submitted.previousTurnId ||
-          (!!agent.turnId && agent.turnId !== submitted.previousTurnId))))
+          (!!agent.turnId &&
+            (agent.turnId !== submitted.previousTurnId ||
+              now >= agent.sinceMs + FORCED_SETTLE_MS)))))
   )
 }
 /**
@@ -88,6 +123,54 @@ export function forceable(session: SessionState | undefined) {
     !!agent.turnId &&
     agent.state === 'working' &&
     !agent.approvalPending
+  )
+}
+/**
+ * Whether Chat's Interrupt can end the agent's turn: a Claude or Codex process whose hooks
+ * reported in this run and that isn't at a confirmed ready prompt. The service ends the turn with
+ * Esc and confirms the prompt as ready, which a typed Esc never does.
+ */
+export function interruptible(session: SessionState | undefined, ready: boolean) {
+  return (
+    !!session?.running &&
+    !ready &&
+    !session.disconnected &&
+    !session.interrupted &&
+    session.chatStartup !== 'pending' &&
+    (sessionReportedHooks(session) || !!session.status?.agent?.authoritative)
+  )
+}
+/** Interrupt one process generation's turn under this window's terminal authority. */
+export async function interruptSession(sid: string, generation: number) {
+  await terminalAttach(sid, true)
+  try {
+    await terminalInterrupt(sid, generation)
+  } finally {
+    if (!hasVisibleTerminal(sid)) await terminalDetach(sid).catch(() => {})
+  }
+}
+/**
+ * Whether the agent's hooks confirm a message whose delivery reply was lost: its process reports
+ * a prompt beginning as that message does, in a turn begun after the message was written. An
+ * earlier turn's prompt may read the same, and its report carries over, so the same turn (or a
+ * message stored without one) confirms nothing. The prompt may run on into notes sent after the
+ * message (`leadNotes`).
+ */
+export function deliveryConfirmed(
+  message: { generation: number; text: string; atMs: number; previousTurnId?: string | null },
+  session: SessionState | undefined,
+) {
+  const agent = session?.status?.agent
+  const prompt = agent?.prompt?.trim()
+  return (
+    !!prompt &&
+    !!agent?.authoritative &&
+    session?.generation === message.generation &&
+    message.previousTurnId !== undefined &&
+    !!agent.turnId &&
+    agent.turnId !== message.previousTurnId &&
+    agent.sinceMs >= message.atMs &&
+    (message.text.trim().startsWith(prompt) || prompt.startsWith(message.text.trim()))
   )
 }
 /** Why chat may ask for status hooks beside the composer: missing, unreadable, or never possible. */
@@ -158,7 +241,7 @@ export function composerStatus({
           : !reporting && installed === false
             ? needsHooks
             : agent
-              ? 'Not confirmed ready: continue in its terminal'
+              ? 'Not confirmed ready: Interrupt to send'
               : 'Waiting for the agent',
     sendable: queueable,
     action: queueable ? 'queue' : 'none',
@@ -291,7 +374,7 @@ export async function waitForPrompt(
           ? 'Couldn’t confirm Lead readiness. Your message hasn’t been sent.'
           : port.provider === null
             ? 'No ready prompt after 30 seconds. Chat can message only Claude and Codex agents; open the terminal to continue.'
-            : 'No ready prompt after 30 seconds. Open the terminal to continue.',
+            : 'No ready prompt after 30 seconds. Retry, or restart the agent.',
       )
     await (port.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(
       100,
@@ -344,6 +427,8 @@ export async function sendToSession({
       session: () => useStore.getState().sessions[sid],
       claim: () => terminalAttach(sid, true),
       write: async (message) => {
+        // Work started from the step card reaches the lead here, after the user's own words.
+        const notes = leadNotes(projectId, task, sid)
         useSimpleUi.getState().patch(key, {
           unconfirmed: {
             sessionId: sid,
@@ -352,11 +437,19 @@ export async function sendToSession({
             stage,
             mentions,
             atMs: Date.now(),
+            previousTurnId: useStore.getState().sessions[sid]?.status?.agent?.turnId ?? null,
+            noteIds: notes.ids,
           },
         })
         try {
-          await terminalPrompt(sid, generation, message, force)
+          await terminalPrompt(
+            sid,
+            generation,
+            notes.text ? `${message}\n\n${notes.text}` : message,
+            force,
+          )
           useSimpleUi.getState().patch(key, { unconfirmed: undefined })
+          void settleLeadNotes(projectId, task, notes.ids)
         } catch (error) {
           const failure = error as { uncertain?: boolean; message?: string }
           if (!failure?.uncertain) useSimpleUi.getState().patch(key, { unconfirmed: undefined })

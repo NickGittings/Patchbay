@@ -1,4 +1,4 @@
-import type { SessionRecord, SessionState, UserQuestion } from '../types'
+import type { AgentQuestion, SessionRecord, SessionState, UserQuestion } from '../types'
 import type { SimpleState } from './simple'
 
 /** Selection never follows a workflow stage or another agent's input wait. */
@@ -61,4 +61,43 @@ export function chatInputRequests(
     if (report.questions?.length) request.questions = report.questions
     return [request]
   })
+}
+
+/**
+ * Input requests plus the questions a hook is holding for Chat whose session doesn't report an
+ * input wait: Codex keeps an approval `working` through its automatic-review grace, and the card
+ * must claim its question before then. An interrupted turn or an ended agent shows none.
+ */
+export function withOfferedQuestions(
+  requests: readonly ChatInputRequest[],
+  offered: Record<string, AgentQuestion>,
+  records: readonly SessionRecord[],
+  sessions: Record<string, SessionState>,
+): ChatInputRequest[] {
+  const waiting = new Set(requests.map((r) => r.sessionId))
+  const extra = Object.values(offered).flatMap((question) => {
+    const session = sessions[question.sessionId]
+    const agent = session?.status?.agent
+    if (
+      waiting.has(question.sessionId) ||
+      !records.some((r) => r.id === question.sessionId) ||
+      !session?.running ||
+      session.generation === undefined ||
+      (question.generation !== null && question.generation !== session.generation) ||
+      // The turn that asked was interrupted, or the agent ended: its hook waits on nothing.
+      // Dropping the card hands the question back, which ends that wait. A stopped turn's
+      // hook is gone already, so a question held after one is a live request.
+      (!!agent?.authoritative && ['idle', 'ended'].includes(agent.state))
+    )
+      return []
+    waiting.add(question.sessionId)
+    return [
+      {
+        sessionId: question.sessionId,
+        generation: session.generation,
+        sinceMs: question.deadlineMs,
+      },
+    ]
+  })
+  return extra.length ? [...requests, ...extra] : [...requests]
 }

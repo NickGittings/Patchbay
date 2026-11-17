@@ -111,9 +111,8 @@
       document.querySelector('.chat-agent-picker').textContent.includes('First agent'),
       'question changed selected agent',
     )
-    assert(
-      document.querySelector('.chat-question summary')?.textContent.includes('Second agent'),
-      'question lost originating agent',
+    await until('question names its originating agent', () =>
+      document.querySelector('.chat-question-title')?.textContent.includes('Second agent'),
     )
     click(await chatMenu('Clear chat'))
     const clear = await until('visible history confirmation', () => confirmDialog('Clear chat'))
