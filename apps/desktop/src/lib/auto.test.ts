@@ -1,5 +1,8 @@
 vi.mock('./workspace', () => ({ flushWorkspace: vi.fn(async () => {}) }))
-vi.mock('./chatTeams', () => ({ autoOwnership: vi.fn(async () => {}) }))
+vi.mock('./chatTeams', () => ({
+  autoOwnership: vi.fn(async () => {}),
+  completeAutoTask: vi.fn(async () => {}),
+}))
 vi.mock('./providerAuth', () => ({
   requireProviderAuth: vi.fn(async () => {}),
   requireDeviceAuth: vi.fn(async () => {}),

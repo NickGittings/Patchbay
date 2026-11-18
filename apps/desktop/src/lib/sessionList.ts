@@ -1,11 +1,15 @@
 import {
+  COORDINATOR_SCOPE,
   MAP_SCOPE,
   PLAN_SCOPE,
   PROJECT_DRAFT,
   plannerChatTask,
   REVIEW_SCOPE,
   MERGE_SCOPE,
+  SCAN_SCOPE,
   STACK_AGENT_TERMINAL,
+  TASK_ROOT_SCOPE,
+  WORKER_SCOPE,
   isReservedScope,
   type SessionRecord,
   type Task,
@@ -18,7 +22,9 @@ export interface SessionRole {
 }
 
 /** The purpose of a session, independent of its terminal's saved name. */
-export function sessionRole(metadata: SessionMetadata): SessionRole {
+export function sessionRole(
+  metadata: Pick<SessionMetadata, 'componentId' | 'kind' | 'terminalId' | 'extensionId' | 'branch'>,
+): SessionRole {
   if (metadata.extensionId) return { role: 'Extension', tone: 'task' }
   if (metadata.kind === 'shell') return { role: 'Shell', tone: 'shell' }
   switch (metadata.componentId) {
@@ -33,11 +39,18 @@ export function sessionRole(metadata: SessionMetadata): SessionRole {
       return metadata.terminalId === STACK_AGENT_TERMINAL
         ? { role: 'Stack', tone: 'plan' }
         : { role: 'Dependencies', tone: 'plan' }
+    case SCAN_SCOPE:
+      return { role: 'Scan', tone: 'plan' }
+    case COORDINATOR_SCOPE:
+      return { role: 'Coordinator', tone: 'implement' }
+    case WORKER_SCOPE:
+      return { role: 'Worker', tone: 'implement' }
     default:
-      // Root terminals and component terminals alike: agents implement, the rest run tasks.
-      return metadata.kind === 'agent'
-        ? { role: 'Build', tone: 'implement' }
-        : { role: 'Task', tone: 'task' }
+      if (metadata.kind !== 'agent') return { role: 'Task', tone: 'task' }
+      // A root agent with a reviewed branch is fixing that review's findings.
+      return metadata.componentId === TASK_ROOT_SCOPE && metadata.branch
+        ? { role: 'Fix', tone: 'implement' }
+        : { role: 'Build', tone: 'implement' }
   }
 }
 

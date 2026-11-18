@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { describeTerminal, statusTitle, terminalStatus } from '../lib/display'
 import { openComponentWindow } from '../lib/windows'
 import { removeTaskTerminal } from '../lib/sessions'
-import type { TaskTerminal } from '../lib/taskTerminals'
+import { tileLabel, type TaskTerminal } from '../lib/taskTerminals'
 import { parseSessionId, TASK_ROOT_SCOPE } from '../types'
 import { useStore } from '../store'
 import StatusLabel from './status/StatusLabel'
@@ -12,6 +12,7 @@ import { confirmAction } from '../lib/confirm'
 
 export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) {
   const sessions = useStore((s) => s.sessions)
+  const records = useStore((s) => s.sessionRecords)
   const maximized = useStore((s) => s.maximizedTerminal)
   const focused = useStore((s) => s.activeSession)
   const [editing, setEditing] = useState<string | null>(null)
@@ -21,6 +22,10 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
     const session = sessions[sid]
     const status = terminalStatus(terminal.kind, session)
     const s = useStore.getState()
+    const prefix = tileLabel(
+      entry,
+      records.find((r) => r.id === sid),
+    )
     return (
       <section
         className={`terminal-tile health-${status.health} ${focused === sid ? 'focused' : ''} ${maximized === sid ? 'maximized' : ''}`}
@@ -31,7 +36,7 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
       >
         <div className="terminal-tile-header">
           <span className="status-dot" title={statusTitle(status)} />
-          {componentId !== TASK_ROOT_SCOPE && <span className="hint">{label} ›</span>}
+          {prefix && <span className="hint">{prefix} ›</span>}
           <strong title={describeTerminal(terminal)}>{terminal.name}</strong>
           <span className="spacer" />
           <StatusLabel status={status} />
@@ -53,17 +58,16 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
           >
             {maximized === sid ? '⤡' : '⤢'}
           </button>
-          {componentId !== TASK_ROOT_SCOPE &&
-            useStore.getState().nodes.some((n) => n.id === componentId) && (
-              <button
-                className="group-popout"
-                aria-label={`Open ${label} in its own window`}
-                title="Open in its own window"
-                onClick={() => void openComponentWindow(componentId, label)}
-              >
-                ⧉
-              </button>
-            )}
+          {label && (
+            <button
+              className="group-popout"
+              aria-label={`Open ${label} in its own window`}
+              title="Open in its own window"
+              onClick={() => void openComponentWindow(componentId, label)}
+            >
+              ⧉
+            </button>
+          )}
           {!entry.retained && (
             <button
               title="Configure terminal command"

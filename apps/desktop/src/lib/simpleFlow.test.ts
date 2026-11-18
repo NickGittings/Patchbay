@@ -58,6 +58,21 @@ test('idle and planning ignore old shared plans until the planner finishes a fre
   })
   expect(flow({ ...ready, sessions: { '@plan': session('working') } }).prompt).toBeUndefined()
 })
+test('a retired stage agent leaves the next stage in charge of the step', () => {
+  const s = snapshot('@task')
+  const stopped = { ...s.sessions['@task'], running: false }
+  expect(flow({ ...s, sessions: { '@task': stopped } }).step).toBe('built')
+  const reviewing = {
+    ...snapshot('@review', 'working'),
+    records: [record('@task'), record('@review')],
+  }
+  reviewing.records[1] = {
+    ...reviewing.records[1],
+    snapshot: { startedMs: 30 },
+  } as unknown as SessionRecord
+  reviewing.sessions['@task'] = stopped
+  expect(flow(reviewing).step).toBe('reviewing')
+})
 test('build, review, fix and merge prompts follow the latest turn and artifacts', () => {
   expect(flow(snapshot('@task', 'working')).step).toBe('building')
   expect(flow(snapshot('@task'))).toMatchObject({
