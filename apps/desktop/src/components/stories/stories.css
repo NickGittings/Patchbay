@@ -32,7 +32,7 @@
   max-width: 95px;
   padding: 3px 6px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .story-board-body {
   display: flex;
@@ -72,7 +72,7 @@
 .story-column h3,
 .story-editor h3 {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 .story-column h3 span {
@@ -80,14 +80,14 @@
   margin-left: 4px;
 }
 .story-column > header button {
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 3px 6px;
 }
 .story-all {
   align-self: flex-start;
   border-color: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 3px 0;
 }
 .story-all.active {
@@ -131,14 +131,14 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #60a5fa;
+  background: var(--accent-text);
   flex-shrink: 0;
 }
 .story-dot.epic {
   background: var(--input);
 }
 .story-dot.feature {
-  background: #a855f7;
+  background: var(--review);
 }
 .story-card-meta {
   display: flex;
@@ -146,7 +146,7 @@
   flex-wrap: wrap;
   gap: 6px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .story-status {
   text-transform: capitalize;
@@ -162,14 +162,14 @@
 }
 .story-worktree {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .story-stage {
   color: var(--running);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .story-stage.waitingOnYou,
 .story-stage.paused {
@@ -186,7 +186,7 @@
 }
 .story-hint {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 .story-editor {
@@ -210,7 +210,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .story-editor input:not([type='checkbox']),
 .story-editor textarea,
@@ -228,7 +228,7 @@
   margin-top: 6px;
 }
 .story-editor .scope-chips button {
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 4px 7px;
 }
 .story-editor .scope-chips button.active {
@@ -240,7 +240,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .story-acceptance > button {
   align-self: flex-start;
@@ -258,7 +258,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .story-delete p {
   margin: 0;
@@ -269,7 +269,7 @@
 }
 .story-error {
   color: var(--bad);
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
 
@@ -277,5 +277,5 @@
   color: var(--accent);
 }
 .story-status.merging {
-  color: #bf96e8;
+  color: var(--review);
 }

@@ -22,6 +22,10 @@
   --running: #22d3ee;
   --input: #f5a524;
   --review: #a78bfa;
+  --warn-strong: #ff8a4c;
+  /* Text on filled accent and danger surfaces. */
+  --on-accent: #fff;
+  --danger-text: #ffc9c9;
   --task: var(--review);
   --role-lead: var(--accent);
   --role-builder: #2dd4bf;
@@ -50,6 +54,24 @@
   --del-gutter: color-mix(in srgb, var(--bad) 15%, var(--bg));
   --del-text: #ffc2c2;
   --hunk-bg: color-mix(in srgb, var(--accent) 7%, var(--bg));
+  /* Type scale: dense UI text sits at --text-sm; headings step up by size and weight together. */
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 15px;
+  --text-lg: 17px;
+  --text-2xl: 28px;
+  /* Small uppercase labels open up slightly; large display text tightens. */
+  --tracking-caps: 0.06em;
+  --tracking-display: -0.02em;
+  /* Stacking layers, lowest first: workspace chrome, its popovers, the canvas node menu, modal
+     dialogs, then app-level overlays (provider setup, maintenance review, tooltips). */
+  --z-chrome: 30;
+  --z-popover: 40;
+  --z-node-menu: 90;
+  --z-modal: 100;
+  --z-system: 1000;
   /* Corner scale: chips, controls, cards and panels, floating surfaces. */
   --radius-xs: 4px;
   --radius-sm: 6px;
@@ -93,7 +115,7 @@ body,
 code,
 .mono {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 /* Controls */
@@ -149,7 +171,7 @@ button:disabled {
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-weight: 600;
 }
 button.primary:hover:not(:disabled) {
@@ -159,7 +181,7 @@ button.primary:hover:not(:disabled) {
 button.danger {
   background: color-mix(in srgb, var(--bad) 12%, transparent);
   border-color: color-mix(in srgb, var(--bad) 40%, transparent);
-  color: #ffc9c9;
+  color: var(--danger-text);
 }
 button.danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--bad) 20%, transparent);
@@ -295,7 +317,7 @@ input[type='radio'] {
   align-items: center;
   gap: 6px;
   flex: none;
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
   color: var(--tone);
 }
@@ -361,7 +383,7 @@ input[type='radio'] {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  z-index: 41;
+  z-index: calc(var(--z-popover) + 1);
   display: flex;
   flex-direction: column;
   min-width: 200px;
@@ -405,7 +427,7 @@ input[type='radio'] {
 }
 .menu-shortcut {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .menu-row {
@@ -437,7 +459,7 @@ input[type='radio'] {
 }
 .attention-label {
   flex: none;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 /* Gentle enough to sit in peripheral vision; reduced motion holds the dot steady. */
@@ -511,7 +533,7 @@ input[type='radio'] {
 .view-tabs button {
   min-height: 34px;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   white-space: nowrap;
   background: none;
@@ -534,7 +556,7 @@ input[type='radio'] {
   position: absolute;
   top: calc(100% + 8px);
   right: 12px;
-  z-index: 30;
+  z-index: var(--z-chrome);
 }
 .toast {
   position: relative;
@@ -543,7 +565,7 @@ input[type='radio'] {
   gap: 10px;
   max-width: min(440px, calc(100vw - 24px));
   padding: 10px 38px 10px 14px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 .toast-text {
@@ -586,10 +608,10 @@ input[type='radio'] {
 }
 .panel-title,
 .section-title {
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: var(--tracking-caps);
   color: var(--muted);
 }
 .panel-title {
@@ -600,7 +622,7 @@ input[type='radio'] {
 }
 .hint {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   padding: 0;
 }
@@ -613,7 +635,7 @@ input[type='radio'] {
 }
 .count {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   color: var(--muted);
 }
 
@@ -655,7 +677,7 @@ input[type='radio'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   line-height: 1.4;
 }
@@ -665,7 +687,7 @@ input[type='radio'] {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 .inspector .inspector-actions-trigger,
@@ -695,7 +717,7 @@ input[type='radio'] {
   border: 0;
   border-radius: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
   box-shadow: inset 0 -2px 0 transparent;
 }
@@ -712,7 +734,7 @@ input[type='radio'] {
   width: 100%;
   text-align: left;
   color: var(--accent-text);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .inspector-body {
   flex: 1;
@@ -731,7 +753,7 @@ input[type='radio'] {
   gap: 4px;
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   min-width: 0;
 }
 .inspector :is(input, select, textarea) {
@@ -783,19 +805,19 @@ input[type='radio'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 500;
 }
 .inspector-terminal-meta {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
 }
 .inspector-terminal-action {
   flex: none;
   padding: 4px 8px;
   color: var(--accent-text);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .inspector-terminal-settings:not([hidden]) {
   display: grid;
@@ -805,7 +827,7 @@ input[type='radio'] {
 .inspector-terminal-settings > button {
   justify-self: start;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .inspector .add-terminal {
   margin-top: 10px;
@@ -813,13 +835,13 @@ input[type='radio'] {
   border-color: transparent;
   background: transparent;
   color: var(--accent-text);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .inspector .add-terminal:hover {
   background: var(--hover);
 }
 .inspector .maintenance-origin {
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 .inspector .context {
@@ -861,7 +883,7 @@ input[type='radio'] {
   border-style: dashed;
 }
 .relation {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   padding: 3px 0;
 }
@@ -874,12 +896,12 @@ input[type='radio'] {
 .context summary {
   cursor: pointer;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .context pre {
   white-space: pre-wrap;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -953,10 +975,10 @@ input[type='radio'] {
   opacity: 0;
 }
 .kind-badge {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: var(--text-xs);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-caps);
   color: var(--kind);
 }
 .component-name {
@@ -969,7 +991,7 @@ input[type='radio'] {
 }
 .git-badge {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   color: var(--accent-text);
   background: var(--accent-soft);
   border-radius: var(--radius-xs);
@@ -977,7 +999,7 @@ input[type='radio'] {
 }
 .repo-badge {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
@@ -998,7 +1020,7 @@ input[type='radio'] {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -1049,7 +1071,7 @@ input[type='radio'] {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   padding: 1px 8px;
   border-radius: 999px;
@@ -1156,7 +1178,7 @@ input[type='radio'] {
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
 }
 .terminal-notice button {
@@ -1398,7 +1420,7 @@ input[type='radio'] {
   width: 100%;
   margin-top: 6px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   resize: vertical;
 }
 .scope-chips {
@@ -1417,7 +1439,7 @@ input[type='radio'] {
   color: var(--input);
   background: var(--panel-2);
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .implementation-view {
   display: flex;
@@ -1440,7 +1462,7 @@ input[type='radio'] {
   flex: none;
   height: 28px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text);
   background: var(--panel-2);
   border-color: var(--border);
@@ -1544,7 +1566,7 @@ input[type='radio'] {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 1px 8px;
@@ -1568,7 +1590,7 @@ input[type='radio'] {
 }
 .validation-chip button {
   padding: 0 4px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
 }
 
@@ -1589,7 +1611,7 @@ input[type='radio'] {
   background: transparent;
   text-align: left;
   padding: 4px 12px 4px 18px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .change-row:hover:not(:disabled) {
   background: var(--panel-2);
@@ -1621,7 +1643,7 @@ input[type='radio'] {
   text-overflow: ellipsis;
   direction: rtl;
   text-align: left;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .path-dir {
   color: var(--muted);
@@ -1643,7 +1665,7 @@ input[type='radio'] {
   justify-content: center;
   border-radius: var(--radius-xs);
   padding: 1px 7px;
-  font-size: 10.5px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   color: var(--tone);
   background: color-mix(in srgb, var(--tone) 14%, transparent);
@@ -1654,7 +1676,7 @@ input[type='radio'] {
   height: 18px;
   padding: 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .kind-pill.kind-added,
 .kind-pill.kind-untracked {
@@ -1676,7 +1698,7 @@ input[type='radio'] {
   align-items: center;
   gap: 6px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 500;
   text-transform: none;
   letter-spacing: 0;
@@ -1724,7 +1746,7 @@ input[type='radio'] {
   padding: 9px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
 }
 .diff-file-path {
   flex: 1;
@@ -1733,7 +1755,7 @@ input[type='radio'] {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .diff-file-path .path-name {
   font-weight: 600;
@@ -1741,7 +1763,7 @@ input[type='radio'] {
 .diff {
   --gutter: 5ch;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.6;
   min-width: max-content;
   padding-bottom: 12px;
@@ -1821,7 +1843,7 @@ input[type='radio'] {
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   font-family: var(--sans);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 .diff-hunk:first-child {
   margin-top: 0;
@@ -1858,7 +1880,7 @@ input[type='radio'] {
 }
 .review-totals {
   flex: 1;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .review-refresh {
   padding: 2px 8px;
@@ -1874,7 +1896,7 @@ input[type='radio'] {
   gap: 6px;
   border-radius: 999px;
   padding: 2px 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   background: transparent;
 }
@@ -1886,7 +1908,7 @@ input[type='radio'] {
 }
 .filter-count {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--text-2xs);
   color: var(--muted);
 }
 .kind-dot.project {
@@ -1960,12 +1982,12 @@ button.review-name:hover:not(:disabled) {
 .review-count {
   flex: 1;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
 }
 .review-via {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1979,7 +2001,7 @@ button.review-name:hover:not(:disabled) {
 .extension-overlay {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--z-modal);
   background: var(--overlay);
   display: flex;
   justify-content: center;
@@ -2003,7 +2025,7 @@ button.review-name:hover:not(:disabled) {
 .extension-badge {
   --tone: var(--accent);
   border-radius: var(--radius-xs);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   padding: 2px 5px;
   color: color-mix(in srgb, var(--tone) 50%, #fff);
   background: color-mix(in srgb, var(--tone) 20%, transparent);
@@ -2028,7 +2050,7 @@ button.review-name:hover:not(:disabled) {
 .node-menu-overlay {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  z-index: var(--z-node-menu);
 }
 .node-extension-menu {
   position: fixed;
@@ -2109,7 +2131,7 @@ button.review-name:hover:not(:disabled) {
 }
 .session-worktree-heading h4 {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 700;
 }
 .session-worktree-branch {
@@ -2121,7 +2143,7 @@ button.review-name:hover:not(:disabled) {
 }
 .session-worktree-count {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .session-worktree-rows {
   margin: 4px 0 0 12px;
@@ -2162,7 +2184,7 @@ button.review-name:hover:not(:disabled) {
   background: color-mix(in srgb, var(--role-color) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--role-color) 25%, transparent);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 .session-role.plan {
@@ -2198,7 +2220,7 @@ button.review-name:hover:not(:disabled) {
   align-items: center;
   gap: 4px;
   margin-left: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .component-groups {
@@ -2271,7 +2293,7 @@ button.review-name:hover:not(:disabled) {
   flex-direction: column;
   gap: 4px;
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .component-group .group-option {
@@ -2293,7 +2315,7 @@ button.review-name:hover:not(:disabled) {
   align-items: center;
   gap: 6px;
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .component-group .group-member .group-option {
@@ -2310,7 +2332,7 @@ button.review-name:hover:not(:disabled) {
   text-align: left;
   margin: 4px 0;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .action-result .failed {
   color: var(--bad);
@@ -2336,7 +2358,7 @@ button.review-name:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--task) 60%, var(--border-strong));
 }
 .task-badge {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--task);
   background: color-mix(in srgb, var(--task) 14%, transparent);
   border-radius: var(--radius-xs);
@@ -2353,7 +2375,7 @@ button.review-name:hover:not(:disabled) {
   gap: 4px;
   margin: 10px 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .task-dialog .row {
   gap: 8px;
@@ -2384,7 +2406,7 @@ button.review-name:hover:not(:disabled) {
 }
 .add-task-terminal h2 {
   margin: 0 0 4px;
-  font-size: 15px;
+  font-size: var(--text-md);
 }
 .add-task-terminal select {
   width: 100%;
@@ -2456,7 +2478,7 @@ button.review-name:hover:not(:disabled) {
   flex-wrap: wrap;
 }
 .worktree-tag {
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 1px 7px;
   border-radius: var(--radius);
   border: 1px solid var(--border-strong);
@@ -2494,7 +2516,7 @@ button.review-name:hover:not(:disabled) {
   padding: 5px;
   border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .worktree-detail {
   display: grid;
@@ -2663,14 +2685,14 @@ button.review-name:hover:not(:disabled) {
 }
 .map-issue {
   color: var(--input);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .map-issue strong,
 .component-node .map-issue {
   text-transform: capitalize;
 }
 .maintenance-origin {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   margin: 12px 0;
 }
@@ -2680,7 +2702,7 @@ button.review-name:hover:not(:disabled) {
 .maintenance-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: var(--z-system);
   background: var(--overlay);
   display: grid;
   place-items: center;
@@ -2721,7 +2743,7 @@ button.review-name:hover:not(:disabled) {
 .empty-state-text {
   max-width: 380px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 .empty-state-actions {
@@ -2736,7 +2758,7 @@ kbd {
   min-width: 18px;
   padding: 0 5px;
   font-family: var(--sans);
-  font-size: 10.5px;
+  font-size: var(--text-2xs);
   line-height: 17px;
   text-align: center;
   color: var(--text);
@@ -2775,9 +2797,9 @@ kbd {
 }
 .welcome-card h1 {
   margin: 0 0 8px;
-  font-size: 28px;
+  font-size: var(--text-2xl);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--tracking-display);
   color: var(--text);
 }
 .welcome-card > p {
@@ -2802,7 +2824,7 @@ kbd {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   color: var(--muted);
 }
@@ -2814,7 +2836,7 @@ kbd {
 }
 .welcome-keys {
   color: var(--faint);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .terminal-close-confirm {
@@ -2834,7 +2856,7 @@ kbd {
   padding: 0;
   margin: 4px 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -2851,7 +2873,7 @@ kbd {
   height: 28px;
   padding: 0;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   border-color: transparent;
 }
@@ -2930,7 +2952,7 @@ kbd {
 }
 .review-merge-button,
 .review-agent-button {
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .review-merge-terminal {
   display: flex;
@@ -2946,7 +2968,7 @@ kbd {
 }
 .merge-agent-dialog code {
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .reviewer-picker {
   min-width: 0;
@@ -3008,7 +3030,7 @@ kbd {
 
 .review-status {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 4px 0;
 }
 .review-status-row {
@@ -3022,7 +3044,7 @@ kbd {
   align-items: center;
   gap: 6px;
   padding: 2px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .review-findings-button.on,
 .review-findings-button.on:hover:not(:disabled) {
@@ -3069,7 +3091,7 @@ kbd {
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
-  z-index: 30;
+  z-index: var(--z-chrome);
 }
 .top-bar.mac-titlebar {
   padding-inline: 88px;
@@ -3110,7 +3132,7 @@ kbd {
   height: 28px;
   border-color: transparent;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .workspace-context > button:hover:not(:disabled),
 .workspace-context > button[aria-expanded='true'] {
@@ -3173,7 +3195,7 @@ kbd {
 .unified-search > input {
   width: 100%;
   height: 28px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .search-results {
   position: absolute;
@@ -3182,12 +3204,12 @@ kbd {
   right: 0;
   max-height: min(65vh, 600px);
   overflow: auto;
-  z-index: 100;
+  z-index: var(--z-modal);
   padding: 8px;
 }
 .search-results h3 {
   margin: 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .search-results p {
@@ -3272,7 +3294,7 @@ kbd {
   position: absolute;
   top: -2px;
   right: -1px;
-  font-size: 10px;
+  font-size: var(--text-2xs);
   background: var(--accent);
   color: var(--bg);
   font-weight: 600;
@@ -3325,7 +3347,8 @@ kbd {
   min-width: 0;
 }
 .utility-header h2 {
-  font-size: 14px;
+  font-size: var(--text-md);
+  font-weight: 600;
   margin: 0 0 4px;
 }
 .utility-header small {
@@ -3533,7 +3556,7 @@ kbd {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   min-width: 0;
 }
@@ -3621,7 +3644,7 @@ kbd {
 }
 .diff-nav button {
   padding: 1px 8px;
-  font-size: 14px;
+  font-size: var(--text-md);
   line-height: 1.2;
 }
 .diff-nav-count {
@@ -3629,7 +3652,7 @@ kbd {
   text-align: center;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .diff-view:focus {
   outline: none;
@@ -3637,12 +3660,12 @@ kbd {
 
 .usage-panel .usage-note {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 .usage-panel h3 {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 .usage-window {
   margin: 12px 0;
@@ -3650,7 +3673,7 @@ kbd {
 .usage-window-label {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .usage-window progress {
   width: 100%;
@@ -3658,16 +3681,16 @@ kbd {
   accent-color: var(--accent);
 }
 .usage-window[data-level='warn'] progress {
-  accent-color: #d4a448;
+  accent-color: var(--input);
 }
 .usage-window[data-level='limit'] progress {
-  accent-color: #e16b68;
+  accent-color: var(--bad);
 }
 .usage-window small,
 .usage-source {
   display: block;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .usage-source {
   overflow-wrap: anywhere;
@@ -3678,7 +3701,7 @@ kbd {
   justify-content: space-between;
   gap: 8px;
   margin: 12px 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .usage-controls input[type='number'] {
   width: 58px;
@@ -3692,12 +3715,12 @@ kbd {
   flex: none;
 }
 .workspace-rail .usage-dot {
-  background: #d4a448;
+  background: var(--input);
 }
 
 /* Provider setup overlays the launch dialog, whose selections stay mounted. */
 .provider-setup-overlay {
-  z-index: 1000;
+  z-index: var(--z-system);
 }
 
 /* Settings share a shell and form rhythm without changing workflow dialogs. */
@@ -3751,7 +3774,7 @@ kbd {
 .settings-section h3,
 .settings-section legend {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
 }
 .settings-section legend {
@@ -3884,7 +3907,7 @@ kbd {
 .rail-section-header h3 {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 .rail-section-header .panel-actions {
@@ -3892,7 +3915,7 @@ kbd {
 }
 .rail-details {
   border-top: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .rail-details > summary {
   padding: 10px 0;
@@ -3998,7 +4021,7 @@ kbd {
   border-color: transparent;
 }
 .notification-badge {
-  font-size: 10px;
+  font-size: var(--text-2xs);
   border-radius: var(--radius);
   padding: 0 5px;
   color: var(--bg);
@@ -4019,7 +4042,7 @@ kbd {
 .notification-center .toast-region[data-position='bottom-left'],
 .notification-center .toast-region[data-position^='top-'] {
   position: fixed;
-  z-index: 29;
+  z-index: calc(var(--z-chrome) - 1);
   width: min(440px, calc(100vw - var(--rail-width) - 24px));
 }
 .notification-center .toast-region[data-position='bottom-left'] {
@@ -4070,7 +4093,7 @@ kbd {
 .notice-heading {
   display: block;
   margin-bottom: 3px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .footer-popover {
   position: absolute;
@@ -4080,7 +4103,7 @@ kbd {
   max-height: min(560px, calc(100dvh - 100px));
   display: flex;
   flex-direction: column;
-  z-index: 40;
+  z-index: var(--z-popover);
   border: 0;
   border-radius: var(--radius-lg);
   background: var(--panel);
@@ -4103,7 +4126,7 @@ kbd {
   height: 28px;
   min-width: 28px;
   padding: 0 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .footer-popover-header .footer-popover-icon {
   flex: none;
@@ -4160,7 +4183,7 @@ kbd {
   align-items: flex-start;
   gap: 8px;
   padding: 12px 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .notification-entry + .notification-entry {
   border-top: 1px solid var(--border);
@@ -4173,7 +4196,7 @@ kbd {
   flex-wrap: wrap;
   gap: 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   margin-bottom: 6px;
 }
 .notification-entry .toast-close {
@@ -4253,7 +4276,7 @@ kbd {
   gap: 8px;
   align-items: center;
   padding: 8px 14px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .windowed-diff .diff-hunk {
   white-space: nowrap;
@@ -4338,7 +4361,7 @@ kbd {
 }
 .file-editor-path {
   padding: 8px 12px;
-  font: 11px var(--mono);
+  font: var(--text-xs) var(--mono);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -4395,7 +4418,7 @@ kbd {
 .file-editor-code textarea {
   margin: 0;
   padding: 12px;
-  font: 12px / 20px var(--mono);
+  font: var(--text-sm) / 20px var(--mono);
   tab-size: 4;
 }
 .file-editor-code pre {
@@ -4451,7 +4474,7 @@ kbd {
   max-width: 100%;
   min-height: 34px;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .dock-tab-label {
   min-width: 0;
@@ -4478,7 +4501,7 @@ kbd {
   flex-wrap: wrap;
   gap: 6px;
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border-left: 1px solid var(--border);
   white-space: normal;
 }
@@ -4514,7 +4537,7 @@ kbd {
 }
 .file-editor-tab button {
   min-height: 34px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .component-header > :not(.component-name) {
   flex: none;
@@ -4540,7 +4563,7 @@ kbd {
 }
 .rail-tooltip {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-system);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -4551,14 +4574,14 @@ kbd {
   background: var(--panel-2);
   color: var(--text);
   box-shadow: var(--shadow-2);
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
   pointer-events: none;
 }
 .rail-tooltip kbd {
   flex: none;
   color: var(--muted);
-  font: 11px var(--mono);
+  font: var(--text-xs) var(--mono);
 }
 .canvas {
   container-type: inline-size;
@@ -4691,7 +4714,7 @@ kbd {
 .workspace-rail[data-expanded='true'] .rail-label,
 .workspace-rail[data-expanded='true'] .rail-group-label {
   display: block;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .rail-group-label {
   padding: 4px 10px;
@@ -4714,7 +4737,7 @@ kbd {
 .review-context span,
 .review-context summary {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .review-title-row,
 .review-status-row {
@@ -4736,7 +4759,7 @@ kbd {
 .panel-status pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 12px var(--mono);
+  font: var(--text-sm) var(--mono);
 }
 
 /* Surfaces arrive from what opened them: menus and popovers grow from their trigger's corner,
@@ -4805,4 +4828,14 @@ kbd {
   .maintenance-backdrop {
     background: rgb(0 0 0 / 85%);
   }
+}
+
+/* Counters and stats keep their width as digits change. */
+.notification-badge,
+.workspace-rail sup,
+.review-count,
+.review-totals,
+.session-worktree-count,
+.usage-window-label {
+  font-variant-numeric: tabular-nums;
 }

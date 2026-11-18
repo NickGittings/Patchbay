@@ -43,7 +43,7 @@
   white-space: nowrap;
 }
 .commit-meta {
-  font-size: 12px;
+  font-size: var(--text-sm);
   opacity: 0.7;
 }
 .commit-details {
@@ -83,7 +83,7 @@
 }
 .commit-files span {
   opacity: 0.6;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .commit-files button.active {
   background: var(--hover);
