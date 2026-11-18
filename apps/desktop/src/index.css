@@ -50,8 +50,14 @@
   --del-gutter: color-mix(in srgb, var(--bad) 15%, var(--bg));
   --del-text: #ffc2c2;
   --hunk-bg: color-mix(in srgb, var(--accent) 7%, var(--bg));
-  --radius: 8px;
+  /* Corner scale: chips, controls, cards and panels, floating surfaces. */
+  --radius-xs: 4px;
   --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  /* Elevation: resting controls, raised cards and tips, then floating menus and dialogs. */
+  --shadow-1: 0 2px 6px rgb(0 0 0 / 22%);
+  --shadow-2: 0 4px 16px rgb(0 0 0 / 26%);
   --shadow: 0 0 0 1px var(--border-strong), 0 16px 48px rgb(0 0 0 / 70%);
   --overlay: rgb(0 0 0 / 70%);
   /* Pressed fill: one step past --hover, so a press reads before release. */
@@ -208,7 +214,7 @@ input[type='radio'] {
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border: 2px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
@@ -334,7 +340,7 @@ input[type='radio'] {
 .search-results {
   background: var(--panel);
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
 }
 
@@ -487,7 +493,7 @@ input[type='radio'] {
   padding: 3px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--radius);
 }
 /* Map, Stories and Chat's Changes put these tabs at one spot: the map's panel sits as far in as
    the other two headers pad, and both headers are the same height. */
@@ -915,8 +921,8 @@ input[type='radio'] {
   width: 260px;
   background: var(--panel-2);
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  box-shadow: 0 2px 6px rgb(0 0 0 / 25%);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
   transition:
     border-color var(--dur-fast) var(--ease-out),
     box-shadow var(--dur-fast) var(--ease-out);
@@ -935,7 +941,7 @@ input[type='radio'] {
   border-color: var(--accent);
   box-shadow:
     0 0 0 1px var(--accent),
-    0 3px 8px rgb(0 0 0 / 30%);
+    var(--shadow-2);
 }
 .component-header {
   display: flex;
@@ -966,7 +972,7 @@ input[type='radio'] {
   font-size: 10px;
   color: var(--accent-text);
   background: var(--accent-soft);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 1px 5px;
 }
 .repo-badge {
@@ -974,7 +980,7 @@ input[type='radio'] {
   font-size: 12px;
   color: var(--muted);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 0 5px;
   max-width: 90px;
   overflow: hidden;
@@ -1348,7 +1354,7 @@ input[type='radio'] {
   border-color: var(--accent);
   box-shadow:
     0 0 0 1px var(--accent),
-    0 3px 8px rgb(0 0 0 / 30%);
+    var(--shadow-2);
 }
 .component-node.nearby {
   border-color: var(--border-hover);
@@ -1540,7 +1546,7 @@ input[type='radio'] {
   gap: 4px;
   font-size: 12px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 1px 8px;
   color: var(--muted);
 }
@@ -1635,7 +1641,7 @@ input[type='radio'] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 1px 7px;
   font-size: 10.5px;
   font-weight: 600;
@@ -1975,7 +1981,6 @@ button.review-name:hover:not(:disabled) {
   inset: 0;
   z-index: 100;
   background: var(--overlay);
-  backdrop-filter: blur(4px);
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -1997,7 +2002,7 @@ button.review-name:hover:not(:disabled) {
 }
 .extension-badge {
   --tone: var(--accent);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font-size: 10px;
   padding: 2px 5px;
   color: color-mix(in srgb, var(--tone) 50%, #fff);
@@ -2334,7 +2339,7 @@ button.review-name:hover:not(:disabled) {
   font-size: 12px;
   color: var(--task);
   background: color-mix(in srgb, var(--task) 14%, transparent);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 1px 5px;
 }
 
@@ -2389,7 +2394,7 @@ button.review-name:hover:not(:disabled) {
 }
 .worktree-row {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--panel-2);
   min-width: 0;
   padding: 6px 8px;
@@ -2453,7 +2458,7 @@ button.review-name:hover:not(:disabled) {
 .worktree-tag {
   font-size: 12px;
   padding: 1px 7px;
-  border-radius: 9px;
+  border-radius: var(--radius);
   border: 1px solid var(--border-strong);
   color: var(--muted);
 }
@@ -2487,7 +2492,7 @@ button.review-name:hover:not(:disabled) {
   flex-wrap: wrap;
   gap: 4px;
   padding: 5px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
   font-size: 12px;
 }
@@ -2677,7 +2682,6 @@ button.review-name:hover:not(:disabled) {
   inset: 0;
   z-index: 1000;
   background: var(--overlay);
-  backdrop-filter: blur(4px);
   display: grid;
   place-items: center;
 }
@@ -2706,7 +2710,7 @@ button.review-name:hover:not(:disabled) {
   height: 40px;
   margin-bottom: 4px;
   border: 1px solid var(--border-strong);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: linear-gradient(180deg, var(--panel-2), var(--bg));
   color: var(--muted);
   font-size: 18px;
@@ -2739,7 +2743,7 @@ kbd {
   background: var(--panel-2);
   border: 1px solid var(--border-strong);
   border-bottom-width: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 /* Welcome */
@@ -2989,7 +2993,7 @@ kbd {
   margin: 0;
   padding: 6px 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
@@ -3272,7 +3276,7 @@ kbd {
   background: var(--accent);
   color: var(--bg);
   font-weight: 600;
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 1px 4px;
 }
 .workspace-rail sup[data-status='error'] {
@@ -3458,7 +3462,7 @@ kbd {
   gap: 8px;
   min-width: 0;
   padding: 6px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .project-list .panel-list-row {
   border: 1px solid transparent;
@@ -3515,7 +3519,7 @@ kbd {
 }
 .stack-card {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--panel-2);
   padding: 10px 12px;
   margin: 0 0 10px;
@@ -3995,7 +3999,7 @@ kbd {
 }
 .notification-badge {
   font-size: 10px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 0 5px;
   color: var(--bg);
   background: var(--accent);
@@ -4077,10 +4081,10 @@ kbd {
   display: flex;
   flex-direction: column;
   z-index: 40;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 0;
+  border-radius: var(--radius-lg);
   background: var(--panel);
-  box-shadow: 0 12px 40px #0004;
+  box-shadow: var(--shadow);
 }
 .footer-popover-header {
   display: flex;
@@ -4215,30 +4219,29 @@ kbd {
   --toast-from: -8px;
 }
 .toast-region > .toast {
-  animation: toast-in 240ms cubic-bezier(0.2, 0.9, 0.3, 1) backwards;
   transition:
-    opacity 160ms ease-in,
-    transform 160ms ease-in;
+    opacity 240ms var(--ease-out),
+    transform 240ms var(--ease-out);
+}
+/* Transitions, not keyframes: dismissing a card mid-entrance reverses it from where it is. */
+@starting-style {
+  .toast-region > .toast {
+    opacity: 0;
+    transform: translateY(var(--toast-from)) scale(0.98);
+  }
 }
 .toast-region > .toast[data-leaving] {
   opacity: 0;
   transform: translateY(var(--toast-from)) scale(0.98);
   pointer-events: none;
-}
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(var(--toast-from)) scale(0.98);
-  }
-}
-@keyframes toast-fade {
-  from {
-    opacity: 0;
-  }
+  transition-duration: 160ms;
+  transition-timing-function: var(--ease-in);
 }
 @media (prefers-reduced-motion: reduce) {
-  .toast-region > .toast {
-    animation-name: toast-fade;
+  @starting-style {
+    .toast-region > .toast {
+      transform: none;
+    }
   }
   .toast-region > .toast[data-leaving] {
     transform: none;
@@ -4547,7 +4550,7 @@ kbd {
   border-radius: var(--radius-sm);
   background: var(--panel-2);
   color: var(--text);
-  box-shadow: 0 3px 12px rgb(0 0 0 / 30%);
+  box-shadow: var(--shadow-2);
   font-size: 12px;
   overflow-wrap: anywhere;
   pointer-events: none;
@@ -4565,7 +4568,7 @@ kbd {
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  box-shadow: 0 2px 6px rgb(0 0 0 / 20%);
+  box-shadow: var(--shadow-1);
 }
 .canvas-controls .react-flow__controls-button {
   width: 30px;
@@ -4734,4 +4737,72 @@ kbd {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: 12px var(--mono);
+}
+
+/* Surfaces arrive from what opened them: menus and popovers grow from their trigger's corner,
+   dialogs settle in place over a fading scrim. Closing stays immediate, like macOS menus. */
+.menu-list {
+  transform-origin: top left;
+  animation: surface-in 150ms var(--ease-out);
+}
+.menu-list.right {
+  transform-origin: top right;
+}
+.menu-list.above {
+  transform-origin: bottom left;
+}
+.menu-list.right.above {
+  transform-origin: bottom right;
+}
+.extension-overlay,
+.maintenance-backdrop {
+  animation: scrim-in var(--dur-base) var(--ease-out);
+}
+/* `scale` rather than `transform`, so Popover's portal check sees no containing block. */
+.dialog-shell,
+.map-maintenance-dialog {
+  animation: dialog-in var(--dur-base) var(--ease-out);
+}
+.rail-tooltip {
+  animation: scrim-in var(--dur-fast) var(--ease-out);
+}
+@keyframes surface-in {
+  from {
+    opacity: 0;
+    scale: 0.97;
+  }
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    scale: 0.98;
+  }
+}
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu-list,
+  .dialog-shell,
+  .map-maintenance-dialog {
+    animation-name: scrim-in;
+  }
+}
+
+/* Higher contrast: floating surfaces get a defined edge and scrims go fully dark. */
+@media (prefers-contrast: more) {
+  .menu-list,
+  .toast,
+  .extensions-panel,
+  .node-extension-menu,
+  .map-maintenance-dialog,
+  .search-results {
+    border: 1px solid var(--border-hover);
+  }
+  .extension-overlay,
+  .maintenance-backdrop {
+    background: rgb(0 0 0 / 85%);
+  }
 }

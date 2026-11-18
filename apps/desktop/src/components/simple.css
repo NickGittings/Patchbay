@@ -89,7 +89,7 @@
 .simple-prompt {
   margin: 12px 0 12px 24px;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--hover);
 }
 .simple-prompt pre {
@@ -132,7 +132,7 @@
   padding: 12px;
   margin: 16px 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   overflow-wrap: anywhere;
 }
 .simple-result h3 {
@@ -186,9 +186,9 @@
   margin: 0 12px 8px;
   padding: 10px 12px;
   border: 1px solid var(--border-strong);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: linear-gradient(var(--accent-soft), transparent 72px), var(--panel);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 22%);
+  box-shadow: var(--shadow-2);
 }
 .simple-step::after {
   content: '';
@@ -214,7 +214,7 @@
   width: 24px;
   height: 24px;
   flex-shrink: 0;
-  border-radius: 7px;
+  border-radius: var(--radius);
   background: var(--accent-soft);
   color: var(--accent-text);
   font-size: 16px;
@@ -431,7 +431,7 @@
   margin: 0 0 8px;
   padding: 8px 10px;
   border: 1px solid var(--muted);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
 }
 .simple-result > time {
@@ -462,7 +462,7 @@
   margin: 12px 0;
   padding: 10px;
   border: 1px solid color-mix(in srgb, var(--input) 45%, var(--border));
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .chat-question-title {
   margin: 0 0 8px;
@@ -482,7 +482,7 @@
   display: inline-block;
   margin-right: 6px;
   padding: 0 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--panel-2);
   color: var(--muted);
   font-size: 11px;
@@ -508,7 +508,7 @@
   padding: 8px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -563,9 +563,10 @@
   z-index: 10;
   width: min(300px, 70vw);
   padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 0;
+  border-radius: var(--radius-lg);
   background: var(--panel);
+  box-shadow: var(--shadow);
 }
 
 .message-meta {
@@ -589,7 +590,7 @@
   overflow: auto;
   padding: 0 0.75rem;
   font-size: 0.85rem;
-  color: var(--text-muted);
+  color: var(--muted);
 }
 .chat-workers-flag {
   color: var(--bad);

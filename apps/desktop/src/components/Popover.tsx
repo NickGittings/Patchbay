@@ -51,6 +51,7 @@ function portalTarget(from: HTMLElement | null): HTMLElement {
   const style = getComputedStyle(modal)
   const contains =
     style.transform !== 'none' ||
+    style.scale !== 'none' ||
     style.filter !== 'none' ||
     style.backdropFilter !== 'none' ||
     style.perspective !== 'none' ||
@@ -241,7 +242,7 @@ export default function Popover({
   const popup = (
     <div
       ref={list}
-      className={`menu-list ${align} ${listClassName}`}
+      className={`menu-list ${align}${portal && above ? ' above' : ''} ${listClassName}`}
       role={role}
       aria-label={title}
       style={
