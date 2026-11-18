@@ -11,6 +11,10 @@ import { ago } from './review'
 export const INTERRUPTED_SESSION_DETAIL =
   'The session service restarted. Choose Resume in Sessions or Restart to recover.'
 
+/** Whether an older version's service, kept alive by running work, blocks this one. */
+export const isOutdatedServiceError = (error: string | undefined) =>
+  error?.includes('still running work') ?? false
+
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 export const KIND_COLOR: Record<ComponentKind, string> = {

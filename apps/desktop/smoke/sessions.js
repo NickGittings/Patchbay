@@ -565,7 +565,25 @@
       if (!disabled) smoke.store.setState({ serviceConnected: false })
       return disabled
     })
-    smoke.store.setState({ serviceConnected: true })
+    // Chat has no terminal pane to carry the older-service action, so its banner offers it.
+    const outdatedBanner = () =>
+      [...document.querySelectorAll('.recovery-banner')].find((banner) =>
+        [...banner.querySelectorAll('button')].some(
+          (button) => button.textContent.trim() === 'Stop older sessions',
+        ),
+      )
+    state().setSimpleMode(true)
+    smoke.store.setState({
+      serviceError: 'an older Patchbay session service is still running work',
+    })
+    await until('older-service banner in chat', () => {
+      const banner = outdatedBanner()
+      if (!banner) smoke.store.setState({ serviceConnected: false })
+      return banner
+    })
+    smoke.store.setState({ serviceConnected: true, serviceError: undefined })
+    await until('older-service banner cleared', () => !outdatedBanner())
+    state().setSimpleMode(false)
     for (const closePanel of [
       () => document.querySelector('.workspace-rail [aria-label="Sessions"]').click(),
       () =>

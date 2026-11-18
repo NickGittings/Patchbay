@@ -3,10 +3,25 @@ import type { AgentReport, SessionState, SessionStatus, TerminalKind } from '../
 import {
   describeTerminal,
   foldedStatus,
+  isOutdatedServiceError,
   paneAutoStarts,
   sessionRun,
   terminalStatus,
 } from './display'
+
+test('only a service kept alive by running work counts as outdated', () => {
+  expect(
+    isOutdatedServiceError(
+      'Session service protocol mismatch (service 1, this build 2): an older Patchbay session service is still running work, which was preserved',
+    ),
+  ).toBe(true)
+  expect(
+    isOutdatedServiceError(
+      'Session service protocol mismatch (service 3, this build 2). Use a matching Patchbay version.',
+    ),
+  ).toBe(false)
+  expect(isOutdatedServiceError(undefined)).toBe(false)
+})
 
 const NOW = 1_000_000
 const status = (patch: Partial<SessionStatus> = {}): SessionStatus => ({
