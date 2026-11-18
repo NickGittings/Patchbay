@@ -1833,6 +1833,7 @@ async fn task_root_start(
     extra_context: Option<Vec<ContextSection>>,
     kickoff: Option<context::Kickoff>,
     review_session: Option<String>,
+    chat_team: Option<String>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1875,6 +1876,7 @@ async fn task_root_start(
                 &project_id,
                 &tree,
                 auto.is_some(),
+                chat_team.as_deref(),
             )
             .map_err(err)?;
         }

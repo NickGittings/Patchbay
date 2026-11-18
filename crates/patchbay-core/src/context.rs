@@ -2132,8 +2132,15 @@ fn root_session_spec(
         // Without a repo there is nowhere to keep the plan; the briefing still works.
         // The folder is always added: it sits under `.git`, which agents' sandboxes
         // (Codex's workspace-write) keep read-only unless it is a writable root itself.
-        if planning
-            && let Ok(plan) = crate::plans::prepared_file(&PathBuf::from(&project.root), task)
+        // A chat lead plans for the same Plan view and Build as a planner does.
+        let chat = purpose == crate::pty::LaunchPurpose::Chat;
+        let plan_task = if chat {
+            crate::planning::artifact_task(task)
+        } else {
+            task
+        };
+        if (planning || chat)
+            && let Ok(plan) = crate::plans::prepared_file(&PathBuf::from(&project.root), plan_task)
         {
             if let Some(dir) = plan.parent() {
                 dirs.push(dir.to_path_buf());
@@ -2143,7 +2150,7 @@ fn root_session_spec(
                 plan.display().to_string(),
             );
         }
-        if !planning {
+        if !planning && !chat {
             dirs.extend(crate::plans::existing_dir(Path::new(&project.root)));
         }
         // cwd is the root; components in other repos must be added explicitly.
@@ -3279,6 +3286,15 @@ mod tests {
         assert!(spec.dirs.contains(&plans));
         let task = plan_session_spec_for(&p, &[], &planner(), Some("t1"), &AllowAll, &[]).unwrap();
         assert!(task.env[crate::plans::PLAN_FILE_ENV].ends_with("t1.md"));
+        // A chat lead's plans reach the same artifact as its worktree's planner.
+        for (task, file) in [(None, "_worktree_main.md"), (Some("t1"), "t1.md")] {
+            let lead = chat_session_spec(&p, &[], &planner(), task, &AllowAll, &[]).unwrap();
+            assert_eq!(
+                lead.env[crate::plans::PLAN_FILE_ENV],
+                plans.join(file).display().to_string()
+            );
+            assert!(lead.dirs.contains(&plans));
+        }
         let context = plan_context(&p, &[], &[]);
         assert!(context.contains("$PATCHBAY_PLAN_FILE"));
         assert!(context.contains("Do not wait for the user to request a save"));

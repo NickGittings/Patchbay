@@ -1,8 +1,19 @@
-import { gitWorktrees, reviewRead, reviewAgentStart, terminalStop } from './ipc'
-import { reviewerBusy } from './review'
-import { useStore, projectOf } from '../store'
+import {
+  gitBranches,
+  gitWorktrees,
+  reviewRead,
+  reviewAgentStart,
+  terminalSnapshot,
+  terminalStop,
+} from './ipc'
+import { agentTurnEnded, reviewerBusy } from './review'
+import { useStore, projectOf, projectStateOf } from '../store'
 import { controlTeam, requireTeamPreset, useChatTeams, type ChatTeam } from './chatTeams'
-import type { TerminalSpec } from '../types'
+import { roleDevices } from './agentRoles'
+import { agentTerminal } from './plan'
+import { requireProviderAuth } from './providerAuth'
+import { logStageLaunch } from './stageLog'
+import type { TerminalSpec, Worktree } from '../types'
 
 export interface CouncilSettings {
   enabled: boolean
@@ -34,6 +45,8 @@ export interface CouncilRun {
     preset: TerminalSpec
     requestId: string
     sessionId?: string
+    /** When its launch began, so only turns of this launch count as its finish. */
+    startedMs?: number
     state: 'queued' | 'launching' | 'running' | 'done' | 'failed'
     error?: string
   }[]
@@ -41,6 +54,52 @@ export interface CouncilRun {
 const active = new Set<string>()
 const driving = new Map<string, Promise<void>>()
 type Workflow = NonNullable<ChatTeam['requests']>[number]
+type Member = CouncilRun['members'][number]
+/** A lead's `startReview`: the regular review, with the reviewers and base Chat's button uses. */
+const leadReview = (request: Workflow) => request.action === 'startReview'
+/** Like `startReviewAgents`, a lone reviewer has no lane and several get one each. */
+const laneOf = (run: CouncilRun, member: Member) =>
+  run.members.length > 1 ? member.preset.id : null
+async function leadReviewBase(
+  team: ChatTeam,
+  request: Workflow,
+  source: Worktree,
+  worktrees: Worktree[],
+) {
+  const branches = await gitBranches(team.projectId)
+  const asked = request.settings.base
+  let base = typeof asked === 'string' ? asked : ''
+  if (!base) {
+    const { chatReviewBase } = await import('./reviewAgents')
+    const saved = await reviewRead(team.projectId, source.branch!)
+    base =
+      chatReviewBase(
+        source,
+        projectStateOf(team.projectId)?.tasks ?? [],
+        worktrees,
+        branches,
+        saved?.base,
+      ) ?? ''
+  }
+  if (!base || !branches.includes(base)) throw new Error('Choose an existing review base branch')
+  return base
+}
+function leadReviewers(): TerminalSpec[] {
+  const { devices, agentRoles } = useStore.getState()
+  return roleDevices(devices, agentRoles, 'review').filter(Boolean).map(agentTerminal)
+}
+/** Show a lead's reviewer like a launched stage; only its workflow result wakes the lead. */
+async function recordLeadReviewer(team: ChatTeam, request: Workflow, member: Member) {
+  if (!leadReview(request) || !member.sessionId) return
+  const launched = { sessionId: member.sessionId, requestId: member.requestId }
+  await logStageLaunch(team.projectId, team.task, 'review', 'review', launched).catch(() => {})
+  await controlTeam(team, {
+    kind: 'note',
+    id: member.requestId,
+    text: `Reviewer for workflow ${request.id} started. Its result arrives with that workflow.`,
+    sessions: [member.sessionId],
+  }).catch(() => {})
+}
 export function savedCouncil(request: Workflow): CouncilRun | null {
   try {
     if (request.councilRun) return structuredClone(request.councilRun)
@@ -66,6 +125,7 @@ export async function cancelCouncil(team: ChatTeam, request: Workflow) {
       ?.requests?.find((r) => r.id === request.id) ?? request
   if (['completed', 'failed'].includes(fresh.state)) return
   const run = savedCouncil(fresh)
+  const noun = leadReview(fresh) ? 'Review' : 'Council'
   for (const member of run?.members ?? []) {
     if (member.sessionId && member.state === 'running') await terminalStop(member.sessionId)
   }
@@ -73,7 +133,7 @@ export async function cancelCouncil(team: ChatTeam, request: Workflow) {
     for (const member of run.members) {
       if (member.state !== 'done' && member.state !== 'failed') {
         member.state = 'failed'
-        member.error = 'Council cancelled; findings may be partial'
+        member.error = `${noun} cancelled; findings may be partial`
       }
     }
     await save(team, request, run)
@@ -82,7 +142,7 @@ export async function cancelCouncil(team: ChatTeam, request: Workflow) {
     kind: 'requestState',
     id: request.id,
     state: 'failed',
-    result: 'Council cancelled. Results are incomplete; do not treat them as clean.',
+    result: `${noun} cancelled. Results are incomplete; do not treat them as clean.`,
   })
   active.delete(request.id)
 }
@@ -104,9 +164,13 @@ async function advanceCouncil(team: ChatTeam, request: Workflow) {
   if (!run) {
     const project = projectOf(team.projectId)
     if (!project) throw new Error('Project is unavailable')
-    const source = (await gitWorktrees(team.projectId)).find((w) => w.path === team.target)
-    if (!source?.branch) throw new Error('Council requires a checked-out branch')
-    const base = request.settings.base
+    const worktrees = await gitWorktrees(team.projectId)
+    const source = worktrees.find((w) => w.path === team.target)
+    if (!source?.branch)
+      throw new Error(`${leadReview(request) ? 'Review' : 'Council'} requires a checked-out branch`)
+    const base = leadReview(request)
+      ? await leadReviewBase(team, request, source, worktrees)
+      : request.settings.base
     if (typeof base !== 'string' || !base || base === source.branch)
       throw new Error('Choose a different review base branch')
     const { reviewWorktreeBusy } = await import('./reviewAgents')
@@ -114,13 +178,15 @@ async function advanceCouncil(team: ChatTeam, request: Workflow) {
     if (reviewWorktreeBusy(store.sessionRecords, store.sessions, team.target))
       throw new Error('Another review is still active in this worktree')
     const snapshot = request.council
-    if (!snapshot?.[0].enabled || snapshot[1].length < 2)
+    if (!leadReview(request) && (!snapshot?.[0].enabled || snapshot[1].length < 2))
       throw new Error('Council is disabled or has fewer than two reviewers')
+    const reviewers = leadReview(request) ? leadReviewers() : snapshot![1]
+    if (!reviewers.length) throw new Error('Choose an agent for the review role first')
     run = {
       round: crypto.randomUUID(),
       branch: source.branch,
       base,
-      members: snapshot[1].map((preset) => ({
+      members: reviewers.map((preset) => ({
         preset,
         requestId: crypto.randomUUID(),
         state: 'queued',
@@ -131,29 +197,32 @@ async function advanceCouncil(team: ChatTeam, request: Workflow) {
   }
   const project = projectOf(team.projectId)
   if (!project) return
-  const findings = await reviewRead(team.projectId, run.branch)
+  const noun = leadReview(request) ? 'review' : 'council'
+  // Sessions first: findings read afterwards include whatever a finished turn wrote.
   const state = useStore.getState()
+  const findings = await reviewRead(team.projectId, run.branch)
   for (const member of run.members) {
     if (member.state === 'launching') {
       const recovered = state.sessionRecords.find((r) => r.requestIds?.includes(member.requestId))
       if (recovered) {
         member.sessionId = recovered.id
         member.state = 'running'
+        await recordLeadReviewer(team, request, member)
       } else {
         member.state = 'failed'
-        member.error = 'Launch interrupted; request a new council to retry. No automatic relaunch.'
+        member.error = `Launch interrupted; request a new ${noun} to retry. No automatic relaunch.`
       }
     }
     if (member.state === 'queued' && !active.has(request.id)) {
       member.state = 'failed'
-      member.error = 'Not launched before restart; request a new council to retry.'
+      member.error = `Not launched before restart; request a new ${noun} to retry.`
     }
     if (member.state !== 'running') continue
     const record = state.sessionRecords.find((r) => r.id === member.sessionId)
     const session = state.sessions[member.sessionId!]
     const lane =
       findings?.round === run.round
-        ? findings.reviewers.find((r) => r.lane === member.preset.id)
+        ? findings.reviewers.find((r) => (r.lane ?? null) === laneOf(run, member))
         : undefined
     if (
       lane?.finished &&
@@ -164,20 +233,35 @@ async function advanceCouncil(team: ChatTeam, request: Workflow) {
     } else if (session?.running === false || lane?.error) {
       member.state = 'failed'
       member.error = lane?.error ?? 'Reviewer exited without complete findings'
+    } else if (agentTurnEnded(session ?? record?.snapshot, member.startedMs)) {
+      member.state = 'failed'
+      member.error = 'Reviewer stopped without complete findings for this review'
+    } else if (
+      !session &&
+      !record &&
+      !(await terminalSnapshot(member.sessionId!, 0).catch(() => true))
+    ) {
+      member.state = 'failed'
+      member.error = 'Reviewer session no longer exists'
     }
   }
   let capacity =
-    (request.council?.[0].concurrency ?? 2) -
+    (leadReview(request) ? run.members.length : (request.council?.[0].concurrency ?? 2)) -
     run.members.filter((m) => m.state === 'running' || m.state === 'launching').length
   for (const member of run.members) {
     if (member.state !== 'queued' || team.state !== 'running' || team.recovery || capacity-- <= 0)
       continue
     member.state = 'launching'
+    member.startedMs = Date.now()
     await save(team, request, run)
     try {
-      await requireTeamPreset(member.preset, project, team.task)
+      // A lead review launches like Chat's Review, which doesn't need status hooks.
+      if (leadReview(request))
+        await requireProviderAuth({ terminal: member.preset, project, task: team.task })
+      else await requireTeamPreset(member.preset, project, team.task)
       const { retireReviewSlots } = await import('./simpleReview')
-      await retireReviewSlots(team.projectId, team.target, [member.preset.id])
+      const lane = laneOf(run, member)
+      await retireReviewSlots(team.projectId, team.target, [lane])
       await listenForTerminals()
       member.sessionId = await reviewAgentStart(
         project,
@@ -186,14 +270,16 @@ async function advanceCouncil(team: ChatTeam, request: Workflow) {
           focus: typeof request.settings.focus === 'string' ? request.settings.focus : undefined,
           branch: run.branch,
           base: run.base,
-          lane: member.preset.id,
+          ...(lane ? { lane } : {}),
           round: run.round,
         },
         member.preset,
         member.requestId,
       )
       member.state = 'running'
-      await reconcileFreshSessions()
+      // The reviewer is running now, so a failed refresh must not report it as failed.
+      await reconcileFreshSessions().catch(() => {})
+      await recordLeadReviewer(team, request, member)
     } catch (error) {
       // A lost reply can hide a successful launch. Reconcile before declaring failure.
       await reconcileFreshSessions().catch(() => {})
@@ -203,6 +289,7 @@ async function advanceCouncil(team: ChatTeam, request: Workflow) {
       if (recovered) {
         member.sessionId = recovered.id
         member.state = 'running'
+        await recordLeadReviewer(team, request, member)
       } else {
         member.state = 'failed'
         member.error = String(error)
@@ -226,7 +313,10 @@ async function advanceCouncil(team: ChatTeam, request: Workflow) {
     const summary = run.members
       .map((m) => `${m.preset.name}: ${m.state}${m.error ? ' — ' + m.error : ''}`)
       .join('\n')
-    const text = `Council ${run.round} against ${run.base}. ${complete ? 'All members completed.' : 'INCOMPLETE OR STALE: do not report a clean council verdict.'}\n${summary}\nConsolidate duplicate findings with attribution and explain disagreements.\n${current?.round === run.round ? current.text.slice(0, 10000) + (current.text.length > 10000 ? '\n[Findings excerpt; open Review for the full reports.]' : '') : 'Saved findings belong to another review round.'}`
+    const heading = leadReview(request)
+      ? `Review ${run.round} of ${run.branch} against ${run.base}. ${complete ? 'All reviewers completed.' : 'INCOMPLETE OR STALE: do not report a clean verdict.'}\n${summary}\nThe findings are in Review, where the user can fix or merge.`
+      : `Council ${run.round} against ${run.base}. ${complete ? 'All members completed.' : 'INCOMPLETE OR STALE: do not report a clean council verdict.'}\n${summary}\nConsolidate duplicate findings with attribution and explain disagreements.`
+    const text = `${heading}\n${current?.round === run.round ? current.text.slice(0, 10000) + (current.text.length > 10000 ? '\n[Findings excerpt; open Review for the full reports.]' : '') : 'Saved findings belong to another review round.'}`
     await controlTeam(team, {
       kind: 'requestState',
       id: request.id,

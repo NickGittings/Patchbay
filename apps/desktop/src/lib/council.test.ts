@@ -1,12 +1,20 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 vi.mock('./ipc', () => ({
   gitWorktrees: vi.fn(async () => [{ path: '/p', branch: 'feature' }]),
+  gitBranches: vi.fn(async () => ['main', 'feature']),
   reviewRead: vi.fn(async () => null),
   reviewAgentStart: vi.fn(async () => 'review-session'),
+  terminalSnapshot: vi.fn(async () => ({ running: true })),
   terminalStop: vi.fn(async () => {}),
 }))
+vi.mock('./providerAuth', () => ({ requireProviderAuth: vi.fn(async () => {}) }))
 vi.mock('./simpleReview', () => ({ retireReviewSlots: vi.fn(async () => {}) }))
-vi.mock('./reviewAgents', () => ({ reviewWorktreeBusy: vi.fn(() => false) }))
+vi.mock('./reviewAgents', () => ({
+  reviewWorktreeBusy: vi.fn(() => false),
+  chatReviewBase: vi.fn(() => 'main'),
+}))
+vi.mock('./agentRoles', () => ({ roleDevices: vi.fn(() => []) }))
+vi.mock('./stageLog', () => ({ logStageLaunch: vi.fn(async () => {}) }))
 vi.mock('./sessions', () => ({
   listenForTerminals: vi.fn(async () => {}),
   reconcileFreshSessions: vi.fn(async () => {}),
@@ -18,6 +26,7 @@ vi.mock('./chatTeams', () => ({
 }))
 vi.mock('../store', () => ({
   projectOf: vi.fn(() => ({ root: '/p', projectId: 'p' })),
+  projectStateOf: vi.fn(() => ({ tasks: [] })),
   useStore: { getState: vi.fn(() => ({ sessionRecords: [], sessions: {} })) },
 }))
 import {
@@ -28,8 +37,15 @@ import {
   type CouncilRun,
 } from './council'
 import { controlTeam, requireTeamPreset, type ChatTeam } from './chatTeams'
-import { reviewAgentStart, reviewRead } from './ipc'
+import { gitBranches, gitWorktrees, reviewAgentStart, reviewRead, terminalSnapshot } from './ipc'
+import { requireProviderAuth } from './providerAuth'
+import { chatReviewBase } from './reviewAgents'
+import { reconcileFreshSessions } from './sessions'
 import { useStore } from '../store'
+import { roleDevices } from './agentRoles'
+import { retireReviewSlots } from './simpleReview'
+import { logStageLaunch } from './stageLog'
+import type { ReviewFindings } from '../types'
 const presets = ['codex', 'claude'].map((id) => ({
   id,
   name: id,
@@ -139,4 +155,138 @@ test('provider setup failures never launch an untrackable reviewer', async () =>
     team,
     expect.objectContaining({ result: expect.stringContaining('Set up Agent status integration') }),
   )
+})
+
+function leadReview(state = 'starting') {
+  return {
+    id: 'lead-review',
+    action: 'startReview',
+    settings: {},
+    state,
+    result: null,
+  } as NonNullable<ChatTeam['requests']>[number]
+}
+const devices = (...ids: string[]) =>
+  ids.map((id) => ({ id, name: id, command: id })) as ReturnType<typeof roleDevices>
+test('a lead review launches the regular reviewer and appears as its stage', async () => {
+  vi.mocked(roleDevices).mockReturnValue(devices('codex'))
+  await driveCouncil({ ...team, task: 't1' } as ChatTeam, leadReview())
+  const request = vi.mocked(reviewAgentStart).mock.calls[0][1]
+  expect(request).toMatchObject({ worktree: '/p', branch: 'feature', base: 'main' })
+  expect(request.lane).toBeUndefined()
+  expect(retireReviewSlots).toHaveBeenCalledWith('p', '/p', [null])
+  expect(logStageLaunch).toHaveBeenCalledWith(
+    'p',
+    't1',
+    'review',
+    'review',
+    expect.objectContaining({ sessionId: 'review-session' }),
+  )
+  expect(controlTeam).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ kind: 'note', sessions: ['review-session'] }),
+  )
+})
+test('every configured reviewer of a lead review starts in its own lane', async () => {
+  vi.mocked(roleDevices).mockReturnValue(devices('codex', 'claude'))
+  await driveCouncil(team, leadReview())
+  expect(vi.mocked(reviewAgentStart).mock.calls.map(([, r]) => r.lane)).toEqual(['codex', 'claude'])
+})
+const runningReview = (startedMs = 100) => {
+  const r = leadReview('running')
+  r.councilRun = {
+    round: 'round',
+    branch: 'feature',
+    base: 'main',
+    members: [
+      { preset: presets[0], requestId: 'one', sessionId: 'review', startedMs, state: 'running' },
+    ],
+  }
+  return r
+}
+const withSessions = (sessions: unknown) =>
+  vi.mocked(useStore.getState).mockReturnValue({
+    sessionRecords: [],
+    sessions,
+  } as unknown as ReturnType<typeof useStore.getState>)
+const lastResult = () => {
+  const control = vi.mocked(controlTeam).mock.lastCall![1]
+  return control.kind === 'requestState' ? control : undefined
+}
+const stopped = (sinceMs: number) => ({
+  review: {
+    running: true,
+    status: { agent: { state: 'review', sinceMs, authoritative: true } },
+  },
+})
+test('a reviewer that ends its turn without findings fails the review', async () => {
+  withSessions(stopped(200))
+  await driveCouncil(team, runningReview())
+  expect(lastResult()).toMatchObject({ state: 'failed' })
+  expect(lastResult()?.result).toContain('stopped without complete findings')
+})
+test('a turn that ended before this launch does not settle its reviewer', async () => {
+  withSessions(stopped(50))
+  await driveCouncil(team, runningReview())
+  expect(lastResult()).toMatchObject({ state: 'running' })
+})
+test('a reviewer whose session no longer exists fails the review', async () => {
+  vi.mocked(terminalSnapshot).mockResolvedValueOnce(null)
+  await driveCouncil(team, runningReview())
+  expect(lastResult()).toMatchObject({ state: 'failed' })
+  expect(lastResult()?.result).toContain('no longer exists')
+})
+test('a failed refresh after launch leaves the reviewer running and recorded', async () => {
+  vi.mocked(roleDevices).mockReturnValue(devices('codex'))
+  vi.mocked(reconcileFreshSessions).mockRejectedValueOnce(new Error('refresh failed'))
+  await driveCouncil(team, leadReview())
+  expect(JSON.parse(lastResult()!.result!).members[0]).toMatchObject({
+    state: 'running',
+    sessionId: 'review-session',
+  })
+  expect(logStageLaunch).toHaveBeenCalledOnce()
+})
+test('a lead review needs provider sign-in but not status hooks', async () => {
+  vi.mocked(roleDevices).mockReturnValue(devices('codex'))
+  await driveCouncil(team, leadReview())
+  expect(requireProviderAuth).toHaveBeenCalledOnce()
+  expect(requireTeamPreset).not.toHaveBeenCalled()
+  expect(reviewAgentStart).toHaveBeenCalledOnce()
+})
+test('an explicit lead review base skips the saved base lookup', async () => {
+  vi.mocked(roleDevices).mockReturnValue(devices('codex'))
+  const r = leadReview()
+  r.settings.base = 'main'
+  await driveCouncil(team, r)
+  expect(gitWorktrees).toHaveBeenCalledOnce()
+  expect(gitBranches).toHaveBeenCalledOnce()
+  expect(chatReviewBase).not.toHaveBeenCalled()
+})
+test('a finished lead review reports its findings to the lead', async () => {
+  const r = leadReview('running')
+  r.councilRun = {
+    round: 'round',
+    branch: 'feature',
+    base: 'main',
+    members: [{ preset: presets[0], requestId: 'one', sessionId: 'review', state: 'running' }],
+  }
+  vi.mocked(reviewRead).mockResolvedValue({
+    round: 'round',
+    text: 'One bug in app.ts',
+    verdict: { clean: false, counts: {} },
+    reviewers: [{ lane: null, finished: true, verdict: { clean: false, counts: {} } }],
+  } as unknown as ReviewFindings)
+  vi.mocked(useStore.getState).mockReturnValue({
+    sessionRecords: [],
+    sessions: { review: { running: false } },
+  } as unknown as ReturnType<typeof useStore.getState>)
+  await driveCouncil(team, r)
+  expect(controlTeam).toHaveBeenLastCalledWith(
+    team,
+    expect.objectContaining({
+      kind: 'requestState',
+      result: expect.stringContaining('One bug in app.ts'),
+    }),
+  )
+  expect(savedCouncil(r)?.members[0].state).toBe('running')
 })

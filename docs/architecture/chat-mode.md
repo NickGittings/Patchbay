@@ -220,6 +220,26 @@ recovery/inbox delivery and a later ready prompt. Service-level submission reser
 and prevent two clients from consuming the same ready prompt. Explicit pause/stop decisions survive
 recovery. Intentional agent switching and conversation clearing remain separate actions.
 
+### Lead-started stages
+
+The lead uses the same stage artifacts as Chat's step card and Full view, so either surface can
+continue the work. Chat leads launch with `PATCHBAY_PLAN_FILE` for their worktree's plan; a lead
+launched before this variable existed keeps its launch environment until it is replaced, and says
+its plan was not saved. `team-request` adds three actions. `startBuild` and `startFix` (`leadStages.ts`)
+call `implementPlannerPlan` and `fixReviewFindings` for the team's worktree, which may not be the
+one on screen. They and Chat's Build and Fix buttons pass the team id, which admits the launch past
+the team's own worktree ownership and starts one agent rather than a provider run. Their requests
+stay `running` until the agent ends a turn or exits, and that result wakes the lead. `startFix` also
+refuses while any reviewer of the worktree may still be writing. `startReview` (`{ base?, focus? }`)
+runs through `council.ts` with the review role's presets and Chat's review base: the branch's last
+review base, else its merge destination. It needs provider sign-in but not status hooks, like Chat's
+Review. One reviewer has no lane; several get one each, as `startReviewAgents` does. Findings go to
+the regular review files, each launch is logged with `logStageLaunch`, and the reviewer's finish is
+a passive note because the workflow result carries the verdict and an excerpt to the lead. A
+reviewer that ends its turn without findings for the round, exits, or disappears fails its member,
+and Settings can cancel the review. Only one build, fix, review or council can be active per team.
+`report` workers remain for investigation. The lead doesn't start merges.
+
 ### Lead review councils
 
 Agent roles settings persist `settings.reviewCouncil` independently of Review assignments:

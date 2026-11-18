@@ -145,3 +145,22 @@ export function reviewerBusy(
     return !agent.authoritative && (s?.status?.lastOutputMs ?? 0) > agent.sinceMs + 2000
   return !(agent?.authoritative && (agent.state === 'idle' || agent.state === 'ended'))
 }
+
+/**
+ * Whether an agent launched at `startedMs` has ended a turn since. Only `review` counts: a fresh
+ * agent can report `idle` before its first turn, and an older report may survive from a previous
+ * run of the same session.
+ */
+export function agentTurnEnded(
+  s: Pick<SessionState, 'status'> | null | undefined,
+  startedMs: number | undefined,
+) {
+  const agent = s?.status?.agent
+  return (
+    startedMs !== undefined &&
+    agent?.state === 'review' &&
+    agent.sinceMs >= startedMs &&
+    !agent.approvalPending &&
+    !reviewerBusy(s, true)
+  )
+}

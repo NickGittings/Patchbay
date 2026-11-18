@@ -11,7 +11,13 @@ import { savePlanDraft } from './planDrafts'
 import { startTerminal } from './sessions'
 import { refreshTasks } from './tasks'
 
-export type HandoffTarget = { projectId: string; task: string | null; providerRunId?: string }
+export type HandoffTarget = {
+  projectId: string
+  task: string | null
+  providerRunId?: string
+  /** The chat team that owns this worktree. Its lead coordinates workers, so one agent starts. */
+  chatTeam?: string
+}
 
 /**
  * Accept the target worktree's own plan and assignments, then launch its implementation agent.
@@ -51,7 +57,7 @@ async function handoffPlannerPlan(
   }
   const authWorkers = workerIds
     ? agentDevices(initial.devices).filter((d) => workerIds.includes(d.id))
-    : auto
+    : auto || target?.chatTeam
       ? []
       : roleDevices(initial.devices, initial.agentRoles, 'worker')
   for (const provider of [device, ...authWorkers])
@@ -89,7 +95,7 @@ async function handoffPlannerPlan(
         if (!found) throw new Error(`Worker preset ${id} is not installed`)
         return found
       })
-    : auto
+    : auto || target?.chatTeam
       ? []
       : roleDevices(initial.devices, useStore.getState().agentRoles, 'worker')
   let launched: { sessionId: string; requestId?: string; implementationRun?: string }
@@ -132,13 +138,24 @@ async function handoffPlannerPlan(
     }
   } else {
     const terminalId = useStore.getState().addRootTerminal(device, target)
-    const requestId = await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
-      kickoff: {
-        kind: 'implementPlan',
-        subagents: useStore.getState().implementSubagents || undefined,
-      },
-      auto,
-    })
+    let requestId: string | undefined
+    try {
+      requestId = await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
+        kickoff: {
+          kind: 'implementPlan',
+          subagents: useStore.getState().implementSubagents || undefined,
+        },
+        auto,
+        chatTeam: target?.chatTeam,
+      })
+    } catch (e) {
+      // Leave nothing behind for a build that didn't start.
+      const failed = useStore.getState()
+      if (target) failed.removeTaskTerminal(TASK_ROOT_SCOPE, terminalId, target)
+      else if (failed.project?.id === projectId && failed.activeTask === task)
+        failed.removeTaskTerminal(TASK_ROOT_SCOPE, terminalId)
+      throw e
+    }
     launched = { sessionId: sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId), requestId }
   }
   if (story && task) {

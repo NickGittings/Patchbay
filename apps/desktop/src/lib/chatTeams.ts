@@ -546,10 +546,15 @@ export function autoOwnership(
 async function driveLeadRequests(team: ChatTeam) {
   if (team.state !== 'running' || team.reset) return
   for (const request of team.requests ?? []) {
-    if (
-      request.action === 'startCouncilReview' &&
-      ['running', 'starting'].includes(request.state)
-    ) {
+    const reviewRound = ['startCouncilReview', 'startReview'].includes(request.action)
+    const leadStage = ['startBuild', 'startFix'].includes(request.action)
+    if (leadStage && request.state === 'running') {
+      const { settleLeadStage } = await import('./leadStages')
+      // A concurrent refresh may settle it first; the next one sees the saved outcome.
+      await settleLeadStage(team, request).catch(() => {})
+      continue
+    }
+    if (reviewRound && ['running', 'starting'].includes(request.state)) {
       try {
         await driveCouncil(team, request)
       } catch (error) {
@@ -574,8 +579,13 @@ async function driveLeadRequests(team: ChatTeam) {
       continue
     }
     try {
-      if (request.action === 'startCouncilReview') {
+      if (reviewRound) {
         await driveCouncil(team, request)
+        continue
+      }
+      if (leadStage) {
+        const { startLeadStage } = await import('./leadStages')
+        await startLeadStage(team, request)
         continue
       }
       const auto = await import('./auto')
@@ -645,12 +655,14 @@ async function driveLeadRequests(team: ChatTeam) {
       await controlTeam(team, {
         kind: 'requestState',
         id: request.id,
-        state: [
-          'An unfinished provider run controls this worktree',
-          'This worktree is controlled',
-        ].some((reason) => String(error).includes(reason))
-          ? 'waiting'
-          : 'failed',
+        // A stage's handoff has side effects, so it reports failure instead of retrying.
+        state:
+          !leadStage &&
+          ['An unfinished provider run controls this worktree', 'This worktree is controlled'].some(
+            (reason) => String(error).includes(reason),
+          )
+            ? 'waiting'
+            : 'failed',
         result: String(error),
       })
     }

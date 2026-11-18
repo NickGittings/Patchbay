@@ -29,7 +29,7 @@ export default function CouncilSettings() {
   const running =
     team?.requests?.filter(
       (r) =>
-        r.action === 'startCouncilReview' &&
+        ['startCouncilReview', 'startReview'].includes(r.action) &&
         ['queued', 'starting', 'running', 'waiting', 'failed', 'completed'].includes(r.state),
     ) ?? []
   return (
@@ -93,35 +93,40 @@ export default function CouncilSettings() {
       {!valid && (
         <p role="alert">Select at least two available presets to enable council reviews.</p>
       )}
-      {running.map((request) => (
-        <div key={request.id}>
-          <p role="status">Council: {request.state}</p>
-          {savedCouncil(request)?.members.map((m) => (
-            <p key={m.preset.id}>
-              {m.preset.name}: {m.state}
-              {m.error && ` — ${m.error}`}
+      {running.map((request) => {
+        const council = request.action === 'startCouncilReview'
+        return (
+          <div key={request.id}>
+            <p role="status">
+              {council ? 'Council' : 'Lead review'}: {request.state}
             </p>
-          ))}
-          {!['failed', 'completed'].includes(request.state) && (
-            <button
-              onClick={() => void cancelCouncil(team!, request).catch((e) => setError(String(e)))}
-            >
-              Cancel council
-            </button>
-          )}
-          {request.state === 'failed' && (
-            <button
-              onClick={() =>
-                void controlTeam(team!, { kind: 'retryCouncil', id: request.id }).catch((e) =>
-                  setError(String(e)),
-                )
-              }
-            >
-              Run council again
-            </button>
-          )}
-        </div>
-      ))}
+            {savedCouncil(request)?.members.map((m) => (
+              <p key={m.preset.id}>
+                {m.preset.name}: {m.state}
+                {m.error && ` — ${m.error}`}
+              </p>
+            ))}
+            {!['failed', 'completed'].includes(request.state) && (
+              <button
+                onClick={() => void cancelCouncil(team!, request).catch((e) => setError(String(e)))}
+              >
+                {council ? 'Cancel council' : 'Cancel review'}
+              </button>
+            )}
+            {council && request.state === 'failed' && (
+              <button
+                onClick={() =>
+                  void controlTeam(team!, { kind: 'retryCouncil', id: request.id }).catch((e) =>
+                    setError(String(e)),
+                  )
+                }
+              >
+                Run council again
+              </button>
+            )}
+          </div>
+        )
+      })}
       {error && <p role="alert">{error}</p>}
     </SettingsSection>
   )

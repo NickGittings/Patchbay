@@ -6,6 +6,7 @@ import type { FlowAction } from './simpleFlow'
 import type { useSimpleData } from './useSimpleData'
 import { simpleKey, useSimpleUi } from './simpleUi'
 import { clearSimpleChat, logLaunch, logSimple } from './simpleActions'
+import { logStageLaunch } from './stageLog'
 import { implementPlannerPlan } from './planHandoff'
 import { fixReviewFindings } from './reviewHandoff'
 import { roleDevice, roleDevices } from './agentRoles'
@@ -73,14 +74,7 @@ export function useChatModeWorkflow({
     stage: SimpleStage,
     launched: { sessionId: string; requestId?: string },
     destinationTask = task,
-  ) =>
-    logLaunch(
-      projectId,
-      destinationTask,
-      { kind: 'action', action, stage, sessionId: launched.sessionId },
-      launched.requestId,
-      { atRunStart: true },
-    )
+  ) => logStageLaunch(projectId, destinationTask, action, stage, launched)
   const logReviewers = (reviewers: StartedReviewer[]) =>
     Promise.all(reviewers.map((r) => log('review', 'review', r)))
   const logMerge = (request: MergeRequest, sid: string, requestId: string) =>
@@ -107,11 +101,22 @@ export function useChatModeWorkflow({
       setPendingResult((current) => (current.key === key ? { key, action: '' } : current))
     }
   }
+  // While this chat's team owns the worktree, its stages launch on the team's behalf.
+  const teamTarget = (stageTask = task) =>
+    team && team.task === stageTask && ['running', 'paused'].includes(team.state)
+      ? { projectId, task: stageTask, chatTeam: team.id }
+      : undefined
   const build = async (destinationTask = task) => {
     const current = useStore.getState()
     if (current.project?.id !== projectId || current.activeTask !== destinationTask)
       throw new Error('The worktree changed. Choose Build in the intended chat.')
-    const launched = await implementPlannerPlan(planner, undefined, undefined, 'stay')
+    const launched = await implementPlannerPlan(
+      planner,
+      undefined,
+      undefined,
+      'stay',
+      teamTarget(destinationTask),
+    )
     await log('implement', 'build', launched, destinationTask)
     await noteLead(team, 'a build of the saved plan', [launched.sessionId], launched.requestId)
   }
@@ -151,7 +156,7 @@ export function useChatModeWorkflow({
           )
         if (errors.length) setFailure(errors.join('\n'))
       } else if (action === 'fix' && reviewer) {
-        const fixing = await fixReviewFindings(reviewer, undefined, undefined, 'stay')
+        const fixing = await fixReviewFindings(reviewer, undefined, undefined, 'stay', teamTarget())
         await log('fix', 'build', fixing)
         await noteLead(team, 'fixes for the review findings', [fixing.sessionId], fixing.requestId)
       } else if (action === 'checkMerge') {

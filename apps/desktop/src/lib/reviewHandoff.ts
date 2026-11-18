@@ -64,6 +64,7 @@ export async function fixReviewFindings(
     requestId = await startTerminal(TASK_ROOT_SCOPE, id, task, projectId, {
       kickoff: { kind: 'fixFindings', reviewSession: record.id },
       auto,
+      chatTeam: target?.chatTeam,
     })
   } catch (e) {
     // Leave nothing behind for a fix that didn't start, unless the user moved on meanwhile.

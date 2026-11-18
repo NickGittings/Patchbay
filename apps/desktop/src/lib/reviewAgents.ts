@@ -20,6 +20,7 @@ import { useStore } from '../store'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
 import { sessionLive, sessionTimeMs } from './sessionList'
 import { reviewerBusy } from './review'
+import { agentTerminal } from './plan'
 
 /** Existing local branches, with a checkout when one is already available. */
 export function mergeDestinations(
@@ -200,19 +201,7 @@ function launchJob<R>(
   requestId: string,
   auto?: import('../types').AutoBrief,
 ) {
-  return start(
-    project,
-    request,
-    {
-      id: device.id,
-      name: device.name,
-      command: device.command,
-      adapter: device.adapter,
-      kind: 'agent',
-    },
-    requestId,
-    ...(auto ? [auto] : []),
-  )
+  return start(project, request, agentTerminal(device), requestId, ...(auto ? [auto] : []))
 }
 
 /** Resolve only on submit; keep the destination available even when launch fails. */

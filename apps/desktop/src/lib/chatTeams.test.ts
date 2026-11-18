@@ -8,7 +8,9 @@ vi.mock('./auto', () => ({
   resumeAuto: vi.fn(),
   stopAuto: vi.fn(),
 }))
+vi.mock('./leadStages', () => ({ startLeadStage: vi.fn(), settleLeadStage: vi.fn() }))
 import { startAuto, pauseAuto } from './auto'
+import { settleLeadStage, startLeadStage } from './leadStages'
 import { invoke } from '@tauri-apps/api/core'
 import { useStore, workspaceOf } from '../store'
 import { useSimpleUi, simpleKey } from './simpleUi'
@@ -387,6 +389,35 @@ test('lead workflow controls claim requests once before applying the existing Au
   await Promise.all([refreshChatTeams('p'), refreshChatTeams('p')])
   expect(pauseAuto).toHaveBeenCalledExactlyOnceWith('p', null)
   expect(saved.requests![0].state).toBe('completed')
+})
+test.each(['startBuild', 'startFix'])('%s runs its stage for the team once', async (action) => {
+  const saved = mockRequestDriver(action)
+  await Promise.all([refreshChatTeams('p'), refreshChatTeams('p')])
+  expect(startLeadStage).toHaveBeenCalledOnce()
+  expect(saved.requests![0].state).toBe('starting')
+})
+test('a running lead stage is checked for its agent finishing', async () => {
+  const saved = mockRequestDriver('startBuild')
+  saved.requests![0].state = 'running'
+  vi.mocked(settleLeadStage).mockResolvedValueOnce(undefined)
+  await refreshChatTeams('p')
+  expect(settleLeadStage).toHaveBeenCalledOnce()
+  expect(startLeadStage).not.toHaveBeenCalled()
+})
+test('a lead stage refused by a worktree owner fails instead of repeating its handoff', async () => {
+  const saved = mockRequestDriver('startBuild')
+  vi.mocked(startLeadStage).mockRejectedValueOnce(new Error('This worktree is controlled by Auto'))
+  await refreshChatTeams('p')
+  expect(saved.requests![0].state).toBe('failed')
+})
+test('a lead stage that cannot start reports why', async () => {
+  const saved = mockRequestDriver('startFix')
+  vi.mocked(startLeadStage).mockRejectedValueOnce(new Error('Review this worktree first'))
+  await refreshChatTeams('p')
+  expect(saved.requests![0]).toMatchObject({
+    state: 'failed',
+    result: expect.stringContaining('Review this worktree first'),
+  })
 })
 test('an overlapping Auto start remains waiting and can be retried after scope release', async () => {
   const saved = mockRequestDriver('startAuto', { goal: 'New task' })

@@ -405,9 +405,21 @@ pub(super) fn ensure_available(
     target: &Path,
     auto: bool,
 ) -> Result<()> {
+    ensure_available_to(store, project, target, auto, None)
+}
+/// As [`ensure_available`], also admitting a stage launched for the team that owns the worktree.
+fn ensure_available_to(
+    store: &Store,
+    project: &str,
+    target: &Path,
+    auto: bool,
+    chat_team: Option<&str>,
+) -> Result<()> {
     ensure!(
         !store.owners.iter().any(|o| Path::new(&o.target) == target
-            && !(o.project_id == project && (auto && (o.kind == "chat" || o.kind == "auto")))),
+            && !(o.project_id == project
+                && ((auto && (o.kind == "chat" || o.kind == "auto"))
+                    || (o.kind == "chat" && chat_team == Some(o.id.as_str()))))),
         "This worktree is controlled by coordinated chat or Auto; stop its owner first"
     );
     Ok(())
@@ -418,11 +430,14 @@ pub fn implementation_available(
     project: &str,
     target: &Path,
     auto: bool,
+    chat_team: Option<&str>,
 ) -> Result<()> {
     if crate::git::repo_root(target).is_none() {
         return Ok(());
     }
-    modify(root, |s| ensure_available(s, project, target, auto))
+    modify(root, |s| {
+        ensure_available_to(s, project, target, auto, chat_team)
+    })
 }
 pub fn auto_ownership(
     root: &Path,
@@ -843,6 +858,9 @@ pub fn command(
                         "resumeAuto",
                         "stopAuto",
                         "startAgent",
+                        "startBuild",
+                        "startReview",
+                        "startFix",
                         "startCouncilReview"
                     ]
                     .contains(&action.as_str()),
@@ -861,13 +879,10 @@ pub fn command(
                     if action == "startCouncilReview" {
                         ensure!(t.council.enabled, "Review council is disabled");
                         t.council.validate(&t.presets)?;
-                        ensure!(
-                            !t.requests.iter().any(|r| r.action == action
-                                && ["queued", "starting", "running", "waiting"]
-                                    .contains(&r.state.as_str())),
-                            "A council review is already active"
-                        );
-                        ensure!(settings.is_object(), "Council settings must be an object");
+                    }
+                    if STAGE_ACTIONS.contains(&action.as_str()) {
+                        ensure!(!stage_active(&t), STAGE_ACTIVE);
+                        ensure!(settings.is_object(), "Stage settings must be an object");
                         // Store immutable launch inputs separately from the caller's settings.
                     }
                     t.requests.push(WorkflowRequest {
@@ -1381,6 +1396,23 @@ pub(super) fn reserve_check(s: &Store, project: &str, run: &str, job: &str) -> R
     Ok(())
 }
 
+/// Workflow requests whose agents change this worktree's checkout or review it. Each stays active
+/// until its agents finish, so they never overlap.
+const STAGE_ACTIONS: [&str; 4] = [
+    "startBuild",
+    "startFix",
+    "startReview",
+    "startCouncilReview",
+];
+const STAGE_ACTIVE: &str = "A build, fix or review is already active in this worktree";
+
+fn stage_active(team: &Team) -> bool {
+    team.requests.iter().any(|r| {
+        STAGE_ACTIONS.contains(&r.action.as_str())
+            && ["queued", "starting", "running", "waiting"].contains(&r.state.as_str())
+    })
+}
+
 /// Preserve settled council reports before a later round reuses their lane files.
 fn archive_council(root: &Path, id: &str, run: &mut serde_json::Value) -> Result<()> {
     let Some(branch) = run["branch"].as_str() else {
@@ -1446,12 +1478,7 @@ pub fn control(
             }
             Control::RetryCouncil { id } => {
                 ensure!(t.council.enabled, "Review council is disabled");
-                ensure!(
-                    !t.requests.iter().any(|r| r.action == "startCouncilReview"
-                        && ["queued", "starting", "running", "waiting"]
-                            .contains(&r.state.as_str())),
-                    "A council review is already active"
-                );
+                ensure!(!stage_active(&t), STAGE_ACTIVE);
                 let previous = t
                     .requests
                     .iter()
@@ -1510,6 +1537,13 @@ pub fn control(
                         serde_json::from_str(result.as_deref().context("Missing council state")?)?;
                     archive_council(root, &id, &mut run)?;
                     request.council_run = Some(run);
+                }
+                // A lead review's progress survives restarts like a council's. Its findings stay
+                // in the regular review files, so there is nothing to archive.
+                if state == "running" && request.action == "startReview" {
+                    request.council_run = Some(serde_json::from_str(
+                        result.as_deref().context("Missing review state")?,
+                    )?);
                 }
                 if ["completed", "failed"].contains(&state.as_str())
                     && let Some(archive) = request
@@ -1802,7 +1836,8 @@ const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. 
 ### How you work
 
 - You plan, delegate, integrate and report. The user talks only to you: present coherent updates and final answers in this conversation, and never ask the user to relay worker messages.
-- Delegate by default. Investigation and review go to `report` workers; implementation goes to `code` workers; a complete plan → build → review → merge pipeline goes to `startAuto`; several independent reviewers go to `startCouncilReview`. Start work without asking permission to delegate.
+- Delegate by default. Investigation goes to `report` workers; implementation goes to `code` workers; a complete plan → build → review → merge pipeline goes to `startAuto`; several independent reviewers go to `startCouncilReview`. Start work without asking permission to delegate.
+- Use Patchbay's stages so the work also appears in Plan and Review. When the user asks for a plan to build later, write it to `$PATCHBAY_PLAN_FILE`; if that variable is unset, give the plan in your reply and say it was not saved to Plan. Build a saved plan with `startBuild`. Review this branch's changes with `startReview`, never with a `report` worker or by yourself. Fix review findings with `startFix`, only when the user asks. Do not start merges: point the user to Merge in Chat or Review.
 - Do not edit project files yourself. The only exceptions are a trivial fix to a single file, resolving conflicts while integrating, and the failures named under "When delegation is unavailable". Say which exception applies when you use one.
 - Do not use provider-native subagents. Use only Patchbay-managed workers and configured presets.
 - Workers run validation for their scope; you verify the combined result. Distinguish reported from verified results.
@@ -1815,8 +1850,12 @@ Run each command below as {cli}.
 - `agent team-checkpoint --file <json>`: save a durable checkpoint `{goal, constraints, decisions, remaining, validation}` before delegating and after integration.
 - `agent team-delegate-shared --id <id> --file <assignments-json>`: start configured agents in this existing worktree, without new worktrees. This is the usual way to delegate code. Shared workers finish with `team-report`, without commits or integration.
 - `agent team-delegate --id <unique-round-id> --file <json-array>`: create a round of isolated workers. Each assignment has a globally unique `id`, `instructions`, `components`, `dependencies`, `preset` and `resultKind` (`report` or `code`). Report workers inspect the committed baseline; compare their findings with local edits. Isolated code delegation needs a clean Git checkpoint.
-- `agent team-request --id <id> --action <startAgent|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json>`: control existing workflows.
+- `agent team-request --id <id> --action <startAgent|startBuild|startReview|startFix|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json>`: control existing workflows.
   - `startAgent` settings: `{preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}`. Role-to-preset mappings are in `team.agentRoles`; presets are in `team.presets` (or `team.workers` until the catalog loads).
+  - `startBuild` settings: `{}`. Starts one implementation agent for this worktree's saved plan. Wait for its durable result, then inspect the work.
+  - `startReview` settings: `{base: optional-branch-name, focus: optional-review-focus}`. Starts the configured reviewers against `base`, else the branch's last review base, else its merge destination. The result names the base used. Wait for it, then report the verdict and findings. The full report is in Review. It does not authorize fixes or merges.
+  - `startFix` settings: `{}`. Starts a fix agent on this worktree's latest finished review. Wait for its durable result, then inspect the work.
+  - Only one `startBuild`, `startFix`, `startReview` or `startCouncilReview` can be active at a time.
   - `startAuto` accepts `goal`, `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`) and `stage`; omit fields to use app defaults. Never automatically enable merge approval bypass.
   - `startCouncilReview` settings: `{base: branch-name, focus: optional-review-focus}`, only when `team.council.enabled`. Use only this workflow for a council and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges.
 - `agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...]`: record an existing agent's agreed components.
@@ -3240,6 +3279,89 @@ mod tests {
         assert_eq!(settings.concurrency, 1);
         assert_eq!(presets[1].command, "codex --model other");
         assert_eq!(saved.requests.len(), 1);
+    }
+
+    #[test]
+    fn lead_reviews_keep_their_run_and_never_overlap_another_review() {
+        let f = Fixture::new();
+        let request = |id: &str, action: &str| Command::Request {
+            id: id.into(),
+            action: action.into(),
+            settings: serde_json::json!({"focus":"tests"}),
+        };
+        f.cmd(request("one", "startReview")).unwrap();
+        f.cmd(request("one", "startReview")).unwrap();
+        assert!(f.cmd(request("two", "startReview")).is_err());
+        let state = |state: &str, result: &str| Control::RequestState {
+            id: "one".into(),
+            state: state.into(),
+            result: Some(result.into()),
+        };
+        let apply = |change| {
+            control(
+                &f.dir,
+                "p",
+                &f.team.id,
+                change,
+                std::slice::from_ref(&f.lead),
+            )
+        };
+        apply(state("starting", "")).unwrap();
+        apply(state("running", r#"{"round":"r","members":[]}"#)).unwrap();
+        assert_eq!(
+            f.state().requests[0].council_run.as_ref().unwrap()["round"],
+            "r"
+        );
+        apply(state("completed", "Reviewed")).unwrap();
+        f.cmd(request("two", "startReview")).unwrap();
+        assert_eq!(f.state().requests.len(), 2);
+    }
+
+    #[test]
+    fn lead_stages_are_requested_through_their_workflows() {
+        let f = Fixture::new();
+        let request = |id: &str, action: &str| Command::Request {
+            id: id.into(),
+            action: action.into(),
+            settings: serde_json::json!({}),
+        };
+        f.cmd(request("build", "startBuild")).unwrap();
+        // The build's agent is still working, so nothing else may start in its checkout.
+        for action in ["startBuild", "startFix", "startReview"] {
+            assert!(f.cmd(request("next", action)).is_err());
+        }
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::RequestState {
+                id: "build".into(),
+                state: "completed".into(),
+                result: Some("Finished".into()),
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        f.cmd(request("fix", "startFix")).unwrap();
+        assert_eq!(f.state().requests.len(), 2);
+        let instructions = lead_instructions();
+        assert!(instructions.contains("Review this branch's changes with `startReview`"));
+        assert!(instructions.contains("`$PATCHBAY_PLAN_FILE`"));
+        assert!(!instructions.contains("review go to `report` workers"));
+    }
+
+    #[test]
+    fn only_the_owning_team_can_launch_stages_in_its_worktree() {
+        let f = Fixture::new();
+        let target = PathBuf::from(&f.team.target);
+        let available = |team: Option<&str>| {
+            modify(&f.dir, |s| {
+                ensure_available_to(s, "p", &target, false, team)
+            })
+        };
+        assert!(available(Some(&f.team.id)).is_ok());
+        assert!(available(Some("another-team")).is_err());
+        assert!(available(None).is_err());
     }
 
     #[test]

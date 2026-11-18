@@ -215,6 +215,8 @@ interface Launch {
   kickoff?: Kickoff
   /** Auto launches report every failure, like a kickoff. */
   auto?: AutoBrief
+  /** The chat team that owns this worktree and asked for this stage. */
+  chatTeam?: string
   restart?: boolean
   /** An explicit detection request; ordinary starts recover the retained target. */
   stackDetection?: { stackId?: string }
@@ -285,6 +287,8 @@ export interface StartTerminalOptions {
   kickoff?: Kickoff
   /** Auto's instructions for this launch, in the backend-owned briefing. */
   auto?: AutoBrief
+  /** The chat team that owns this worktree, when the stage is launched on its behalf. */
+  chatTeam?: string
 }
 
 /**
@@ -307,6 +311,7 @@ export function startTerminal(
     launch.kickoff = options.kickoff
     launch.story = options.story
     launch.auto = options.auto
+    launch.chatTeam = options.chatTeam
   } catch (e) {
     if (options.kickoff || options.auto || options.story) return Promise.reject(e)
     useStore.getState().setMessage(String(e), undefined, undefined, 'error')
@@ -541,11 +546,13 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
         const purpose =
           launch.purpose ??
           useStore.getState().sessionRecords.find((r) => r.id === sid)?.spec?.purpose
-        const conversationOptions: [boolean?, ('ordinary' | 'chat')?] = purpose
-          ? [!!launch.freshConversation, purpose]
-          : launch.freshConversation
-            ? [true]
-            : []
+        const conversationOptions: [boolean?, ('ordinary' | 'chat')?, string?] = launch.chatTeam
+          ? [!!launch.freshConversation, purpose, launch.chatTeam]
+          : purpose
+            ? [!!launch.freshConversation, purpose]
+            : launch.freshConversation
+              ? [true]
+              : []
         await taskRootStart(
           project,
           fix ? [] : launch.highlighted,

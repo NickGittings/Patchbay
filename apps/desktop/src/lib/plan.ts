@@ -16,15 +16,18 @@ export const agentDevices = (devices: DeviceManifest[]) => {
   return agents.length ? agents : [FALLBACK_AGENT]
 }
 
+/** The terminal that launches agent preset `device`. */
+export const agentTerminal = ({ id, name, command, adapter }: DeviceManifest): TerminalSpec => ({
+  id,
+  name,
+  command,
+  adapter,
+  kind: 'agent',
+})
+
 /** Planner terminals are session UI state, never persisted on a component. */
 export function planTerminals(devices: DeviceManifest[]): TerminalSpec[] {
-  return agentDevices(devices).map(({ id, name, command, adapter }) => ({
-    id,
-    name,
-    command,
-    adapter,
-    kind: 'agent',
-  }))
+  return agentDevices(devices).map(agentTerminal)
 }
 
 /** The agent preset behind planner terminal `id`, so components get the planner's own agent. */
