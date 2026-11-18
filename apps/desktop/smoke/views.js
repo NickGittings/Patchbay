@@ -740,7 +740,7 @@
       return names.includes('index.ts') && names.includes('package.json')
     })
     assert(!query('.hierarchy'), 'Navigation still shows the Hierarchy panel')
-    const search = query('input[aria-label="Search files and commands"]')
+    const search = query('input[aria-label="Search files, agents and commands"]')
     click(search)
     choose(search, 'filter 3')
     const found = await until('component search result', () =>

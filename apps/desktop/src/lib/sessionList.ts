@@ -98,6 +98,21 @@ const newestRow = (rows: readonly SessionRow[]) =>
     return bTime > aTime || (bTime === aTime && compareIds(b.record.id, a.record.id) < 0) ? b : a
   })
 
+/** Each label once, ignoring case: a preset named "Claude" adds nothing beside Claude. */
+export function distinctLabels(parts: readonly (string | null | undefined)[]): string[] {
+  const kept: string[] = []
+  for (const part of parts)
+    if (part && !kept.some((k) => k.toLowerCase() === part.toLowerCase())) kept.push(part)
+  return kept
+}
+
+/** What a session list calls a worktree; `path` names one whose task title is unknown. */
+export function worktreeLabel(task: string | null, title: string | undefined, path: string) {
+  if (task === null) return 'Main worktree'
+  if (task === PROJECT_DRAFT) return 'Project draft'
+  return title ?? `Worktree · ${path.split(/[\\/]/).filter(Boolean).at(-1) ?? path}`
+}
+
 /** Group the full project history before filtering, so labels and paths stay stable. */
 export function groupByWorktree(
   records: readonly SessionRecord[],
@@ -115,17 +130,15 @@ export function groupByWorktree(
   for (const group of groups.values()) {
     // Folder moves and mixed legacy records must not make the displayed sort choose the path.
     group.path = newestRow(group.rows).record.metadata.projectRoot
-    if (group.task === null) group.title = 'Main worktree'
-    else if (group.task === PROJECT_DRAFT) group.title = 'Project draft'
-    else {
-      group.branch = knownTasks.get(group.task)?.branch
-      const named = group.rows.filter((row) => row.record.metadata.taskTitle)
-      // Cached/read-only task lists support records saved before taskTitle was introduced.
-      group.title =
-        (named.length ? newestRow(named).record.metadata.taskTitle : undefined) ??
-        knownTasks.get(group.task)?.title ??
-        `Worktree · ${group.path.split(/[\\/]/).filter(Boolean).at(-1) ?? group.path}`
-    }
+    const known = group.task === null ? undefined : knownTasks.get(group.task)
+    if (group.task !== PROJECT_DRAFT) group.branch = known?.branch
+    const named = group.rows.filter((row) => row.record.metadata.taskTitle)
+    // Cached/read-only task lists support records saved before taskTitle was introduced.
+    group.title = worktreeLabel(
+      group.task,
+      (named.length ? newestRow(named).record.metadata.taskTitle : undefined) ?? known?.title,
+      group.path,
+    )
     group.rows = group.rows.filter(({ record }) => matchesFilter(record, options.filter))
   }
   return [...groups.values()]

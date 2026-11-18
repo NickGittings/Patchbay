@@ -1,14 +1,36 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../store'
+import {
+  agentSearchInputs,
+  agentSearchResults,
+  liveAgentIds,
+  openAgentResult,
+} from '../lib/agentSearch'
+import { useChatTeams } from '../lib/chatTeams'
 import { fileSearch } from '../lib/ipc'
 import { FILE_SEARCH_EVENT, focusComponent, openInEditor } from '../lib/navigation'
 import { matchesComponent } from '../lib/hierarchy'
 import { defaultSelection } from '../lib/search'
+import { focusTerminal } from '../lib/terminals'
 import { commandVisible, useWhenContext } from '../extensions/whenContext'
 import { executeExtensionCommand } from '../extensions/host'
 import { runWorkspaceAction, type WorkspaceAction } from '../lib/workspaceActions'
 import type { FileSearchResult } from '../types'
 import { mod, shiftMod } from '../lib/platform'
+
+interface SearchItem {
+  id: string
+  title: string
+  detail: string
+  group: string
+  run: () => unknown
+  preferred?: boolean
+  sessionId?: string
+}
+
+const NO_AGENTS: string[] = []
+const NO_INPUTS: unknown[] = []
 
 export default function UnifiedSearch({
   actions = [],
@@ -32,6 +54,21 @@ export default function UnifiedSearch({
   const context = useWhenContext(undefined, open)
   // Only what `fileSearch` reads, so switching priority keeps its results.
   const scope = JSON.stringify([projectId, task, query])
+  const searchesAgents = open && !filesOnly && !!query.trim()
+  // Ids only, so terminal output doesn't re-render search.
+  const agentIds = useStore(useShallow((s) => (searchesAgents ? liveAgentIds(s) : NO_AGENTS)))
+  const agentInputs = useStore(
+    useShallow((s) => (searchesAgents ? agentSearchInputs(s) : NO_INPUTS)),
+  )
+  const chatTeams = useChatTeams((s) => s.teams)
+  const chatRuns = useChatTeams((s) => s.runs)
+  // Recomputed only when something a row shows changes, not on every key or file response.
+  const agents = useMemo(
+    () => (searchesAgents ? agentSearchResults(useStore.getState(), query, agentIds) : []),
+    // The extra dependencies are what agentSearchResults reads through getState.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+    [searchesAgents, query, agentIds, agentInputs, chatTeams, chatRuns],
+  )
   const [response, setResponse] = useState<{
     scope: string
     items: FileSearchResult[]
@@ -120,7 +157,21 @@ export default function UnifiedSearch({
     }
   }, [open, projectId, task, query, scope])
   const current = response?.scope === scope ? response : undefined
-  const fileItems = (current?.items ?? []).map((file) => ({
+  const agentItems: SearchItem[] = agents.map((agent) => ({
+    id: `agent:${agent.record.id}`,
+    title: agent.title,
+    detail: agent.detail,
+    group: 'Agents',
+    preferred: agent.named,
+    sessionId: agent.record.id,
+    run: async () => {
+      const focused = document.activeElement
+      const opened = await openAgentResult(agent.record)
+      // Focus that moved during the wait is the user's, such as search opened again.
+      if (opened && document.activeElement === focused) focusTerminal(agent.record.id)
+    },
+  }))
+  const fileItems: SearchItem[] = (current?.items ?? []).map((file) => ({
     id: `file:${file.path}`,
     title: file.name,
     detail: file.path,
@@ -160,8 +211,11 @@ export default function UnifiedSearch({
             run: () => focusComponent(n.id),
           }))
   const groups =
-    priority === 'Files' ? ['Files', 'Components', 'Commands'] : ['Commands', 'Components', 'Files']
-  const byGroup: Record<string, typeof fileItems> = {
+    priority === 'Files'
+      ? ['Agents', 'Files', 'Components', 'Commands']
+      : ['Commands', 'Agents', 'Components', 'Files']
+  const byGroup: Record<string, SearchItem[]> = {
+    Agents: agentItems,
     Files: fileItems,
     Components: componentItems,
     Commands: commandItems,
@@ -169,7 +223,8 @@ export default function UnifiedSearch({
   const items = groups.flatMap((g) => byGroup[g])
   // Remember explicit selections by identity so late file results cannot change the action.
   const explicit = selection.scope === scope ? items.findIndex((i) => i.id === selection.id) : -1
-  const selected = explicit >= 0 ? explicit : defaultSelection(items, priority, query)
+  const pending = priority === 'Files' && !!projectId && !current
+  const selected = explicit >= 0 ? explicit : defaultSelection(items, priority, query, pending)
   useEffect(() => {
     if (open)
       document.getElementById(`search-result-${selected}`)?.scrollIntoView({ block: 'nearest' })
@@ -186,7 +241,7 @@ export default function UnifiedSearch({
       <input
         ref={input}
         role="combobox"
-        aria-label={filesOnly ? 'Search files' : 'Search files and commands'}
+        aria-label={filesOnly ? 'Search files' : 'Search files, agents and commands'}
         aria-expanded={open}
         aria-controls="search-results"
         aria-autocomplete="list"
@@ -194,7 +249,7 @@ export default function UnifiedSearch({
         placeholder={
           filesOnly
             ? `Search files…  ${mod}P`
-            : `Search files and commands…  ${mod}P / ${shiftMod}P`
+            : `Search files, agents and commands…  ${mod}P / ${shiftMod}P`
         }
         value={query}
         onPointerDown={() => {
@@ -239,11 +294,14 @@ export default function UnifiedSearch({
           className="search-results"
           id="search-results"
           role="listbox"
-          aria-label={filesOnly ? 'Files' : 'Files and Commands'}
+          aria-label={filesOnly ? 'Files' : 'Files, Agents and Commands'}
         >
           {groups
             .filter((g) =>
-              filesOnly ? g === 'Files' : g !== 'Components' || componentItems.length,
+              filesOnly
+                ? g === 'Files'
+                : (g !== 'Components' || componentItems.length) &&
+                  (g !== 'Agents' || agentItems.length),
             )
             .map((group) => (
               <div role="group" aria-label={group} key={group}>
@@ -259,6 +317,7 @@ export default function UnifiedSearch({
                         aria-selected={i === selected}
                         className={i === selected ? 'active' : ''}
                         data-command-id={group === 'Commands' ? item.id : undefined}
+                        data-session-id={item.sessionId}
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={() => execute(item)}
                       >
