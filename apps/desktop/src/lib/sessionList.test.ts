@@ -1,11 +1,14 @@
 import { describe, expect, test } from 'vitest'
 import {
+  COORDINATOR_SCOPE,
   PLAN_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
   MAP_SCOPE,
+  SCAN_SCOPE,
   STACK_AGENT_TERMINAL,
   TASK_ROOT_SCOPE,
+  WORKER_SCOPE,
   type SessionRecord,
   type Task,
   type TerminalSnapshot,
@@ -100,6 +103,9 @@ describe('session labels', () => {
     { componentId: REVIEW_SCOPE, kind: 'agent', role: 'Review', tone: 'review' },
     { componentId: MERGE_SCOPE, kind: 'agent', role: 'Merge', tone: 'merge' },
     { componentId: MAP_SCOPE, kind: 'agent', role: 'Dependencies', tone: 'plan' },
+    { componentId: SCAN_SCOPE, kind: 'agent', role: 'Scan', tone: 'plan' },
+    { componentId: COORDINATOR_SCOPE, kind: 'agent', role: 'Coordinator', tone: 'implement' },
+    { componentId: WORKER_SCOPE, kind: 'agent', role: 'Worker', tone: 'implement' },
     { componentId: TASK_ROOT_SCOPE, kind: 'agent', role: 'Build', tone: 'implement' },
     { componentId: 'api', kind: 'agent', role: 'Build', tone: 'implement' },
     { componentId: 'web', kind: 'task', role: 'Task', tone: 'task' },
@@ -108,6 +114,16 @@ describe('session labels', () => {
     { componentId: TASK_ROOT_SCOPE, kind: 'task', role: 'Task', tone: 'task' },
   ] as const)('$componentId/$kind leads with $role', ({ componentId, kind, role, tone }) => {
     expect(sessionRole({ ...running.metadata, componentId, kind })).toEqual({ role, tone })
+  })
+
+  test('only a root agent with a reviewed branch is a fix agent', () => {
+    const agent = { ...running.metadata, kind: 'agent', branch: 'feature-x' } as const
+    expect(sessionRole({ ...agent, componentId: TASK_ROOT_SCOPE })).toEqual({
+      role: 'Fix',
+      tone: 'implement',
+    })
+    expect(sessionRole({ ...agent, componentId: 'api' }).role).toBe('Build')
+    expect(sessionRole({ ...agent, componentId: TASK_ROOT_SCOPE, kind: 'task' }).role).toBe('Task')
   })
 
   test('the stack detection agent is told apart from dependency detection', () => {

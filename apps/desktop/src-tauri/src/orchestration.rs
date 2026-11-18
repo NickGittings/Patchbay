@@ -99,7 +99,7 @@ pub async fn provider_run_control(
         }
         let stopping = matches!(control, Control::Stop | Control::ContinueScan);
         let retry = match &control {
-            Control::Retry { job } => Some(job.as_str()),
+            Control::Retry { job, .. } => Some(job.as_str()),
             _ => None,
         };
         // Stop an old failed process before a retry makes its preserved checkout schedulable.

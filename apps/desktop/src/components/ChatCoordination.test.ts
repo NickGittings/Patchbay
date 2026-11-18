@@ -8,7 +8,8 @@ import ChatCoordination, { ChatCoordinationAlerts } from './ChatCoordination'
 
 const state = vi.hoisted(() => ({ jobs: [] as ProviderJob[], dismissed: [] as string[] }))
 vi.mock('../store', () => ({
-  useStore: (select: (s: unknown) => unknown) => select({ sessions: {}, sessionRecords: [] }),
+  useStore: (select: (s: unknown) => unknown) =>
+    select({ sessions: {}, sessionRecords: [], devices: [] }),
 }))
 vi.mock('../lib/chatTeams', () => ({
   RESTART_NOTICE: 'Paused after restart',
@@ -17,6 +18,7 @@ vi.mock('../lib/chatTeams', () => ({
     select({ runs: { p: [{ chatTeam: 'team', jobs: state.jobs }] } }),
 }))
 vi.mock('../lib/rail', () => ({ selectPanel: vi.fn(), useRail: { setState: vi.fn() } }))
+vi.mock('../lib/clock', () => ({ useClockNow: () => 0 }))
 
 test.each([
   ['failed', 'Worker exited', true],

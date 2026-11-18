@@ -100,6 +100,9 @@ pub struct AgentReport {
     /// Every question of the provider's question tool while it waits for the answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub questions: Option<Vec<crate::agent_hooks::UserQuestion>>,
+    /// When a usage or rate limit ended the current turn; cleared by the next turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_stopped_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -443,6 +446,8 @@ pub struct Tracker {
     pending_replies: Vec<(Option<u64>, Reply)>,
     hook_conversation: Option<String>,
     hook_turn: Option<String>,
+    /// When the current turn's prompt was accepted; older transcript events can't end it.
+    turn_started_ms: Option<u64>,
     conversation_boundary_ms: u64,
     retired_turns: std::collections::HashSet<String>,
     retired_conversations: std::collections::HashSet<String>,
@@ -520,6 +525,44 @@ impl Tracker {
         }
     }
 
+    /// End the current turn on a limit read from the provider's transcript. Replayed history
+    /// predates the turn's prompt, and a provider's late `Stop` is rejected once it closes.
+    pub fn on_usage_limit(
+        &mut self,
+        conversation: &str,
+        stop: &crate::agent_context::LimitStop,
+        now: u64,
+    ) {
+        if self.hook_conversation.as_deref() != Some(conversation)
+            || self.turn_started_ms.is_none_or(|at| stop.at_ms < at)
+            || stop
+                .turn
+                .as_ref()
+                .is_some_and(|turn| self.retired_turns.contains(turn))
+        {
+            return;
+        }
+        let Some(report) = self
+            .report
+            .as_mut()
+            .filter(|r| r.conversation_id.as_deref() == Some(conversation))
+        else {
+            return;
+        };
+        report.state = AgentState::Idle;
+        report.since_ms = now;
+        report.message = None;
+        report.questions = None;
+        report.authoritative = true;
+        report.approval_pending = false;
+        report.limit_stopped_ms = Some(stop.at_ms);
+        self.approval_pending = None;
+        self.interrupted_ms = None;
+        self.resolved = None;
+        self.turn_closed = true;
+        self.heard_ms = now;
+    }
+
     #[must_use]
     pub fn conversation(&self) -> Option<&str> {
         self.hook_conversation.as_deref()
@@ -587,6 +630,7 @@ impl Tracker {
             if let Some(turn) = self.hook_turn.take() {
                 self.retired_turns.insert(turn);
             }
+            self.turn_started_ms = None;
             self.status.context = Default::default();
             self.conversation_boundary_ms = event.at_ms;
             self.approval_pending = None;
@@ -622,6 +666,7 @@ impl Tracker {
         if event.event == "UserPromptSubmit" && event.turn.is_none() {
             self.report = None;
             self.approval_pending = None;
+            self.turn_started_ms = None;
             if let Some(turn) = self.hook_turn.take() {
                 self.retired_turns.insert(turn);
             }
@@ -642,6 +687,7 @@ impl Tracker {
                 {
                     self.retired_turns.insert(previous);
                 }
+                self.turn_started_ms = Some(event.at_ms);
                 self.turn_closed = false;
                 self.interrupted_ms = None;
                 self.turn_progressed = false;
@@ -674,6 +720,7 @@ impl Tracker {
                     if let Some(turn) = self.hook_turn.take() {
                         self.retired_turns.insert(turn);
                     }
+                    self.turn_started_ms = None;
                     self.turn_closed = false;
                     self.approval_pending = None;
                     self.report = None;
@@ -815,6 +862,8 @@ impl Tracker {
         } else {
             (None, None)
         };
+        let limit_stopped_ms =
+            (event.event == "StopFailure" && event.usage_limit).then_some(event.at_ms);
         self.report = Some(AgentReport {
             state,
             since_ms,
@@ -826,6 +875,7 @@ impl Tracker {
             authoritative: true,
             approval_pending: false,
             questions,
+            limit_stopped_ms,
         });
         self.heard_ms = now;
     }
@@ -1064,6 +1114,7 @@ impl Tracker {
             authoritative: false,
             approval_pending: false,
             questions: None,
+            limit_stopped_ms: None,
         });
     }
 
@@ -1531,6 +1582,7 @@ mod tests {
             sequence,
             tool: None,
             file_target: false,
+            usage_limit: false,
             questions: None,
             target: None,
             at_ms: sequence * 100,
@@ -1541,6 +1593,51 @@ mod tests {
             message: (event == "PermissionRequest").then(|| "Allow Bash?".into()),
             reply: None,
             source: None,
+        }
+    }
+
+    #[test]
+    fn a_transcript_limit_ends_only_the_current_turn_until_the_next_prompt() {
+        let conversation = "12345678-conversation";
+        let stop = |at_ms| crate::agent_context::LimitStop { at_ms, turn: None };
+        let mut tracker = Tracker::new("", false).with_identity("session", 42);
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn-1"), 2), 200);
+        tracker.on_usage_limit(conversation, &stop(150), 210);
+        assert_eq!(
+            tracker.changed(210).unwrap().agent.unwrap().state,
+            AgentState::Working,
+            "history from before the prompt cannot end the turn"
+        );
+        tracker.on_usage_limit("other-conversation", &stop(250), 220);
+        tracker.on_usage_limit(conversation, &stop(250), 260);
+        let agent = tracker.changed(260).unwrap().agent.unwrap();
+        assert_eq!(agent.state, AgentState::Idle);
+        assert_eq!(agent.limit_stopped_ms, Some(250));
+        tracker.on_hook(hook("Stop", Some("turn-1"), 3), 300);
+        let agent = tracker.report.clone().unwrap();
+        assert_eq!(
+            agent.state,
+            AgentState::Idle,
+            "the closed turn stays closed"
+        );
+        assert_eq!(agent.limit_stopped_ms, Some(250));
+        tracker.on_hook(hook("UserPromptSubmit", Some("turn-2"), 4), 400);
+        let agent = tracker.report.clone().unwrap();
+        assert_eq!(agent.state, AgentState::Working);
+        assert_eq!(agent.limit_stopped_ms, None);
+    }
+
+    #[test]
+    fn a_claude_limit_failure_marks_the_turn_and_other_failures_do_not() {
+        for (usage_limit, expected) in [(true, Some(300)), (false, None)] {
+            let mut tracker = Tracker::new("", false).with_identity("session", 42);
+            tracker.on_hook(hook("UserPromptSubmit", Some("turn"), 2), 200);
+            let mut failure = hook("StopFailure", Some("turn"), 3);
+            failure.usage_limit = usage_limit;
+            tracker.on_hook(failure, 300);
+            let agent = tracker.report.clone().unwrap();
+            assert_eq!(agent.state, AgentState::Idle);
+            assert_eq!(agent.limit_stopped_ms, expected);
         }
     }
 

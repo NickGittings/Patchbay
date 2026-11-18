@@ -158,6 +158,8 @@ export interface AutoRun {
   /** One persisted, one-time continuation; executed only while Patchbay is open. */
   resumeTrigger?: { kind: 'time' | 'usage'; atMs: number }
   usageWait?: { providers: ('claude' | 'codex')[]; atMs: number }
+  /** Providers whose agents stopped at a limit mid-turn, known even without a reset time. */
+  limitedProviders?: ('claude' | 'codex')[]
   pauseKind?: 'user' | 'restored' | 'inactive' | 'interrupted' | 'needsUser' | 'usage' | 'scheduled'
   pausedMs?: number
   stage: AutoStage
@@ -187,6 +189,8 @@ export interface AutoRun {
    * run ends after a clean review instead of merging.
    */
   baseCommit?: string
+  /** When a run in place finished, until its lead has been told the task is complete. */
+  taskDoneAtMs?: number
   round: number
   sessionId?: string
   /** Auto may stop only a session it launched, in the recorded process generation. */
@@ -584,6 +588,8 @@ export interface AgentReport {
   approvalPending?: boolean
   /** Every question of the provider's question tool while it waits (`agent_hooks::UserQuestion`). */
   questions?: UserQuestion[] | null
+  /** When a usage or rate limit ended the current turn; cleared by the next turn. */
+  limitStoppedMs?: number | null
 }
 
 /** Mirrors `agent_hooks::UserQuestion`. */

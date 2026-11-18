@@ -53,3 +53,7 @@ Run `npm run smoke:providers` from `apps/desktop` for the fake-provider scan, pl
 integration, validation and review flow. `npm run smoke:auto` retains coverage of the single-agent
 Auto path. Unit coverage includes ownership, staleness, dependencies, worktree isolation, clean
 checks, partial failures, launch reconciliation, cancellation, restoration and merge recovery.
+
+A job whose agent stops at a usage limit fails with that reason during reconcile, whether or not it
+was seen working. `Control::Retry` accepts an optional `terminal` that replaces a failed job's agent;
+an unconfirmed launch keeps its original agent because it may still be live.

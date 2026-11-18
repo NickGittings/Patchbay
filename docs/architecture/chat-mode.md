@@ -52,7 +52,43 @@ The existing **Merge complete** confirmation still controls branch/worktree dele
 returning the original checkout to the destination branch. Chat clears whether the merged
 branch/worktree is kept or deleted. Merges into other destination branches leave Chat history intact.
 
+Every stage already launches a fresh conversation, so finishing work retires agents rather than
+clearing them. A finished turn alone proves nothing, because an agent may have stopped to ask a
+question. Launching the next stage is the confirmation: after a review, fix or merge launch from
+Chat or its dialogs, `stageRetire.ts` stops earlier build, fix and review agents this chat launched.
+It keeps any agent that is not in an authoritative `review` state, has a pending approval or queued
+prompt, was prompted since that state, belongs to another chat, or is the lead, and does nothing
+while Auto owns the worktree.
+Stopped agents keep their conversations, so messaging one resumes it.
+
+The task itself finishes on a confirmed merge into `main` whose checkout survives cleanup, or when
+an Auto run in place reaches `done`. The cleanup choice is final immediately: `contextPending` on
+the job, or `taskDoneAtMs` on the run, keeps retrying `completeTeamTask` across restarts. Its
+`completeTask` control carries a stable `task-done-<id>`, recorded in `Team.finished.tasks`, so each
+completion is decided once. A lead that is busy, has had a turn since the merge or run finished, or
+has active rounds or open requests keeps its conversation. Otherwise the completion queues a fresh
+conversation or joins one already pending; without a lead session it clears the task at once.
+Stopped teams stay stopped; paused teams keep the reset queued until **Continue work**. Once the
+replacement is confirmed, the checkpoint's goal, decisions, remaining work and validation, the saved
+context, plan copy and retained briefing are cleared. Waiting lead messages from finished work are
+settled, and `Team.finished` keeps settled rounds and requests out of recovery text while durable
+records retain them. A failed replacement changes nothing.
+
 The composer subscribes to provider usage and the shared clock. It shows every unexpired window at or above 100% for its recipient’s provider, falling back to the selected worktree planner before launch. Each warning names the provider, window, reset time and countdown. Warnings expire at reset and do not depend on notification preferences or Auto thresholds, and do not disable Send or terminal access. Missing data stays unknown.
+
+### Usage limits
+
+`AgentReport.limitStoppedMs` records a turn ended by a usage limit: Codex's `task_complete` with
+`usage_limit_exceeded` (read by `agent_context::CodexReader`, accepted only at or after the current
+turn's prompt) or Claude's `StopFailure` with `rate_limit` or `billing_error`. The next turn clears
+it. The agent reads Idle, and lead replacement stays allowed. Coordination is held
+(`chat::limit_held`) for 15 minutes and for as long as the subscription has a spent window, then
+retries, so a brief rate limit does not stall a team. Held messages never hold the user's prompt, which
+can start the next turn at any time. A queued prompt waits for **Send now** or Send. `ChatLimitNotice`
+names the reset and offers **Continue with** each other preset. It and **Retry with…** disable presets
+whose own subscription is exhausted. Nothing switches automatically. A limited worker fails with that
+reason, and **Retry with…** reruns its assignment on another agent while keeping the lead's requested
+`preset` for idempotent delegation.
 
 ### Persistent lead and coordinated workers
 
@@ -103,7 +139,8 @@ Builder terminal changes the drawer identity while the composer continues to add
 Each worktree can have one persistent chat team. The saved `selectedAgent` becomes its lead when
 coordination is initialized; existing conversations migrate paused, preserving their history and
 recipient without launching workers. **Switch agent** queues an explicit durable provider-conversation
-replacement. **Clear lead context** confirms inline that provider context resets and visible
+replacement that stops the current lead at once, even mid-turn (after an inline confirmation) or
+while work is paused; a queued prompt for that lead returns as a draft. **Clear lead context** confirms inline that provider context resets and visible
 history is replaced with a concise handoff. It uses the same durable replacement while retaining
 workers, assignments, results, inbox messages and checkpoints. The confirmation belongs to one
 visit to a worktree and disappears after switching away; pending send/workflow actions and an

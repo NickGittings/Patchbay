@@ -617,7 +617,7 @@
     await smoke.terminalWrite(sid, '\u0011\u0003')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true }))
     const input = await until('file search shortcut', () =>
-      document.querySelector('input[aria-label="Search files and commands"]'),
+      document.querySelector('input[aria-label="Search files, agents and commands"]'),
     )
     await until('ranked path list', () =>
       document.querySelector('[aria-label="Files"] [role="option"]'),
@@ -689,13 +689,45 @@
     })
     assert(
       document
-        .querySelector('input[aria-label="Search files and commands"]')
+        .querySelector('input[aria-label="Search files, agents and commands"]')
         .getAttribute('aria-activedescendant') === 'search-result-0',
       'Search selection leaked across worktrees',
     )
     state().setActiveTask(null)
+    // The running shell stands in for an agent: search lists agents above files and opens them.
+    // Reconciling replaces the records with the service's, so the mark is reapplied until done.
+    const markAgent = () => {
+      const { sessionRecords } = state()
+      if (sessionRecords.some((r) => r.id === sid && r.metadata.kind !== 'agent'))
+        smoke.store.setState({
+          sessionRecords: sessionRecords.map((r) =>
+            r.id === sid ? { ...r, metadata: { ...r.metadata, kind: 'agent' } } : r,
+          ),
+        })
+    }
+    markAgent()
+    const stopMarkingAgent = smoke.store.subscribe(markAgent)
+    const { view: searchView, selectedId: searchSelection } = state()
+    state().setActiveSession(null)
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'builder')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    const agent = await until('agent search result', () =>
+      document.querySelector(`[aria-label="Agents"] [data-session-id="${CSS.escape(sid)}"]`),
+    )
+    assert(
+      document.querySelector('.search-results h3')?.textContent === 'Agents',
+      'Agents not listed first',
+    )
+    assert(agent.getAttribute('aria-selected') === 'true', 'Named agent not selected')
+    agent.click()
+    await until('agent opened from search', () => state().activeSession === sid)
+    stopMarkingAgent()
+    await smoke.reconcileSessions()
+    // Opening it moved to Implementation; the Inspector steps below need Navigation.
+    state().setView(searchView)
+    state().select(searchSelection)
     document
-      .querySelector('input[aria-label="Search files and commands"]')
+      .querySelector('input[aria-label="Search files, agents and commands"]')
       .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     const inspectorTab = (name) =>
       [...document.querySelectorAll('.inspector .tabs button')].find(

@@ -1,7 +1,7 @@
 import { mentionKey } from '../lib/chatMentions'
 import type { ChatFailureKind } from '../lib/chatTeams'
 import { useChatIdentity } from '../lib/chatIdentity'
-import { chatRecipient, chatAutoActive } from '../lib/chat'
+import { chatRecipient, chatAutoActive, limitStopped } from '../lib/chat'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { useClockNow } from '../lib/clock'
 import {
@@ -46,7 +46,7 @@ import {
   waitForPrompt,
 } from '../lib/simpleComposer'
 import { logLaunch, logSimple } from '../lib/simpleActions'
-import { cancelQueued, enqueuePrompt, flushQueued } from '../lib/simpleQueue'
+import { cancelQueued, enqueuePrompt, flushQueued, sendableNow } from '../lib/simpleQueue'
 import { refreshSession, reconcileFreshSessions, restartTerminal } from '../lib/sessions'
 import { openIntegrations, useAgentHooksInstalled } from '../lib/agentHooks'
 
@@ -126,7 +126,8 @@ export default function SimpleComposer({
     : null
   const usage = useUsage((s) => s.usage)
   const usageNow = useClockNow(exhaustedWindows(usage, provider, 0).map((w) => w.window.resetsAtMs))
-  const exhausted = exhaustedWindows(usage, provider, usageNow)
+  // A limit-stopped recipient has its own notice with the reset time and recovery actions.
+  const exhausted = limitStopped(state) ? [] : exhaustedWindows(usage, provider, usageNow)
   const hooks = useAgentHooksInstalled(provider ? [provider] : [])
   // Installed hooks, not `authoritative`, which lapses on Esc and is unset until the first hook.
   const installed = provider ? hooks[provider] : undefined
@@ -222,7 +223,9 @@ export default function SimpleComposer({
         return
       }
       // Keep the queued message first, including when Send anyway also submits this draft.
-      if (force || ready) await flushQueued(scopeKey, force)
+      // Sending to a limit-stopped agent is the explicit retry its queue waits for.
+      const explicit = force || limitStopped(state)
+      if (explicit || ready) await flushQueued(scopeKey, explicit)
       return
     }
     submitting.current = true
@@ -433,14 +436,16 @@ export default function SimpleComposer({
       {ui.queued && (
         <div className="simple-queued" role="status">
           <span>
-            {queuedSession?.status?.agent?.state === 'needsInput'
-              ? 'Queued — sends once you answer in the terminal and the agent finishes its turn'
-              : queuedSession?.status?.agent?.authoritative
-                ? 'Queued — sends when the agent finishes its turn'
-                : 'Queued — the agent isn’t confirmed working, so this may not send; continue in its terminal or cancel'}
+            {limitStopped(queuedSession)
+              ? 'Queued — this agent stopped at its usage limit. Send now once it resets; switching agents returns this as a draft'
+              : queuedSession?.status?.agent?.state === 'needsInput'
+                ? 'Queued — sends once you answer in the terminal and the agent finishes its turn'
+                : queuedSession?.status?.agent?.authoritative
+                  ? 'Queued — sends when the agent finishes its turn'
+                  : 'Queued — the agent isn’t confirmed working, so this may not send; continue in its terminal or cancel'}
           </span>
           <button
-            disabled={pending || !s.serviceConnected || !forceable(queuedSession)}
+            disabled={pending || !s.serviceConnected || !sendableNow(ui.queued, queuedSession)}
             title="Types into the agent now, even mid-turn"
             onClick={() => void flushQueued(scopeKey, true)}
           >

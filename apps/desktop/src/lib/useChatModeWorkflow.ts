@@ -17,6 +17,7 @@ import { mergeNow, resumeAuto, pauseAuto, stopAuto } from './auto'
 import { controlTeam, noteLead, resetLead, type ChatTeam } from './chatTeams'
 import { chatAutoActive, chatHandoff } from './chat'
 import { autoDrafts, autoDraftKey, emptyAutoDraft } from './autoDrafts'
+import { retireStageAgents } from './stageRetire'
 
 type Store = ReturnType<typeof useStore.getState>
 type Reader = ReturnType<typeof useSimpleData>
@@ -75,15 +76,21 @@ export function useChatModeWorkflow({
     launched: { sessionId: string; requestId?: string },
     destinationTask = task,
   ) => logStageLaunch(projectId, destinationTask, action, stage, launched)
-  const logReviewers = (reviewers: StartedReviewer[]) =>
-    Promise.all(reviewers.map((r) => log('review', 'review', r)))
-  const logMerge = (request: MergeRequest, sid: string, requestId: string) =>
-    logLaunch(
+  // A started stage replaces the agents before it. These also serve the Review and Merge dialogs.
+  const retire = (launched: string[]) => retireStageAgents(projectId, task, launched, model.foreign)
+  const logReviewers = async (reviewers: StartedReviewer[]) => {
+    await Promise.all(reviewers.map((r) => log('review', 'review', r)))
+    if (reviewers.length) await retire(reviewers.map((r) => r.sessionId))
+  }
+  const logMerge = async (request: MergeRequest, sid: string, requestId: string) => {
+    await logLaunch(
       projectId,
       task,
       { kind: 'action', action: 'merge', stage: 'merge', request, sessionId: sid },
       requestId,
     )
+    await retire([sid])
+  }
   const run = async (action: string, fn: () => Promise<void>) => {
     const lock = key
     if (pendingActions.has(lock)) return
@@ -158,6 +165,7 @@ export function useChatModeWorkflow({
       } else if (action === 'fix' && reviewer) {
         const fixing = await fixReviewFindings(reviewer, undefined, undefined, 'stay', teamTarget())
         await log('fix', 'build', fixing)
+        await retire([fixing.sessionId])
         await noteLead(team, 'fixes for the review findings', [fixing.sessionId], fixing.requestId)
       } else if (action === 'checkMerge') {
         if (!target?.branch || !source?.branch) {
@@ -187,7 +195,7 @@ export function useChatModeWorkflow({
           roleDevice(devices, agentRoles, 'merge'),
           requestId,
         )
-        await logMerge(request, sid, requestId)
+        await logMerge(request, sid, requestId) // Also retires the finished stage agents.
         await noteLead(
           team,
           `a merge of ${request.sourceBranch} into ${request.destinationBranch}`,

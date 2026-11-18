@@ -21,6 +21,7 @@ import {
   continueChat,
   continuationContext,
   cacheTeam,
+  completeTeamTask,
   initializeTeam,
   leadDeliveryPending,
   leadNotes,
@@ -141,6 +142,52 @@ test('fresh conversation queues a durable reset and keeps history until confirma
   )
   expect(useStore.getState().simple?.log[0].text).toBe('Retain my changes')
   expect(useSimpleUi.getState().worktrees[simpleKey('p', null)].coordinationReset).toBe(true)
+})
+const answerTeams = (teams: ChatTeam[]) =>
+  vi
+    .mocked(invoke)
+    .mockImplementation(async (command) => (command === 'chat_teams' ? teams : teams[0]))
+test('a completed task reads durable teams, so an unloaded cache cannot skip it', async () => {
+  useChatTeams.setState({ teams: {}, runs: {} })
+  vi.mocked(invoke).mockClear()
+  answerTeams([team()])
+  await completeTeamTask('p', null, 'task-done-merge', 42)
+  expect(invoke).toHaveBeenCalledWith(
+    'chat_team_control',
+    expect.objectContaining({
+      control: { kind: 'completeTask', id: 'task-done-merge', sinceMs: 42 },
+    }),
+  )
+})
+test('a completed task leaves stopped teams alone', async () => {
+  vi.mocked(invoke).mockClear()
+  answerTeams([team({ state: 'stopped' })])
+  await completeTeamTask('p', null, 'task-done-merge')
+  expect(invoke).not.toHaveBeenCalledWith('chat_team_control', expect.anything())
+})
+test('a rejected reset releases the composer', async () => {
+  vi.mocked(invoke).mockRejectedValueOnce(new Error('Auto or another owner controls'))
+  await expect(resetLead(team())).rejects.toThrow('another owner')
+  expect(useSimpleUi.getState().worktrees[simpleKey('p', null)].coordinationReset).toBe(false)
+})
+test('a completed task hands off without repeating the finished work', async () => {
+  useChatTeams.setState({ teams: { p: [] }, runs: {} })
+  vi.mocked(invoke).mockResolvedValue(team())
+  await applyTeamHandoff(
+    team({
+      handoff: {
+        id: 'task-done-merge',
+        sessionId: 'lead',
+        generation: 2,
+        text: 'Goal: old work',
+        clearHistory: true,
+        completeTask: true,
+      },
+    }),
+  )
+  const texts = useStore.getState().simple?.log.map((e) => e.text)
+  expect(texts).toContain('Task complete. New lead conversation.')
+  expect(texts?.join('\n')).not.toContain('old work')
 })
 test('failed fresh reset retains the saved conversation and workers', async () => {
   const current = team()
@@ -274,6 +321,28 @@ test('a waiting note rides the user’s prompt to the lead and never holds it', 
   })
   // An ordinary undelivered message still holds the prompt.
   cacheTeam(team({ messages: [{ ...note, state: 'pending' }] }))
+  expect(leadDeliveryPending('p', null, 'lead', 1)).toBe(true)
+})
+test('messages held for a limit-stopped lead never hold the user’s prompt', () => {
+  const message = {
+    id: 'held',
+    sequence: 1,
+    sender: 'worker',
+    recipient: 'lead',
+    assignment: null,
+    text: 'Done',
+    generation: null,
+  }
+  cacheTeam(team({ recovery: true, messages: [{ ...message, state: 'pending' }] }))
+  expect(leadDeliveryPending('p', null, 'lead', 1)).toBe(true)
+  useStore.setState({
+    sessions: {
+      lead: { status: { agent: { state: 'idle', sinceMs: 5, limitStoppedMs: 5 } } },
+    } as never,
+  })
+  expect(leadDeliveryPending('p', null, 'lead', 1)).toBe(false)
+  // A write already under way still owns the prompt.
+  cacheTeam(team({ messages: [{ ...message, state: 'sending' }] }))
   expect(leadDeliveryPending('p', null, 'lead', 1)).toBe(true)
 })
 test('side messages address the stored team and assignment and preserve their text', async () => {

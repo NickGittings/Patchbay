@@ -23,6 +23,7 @@ vi.mock('./auto', () => ({
   stopAuto: vi.fn(),
 }))
 vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
+vi.mock('./stageRetire', () => ({ retireStageAgents: vi.fn() }))
 vi.mock('./simpleActions', () => ({
   clearSimpleChat: vi.fn(),
   logLaunch: vi.fn(),
@@ -42,6 +43,7 @@ import { clearSimpleChat, logLaunch } from './simpleActions'
 import { gitBranches } from './ipc'
 import { startSimpleReview } from './simpleReview'
 import { thread } from './simple'
+import { retireStageAgents } from './stageRetire'
 type Context = Parameters<typeof useChatModeWorkflow>[0]
 let context: Context
 function render(overrides: Partial<Context> = {}) {
@@ -154,6 +156,19 @@ test('partial review success logs started reviewers and surfaces remaining error
     { atRunStart: true },
   )
   expect(render().failure).toBe('second reviewer failed')
+  expect(retireStageAgents).toHaveBeenCalledWith('p', null, ['reviewer'], context.model.foreign)
+})
+test('a stage that fails to launch leaves the earlier agents running', async () => {
+  vi.mocked(gitBranches).mockResolvedValue(['main'])
+  vi.mocked(startSimpleReview).mockResolvedValue({
+    started: [],
+    errors: ['no reviewer started'],
+    round: 'round',
+  })
+  render().act('review')
+  await idle()
+  expect(render().failure).toBe('no reviewer started')
+  expect(retireStageAgents).not.toHaveBeenCalled()
 })
 test('history confirmation rejects stale scopes and pending input', async () => {
   const workflow = render()

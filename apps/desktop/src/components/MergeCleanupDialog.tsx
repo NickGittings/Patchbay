@@ -5,8 +5,9 @@ import { mergeCleanupPreview, type MergeCleanupPreview } from '../lib/ipc'
 import {
   cleanupJobs,
   deleteMergedWork,
-  handledCleanup,
+  finishCleanup,
   completeMergeChat,
+  settleTaskContext,
   type CleanupJob,
 } from '../lib/mergeCleanup'
 
@@ -24,6 +25,10 @@ export default function MergeCleanupDialog() {
       if (checking || job || useStore.getState().restoring) return
       checking = true
       try {
+        for (const pending of cleanupJobs().filter((j) => j.contextPending)) {
+          if (disposed) break
+          await settleTaskContext(pending)
+        }
         for (const next of cleanupJobs().filter((j) => !j.handled)) {
           if (disposed) break
           if (!(await completeMergeChat(next).catch(() => false))) continue
@@ -66,7 +71,7 @@ export default function MergeCleanupDialog() {
               break
             }
           }
-          handledCleanup(next.id)
+          await finishCleanup(next)
         }
       } finally {
         checking = false
@@ -81,7 +86,7 @@ export default function MergeCleanupDialog() {
   }, [job])
   const keep = () => {
     if (busy || checkingPreview || !job) return
-    handledCleanup(job.id)
+    void finishCleanup(job)
     setJob(undefined)
   }
   const retryPreview = async () => {
@@ -121,7 +126,7 @@ export default function MergeCleanupDialog() {
               setError(undefined)
               void deleteMergedWork(job)
                 .then(() => {
-                  handledCleanup(job.id)
+                  void finishCleanup(job)
                   setJob(undefined)
                 })
                 .catch((e) => setError(String(e)))

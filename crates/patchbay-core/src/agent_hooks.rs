@@ -51,6 +51,9 @@ pub struct HookEvent {
     /// The provider's question tool (`AskUserQuestion`/`request_user_input`) in full.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub questions: Option<Vec<UserQuestion>>,
+    /// A failed turn the provider attributes to account usage or rate limits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub usage_limit: bool,
 }
 
 /// Journaled by the reporter once Chat answered a `PermissionRequest`; no provider sends it.
@@ -576,6 +579,11 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
             _ => name,
         }),
         file_target: file_path.is_some(),
+        usage_limit: event == "StopFailure"
+            && matches!(
+                input.get("error").and_then(Value::as_str),
+                Some("rate_limit" | "billing_error")
+            ),
         questions: (event == "PreToolUse").then(|| questions(input)).flatten(),
         target: file_path
             .map(|s| s.chars().take(4096).collect())
@@ -1500,6 +1508,20 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn claude_stop_failures_report_only_account_limits() {
+        for (error, expected) in [
+            ("rate_limit", true),
+            ("billing_error", true),
+            ("server_error", false),
+        ] {
+            let input = json!({"hook_event_name":"StopFailure","session_id":"12345678-session",
+                "prompt_id":"12345678-prompt","error":error});
+            let event = normalize(Adapter::Claude, &input).unwrap();
+            assert_eq!(event.usage_limit, expected, "{error}");
+        }
+    }
+
     #[test]
     fn normalizes_parent_turns_and_rejects_subagents_and_missing_identity() {
         let input = json!({"hook_event_name":"UserPromptSubmit", "session_id":"12345678-session", "turn_id":"12345678-turn", "prompt":"hello"});

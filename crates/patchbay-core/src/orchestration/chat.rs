@@ -79,6 +79,12 @@ pub struct Reset {
     pub next_session: String,
     pub phase: ResetPhase,
     pub clear_history: bool,
+    /// The user chose a new lead: replace it now, even mid-turn or while work is paused.
+    #[serde(default)]
+    pub interrupt_current: bool,
+    /// The worktree's task finished: the new lead starts without its checkpoint or results.
+    #[serde(default)]
+    pub complete_task: bool,
     pub error: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +104,22 @@ pub struct Handoff {
     pub generation: u64,
     pub text: String,
     pub clear_history: bool,
+    #[serde(default)]
+    pub complete_task: bool,
+}
+/// Work settled before a task completed. It stays stored but leaves later lead handoffs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishedWork {
+    #[serde(default)]
+    pub rounds: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub information: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub workflows: std::collections::BTreeSet<String>,
+    /// Completions already decided, so a retry after any outcome changes nothing.
+    #[serde(default)]
+    pub tasks: std::collections::BTreeSet<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -228,6 +250,8 @@ pub struct Team {
     pub checkpoint_required: bool,
     #[serde(default)]
     pub last_reset_id: Option<String>,
+    #[serde(default)]
+    pub finished: FinishedWork,
     pub error: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,6 +343,9 @@ pub enum Control {
     Stop,
     Retry {
         assignment: String,
+        /// Run the assignment on this agent instead of the one that failed.
+        #[serde(default)]
+        terminal: Option<TerminalSpec>,
     },
     Settings {
         workers: Vec<TerminalSpec>,
@@ -329,6 +356,12 @@ pub enum Control {
         session: String,
         #[serde(rename = "clearHistory")]
         clear_history: bool,
+    },
+    /// The worktree's task finished at `since_ms`: start the next one with a fresh lead.
+    CompleteTask {
+        id: String,
+        #[serde(default, rename = "sinceMs")]
+        since_ms: Option<u64>,
     },
     ResolveDelivery {
         id: String,
@@ -393,7 +426,41 @@ fn ready(r: &Record) -> bool {
                 })
         })
 }
-fn supported(t: &TerminalSpec) -> bool {
+/// Its last turn ended on a usage limit, so a prompt would only fail again.
+fn limit_stopped(r: &Record) -> bool {
+    r.snapshot
+        .as_ref()
+        .and_then(|s| s.status.agent.as_ref())
+        .is_some_and(|a| a.limit_stopped_ms.is_some())
+}
+/// How long a limit stop holds deliveries when no spent usage window explains it, so a brief rate
+/// limit clears by itself. A delivery that hits the limit again starts a new hold.
+const LIMIT_RETRY_MS: u64 = 15 * 60 * 1000;
+/// Held while a delivery would only fail again: just after the stop, or until a spent window of
+/// the subscription resets. OpenRouter profiles spend no subscription window.
+fn limit_held(
+    r: &Record,
+    now_ms: u64,
+    exhausted: &mut impl FnMut(crate::adapters::Adapter) -> bool,
+) -> bool {
+    let Some(agent) = r.snapshot.as_ref().and_then(|s| s.status.agent.as_ref()) else {
+        return false;
+    };
+    let Some(stopped_ms) = agent.limit_stopped_ms else {
+        return false;
+    };
+    let open_router = crate::profiles::from_command(&r.spec.command)
+        .ok()
+        .flatten()
+        .is_some_and(|profile| profile.open_router);
+    now_ms.saturating_sub(stopped_ms) < LIMIT_RETRY_MS
+        || (!open_router && agent.provider.is_some_and(exhausted))
+}
+/// No turn is left to protect: the process ended, its turn finished, or a limit ended it.
+fn replaceable(r: &Record) -> bool {
+    !r.snapshot.as_ref().is_some_and(|s| s.running) || ready(r) || limit_stopped(r)
+}
+pub(super) fn supported(t: &TerminalSpec) -> bool {
     t.kind == crate::TerminalKind::Agent
         && !t.command.trim().is_empty()
         && (t.adapter.is_some() || crate::adapters::Adapter::default_for(&t.command).is_some())
@@ -582,6 +649,7 @@ pub fn initialize(
             checkpoint,
             checkpoint_required: false,
             last_reset_id: None,
+            finished: FinishedWork::default(),
             error: None,
         };
         s.owners.push(Owner {
@@ -1662,7 +1730,14 @@ pub fn control(
                 }
                 s.owners.retain(|o| !(o.kind == "chat" && o.id == t.id));
             }
-            Control::Retry { assignment } => {
+            Control::Retry {
+                assignment,
+                terminal,
+            } => {
+                ensure!(
+                    terminal.as_ref().is_none_or(supported),
+                    "Choose a supported worker preset"
+                );
                 let r = s
                     .runs
                     .iter_mut()
@@ -1682,10 +1757,19 @@ pub fn control(
                     matches!(j.state, JobState::Failed | JobState::Launching),
                     "Only a failed or unconfirmed assignment can retry"
                 );
+                // An unconfirmed launch may still be live under its original agent.
+                ensure!(
+                    terminal.is_none() || j.state == JobState::Failed,
+                    "Only a failed assignment can change agent"
+                );
                 // Failed owned sessions are stopped by the desktop before this operation.
                 if j.state == JobState::Failed {
                     j.request_id = new_id();
                     j.session_id = None;
+                }
+                // `preset` stays the lead's request, so its delegation remains idempotent.
+                if let Some(terminal) = terminal {
+                    j.terminal = terminal;
                 }
                 j.state = JobState::Pending;
                 j.observed_working = false;
@@ -1751,8 +1835,19 @@ pub fn control(
                         next_session: session,
                         phase: ResetPhase::Queued,
                         clear_history,
+                        interrupt_current: false,
+                        complete_task: false,
                         error: None,
                     });
+                }
+            }
+            Control::CompleteTask { id, since_ms } => {
+                valid_id(&id)?;
+                if t.state != State::Stopped
+                    && !t.finished.tasks.contains(&id)
+                    && t.reset.as_ref().is_none_or(|r| r.id != id)
+                {
+                    complete_task(s, &mut t, project, id, since_ms, records)?;
                 }
             }
             Control::ResolveDelivery { id, delivered } => {
@@ -1894,7 +1989,22 @@ fn retained_briefing(text: &str) -> String {
     excerpt(text.trim_end(), 8000)
 }
 fn recovery_text(s: &Store, t: &Team) -> Result<String> {
-    let rounds: Vec<_> = s.runs.iter().filter(|r| r.chat_team.as_deref() == Some(&t.id)).map(|r| serde_json::json!({
+    let open_runs: Vec<_> = s
+        .runs
+        .iter()
+        .filter(|r| r.chat_team.as_deref() == Some(&t.id) && !t.finished.rounds.contains(&r.id))
+        .collect();
+    let open_information: Vec<_> = t
+        .information_requests
+        .iter()
+        .filter(|r| !t.finished.information.contains(&r.id))
+        .collect();
+    let open_workflows: Vec<_> = t
+        .requests
+        .iter()
+        .filter(|r| !t.finished.workflows.contains(&r.id))
+        .collect();
+    let rounds: Vec<_> = open_runs.iter().map(|r| serde_json::json!({
         "id": r.id, "state": r.state, "target": r.target, "integratedHead": r.integrated_head, "error": r.error,
         "assignments": r.jobs.iter().map(|j| serde_json::json!({"id":j.id,"sessionId":j.session_id,"instructions":j.instructions,"components":j.components,"paths":j.paths,"dependencies":j.dependencies,"sharedWorktree":j.shared_worktree,"resultKind":j.result_kind,"preset":j.preset,"state":j.state,"base":j.base,"commit":j.commit,"summary":j.summary,"integratedHead":j.integrated_head,"error":j.error})).collect::<Vec<_>>()
     })).collect();
@@ -1922,8 +2032,8 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         t.original_briefing,
         t.current_plan,
         t.saved_context,
-        serde_json::to_string(&t.information_requests)?,
-        serde_json::to_string(&t.requests)?,
+        serde_json::to_string(&open_information)?,
+        serde_json::to_string(&open_workflows)?,
         t.state
     );
     let full = format!("{}{}", render(&t.checkpoint, &rounds)?, supplement);
@@ -1939,16 +2049,16 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         remaining: excerpt(&t.checkpoint.remaining, 1024),
         validation: excerpt(&t.checkpoint.validation, 1024),
     };
-    let rounds: Vec<_> = s.runs.iter().rev().filter(|r| r.chat_team.as_deref() == Some(&t.id)).take(8).map(|r| serde_json::json!({
+    let rounds: Vec<_> = open_runs.iter().rev().take(8).map(|r| serde_json::json!({
         "id": r.id, "state": r.state, "integratedHead": r.integrated_head,
         "assignments": r.jobs.len(), "unfinishedAssignments": r.jobs.iter().filter(|j| !job_done(j)).count(),
         "error": r.error.as_deref().map(|e| excerpt(e, 256)),
     })).collect();
-    let information: Vec<_> = t.information_requests.iter().rev().filter(|r| r.response.is_none()).chain(t.information_requests.iter().rev().filter(|r| r.response.is_some())).take(16).map(|r| serde_json::json!({
+    let information: Vec<_> = open_information.iter().rev().filter(|r| r.response.is_none()).chain(open_information.iter().rev().filter(|r| r.response.is_some())).take(16).map(|r| serde_json::json!({
         "id": r.id, "recipient": r.recipient, "generation": r.generation,
         "question": excerpt(&r.question, 256), "response": r.response.as_deref().map(|text| excerpt(text, 512)), "error": r.error,
     })).collect();
-    let workflows: Vec<_> = t.requests.iter().rev().take(16).map(|r| serde_json::json!({
+    let workflows: Vec<_> = open_workflows.iter().rev().take(16).map(|r| serde_json::json!({
         "id": r.id, "action": r.action, "state": r.state, "result": r.result.as_deref().map(|text| excerpt(text, 256)),
     })).collect();
     let compact = format!(
@@ -1957,7 +2067,7 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         excerpt(&t.original_briefing, 2048),
         excerpt(&t.current_plan, 4000),
         excerpt(&t.saved_context, 8000),
-        t.information_requests.len(),
+        open_information.len(),
         serde_json::to_string(&information)?,
         serde_json::to_string(&workflows)?,
         excerpt(&scopes, 2048),
@@ -1968,6 +2078,135 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         "{}\n\n{notice}",
         excerpt(&compact, MESSAGE_LIMIT - notice.len() - 2)
     ))
+}
+const SETTLED_WORKFLOWS: [&str; 2] = ["completed", "failed"];
+/// Workers may still report. A failed assignment waits for a decision and is not running.
+fn round_active(r: &Run) -> bool {
+    r.state != State::Stopped
+        && r.jobs
+            .iter()
+            .any(|j| !job_done(j) && j.state != JobState::Failed)
+}
+/// Work begun after the task finished belongs to the lead's current conversation.
+fn lead_moved_on(s: &Store, t: &Team, lead: &Record, since_ms: Option<u64>) -> bool {
+    let snapshot = lead.snapshot.as_ref();
+    snapshot.is_some_and(|s| s.running) && !ready(lead)
+        || since_ms.is_some_and(|since| {
+            snapshot
+                .and_then(|s| s.status.agent.as_ref())
+                .is_some_and(|a| a.since_ms >= since)
+        })
+        || s.runs
+            .iter()
+            .any(|r| r.chat_team.as_deref() == Some(&t.id) && round_active(r))
+        || t.information_requests
+            .iter()
+            .any(|r| r.response.is_none() && r.error.is_none())
+        || t.requests
+            .iter()
+            .any(|r| !SETTLED_WORKFLOWS.contains(&r.state.as_str()))
+}
+/// Decide a completion once. It joins a pending fresh conversation rather than competing with it.
+fn complete_task(
+    s: &Store,
+    t: &mut Team,
+    project: &str,
+    id: String,
+    since_ms: Option<u64>,
+    records: &[Record],
+) -> Result<()> {
+    let lead = record(records, project, &t.lead.session_id).ok();
+    if !lead.is_some_and(|r| lead_moved_on(s, t, r, since_ms)) {
+        if let Some(reset) = &mut t.reset {
+            // A prepared launch already carries the finished task in its briefing.
+            ensure!(
+                reset.clear_history && reset.launch.is_none(),
+                "A lead replacement is already pending"
+            );
+            reset.complete_task = true;
+        } else if lead.is_some() {
+            ensure_available_for_team(s, t)?;
+            t.reset = Some(Reset {
+                launch: None,
+                id: id.clone(),
+                next_session: t.lead.session_id.clone(),
+                phase: ResetPhase::Queued,
+                clear_history: true,
+                interrupt_current: false,
+                complete_task: true,
+                error: None,
+            });
+        } else {
+            // Nothing to replace: the next continuation starts from the cleared state.
+            finish_task(t, &s.runs, records);
+            t.lead.conversation = None;
+            t.recovery = true;
+        }
+    }
+    t.finished.tasks.insert(id);
+    Ok(())
+}
+/// A confirmed replacement after finished work: nothing tells the new lead to continue it.
+fn finish_task(t: &mut Team, runs: &[Run], records: &[Record]) {
+    let id = t.id.clone();
+    let rounds: Vec<_> = runs
+        .iter()
+        .filter(|r| r.chat_team.as_deref() == Some(&id))
+        .collect();
+    t.finished.rounds.extend(
+        rounds
+            .iter()
+            .filter(|r| r.state == State::Stopped || r.jobs.iter().all(job_done))
+            .map(|r| r.id.clone()),
+    );
+    let answered: Vec<_> = t
+        .information_requests
+        .iter()
+        .filter(|r| r.response.is_some() || r.error.is_some())
+        .map(|r| r.id.clone())
+        .collect();
+    t.finished.information.extend(answered);
+    let settled: Vec<_> = t
+        .requests
+        .iter()
+        .filter(|r| SETTLED_WORKFLOWS.contains(&r.state.as_str()))
+        .map(|r| r.id.clone())
+        .collect();
+    t.finished.workflows.extend(settled);
+    // Messages stay stored, so their stable ids can't be queued again.
+    let active: HashSet<_> = rounds
+        .iter()
+        .filter(|r| round_active(r))
+        .flat_map(|r| r.jobs.iter().map(|j| j.id.as_str()))
+        .collect();
+    for m in t.messages.iter_mut().filter(|m| {
+        m.recipient == "lead"
+            && m.state == DeliveryState::Pending
+            && m.assignment
+                .as_deref()
+                .is_none_or(|assignment| !active.contains(assignment))
+    }) {
+        m.state = DeliveryState::Delivered;
+    }
+    // Only agents still working have a finish the new lead needs to hear about.
+    let working: HashSet<_> = records
+        .iter()
+        .filter(|r| r.snapshot.as_ref().is_some_and(|s| s.running) && !ready(r))
+        .map(|r| r.id.as_str())
+        .collect();
+    t.observed_agents
+        .retain(|session, _| working.contains(session.as_str()));
+    t.noted_agents
+        .retain(|session| working.contains(session.as_str()));
+    t.noted_since
+        .retain(|session, _| working.contains(session.as_str()));
+    t.checkpoint.goal.clear();
+    t.checkpoint.decisions.clear();
+    t.checkpoint.remaining = "No task is in progress. Wait for the user's next request.".into();
+    t.checkpoint.validation.clear();
+    t.saved_context.clear();
+    t.current_plan.clear();
+    t.original_briefing.clear();
 }
 pub(super) fn restore(s: &mut Store, project: &str) {
     for t in s.teams.iter_mut().filter(|t| t.project_id == project) {
@@ -2127,6 +2366,9 @@ pub fn reconcile(
                         }
                         t.lead.preset.name = r.metadata.name.clone();
                         t.lead.preset.adapter = r.metadata.adapter;
+                        if reset.complete_task {
+                            finish_task(&mut t, &s.runs, records);
+                        }
                         let text = format!(
                             "Goal: {}\nConstraints: {}\nDecisions: {}\nRemaining: {}\nValidation: {}\nRetained delegation rounds: {}. Pending worker updates will be delivered when ready.",
                             t.checkpoint.goal,
@@ -2143,6 +2385,7 @@ pub fn reconcile(
                             generation,
                             text,
                             clear_history: reset.clear_history,
+                            complete_task: reset.complete_task,
                         });
                         t.last_reset_id = Some(reset.id.clone());
                         t.reset = None;
@@ -2340,6 +2583,8 @@ fn prepare_lead(
             next_session,
             phase: ResetPhase::Queued,
             clear_history,
+            interrupt_current: clear_history,
+            complete_task: false,
             error: None,
             launch: Some(LeadLaunch { metadata, spec }),
         });
@@ -2500,6 +2745,8 @@ pub fn continue_lead(
                             next_session: r.id.clone(),
                             phase: ResetPhase::Queued,
                             clear_history: false,
+                            interrupt_current: false,
+                            complete_task: false,
                             error: None,
                             launch: None,
                         });
@@ -2573,12 +2820,17 @@ pub fn replace_lead(
         let Some(reset) = t.reset.clone() else {
             return Ok(());
         };
-        if (t.state != State::Running && reset.clear_history) || reset.phase != ResetPhase::Queued {
+        let current = record(records, project, &t.lead.session_id);
+        // Pausing holds recovery of a forgotten lead, not the user replacing a live one.
+        let chosen = reset.interrupt_current && current.is_ok();
+        if (t.state != State::Running && reset.clear_history && !chosen)
+            || reset.phase != ResetPhase::Queued
+        {
             return Ok(());
         }
-        if let Ok(current) = record(records, project, &t.lead.session_id)
+        if let Ok(current) = current
             && (generation(current)? != t.lead.generation
-                || (current.snapshot.as_ref().is_some_and(|s| s.running) && !ready(current)))
+                || (!reset.interrupt_current && !replaceable(current)))
         {
             return Ok(());
         }
@@ -2594,7 +2846,7 @@ pub fn replace_lead(
             }
         } else {
             let next = record(records, project, &reset.next_session)?;
-            if next.snapshot.as_ref().is_some_and(|s| s.running) && !ready(next) {
+            if !replaceable(next) {
                 return Ok(());
             }
             Request::ResetConversation {
@@ -2638,6 +2890,32 @@ pub fn deliver(
     project: &str,
     id: &str,
     records: &[Record],
+    call: impl FnMut(Request) -> Result<serde_json::Value>,
+) -> Result<()> {
+    let now_ms = crate::pty::now_ms();
+    // Read only once a held recipient's retry delay has passed.
+    let usage = std::cell::OnceCell::new();
+    deliver_at(
+        root,
+        project,
+        id,
+        records,
+        now_ms,
+        |provider| {
+            usage
+                .get_or_init(|| crate::usage::read(now_ms))
+                .exhausted(provider, now_ms)
+        },
+        call,
+    )
+}
+fn deliver_at(
+    root: &Path,
+    project: &str,
+    id: &str,
+    records: &[Record],
+    now_ms: u64,
+    mut exhausted: impl FnMut(crate::adapters::Adapter) -> bool,
     mut call: impl FnMut(Request) -> Result<serde_json::Value>,
 ) -> Result<()> {
     modify(root, |s| {
@@ -2646,8 +2924,11 @@ pub fn deliver(
             return Ok(());
         }
         if t.recovery
-            && record(records, project, &t.lead.session_id)
-                .is_ok_and(|r| ready(r) && generation(r).ok() == Some(t.lead.generation))
+            && record(records, project, &t.lead.session_id).is_ok_and(|r| {
+                ready(r)
+                    && !limit_held(r, now_ms, &mut exhausted)
+                    && generation(r).ok() == Some(t.lead.generation)
+            })
         {
             let text = recovery_text(s, &t)?;
             append(&mut t, new_id(), "patchbay", "lead", None, text)?;
@@ -2688,7 +2969,7 @@ pub fn deliver(
             else {
                 continue;
             };
-            if !ready(r) {
+            if !ready(r) || limit_held(r, now_ms, &mut exhausted) {
                 continue;
             }
             if recipient != "lead"
@@ -2842,7 +3123,7 @@ mod tests {
             metadata: serde_json::from_value(serde_json::json!({"projectId":"p", "projectName":"P", "projectRoot":root, "componentId":"@task", "terminalId":sid, "name":"Codex", "kind":"agent", "adapter":"codex"})).unwrap(),
             spec: SessionSpec { purpose: crate::pty::LaunchPurpose::Ordinary, id: sid.into(), command: "codex".into(), resume_command: None, rerun_on_resume: false, owns_briefing: false, exclusive_cwd: false, merge_source: None, cwd: root.into(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: vec![] },
             snapshot: Some(Snapshot { chat_startup: None, launch_directory: None, truncated: false, data: vec![], end: 0, generation: 1, running: true, exit_code: None, started_ms: 1, exited_ms: None,
-                status: SessionStatus { agent: Some(AgentReport { state: AgentState::Idle, since_ms: 10, message: None, prompt: None, provider: Some(crate::adapters::Adapter::Codex), conversation_id: Some("c1".into()), turn_id: Some("turn1".into()), authoritative: true, approval_pending: false, questions: None }), ..Default::default() }, activity: vec![], replies: vec![], last_reply: None, notice: None }),
+                status: SessionStatus { agent: Some(AgentReport { state: AgentState::Idle, since_ms: 10, message: None, prompt: None, provider: Some(crate::adapters::Adapter::Codex), conversation_id: Some("c1".into()), turn_id: Some("turn1".into()), authoritative: true, approval_pending: false, questions: None, limit_stopped_ms: None }), ..Default::default() }, activity: vec![], replies: vec![], last_reply: None, notice: None }),
             history: vec![], launch_command: String::new(), restart_context: None, briefing_backup: None, interrupted: false, request_ids: vec!["lead-request".into()],
         }
     }
@@ -3115,6 +3396,7 @@ mod tests {
                 &f.team.id,
                 Control::Retry {
                     assignment: "a".into(),
+                    terminal: None,
                 },
                 std::slice::from_ref(&f.lead),
             )
@@ -3213,7 +3495,8 @@ mod tests {
                     "p",
                     &f.team.id,
                     Control::Retry {
-                        assignment: "a".into()
+                        assignment: "a".into(),
+                        terminal: None,
                     },
                     std::slice::from_ref(&f.lead)
                 )
@@ -4168,7 +4451,10 @@ mod tests {
             super::super::Control::Pause,
             super::super::Control::Resume,
             super::super::Control::Stop,
-            super::super::Control::Retry { job: "a".into() },
+            super::super::Control::Retry {
+                job: "a".into(),
+                terminal: None,
+            },
             super::super::Control::ContinueJob {
                 job: "a".into(),
                 request_id: "request".into(),
@@ -4233,6 +4519,200 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    fn complete_task_reset(f: &Fixture) -> Result<Team> {
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::CompleteTask {
+                id: "task-done-1".into(),
+                since_ms: None,
+            },
+            std::slice::from_ref(&f.lead),
+        )
+    }
+
+    #[test]
+    fn completed_task_reset_drops_finished_work_once_the_new_lead_is_confirmed() {
+        let mut f = Fixture::new();
+        let checkpoint = Checkpoint {
+            goal: "Ship the finished feature".into(),
+            constraints: "Keep public APIs".into(),
+            decisions: "Use the old adapter".into(),
+            remaining: "Nothing else".into(),
+            validation: "All green".into(),
+        };
+        f.cmd(Command::Checkpoint {
+            checkpoint: checkpoint.clone(),
+        })
+        .unwrap();
+        f.delegate(vec![assignment("a", ResultKind::Report, &[])]);
+        let (run, worker) = f.launch("a");
+        f.worker_cmd(
+            &worker,
+            Command::Report {
+                summary: "finished feature report".into(),
+            },
+        )
+        .unwrap();
+        retain_briefing(&f.dir, "p", &f.team.id, "Finished task briefing").unwrap();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Note {
+                id: "merge".into(),
+                text: "The user started a merge.".into(),
+                sessions: vec!["merge-agent".into()],
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        complete_task_reset(&f).unwrap();
+        assert_eq!(f.state().checkpoint, checkpoint, "not confirmed yet");
+
+        f.lead.request_ids.push("task-done-1".into());
+        f.lead.snapshot.as_mut().unwrap().generation = 2;
+        reconcile(&f.dir, "p", &[f.lead.clone(), worker], false).unwrap();
+        let t = f.state();
+        assert!(t.handoff.as_ref().unwrap().complete_task);
+        assert!(t.checkpoint.goal.is_empty());
+        assert!(t.checkpoint.validation.is_empty());
+        assert!(t.checkpoint.decisions.is_empty());
+        assert!(t.original_briefing.is_empty());
+        assert!(t.noted_agents.is_empty());
+        assert!(
+            t.messages
+                .iter()
+                .filter(|m| m.recipient == "lead")
+                .all(|m| m.state == DeliveryState::Delivered),
+            "finished work's messages never reach the new lead"
+        );
+        assert_eq!(t.checkpoint.constraints, "Keep public APIs");
+        assert!(t.finished.rounds.contains(&run.id));
+        assert!(t.rounds.contains(&run.id), "history stays stored");
+        let text = recovery_text(&load(&f.dir).unwrap(), &t).unwrap();
+        assert!(!text.contains("Ship the finished feature"));
+        assert!(!text.contains(&run.id));
+
+        // Polling repeats the request after it was applied.
+        complete_task_reset(&f).unwrap();
+        assert!(f.state().reset.is_none());
+    }
+
+    fn complete_since(f: &Fixture, since_ms: Option<u64>) -> Team {
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::CompleteTask {
+                id: "task-done-1".into(),
+                since_ms,
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap()
+    }
+
+    fn lead_agent(f: &mut Fixture) -> &mut crate::status::AgentReport {
+        let snapshot = f.lead.snapshot.as_mut().unwrap();
+        snapshot.status.agent.as_mut().unwrap()
+    }
+
+    #[test]
+    fn a_lead_with_newer_work_keeps_its_conversation_when_a_task_completes() {
+        let mut f = Fixture::new();
+        lead_agent(&mut f).since_ms = 500;
+        let t = complete_since(&f, Some(500));
+        assert!(t.reset.is_none(), "a turn since the task finished");
+        assert_eq!(t.checkpoint.goal, "Build feature");
+        assert!(t.finished.tasks.contains("task-done-1"));
+
+        // The decision stands, even once the lead is idle again.
+        lead_agent(&mut f).since_ms = 1;
+        assert!(complete_since(&f, Some(500)).reset.is_none());
+    }
+
+    #[test]
+    fn a_busy_lead_or_active_round_keeps_the_conversation() {
+        let mut f = Fixture::new();
+        lead_agent(&mut f).state = crate::status::AgentState::Working;
+        assert!(complete_since(&f, None).reset.is_none());
+
+        let f = Fixture::new();
+        f.delegate(vec![assignment("a", ResultKind::Report, &[])]);
+        assert!(complete_since(&f, None).reset.is_none());
+    }
+
+    #[test]
+    fn a_completion_joins_a_pending_fresh_conversation() {
+        let f = Fixture::new();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Reset {
+                id: "fresh".into(),
+                session: f.lead.id.clone(),
+                clear_history: true,
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        let reset = complete_since(&f, None).reset.unwrap();
+        assert_eq!(reset.id, "fresh");
+        assert!(reset.complete_task);
+    }
+
+    #[test]
+    fn a_completion_without_a_lead_session_clears_the_task_immediately() {
+        let f = Fixture::new();
+        let t = control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::CompleteTask {
+                id: "task-done-1".into(),
+                since_ms: None,
+            },
+            &[],
+        )
+        .unwrap();
+        assert!(t.reset.is_none());
+        assert!(t.checkpoint.goal.is_empty());
+        assert!(
+            t.lead.conversation.is_none(),
+            "nothing resumes the old turn"
+        );
+        assert!(t.recovery);
+    }
+
+    #[test]
+    fn failed_completed_task_reset_keeps_the_checkpoint() {
+        let f = Fixture::new();
+        let checkpoint = Checkpoint {
+            goal: "Keep me".into(),
+            ..Default::default()
+        };
+        f.cmd(Command::Checkpoint {
+            checkpoint: checkpoint.clone(),
+        })
+        .unwrap();
+        complete_task_reset(&f).unwrap();
+        replace_lead(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |_| Err(anyhow!("launch refused")),
+        )
+        .unwrap();
+        let t = f.state();
+        assert_eq!(t.reset.unwrap().phase, ResetPhase::Failed);
+        assert_eq!(t.checkpoint, checkpoint);
+        assert!(t.finished.rounds.is_empty());
     }
 
     #[test]
@@ -4672,6 +5152,204 @@ mod tests {
         assert!(
             super::super::launch(&f.dir, "p", "round1", "a", &f.project, |_| panic!()).is_err()
         );
+    }
+    fn stop_at_limit(record: &mut Record) {
+        record
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .limit_stopped_ms = Some(20);
+    }
+    fn set_working(record: &mut Record) {
+        record
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .state = AgentState::Working;
+    }
+    fn claude_preset() -> TerminalSpec {
+        serde_json::from_value(serde_json::json!({"id":"claude", "name":"Claude", "kind":"agent", "command":"claude", "adapter":"claude"})).unwrap()
+    }
+    #[test]
+    fn a_limit_stopped_lead_gets_no_deliveries_but_can_be_replaced() {
+        let f = Fixture::new();
+        let mut lead = f.lead.clone();
+        stop_at_limit(&mut lead);
+        // Not otherwise ready, so only the limit can release its replacement.
+        lead.snapshot.as_mut().unwrap().chat_startup = Some(crate::status::ChatStartup::Pending);
+        f.send("held", "Worker update");
+        deliver_at(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&lead),
+            30,
+            |_| false,
+            |_| panic!("delivered to a limit-stopped lead"),
+        )
+        .unwrap();
+        let held = f.state();
+        assert!(
+            held.messages
+                .iter()
+                .any(|m| m.state == DeliveryState::Pending)
+        );
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Reset {
+                id: "fresh".into(),
+                session: lead.id.clone(),
+                clear_history: true,
+            },
+            std::slice::from_ref(&lead),
+        )
+        .unwrap();
+        let mut resets = 0;
+        replace_lead(&f.dir, "p", &f.team.id, std::slice::from_ref(&lead), |r| {
+            assert!(matches!(r, Request::ResetConversation { .. }));
+            resets += 1;
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        assert_eq!(resets, 1);
+    }
+    #[test]
+    fn a_limit_hold_ends_after_the_retry_delay_once_no_window_is_spent() {
+        let f = Fixture::new();
+        let mut lead = f.lead.clone();
+        stop_at_limit(&mut lead);
+        f.send("held", "Worker update");
+        let records = std::slice::from_ref(&lead);
+        let retry_at = 20 + LIMIT_RETRY_MS;
+        for (now_ms, spent) in [(retry_at - 1, false), (retry_at, true)] {
+            deliver_at(
+                &f.dir,
+                "p",
+                &f.team.id,
+                records,
+                now_ms,
+                |_| spent,
+                |_| panic!("delivered during the hold"),
+            )
+            .unwrap();
+        }
+        let mut prompts = 0;
+        deliver_at(
+            &f.dir,
+            "p",
+            &f.team.id,
+            records,
+            retry_at,
+            |_| false,
+            |request| {
+                prompts += usize::from(matches!(request, Request::Prompt { .. }));
+                Ok(serde_json::Value::Null)
+            },
+        )
+        .unwrap();
+        assert_eq!(prompts, 1);
+    }
+    #[test]
+    fn choosing_a_lead_replaces_a_working_lead_while_clearing_context_waits() {
+        let f = Fixture::new();
+        let mut lead = f.lead.clone();
+        set_working(&mut lead);
+        let records = std::slice::from_ref(&lead);
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Reset {
+                id: "fresh".into(),
+                session: lead.id.clone(),
+                clear_history: true,
+            },
+            records,
+        )
+        .unwrap();
+        replace_lead(&f.dir, "p", &f.team.id, records, |_| {
+            panic!("cleared context during a working turn")
+        })
+        .unwrap();
+        assert_eq!(f.state().reset.unwrap().phase, ResetPhase::Queued);
+
+        let f = Fixture::new();
+        let mut lead = f.lead.clone();
+        set_working(&mut lead);
+        let records = std::slice::from_ref(&lead);
+        control(&f.dir, "p", &f.team.id, Control::Pause, records).unwrap();
+        let mut terminal = claude_preset();
+        terminal.id = "new-lead".into();
+        new_lead(
+            &f.dir,
+            &f.project,
+            "p",
+            &f.team.id,
+            terminal,
+            "replacement".into(),
+        )
+        .unwrap();
+        let mut requests = Vec::new();
+        replace_lead(&f.dir, "p", &f.team.id, records, |r| {
+            requests.push(match r {
+                Request::Stop { .. } => "stop",
+                Request::NewConversation { .. } => "launch",
+                _ => panic!("unexpected request"),
+            });
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        assert_eq!(requests, ["stop", "launch"]);
+    }
+    #[test]
+    fn a_limit_stopped_worker_fails_and_retries_on_another_agent() {
+        let f = Fixture::new();
+        f.cmd(Command::DelegateShared {
+            id: "round1".into(),
+            assignments: vec![assignment("a", ResultKind::Code, &[])],
+        })
+        .unwrap();
+        let (launched, mut worker) = f.launch("a");
+        let launched_ms = launched.jobs[0].launched_ms;
+        stop_at_limit(&mut worker);
+        let records = [f.lead.clone(), worker];
+        super::super::reconcile_at(&f.dir, "p", &records, false, launched_ms + 1).unwrap();
+        let failed = super::super::read(&f.dir, "p", "round1").unwrap();
+        assert_eq!(failed.jobs[0].state, JobState::Failed);
+        assert!(
+            failed.jobs[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("usage limit")
+        );
+        let preset = failed.jobs[0].preset.clone();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Retry {
+                assignment: "a".into(),
+                terminal: Some(claude_preset()),
+            },
+            &records,
+        )
+        .unwrap();
+        let retried = super::super::read(&f.dir, "p", "round1").unwrap();
+        assert_eq!(retried.jobs[0].state, JobState::Pending);
+        assert_eq!(retried.jobs[0].terminal.name, "Claude");
+        assert_eq!(retried.jobs[0].preset, preset);
+        assert_ne!(retried.jobs[0].request_id, failed.jobs[0].request_id);
     }
     #[test]
     fn changing_preset_queues_one_launch_and_rejects_the_superseded_lead() {

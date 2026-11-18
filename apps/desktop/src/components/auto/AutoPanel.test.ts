@@ -25,6 +25,8 @@ vi.mock('../../lib/reviewAgents', () => ({
   laneRunning: (running: string, lane: string) => running === lane,
 }))
 vi.mock('./AutoDialog', () => ({ default: () => null }))
+vi.mock('../../lib/plan', () => ({ agentDevices: () => [] }))
+vi.mock('../../lib/usage', () => ({ presetExhausted: () => [], useUsage: () => null }))
 
 beforeEach(() => {
   mock.state = {
