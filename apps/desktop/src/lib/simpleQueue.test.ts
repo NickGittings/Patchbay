@@ -23,7 +23,13 @@ vi.mock('./simpleReplies', () => ({ persistReplies: vi.fn() }))
 
 import { useStore } from '../store'
 import { terminalAttach, terminalDetach, terminalPrompt } from './ipc'
-import { cancelQueued, enqueuePrompt, flushQueued, followQueuedPrompts } from './simpleQueue'
+import {
+  cancelQueued,
+  enqueuePrompt,
+  flushQueued,
+  followQueuedPrompts,
+  sendableNow,
+} from './simpleQueue'
 import { appendDraft, simpleKey, useSimpleUi } from './simpleUi'
 import { FORCED_SETTLE_MS, sendToSession, transmittedText } from './simpleComposer'
 import { logSimple } from './simpleActions'
@@ -488,4 +494,21 @@ test('an uncertain user send stays blocked until the user resolves delivery', as
   await flushQueued(key)
   expect(terminalPrompt).toHaveBeenCalledOnce()
   expect(useSimpleUi.getState().worktrees[key].queued).toBeDefined()
+})
+
+test('a limit-stopped agent keeps its queue until the user forces delivery', async () => {
+  stop = followQueuedPrompts()
+  queue()
+  const limited = session('idle')
+  limited.status!.agent!.limitStoppedMs = 5
+  update(limited)
+  await flushQueued(key)
+  expect(terminalPrompt).not.toHaveBeenCalled()
+  const queued = useSimpleUi.getState().worktrees[key]?.queued
+  expect(queued).toBeDefined()
+  // Send now is how the user reaches that forced delivery.
+  expect(sendableNow(queued!, limited)).toBe(true)
+  expect(sendableNow(queued!, session('idle'))).toBe(false)
+  await flushQueued(key, true)
+  expect(terminalPrompt).toHaveBeenCalledExactlyOnceWith(sid, 1, 'follow  up', true)
 })

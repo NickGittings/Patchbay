@@ -37,7 +37,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 25 applies chat startup to retained legacy leads on resume and recovery.
 // Protocol 26 serializes branch mutations with terminal launches.
 // Protocol 27 serializes merge cleanup and restoration with terminal launches.
-pub const PROTOCOL: u32 = 28;
+// Protocol 29 reports turns ended by usage limits, which an older service would leave busy.
+pub const PROTOCOL: u32 = 29;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -6233,6 +6234,7 @@ mod tests {
             authoritative: true,
             approval_pending: false,
             questions: None,
+            limit_stopped_ms: None,
         });
         assert_eq!(
             restart_conversation(Adapter::Claude, &snapshot).as_deref(),
@@ -6261,6 +6263,7 @@ mod tests {
                 authoritative,
                 approval_pending: false,
                 questions: None,
+                limit_stopped_ms: None,
             }),
             ..SessionStatus::default()
         };
@@ -6291,6 +6294,7 @@ mod tests {
                 authoritative,
                 approval_pending,
                 questions: None,
+                limit_stopped_ms: None,
             }),
             ..SessionStatus::default()
         };

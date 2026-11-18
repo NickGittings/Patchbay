@@ -51,8 +51,16 @@ full background plan/build/validate/review/merge path while another worktree rem
 pause and structured `usageWait` (required providers and latest blocking reset). Opted-in runs
 also record `resumeTrigger: { kind: 'usage', atMs }`. Before resuming, usage is refreshed; all
 blocking provider windows must clear. Extended reset deadlines update both the pending trigger and saved usage wait.
-Missing or expired windows retain the existing allow-through behavior. This covers the existing
-gate only: it does not add gates to scan/worker launches or detect mid-turn rate-limit failures.
+Missing or expired windows retain the existing allow-through behavior. The launch gate does not
+cover scan/worker launches.
+
+A limit reached mid-turn (`AgentReport.limitStoppedMs`, or a provider job that failed on one) also
+records a `usage` pause with `limitedProviders`, unless the merge or the reviewer's findings already
+finished. Auto stops its limited sessions so Resume relaunches the stage, and fills `usageWait` when
+the reset is known. **Continue with another agent** (`resumeAutoWithAgent`) checks the chosen preset's
+sign-in and status hooks, moves every stage, reviewer, scanner and worker on the limited providers to
+it, and resumes. If that resume fails, the original agents and reset trigger return. Resume retries
+limited provider jobs.
 
 Paused runs without a needs-user issue can choose a future local date/time. This records a
 `scheduled` pause and a `time` trigger, replacing a pending usage trigger. Only one trigger exists

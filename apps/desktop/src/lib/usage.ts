@@ -1,3 +1,4 @@
+import { commandProfile } from './agentProfiles'
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import { useStore } from '../store'
@@ -28,6 +29,36 @@ export function exhaustedWindows(
       ? [{ provider: key as 'claude' | 'codex', key: window, window: value }]
       : []
   })
+}
+
+type UsagePreset = { command: string; adapter?: 'claude' | 'codex' | null }
+
+/** The provider a plain command runs, as core's `context::command_provider` recognises it. */
+function commandProvider(command: string) {
+  if (/[;&|]/.test(command)) return null
+  const tokens = (command.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((token) =>
+    token.replace(/^["']|["']$/g, ''),
+  )
+  let program = tokens[0] === 'env' ? 1 : 0
+  while (/^[A-Za-z_]\w*=/.test(tokens[program] ?? '')) program++
+  const name = tokens[program]
+    ?.split(/[/\\]/)
+    .pop()
+    ?.toLowerCase()
+    .replace(/\.(exe|cmd|bat)$/, '')
+  return name === 'claude' || name === 'codex' ? name : null
+}
+
+/** The subscription a preset spends; OpenRouter profiles spend none. */
+export function presetProvider(preset: UsagePreset): 'claude' | 'codex' | null {
+  const profile = commandProfile(preset.command)
+  if (profile) return profile.openRouter ? null : 'claude'
+  return preset.adapter ?? commandProvider(preset.command)
+}
+
+/** Exhausted windows of the subscription a preset would spend. */
+export function presetExhausted(usage: Usage | null, preset: UsagePreset, now: number) {
+  return exhaustedWindows(usage, presetProvider(preset), now)
 }
 
 export function usageLevel(window: UsageWindow, settings: UsageSettings): UsageLevel {

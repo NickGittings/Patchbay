@@ -829,6 +829,7 @@ impl PtyManager {
                 .as_deref()
                 .map(|c| context_reader.read(c, now))
                 .unwrap_or_default();
+            let limit_stop = context_reader.take_limit();
             let hooks = journal
                 .map(|dir| crate::agent_hooks::drain(&dir))
                 .unwrap_or_default();
@@ -849,6 +850,12 @@ impl PtyManager {
                 guard.tracker.on_context(observation);
             }
             if let Some(conversation) = conversation {
+                // After this tick's hooks, so the prompt that started the turn is known.
+                if let Some(stop) = &limit_stop {
+                    guard
+                        .tracker
+                        .on_usage_limit(&conversation, stop, observed_ms);
+                }
                 for context in codex_contexts {
                     guard.tracker.on_context(crate::agent_context::Observation {
                         session: id.clone(),
@@ -2191,6 +2198,7 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
                 turn: Some("turn".into()),
                 tool: (event == "PreToolUse").then(|| "Read".into()),
                 file_target: true,
+                usage_limit: false,
                 questions: None,
                 target: Some("src/lib.rs".into()),
                 prompt: None,

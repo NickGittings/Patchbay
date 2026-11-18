@@ -64,7 +64,7 @@ export interface ProviderRun {
 }
 export type ProviderControl =
   | { kind: 'pause' | 'resume' | 'stop' | 'continueScan' }
-  | { kind: 'retry'; job: string }
+  | { kind: 'retry'; job: string; terminal?: TerminalSpec }
   | { kind: 'continueJob'; job: string; requestId: string }
 const terminal = (d: DeviceManifest): TerminalSpec => ({
   id: d.id,

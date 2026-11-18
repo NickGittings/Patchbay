@@ -1,4 +1,5 @@
 import { councilSettings, driveCouncil, type CouncilSettings } from './council'
+import { limitStopped } from './chat'
 import { planTerminals } from './plan'
 import { checkHooks, hooksUsable } from './agentHooks'
 import { ProviderSetupRequired, requireProviderAuth } from './providerAuth'
@@ -79,6 +80,7 @@ export interface ChatTeam {
     nextSession: string
     phase: 'queued' | 'launching' | 'failed'
     clearHistory: boolean
+    interruptCurrent?: boolean
     error: string | null
   } | null
   handoff: {
@@ -102,7 +104,7 @@ export type TeamControl =
   | { kind: 'requestState'; id: string; state: string; result: string | null }
   | { kind: 'pause' | 'resume' | 'stop' | 'historyBoundary' }
   | { kind: 'block'; reason: string }
-  | { kind: 'retry'; assignment: string }
+  | { kind: 'retry'; assignment: string; terminal?: TerminalSpec }
   | { kind: 'settings'; workers: TerminalSpec[]; limit: number }
   | { kind: 'reset'; id: string; session: string; clearHistory: boolean }
   | { kind: 'resolveDelivery'; id: string; delivered: boolean }
@@ -195,6 +197,13 @@ export async function requireTeamPreset(
       `Set up Agent status integration for ${terminal.name} in Settings → Integrations. The lead can continue locally.`,
     )
 }
+/** Retry a failed assignment on a different agent. */
+export async function retryOnAgent(team: ChatTeam, assignment: string, terminal: TerminalSpec) {
+  const project = projectOf(team.projectId)
+  if (!project) throw new Error('Open the project before changing agent')
+  await requireTeamPreset(terminal, project, team.task)
+  return controlTeam(team, { kind: 'retry', assignment, terminal })
+}
 export async function newLead(team: ChatTeam, terminal: TerminalSpec) {
   const project = projectOf(team.projectId)
   if (!project) throw new Error('Open the project before changing lead')
@@ -219,13 +228,17 @@ export function leadDeliveryPending(
   const team = teamFor(projectId, task)
   if (!team || team.lead.sessionId !== sid) return false
   const session = useStore.getState().sessions[sid]
+  // Deliveries wait out a limit stop, and the user's prompt is what can start the next turn.
+  const held = limitStopped(session)
   return (
     !!team.reset ||
-    !!team.recovery ||
+    (!!team.recovery && !held) ||
     // A waiting passive message has no delivery coming, so it must not hold the user's prompt.
     (team.messages ?? []).some(
       (m) =>
-        m.recipient === 'lead' && m.state !== 'delivered' && !(m.passive && m.state === 'pending'),
+        m.recipient === 'lead' &&
+        m.state !== 'delivered' &&
+        !((m.passive || held) && m.state === 'pending'),
     ) ||
     (team.deliveries ?? []).some(
       (d) =>

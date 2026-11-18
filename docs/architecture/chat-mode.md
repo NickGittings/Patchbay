@@ -54,6 +54,20 @@ branch/worktree is kept or deleted. Merges into other destination branches leave
 
 The composer subscribes to provider usage and the shared clock. It shows every unexpired window at or above 100% for its recipient’s provider, falling back to the selected worktree planner before launch. Each warning names the provider, window, reset time and countdown. Warnings expire at reset and do not depend on notification preferences or Auto thresholds, and do not disable Send or terminal access. Missing data stays unknown.
 
+### Usage limits
+
+`AgentReport.limitStoppedMs` records a turn ended by a usage limit: Codex's `task_complete` with
+`usage_limit_exceeded` (read by `agent_context::CodexReader`, accepted only at or after the current
+turn's prompt) or Claude's `StopFailure` with `rate_limit` or `billing_error`. The next turn clears
+it. The agent reads Idle, and lead replacement stays allowed. Coordination is held
+(`chat::limit_held`) for 15 minutes and for as long as the subscription has a spent window, then
+retries, so a brief rate limit does not stall a team. Held messages never hold the user's prompt, which
+can start the next turn at any time. A queued prompt waits for **Send now** or Send. `ChatLimitNotice`
+names the reset and offers **Continue with** each other preset. It and **Retry with…** disable presets
+whose own subscription is exhausted. Nothing switches automatically. A limited worker fails with that
+reason, and **Retry with…** reruns its assignment on another agent while keeping the lead's requested
+`preset` for idempotent delegation.
+
 ### Persistent lead and coordinated workers
 
 `reviewAgents::chatReviewBase` supplies Chat's review launches and changes reader with the same
@@ -103,7 +117,8 @@ Builder terminal changes the drawer identity while the composer continues to add
 Each worktree can have one persistent chat team. The saved `selectedAgent` becomes its lead when
 coordination is initialized; existing conversations migrate paused, preserving their history and
 recipient without launching workers. **Switch agent** queues an explicit durable provider-conversation
-replacement. **Clear lead context** confirms inline that provider context resets and visible
+replacement that stops the current lead at once, even mid-turn (after an inline confirmation) or
+while work is paused; a queued prompt for that lead returns as a draft. **Clear lead context** confirms inline that provider context resets and visible
 history is replaced with a concise handoff. It uses the same durable replacement while retaining
 workers, assignments, results, inbox messages and checkpoints. The confirmation belongs to one
 visit to a worktree and disappears after switching away; pending send/workflow actions and an

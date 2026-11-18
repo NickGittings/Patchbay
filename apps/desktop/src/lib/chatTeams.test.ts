@@ -274,6 +274,28 @@ test('a waiting note rides the user’s prompt to the lead and never holds it', 
   cacheTeam(team({ messages: [{ ...note, state: 'pending' }] }))
   expect(leadDeliveryPending('p', null, 'lead', 1)).toBe(true)
 })
+test('messages held for a limit-stopped lead never hold the user’s prompt', () => {
+  const message = {
+    id: 'held',
+    sequence: 1,
+    sender: 'worker',
+    recipient: 'lead',
+    assignment: null,
+    text: 'Done',
+    generation: null,
+  }
+  cacheTeam(team({ recovery: true, messages: [{ ...message, state: 'pending' }] }))
+  expect(leadDeliveryPending('p', null, 'lead', 1)).toBe(true)
+  useStore.setState({
+    sessions: {
+      lead: { status: { agent: { state: 'idle', sinceMs: 5, limitStoppedMs: 5 } } },
+    } as never,
+  })
+  expect(leadDeliveryPending('p', null, 'lead', 1)).toBe(false)
+  // A write already under way still owns the prompt.
+  cacheTeam(team({ messages: [{ ...message, state: 'sending' }] }))
+  expect(leadDeliveryPending('p', null, 'lead', 1)).toBe(true)
+})
 test('side messages address the stored team and assignment and preserve their text', async () => {
   vi.mocked(invoke).mockResolvedValue(team())
   await sendWorkerMessage(team(), 'assignment-a', 'Check this constraint')

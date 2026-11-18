@@ -76,6 +76,17 @@ async function launchChatAgent(projectId: string, task: string | null) {
   return record
 }
 
+/** A user's choice of agent: holds the worktree's composer until the change is queued. */
+export async function changeChatAgent(projectId: string, task: string | null, presetId: string) {
+  const key = simpleKey(projectId, task)
+  useSimpleUi.getState().patch(key, { pendingAction: true })
+  try {
+    await switchChatAgent(projectId, task, presetId)
+  } finally {
+    useSimpleUi.getState().patch(key, { pendingAction: false })
+  }
+}
+
 export async function switchChatAgent(projectId: string, task: string | null, presetId: string) {
   const preset = planTerminals(useStore.getState().devices).find((p) => p.id === presetId)
   if (!preset) throw new Error('This agent preset is no longer available.')

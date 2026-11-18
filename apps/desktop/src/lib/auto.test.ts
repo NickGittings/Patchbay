@@ -95,6 +95,7 @@ const {
   followAuto,
   pauseAuto,
   resumeAuto,
+  resumeAutoWithAgent,
   mergeNow,
   skipStage,
   autoRun,
@@ -3577,6 +3578,8 @@ test.each(['reset', 'threshold', 'disable'] as const)(
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ status: 'paused', stage: 'review' })
       expect(autoRun('p', 't')?.reason).toMatch(/^Claude weekly limit is 96% used; resets /)
+      // Codex reviews in the same round but has usage left.
+      expect(autoRun('p', 't')?.usageWait?.providers).toEqual(['claude'])
       expect(jobs.startReviewAgents).not.toHaveBeenCalled()
       if (resume === 'reset') vi.setSystemTime(2000)
       else
@@ -5663,4 +5666,194 @@ test('a tracked session change does not drive another active worktree', async ()
     expect(autoOwnership).toHaveBeenCalledWith('p', 't', true)
     expect(autoRun('p', null)?.status).toBe('running')
   })
+})
+
+const limitUsage = (resetsAtMs: number) => ({
+  claude: null,
+  codex: {
+    provider: 'codex',
+    fiveHour: { usedPercent: 100, resetsAtMs, windowMinutes: 300 },
+    weekly: null,
+    observedMs: 1000,
+  },
+  claudeCapture: { installed: true, chained: null, source: '/settings.json' },
+  claudeError: null,
+  codexError: null,
+})
+function limitStoppedAgent(limitStoppedMs: number) {
+  useStore.setState({
+    sessions: {
+      s: {
+        running: true,
+        startedMs: 1000,
+        status: {
+          stopped: false,
+          agent: {
+            state: 'idle',
+            sinceMs: limitStoppedMs,
+            authoritative: true,
+            message: null,
+            prompt: null,
+            provider: 'codex',
+            limitStoppedMs,
+          },
+        },
+      } as SessionState,
+    },
+  })
+}
+
+test('a limit reached mid-turn pauses for usage, stops the agent and schedules the reset', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1000)
+  load()
+  vi.mocked(ipc.usageRead).mockResolvedValue(limitUsage(9000) as never)
+  setRun({
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+    turnSince: 1000,
+    autonomous: true,
+    resumeOnUsageReset: true,
+  })
+  await withFollower(async () => {
+    agent('working', 1100)
+    await flush()
+    limitStoppedAgent(1200)
+    await flush()
+    await flush()
+  })
+  expect(autoRun('p', 't')).toMatchObject({
+    status: 'paused',
+    pauseKind: 'usage',
+    usageWait: { providers: ['codex'], atMs: 9000 },
+    resumeTrigger: { kind: 'usage', atMs: 9000 },
+  })
+  expect(autoRun('p', 't')?.reason).toMatch(/^Codex reached its usage limit/)
+  expect(autoRun('p', 't')?.recovery).toBeUndefined()
+  expect(ipc.terminalStop).toHaveBeenCalledWith('s')
+})
+
+test('a limit from before the tracked turn does not pause the run', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  load()
+  setRun({ sessionId: 's', sessionOwned: true, sessionStartedMs: 1000, turnSince: 2000 })
+  await withFollower(async () => {
+    limitStoppedAgent(1500)
+    await flush()
+  })
+  expect(autoRun('p', 't')?.status).toBe('running')
+})
+
+function loadLimitPresets() {
+  load()
+  const codex = { ...useStore.getState().devices[0], id: 'codex', adapter: 'codex' as const }
+  const claude = {
+    ...codex,
+    id: 'claude',
+    name: 'Claude',
+    command: 'claude',
+    adapter: 'claude' as const,
+  }
+  const other = { ...claude, id: 'other', name: 'Other', command: 'claude --other' }
+  // A custom command names its provider without an adapter.
+  const custom = { ...codex, id: 'custom', command: 'codex --profile x', adapter: undefined }
+  useStore.setState({ devices: [codex, claude, other, custom] })
+}
+const usagePause: Partial<AutoRun> = {
+  status: 'paused',
+  pauseKind: 'usage',
+  device: 'codex',
+  agents: { plan: 'other' },
+  reviewers: ['codex', 'other'],
+  workers: ['codex', 'custom'],
+}
+
+test.each<[string, Partial<AutoRun>]>([
+  ['a known reset', { usageWait: { providers: ['codex'], atMs: 9000 } }],
+  ['no known reset', { limitedProviders: ['codex'] }],
+])(
+  'continuing on another agent replaces only the agents at their limit with %s',
+  async (_, how) => {
+    loadLimitPresets()
+    setRun({ ...usagePause, ...how })
+    await resumeAutoWithAgent('p', 't', 'claude').catch(() => {})
+    const next = autoRun('p', 't')!
+    expect(next.agents).toMatchObject({ plan: 'other', implement: 'claude', review: 'claude' })
+    expect(next.reviewers).toEqual(['claude', 'other'])
+    expect(next.workers).toEqual(['claude'])
+  },
+)
+
+test('an agent without status hooks is refused before the run changes', async () => {
+  loadLimitPresets()
+  const trigger = { kind: 'usage' as const, atMs: 9000 }
+  setRun({
+    ...usagePause,
+    usageWait: { providers: ['codex'], atMs: 9000 },
+    resumeTrigger: trigger,
+  })
+  vi.mocked(ipc.agentHooksCheck).mockResolvedValueOnce({
+    installed: false,
+    disabled: false,
+    reporterAvailable: true,
+  } as Awaited<ReturnType<typeof ipc.agentHooksCheck>>)
+  await expect(resumeAutoWithAgent('p', 't', 'claude')).rejects.toThrow()
+  expect(autoRun('p', 't')).toMatchObject({
+    reviewers: ['codex', 'other'],
+    resumeTrigger: trigger,
+  })
+})
+
+test('a resume that fails puts the original agents and reset trigger back', async () => {
+  loadLimitPresets()
+  const trigger = { kind: 'usage' as const, atMs: 9000 }
+  setRun({
+    ...usagePause,
+    sessionId: 's',
+    usageWait: { providers: ['codex'], atMs: 9000 },
+    resumeTrigger: trigger,
+  })
+  useStore.setState({ serviceConnected: false })
+  await expect(resumeAutoWithAgent('p', 't', 'claude')).rejects.toThrow('session service')
+  expect(autoRun('p', 't')).toMatchObject({
+    status: 'paused',
+    agents: { plan: 'other' },
+    reviewers: ['codex', 'other'],
+    workers: ['codex', 'custom'],
+    resumeTrigger: trigger,
+  })
+})
+
+test.each([
+  ['finishes the round once its findings are written', true],
+  ['pauses the round before its findings are written', false],
+])('a reviewer stopped at its limit %s', async (_, wrote) => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  load()
+  const lane = reviewSession('idle', 1200)
+  lane.status!.agent!.limitStoppedMs = 1200
+  lane.status!.agent!.provider = 'codex'
+  useStore.setState({ sessions: { s: reviewSession('review', 1300), lane } })
+  vi.mocked(ipc.reviewRead).mockResolvedValue(roundFindings(true, wrote))
+  setRun({
+    ...inputWaitRound(),
+    status: 'running',
+    waitingFor: undefined,
+    inputSessionId: undefined,
+  })
+  await withFollower(async () => {
+    await flush()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+  })
+  if (wrote) expect(autoRun('p', 't')?.stage).toBe('mergeGate')
+  else
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'usage',
+      limitedProviders: ['codex'],
+    })
 })

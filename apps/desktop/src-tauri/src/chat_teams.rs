@@ -166,7 +166,7 @@ pub async fn chat_team_control(
             }
             Ok(())
         };
-        if let Control::Retry { assignment } = &control {
+        if let Control::Retry { assignment, .. } = &control {
             stop_workers(Some(assignment))?;
         }
         let stopping = matches!(control, Control::Stop);

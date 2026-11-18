@@ -769,6 +769,7 @@ mod tests {
                 authoritative: true,
                 approval_pending: false,
                 questions: None,
+                limit_stopped_ms: None,
             };
             Ok(json!(crate::pty::Snapshot {
                 chat_startup: None,

@@ -434,6 +434,22 @@
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
 }
+.chat-limit-notice {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--muted);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+.chat-limit-notice p {
+  margin: 0;
+}
+.chat-limit-notice div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
 .simple-result > time {
   display: block;
   color: var(--muted);
