@@ -12,6 +12,7 @@ export default function ConfirmHost() {
       key={request.id}
       title={request.title}
       role="alertdialog"
+      returnFocus={request.returnFocus}
       className="centered confirm-dialog"
       onClose={cancel}
       footer={

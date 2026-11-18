@@ -249,7 +249,7 @@ const hooks = {
    *  a function that stops answering. Stands in for overriding `window.confirm`. */
   answerConfirms: (answer: (text: string) => boolean) => {
     const seen = new WeakSet<Element>()
-    const observer = new MutationObserver(() => {
+    const answerOpen = () => {
       const dialog = document.querySelector('.confirm-dialog [role="alertdialog"]')
       if (!dialog || seen.has(dialog)) return
       seen.add(dialog)
@@ -259,8 +259,11 @@ const hooks = {
       const [cancel, confirm] =
         dialog.querySelectorAll<HTMLButtonElement>('.settings-footer button')
       ;(answer(text) ? confirm : cancel).click()
-    })
+    }
+    const observer = new MutationObserver(answerOpen)
     observer.observe(document.body, { childList: true, subtree: true })
+    // A confirmation already open when answering starts gets its answer too.
+    answerOpen()
     return () => observer.disconnect()
   },
   resizeWindow: async (width: number, height: number) => {

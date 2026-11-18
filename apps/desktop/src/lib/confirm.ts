@@ -12,6 +12,8 @@ export interface ConfirmRequest {
 
 export interface PendingConfirm extends ConfirmRequest {
   id: number
+  /** Focused when the first of a run of confirmations opened; focus returns there. */
+  returnFocus: Element | null
 }
 
 let current: (PendingConfirm & { resolve: (ok: boolean) => void }) | null = null
@@ -21,9 +23,13 @@ const emit = () => listeners.forEach((listener) => listener())
 
 /** Resolves true when the person confirms, false on Cancel, Escape, or a newer request. */
 export function confirmAction(request: ConfirmRequest): Promise<boolean> {
-  current?.resolve(false)
+  const previous = current
+  previous?.resolve(false)
+  // A request replacing an open one returns focus where the first one found it, not to the
+  // replaced dialog's Cancel button.
+  const returnFocus = previous ? previous.returnFocus : document.activeElement
   return new Promise((resolve) => {
-    current = { ...request, id: nextId++, resolve }
+    current = { ...request, id: nextId++, returnFocus, resolve }
     emit()
   })
 }

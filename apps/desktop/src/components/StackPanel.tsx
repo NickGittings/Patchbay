@@ -3,7 +3,7 @@ import WorktreeSetupPanel from './WorktreeSetupPanel'
 import WorktreeSetupStatus from './tasks/WorktreeSetupStatus'
 import { taskPassed } from '../lib/autoSettings'
 import Menu, { MenuItem } from './Menu'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
   linkedWithin,
   proposedPatch,
@@ -157,6 +157,8 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
   const busy = useStore((s) => s.graphActionBusy)
   const { updateGroup, removeGroup, toggleHighlight } = useStore.getState()
   const [stopping, setStopping] = useState(false)
+  // Read after the delete confirmation, which can stay open while a stop starts or finishes.
+  const stoppingNow = useRef(false)
   const [editing, setEditing] = useState(!group.componentIds.length)
   const blocked = useStore((s) => !!s.project && mapEditsBlocked(s.projects[s.project.id]))
   return (
@@ -183,6 +185,13 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
                   message: `Delete the ${group.name} stack? Its terminals stop in every worktree.`,
                   confirmLabel: 'Delete stack',
                 }))
+              )
+                return
+              const now = useStore.getState()
+              if (
+                now.graphActionBusy ||
+                stoppingNow.current ||
+                !now.groups.some((g) => g.id === group.id)
               )
                 return
               void stopGroup(group.id, true).then((stopped) => {
@@ -281,8 +290,13 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
           title="Stop what this stack started in the current worktree; shared terminals keep running"
           onClick={async () => {
             setStopping(true)
-            await stopGroup(group.id)
-            setStopping(false)
+            stoppingNow.current = true
+            try {
+              await stopGroup(group.id)
+            } finally {
+              stoppingNow.current = false
+              setStopping(false)
+            }
           }}
         >
           Stop

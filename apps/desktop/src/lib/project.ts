@@ -121,6 +121,8 @@ export async function closeProjectTab(id: string) {
     }))
   )
     return
+  // Closed another way (a recovery banner, another window) while the dialog was open.
+  if (!useStore.getState().projects[id]) return
   try {
     if (!(await flushMapSaves(id))) {
       useStore

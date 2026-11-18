@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { autoControlsAgent, newConversation, startTerminal, stopTerminal } from '../lib/sessions'
 import {
@@ -45,6 +45,11 @@ export default function TerminalControl({
     kind === 'agent' &&
     (!isReservedScope(componentId) || componentId === PLAN_SCOPE || componentId === TASK_ROOT_SCOPE)
   const busy = restarting || freshPending
+  // The confirmation is async, so the props it was opened with may be stale once it's answered.
+  const props = useRef({ disabled, restarting })
+  useEffect(() => {
+    props.current = { disabled, restarting }
+  })
   const fresh = async () => {
     if (pending.current || busy || disabled || auto || !connected) return
     pending.current = true
@@ -55,7 +60,14 @@ export default function TerminalControl({
       detail: 'Saved history remains available.',
       confirmLabel: 'Start new conversation',
     })
-    if (!ok) {
+    // Auto may have taken the agent over, or the service dropped, while the dialog was open.
+    if (
+      !ok ||
+      props.current.disabled ||
+      props.current.restarting ||
+      autoControlsAgent(ownerProject, sid) ||
+      !useStore.getState().serviceConnected
+    ) {
       pending.current = false
       return
     }

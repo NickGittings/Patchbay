@@ -63,14 +63,22 @@ export default function AutoPanel({
     finished &&
     (newRunFor === JSON.stringify([projectId, task, run.runId]) ||
       !!autoDrafts.get(autoDraftKey(projectId, task))?.story)
-  // Set while a run control's call is in flight, so a second press can't send it twice.
-  const [busy, setBusy] = useState(false)
+  // Run controls whose call is in flight, so a second press can't send one twice. Controls that
+  // advance the run (merge, resume, skip) exclude each other; Pause and Stop stay available so
+  // they can still cancel a slow Resume.
+  const [pending, setPending] = useState<ReadonlySet<SimpleAction>>(new Set())
+  const advancing = (['mergeApproval', 'resumeAuto', 'skipStage'] as SimpleAction[]).some((a) =>
+    pending.has(a),
+  )
+  const blocked = (action: SimpleAction) =>
+    pending.has(action) ||
+    (advancing && ['mergeApproval', 'resumeAuto', 'skipStage'].includes(action))
   const act = (
     action: SimpleAction,
     fn: (id: string, task: string | null) => void | Promise<void>,
   ) => {
-    if (!projectId || busy) return
-    setBusy(true)
+    if (!projectId || blocked(action)) return
+    setPending((current) => new Set(current).add(action))
     void Promise.resolve()
       .then(() => fn(projectId, task))
       .then(() => {
@@ -84,7 +92,13 @@ export default function AutoPanel({
           })
       })
       .catch((e) => setError(String(e)))
-      .finally(() => setBusy(false))
+      .finally(() =>
+        setPending((current) => {
+          const next = new Set(current)
+          next.delete(action)
+          return next
+        }),
+      )
   }
   // Opens Power when sleep prevention can't do its job, so the warning isn't left collapsed.
   const powerProblem =
@@ -229,14 +243,14 @@ export default function AutoPanel({
           {run.stage === 'mergeGate' && run.status === 'waitingOnYou' && !inPlace(run) && (
             <button
               className="primary"
-              disabled={busy}
+              disabled={blocked('mergeApproval')}
               onClick={() => act('mergeApproval', mergeNow)}
             >
               Merge now
             </button>
           )}
           {run.status === 'running' ? (
-            <button disabled={busy} onClick={() => act('pauseAuto', pauseAuto)}>
+            <button disabled={blocked('pauseAuto')} onClick={() => act('pauseAuto', pauseAuto)}>
               Pause
             </button>
           ) : (
@@ -245,7 +259,7 @@ export default function AutoPanel({
                 className={
                   run.stage === 'mergeGate' && run.status === 'waitingOnYou' ? undefined : 'primary'
                 }
-                disabled={busy}
+                disabled={blocked('resumeAuto')}
                 onClick={() => act('resumeAuto', (id, task) => resumeAuto(id, task))}
               >
                 {run.resumeTrigger ? 'Resume now' : 'Resume'}
@@ -261,12 +275,16 @@ export default function AutoPanel({
             </button>
           )}
           {['paused', 'failed', 'waitingOnYou'].includes(run.status) && (
-            <button disabled={busy} onClick={() => act('skipStage', skipStage)}>
+            <button disabled={blocked('skipStage')} onClick={() => act('skipStage', skipStage)}>
               {run.stage === 'scan' ? 'Continue with available findings' : 'Skip stage'}
             </button>
           )}
           {stoppable && (
-            <button className="auto-stop" disabled={busy} onClick={() => act('stopAuto', stopAuto)}>
+            <button
+              className="auto-stop"
+              disabled={blocked('stopAuto')}
+              onClick={() => act('stopAuto', stopAuto)}
+            >
               Stop
             </button>
           )}

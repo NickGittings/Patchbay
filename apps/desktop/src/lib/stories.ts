@@ -268,7 +268,7 @@ export async function updateStory(projectId: string, id: string, patch: StoryPat
 }
 
 export async function planStory(projectId: string, story: Story) {
-  const s = useStore.getState()
+  let s = useStore.getState()
   if (s.project?.id !== projectId) throw new Error('Select the story’s project first')
   // The chat the story was planned from, whichever worktree is shown once the planner starts.
   const task = s.activeTask
@@ -286,10 +286,17 @@ export async function planStory(projectId: string, story: Story) {
       }))
     )
       return
+    // The app kept running while the dialog was open: recheck what it was opened for.
+    const answered = useStore.getState()
+    if (answered.project?.id !== projectId || answered.activeTask !== task)
+      throw new Error('The worktree changed. Choose Plan again in the intended worktree.')
+    if (autoRuns(answered).some(({ run }) => unfinished(run.status) && run.sessionId === sid))
+      throw new Error('Stop the Auto run before using its planner for a story')
     await stopAndWait(sid, 'The previous planner is still stopping. Try Plan again.')
     const now = useStore.getState()
     if (now.project?.id !== projectId || now.activeTask !== task)
       throw new Error('The worktree changed. Choose Plan again in the intended worktree.')
+    s = now
   }
   const items = [story, ...descendants(s.stories, story)]
   s.clearHighlights()

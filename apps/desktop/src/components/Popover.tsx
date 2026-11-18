@@ -51,7 +51,6 @@ function portalTarget(from: HTMLElement | null): HTMLElement {
   const style = getComputedStyle(modal)
   const contains =
     style.transform !== 'none' ||
-    style.scale !== 'none' ||
     style.filter !== 'none' ||
     style.backdropFilter !== 'none' ||
     style.perspective !== 'none' ||

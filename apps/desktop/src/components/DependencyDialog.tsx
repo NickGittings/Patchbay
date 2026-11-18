@@ -58,6 +58,7 @@ function Shell({
       className="centered map-maintenance-dialog"
       onClose={close}
       dismissible={!busy}
+      takeFocus={false}
     >
       {children}
     </Dialog>

@@ -4776,9 +4776,10 @@ kbd {
 .extension-overlay {
   animation: scrim-in var(--dur-base) var(--ease-out);
 }
-/* `scale` rather than `transform`, so Popover's portal check sees no containing block. */
+/* Opacity only: any transform, even mid-animation, would make the dialog a containing block
+   for fixed popups and send a Popover opened inside it to the document body. */
 .dialog-shell {
-  animation: dialog-in var(--dur-base) var(--ease-out);
+  animation: scrim-in var(--dur-base) var(--ease-out);
 }
 .rail-tooltip {
   animation: scrim-in var(--dur-fast) var(--ease-out);
@@ -4794,12 +4795,6 @@ kbd {
     scale: 0.97;
   }
 }
-@keyframes dialog-in {
-  from {
-    opacity: 0;
-    scale: 0.98;
-  }
-}
 @keyframes scrim-in {
   from {
     opacity: 0;
@@ -4807,8 +4802,7 @@ kbd {
 }
 @media (prefers-reduced-motion: reduce) {
   .menu-list,
-  .footer-popover,
-  .dialog-shell {
+  .footer-popover {
     animation-name: scrim-in;
   }
 }

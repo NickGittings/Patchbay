@@ -46,7 +46,13 @@ function ReviewDialog({
             disabled={busy || !selected.length}
             onClick={() => run('apply', () => applyMapReview(selected))}
           >
-            {busy && action === 'apply' ? 'Applying…' : 'Apply selected'}
+            {!busy
+              ? 'Apply selected'
+              : action === 'apply'
+                ? 'Applying…'
+                : action === 'refresh'
+                  ? 'Apply selected'
+                  : 'Checking…'}
           </button>
         </>
       }
