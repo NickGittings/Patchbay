@@ -1,6 +1,15 @@
 import { useStore } from '../store'
-import { controlTeam, RESTART_NOTICE, useChatTeams, type ChatTeam } from '../lib/chatTeams'
+import {
+  controlTeam,
+  RESTART_NOTICE,
+  retryOnAgent,
+  useChatTeams,
+  type ChatTeam,
+} from '../lib/chatTeams'
+import { useClockNow } from '../lib/clock'
+import { planTerminals } from '../lib/plan'
 import { simpleKey, useSimpleUi } from '../lib/simpleUi'
+import { presetExhausted, useUsage } from '../lib/usage'
 import type { ProviderJob, ScanReport } from '../lib/orchestration'
 import { selectPanel, useRail } from '../lib/rail'
 import Popover from './Popover'
@@ -61,18 +70,60 @@ function useTeamWork(team: ChatTeam) {
 function useTeamAction(team: ChatTeam) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const act = async (control: Parameters<typeof controlTeam>[1]) => {
+  const run = async (action: () => Promise<unknown>) => {
     setBusy(true)
     setError('')
     try {
-      await controlTeam(team, control)
+      await action()
     } catch (e) {
       setError(String(e))
     } finally {
       setBusy(false)
     }
   }
-  return { act, busy, error }
+  const act = (control: Parameters<typeof controlTeam>[1]) => run(() => controlTeam(team, control))
+  return { act, run, busy, error }
+}
+
+/** Offers the other agent presets for a failed assignment. */
+function RetryOnAgent({
+  team,
+  job,
+  busy,
+  run,
+}: {
+  team: ChatTeam
+  job: ProviderJob
+  busy: boolean
+  run: (action: () => Promise<unknown>) => Promise<void>
+}) {
+  const devices = useStore((s) => s.devices)
+  const usage = useUsage((s) => s.usage)
+  const presets = planTerminals(devices).filter((t) => t.command !== job.terminal.command)
+  const now = useClockNow(
+    presets.flatMap((t) => presetExhausted(usage, t, 0)).map((w) => w.window.resetsAtMs),
+  )
+  if (job.state !== 'failed' || !presets.length) return null
+  return (
+    <select
+      aria-label={`Retry ${job.terminal.name} on another agent`}
+      value=""
+      disabled={busy}
+      onChange={(e) => {
+        const terminal = presets.find((t) => t.id === e.target.value)
+        if (terminal) void run(() => retryOnAgent(team, job.id, terminal))
+      }}
+    >
+      <option value="" disabled>
+        Retry with…
+      </option>
+      {presets.map((t) => (
+        <option value={t.id} key={t.id} disabled={presetExhausted(usage, t, now).length > 0}>
+          {t.name}
+        </option>
+      ))}
+    </select>
+  )
 }
 
 /**
@@ -83,7 +134,7 @@ function useTeamAction(team: ChatTeam) {
 export function ChatCoordinationAlerts({ team, openTerminal }: Props) {
   const records = useStore((s) => s.sessionRecords)
   const work = useTeamWork(team)
-  const { act, busy, error } = useTeamAction(team)
+  const { act, run, busy, error } = useTeamAction(team)
   const { teamError, requests, messages } = work.issues
   const terminal = (job: ProviderJob) => workerSession(job, records, team.projectId)
   if (
@@ -104,6 +155,7 @@ export function ChatCoordinationAlerts({ team, openTerminal }: Props) {
           <button disabled={busy} onClick={() => void act({ kind: 'retry', assignment: job.id })}>
             Retry work
           </button>
+          <RetryOnAgent team={team} job={job} busy={busy} run={run} />
           <button onClick={showSettings}>Agent settings</button>
         </p>
       ))}
@@ -193,7 +245,7 @@ function AssignmentsPanel({
 }: Props & { work: ReturnType<typeof useTeamWork> }) {
   const close = useContext(CloseMenu)
   const records = useStore((s) => s.sessionRecords)
-  const { act, busy, error } = useTeamAction(team)
+  const { act, run, busy, error } = useTeamAction(team)
   const { sessions, jobs, dismissed } = work
   // The last dismissal, offered for undo; its button takes focus from the row that went away.
   const [undo, setUndo] = useState<ProviderJob>()
@@ -283,6 +335,7 @@ function AssignmentsPanel({
                         >
                           Retry work
                         </button>
+                        <RetryOnAgent team={team} job={job} busy={busy} run={run} />
                         <button onClick={leave(showSettings)}>Agent settings</button>
                       </>
                     )}

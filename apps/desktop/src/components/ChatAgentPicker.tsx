@@ -5,7 +5,7 @@ import { agentDevices } from '../lib/plan'
 import { chatAutoActive, chatBusy, chatRecipient } from '../lib/chat'
 import { EMPTY_SIMPLE_UI, simpleKey, useSimpleUi } from '../lib/simpleUi'
 import { useChatTeams } from '../lib/chatTeams'
-import { defaultChatPreset, switchChatAgent } from '../lib/chatAgent'
+import { changeChatAgent, defaultChatPreset } from '../lib/chatAgent'
 
 export default function ChatAgentPicker({ records }: { records: SessionRecord[] }) {
   const s = useStore()
@@ -15,6 +15,7 @@ export default function ChatAgentPicker({ records }: { records: SessionRecord[] 
   const team = useChatTeams((s) => s.teams[projectId]?.find((t) => t.task === task))
   const ui = useSimpleUi((u) => u.worktrees[key] ?? EMPTY_SIMPLE_UI)
   const [open, setOpen] = useState(false)
+  const [confirming, setConfirming] = useState('')
   const [error, setError] = useState('')
   const recipient = chatRecipient(records, s.simple?.selectedAgent)
   const preset = defaultChatPreset(
@@ -22,13 +23,32 @@ export default function ChatAgentPicker({ records }: { records: SessionRecord[] 
     s.agentRoles,
     ui.chatPreset ?? s.workspaceSettings.chatAgent,
   )
+  const presets = agentDevices(s.devices)
+  // A team can replace its lead at any time; only an unmanaged agent has to finish first.
+  const leadBusy = chatBusy(s.sessions[team?.lead.sessionId ?? recipient?.id ?? ''])
   const disabled =
     !!ui.pendingAction ||
     !!ui.pendingWorkflow ||
-    !!ui.queued ||
     !!team?.reset ||
     chatAutoActive(s.auto?.status) ||
-    chatBusy(recipient && s.sessions[recipient.id])
+    (!team && (!!ui.queued || leadBusy))
+  const change = async (id: string) => {
+    setConfirming('')
+    if (!id || disabled || !projectId) return
+    setError('')
+    if (!recipient && !team) {
+      useSimpleUi.getState().patch(key, { chatPreset: id })
+      setOpen(false)
+      return
+    }
+    try {
+      await changeChatAgent(projectId, task, id)
+      setOpen(false)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+  const pending = presets.find((a) => a.id === confirming)
   return (
     <div className="chat-agent-picker">
       <span>Agent: {recipient?.metadata.name ?? preset?.name ?? 'Unavailable'}</span>
@@ -42,35 +62,32 @@ export default function ChatAgentPicker({ records }: { records: SessionRecord[] 
             aria-label="Switch chat agent"
             value=""
             disabled={disabled}
-            onChange={async (e) => {
-              const id = e.target.value
-              if (!id || disabled || !projectId) return
-              setError('')
-              if (!recipient && !team) {
-                useSimpleUi.getState().patch(key, { chatPreset: id })
-                setOpen(false)
-                return
-              }
-              useSimpleUi.getState().patch(key, { pendingAction: true })
-              try {
-                await switchChatAgent(projectId, task, id)
-                setOpen(false)
-              } catch (e) {
-                setError(String(e))
-              } finally {
-                useSimpleUi.getState().patch(key, { pendingAction: false })
-              }
+            onChange={(e) => {
+              if (team && leadBusy) setConfirming(e.target.value)
+              else void change(e.target.value)
             }}
           >
             <option value="" disabled>
               Choose an agent preset…
             </option>
-            {agentDevices(s.devices).map((a) => (
+            {presets.map((a) => (
               <option value={a.id} key={a.id}>
                 {a.name}
               </option>
             ))}
           </select>
+          {pending && (
+            <div role="group" aria-label="Confirm agent switch">
+              <p>
+                This stops the lead’s current turn and drops any question it is waiting on. Files it
+                already wrote stay in the worktree.
+              </p>
+              <button disabled={disabled} onClick={() => void change(pending.id)}>
+                Stop and switch to {pending.name}
+              </button>
+              <button onClick={() => setConfirming('')}>Cancel</button>
+            </div>
+          )}
         </div>
       )}
       {error && <p role="alert">{error}</p>}

@@ -79,6 +79,9 @@ pub struct Reset {
     pub next_session: String,
     pub phase: ResetPhase,
     pub clear_history: bool,
+    /// The user chose a new lead: replace it now, even mid-turn or while work is paused.
+    #[serde(default)]
+    pub interrupt_current: bool,
     /// The worktree's task finished: the new lead starts without its checkpoint or results.
     #[serde(default)]
     pub complete_task: bool,
@@ -340,6 +343,9 @@ pub enum Control {
     Stop,
     Retry {
         assignment: String,
+        /// Run the assignment on this agent instead of the one that failed.
+        #[serde(default)]
+        terminal: Option<TerminalSpec>,
     },
     Settings {
         workers: Vec<TerminalSpec>,
@@ -420,7 +426,41 @@ fn ready(r: &Record) -> bool {
                 })
         })
 }
-fn supported(t: &TerminalSpec) -> bool {
+/// Its last turn ended on a usage limit, so a prompt would only fail again.
+fn limit_stopped(r: &Record) -> bool {
+    r.snapshot
+        .as_ref()
+        .and_then(|s| s.status.agent.as_ref())
+        .is_some_and(|a| a.limit_stopped_ms.is_some())
+}
+/// How long a limit stop holds deliveries when no spent usage window explains it, so a brief rate
+/// limit clears by itself. A delivery that hits the limit again starts a new hold.
+const LIMIT_RETRY_MS: u64 = 15 * 60 * 1000;
+/// Held while a delivery would only fail again: just after the stop, or until a spent window of
+/// the subscription resets. OpenRouter profiles spend no subscription window.
+fn limit_held(
+    r: &Record,
+    now_ms: u64,
+    exhausted: &mut impl FnMut(crate::adapters::Adapter) -> bool,
+) -> bool {
+    let Some(agent) = r.snapshot.as_ref().and_then(|s| s.status.agent.as_ref()) else {
+        return false;
+    };
+    let Some(stopped_ms) = agent.limit_stopped_ms else {
+        return false;
+    };
+    let open_router = crate::profiles::from_command(&r.spec.command)
+        .ok()
+        .flatten()
+        .is_some_and(|profile| profile.open_router);
+    now_ms.saturating_sub(stopped_ms) < LIMIT_RETRY_MS
+        || (!open_router && agent.provider.is_some_and(exhausted))
+}
+/// No turn is left to protect: the process ended, its turn finished, or a limit ended it.
+fn replaceable(r: &Record) -> bool {
+    !r.snapshot.as_ref().is_some_and(|s| s.running) || ready(r) || limit_stopped(r)
+}
+pub(super) fn supported(t: &TerminalSpec) -> bool {
     t.kind == crate::TerminalKind::Agent
         && !t.command.trim().is_empty()
         && (t.adapter.is_some() || crate::adapters::Adapter::default_for(&t.command).is_some())
@@ -1656,7 +1696,14 @@ pub fn control(
                 }
                 s.owners.retain(|o| !(o.kind == "chat" && o.id == t.id));
             }
-            Control::Retry { assignment } => {
+            Control::Retry {
+                assignment,
+                terminal,
+            } => {
+                ensure!(
+                    terminal.as_ref().is_none_or(supported),
+                    "Choose a supported worker preset"
+                );
                 let r = s
                     .runs
                     .iter_mut()
@@ -1676,10 +1723,19 @@ pub fn control(
                     matches!(j.state, JobState::Failed | JobState::Launching),
                     "Only a failed or unconfirmed assignment can retry"
                 );
+                // An unconfirmed launch may still be live under its original agent.
+                ensure!(
+                    terminal.is_none() || j.state == JobState::Failed,
+                    "Only a failed assignment can change agent"
+                );
                 // Failed owned sessions are stopped by the desktop before this operation.
                 if j.state == JobState::Failed {
                     j.request_id = new_id();
                     j.session_id = None;
+                }
+                // `preset` stays the lead's request, so its delegation remains idempotent.
+                if let Some(terminal) = terminal {
+                    j.terminal = terminal;
                 }
                 j.state = JobState::Pending;
                 j.observed_working = false;
@@ -1745,6 +1801,7 @@ pub fn control(
                         next_session: session,
                         phase: ResetPhase::Queued,
                         clear_history,
+                        interrupt_current: false,
                         complete_task: false,
                         error: None,
                     });
@@ -2036,6 +2093,7 @@ fn complete_task(
                 next_session: t.lead.session_id.clone(),
                 phase: ResetPhase::Queued,
                 clear_history: true,
+                interrupt_current: false,
                 complete_task: true,
                 error: None,
             });
@@ -2486,6 +2544,7 @@ fn prepare_lead(
             next_session,
             phase: ResetPhase::Queued,
             clear_history,
+            interrupt_current: clear_history,
             complete_task: false,
             error: None,
             launch: Some(LeadLaunch { metadata, spec }),
@@ -2647,6 +2706,7 @@ pub fn continue_lead(
                             next_session: r.id.clone(),
                             phase: ResetPhase::Queued,
                             clear_history: false,
+                            interrupt_current: false,
                             complete_task: false,
                             error: None,
                             launch: None,
@@ -2721,12 +2781,17 @@ pub fn replace_lead(
         let Some(reset) = t.reset.clone() else {
             return Ok(());
         };
-        if (t.state != State::Running && reset.clear_history) || reset.phase != ResetPhase::Queued {
+        let current = record(records, project, &t.lead.session_id);
+        // Pausing holds recovery of a forgotten lead, not the user replacing a live one.
+        let chosen = reset.interrupt_current && current.is_ok();
+        if (t.state != State::Running && reset.clear_history && !chosen)
+            || reset.phase != ResetPhase::Queued
+        {
             return Ok(());
         }
-        if let Ok(current) = record(records, project, &t.lead.session_id)
+        if let Ok(current) = current
             && (generation(current)? != t.lead.generation
-                || (current.snapshot.as_ref().is_some_and(|s| s.running) && !ready(current)))
+                || (!reset.interrupt_current && !replaceable(current)))
         {
             return Ok(());
         }
@@ -2742,7 +2807,7 @@ pub fn replace_lead(
             }
         } else {
             let next = record(records, project, &reset.next_session)?;
-            if next.snapshot.as_ref().is_some_and(|s| s.running) && !ready(next) {
+            if !replaceable(next) {
                 return Ok(());
             }
             Request::ResetConversation {
@@ -2786,6 +2851,32 @@ pub fn deliver(
     project: &str,
     id: &str,
     records: &[Record],
+    call: impl FnMut(Request) -> Result<serde_json::Value>,
+) -> Result<()> {
+    let now_ms = crate::pty::now_ms();
+    // Read only once a held recipient's retry delay has passed.
+    let usage = std::cell::OnceCell::new();
+    deliver_at(
+        root,
+        project,
+        id,
+        records,
+        now_ms,
+        |provider| {
+            usage
+                .get_or_init(|| crate::usage::read(now_ms))
+                .exhausted(provider, now_ms)
+        },
+        call,
+    )
+}
+fn deliver_at(
+    root: &Path,
+    project: &str,
+    id: &str,
+    records: &[Record],
+    now_ms: u64,
+    mut exhausted: impl FnMut(crate::adapters::Adapter) -> bool,
     mut call: impl FnMut(Request) -> Result<serde_json::Value>,
 ) -> Result<()> {
     modify(root, |s| {
@@ -2794,8 +2885,11 @@ pub fn deliver(
             return Ok(());
         }
         if t.recovery
-            && record(records, project, &t.lead.session_id)
-                .is_ok_and(|r| ready(r) && generation(r).ok() == Some(t.lead.generation))
+            && record(records, project, &t.lead.session_id).is_ok_and(|r| {
+                ready(r)
+                    && !limit_held(r, now_ms, &mut exhausted)
+                    && generation(r).ok() == Some(t.lead.generation)
+            })
         {
             let text = recovery_text(s, &t)?;
             append(&mut t, new_id(), "patchbay", "lead", None, text)?;
@@ -2836,7 +2930,7 @@ pub fn deliver(
             else {
                 continue;
             };
-            if !ready(r) {
+            if !ready(r) || limit_held(r, now_ms, &mut exhausted) {
                 continue;
             }
             if recipient != "lead"
@@ -2990,7 +3084,7 @@ mod tests {
             metadata: serde_json::from_value(serde_json::json!({"projectId":"p", "projectName":"P", "projectRoot":root, "componentId":"@task", "terminalId":sid, "name":"Codex", "kind":"agent", "adapter":"codex"})).unwrap(),
             spec: SessionSpec { purpose: crate::pty::LaunchPurpose::Ordinary, id: sid.into(), command: "codex".into(), resume_command: None, rerun_on_resume: false, owns_briefing: false, exclusive_cwd: false, merge_source: None, cwd: root.into(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: vec![] },
             snapshot: Some(Snapshot { chat_startup: None, launch_directory: None, truncated: false, data: vec![], end: 0, generation: 1, running: true, exit_code: None, started_ms: 1, exited_ms: None,
-                status: SessionStatus { agent: Some(AgentReport { state: AgentState::Idle, since_ms: 10, message: None, prompt: None, provider: Some(crate::adapters::Adapter::Codex), conversation_id: Some("c1".into()), turn_id: Some("turn1".into()), authoritative: true, approval_pending: false, questions: None }), ..Default::default() }, activity: vec![], replies: vec![], last_reply: None, notice: None }),
+                status: SessionStatus { agent: Some(AgentReport { state: AgentState::Idle, since_ms: 10, message: None, prompt: None, provider: Some(crate::adapters::Adapter::Codex), conversation_id: Some("c1".into()), turn_id: Some("turn1".into()), authoritative: true, approval_pending: false, questions: None, limit_stopped_ms: None }), ..Default::default() }, activity: vec![], replies: vec![], last_reply: None, notice: None }),
             history: vec![], launch_command: String::new(), restart_context: None, briefing_backup: None, interrupted: false, request_ids: vec!["lead-request".into()],
         }
     }
@@ -3263,6 +3357,7 @@ mod tests {
                 &f.team.id,
                 Control::Retry {
                     assignment: "a".into(),
+                    terminal: None,
                 },
                 std::slice::from_ref(&f.lead),
             )
@@ -3361,7 +3456,8 @@ mod tests {
                     "p",
                     &f.team.id,
                     Control::Retry {
-                        assignment: "a".into()
+                        assignment: "a".into(),
+                        terminal: None,
                     },
                     std::slice::from_ref(&f.lead)
                 )
@@ -4233,7 +4329,10 @@ mod tests {
             super::super::Control::Pause,
             super::super::Control::Resume,
             super::super::Control::Stop,
-            super::super::Control::Retry { job: "a".into() },
+            super::super::Control::Retry {
+                job: "a".into(),
+                terminal: None,
+            },
             super::super::Control::ContinueJob {
                 job: "a".into(),
                 request_id: "request".into(),
@@ -4931,6 +5030,204 @@ mod tests {
         assert!(
             super::super::launch(&f.dir, "p", "round1", "a", &f.project, |_| panic!()).is_err()
         );
+    }
+    fn stop_at_limit(record: &mut Record) {
+        record
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .limit_stopped_ms = Some(20);
+    }
+    fn set_working(record: &mut Record) {
+        record
+            .snapshot
+            .as_mut()
+            .unwrap()
+            .status
+            .agent
+            .as_mut()
+            .unwrap()
+            .state = AgentState::Working;
+    }
+    fn claude_preset() -> TerminalSpec {
+        serde_json::from_value(serde_json::json!({"id":"claude", "name":"Claude", "kind":"agent", "command":"claude", "adapter":"claude"})).unwrap()
+    }
+    #[test]
+    fn a_limit_stopped_lead_gets_no_deliveries_but_can_be_replaced() {
+        let f = Fixture::new();
+        let mut lead = f.lead.clone();
+        stop_at_limit(&mut lead);
+        // Not otherwise ready, so only the limit can release its replacement.
+        lead.snapshot.as_mut().unwrap().chat_startup = Some(crate::status::ChatStartup::Pending);
+        f.send("held", "Worker update");
+        deliver_at(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&lead),
+            30,
+            |_| false,
+            |_| panic!("delivered to a limit-stopped lead"),
+        )
+        .unwrap();
+        let held = f.state();
+        assert!(
+            held.messages
+                .iter()
+                .any(|m| m.state == DeliveryState::Pending)
+        );
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Reset {
+                id: "fresh".into(),
+                session: lead.id.clone(),
+                clear_history: true,
+            },
+            std::slice::from_ref(&lead),
+        )
+        .unwrap();
+        let mut resets = 0;
+        replace_lead(&f.dir, "p", &f.team.id, std::slice::from_ref(&lead), |r| {
+            assert!(matches!(r, Request::ResetConversation { .. }));
+            resets += 1;
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        assert_eq!(resets, 1);
+    }
+    #[test]
+    fn a_limit_hold_ends_after_the_retry_delay_once_no_window_is_spent() {
+        let f = Fixture::new();
+        let mut lead = f.lead.clone();
+        stop_at_limit(&mut lead);
+        f.send("held", "Worker update");
+        let records = std::slice::from_ref(&lead);
+        let retry_at = 20 + LIMIT_RETRY_MS;
+        for (now_ms, spent) in [(retry_at - 1, false), (retry_at, true)] {
+            deliver_at(
+                &f.dir,
+                "p",
+                &f.team.id,
+                records,
+                now_ms,
+                |_| spent,
+                |_| panic!("delivered during the hold"),
+            )
+            .unwrap();
+        }
+        let mut prompts = 0;
+        deliver_at(
+            &f.dir,
+            "p",
+            &f.team.id,
+            records,
+            retry_at,
+            |_| false,
+            |request| {
+                prompts += usize::from(matches!(request, Request::Prompt { .. }));
+                Ok(serde_json::Value::Null)
+            },
+        )
+        .unwrap();
+        assert_eq!(prompts, 1);
+    }
+    #[test]
+    fn choosing_a_lead_replaces_a_working_lead_while_clearing_context_waits() {
+        let f = Fixture::new();
+        let mut lead = f.lead.clone();
+        set_working(&mut lead);
+        let records = std::slice::from_ref(&lead);
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Reset {
+                id: "fresh".into(),
+                session: lead.id.clone(),
+                clear_history: true,
+            },
+            records,
+        )
+        .unwrap();
+        replace_lead(&f.dir, "p", &f.team.id, records, |_| {
+            panic!("cleared context during a working turn")
+        })
+        .unwrap();
+        assert_eq!(f.state().reset.unwrap().phase, ResetPhase::Queued);
+
+        let f = Fixture::new();
+        let mut lead = f.lead.clone();
+        set_working(&mut lead);
+        let records = std::slice::from_ref(&lead);
+        control(&f.dir, "p", &f.team.id, Control::Pause, records).unwrap();
+        let mut terminal = claude_preset();
+        terminal.id = "new-lead".into();
+        new_lead(
+            &f.dir,
+            &f.project,
+            "p",
+            &f.team.id,
+            terminal,
+            "replacement".into(),
+        )
+        .unwrap();
+        let mut requests = Vec::new();
+        replace_lead(&f.dir, "p", &f.team.id, records, |r| {
+            requests.push(match r {
+                Request::Stop { .. } => "stop",
+                Request::NewConversation { .. } => "launch",
+                _ => panic!("unexpected request"),
+            });
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        assert_eq!(requests, ["stop", "launch"]);
+    }
+    #[test]
+    fn a_limit_stopped_worker_fails_and_retries_on_another_agent() {
+        let f = Fixture::new();
+        f.cmd(Command::DelegateShared {
+            id: "round1".into(),
+            assignments: vec![assignment("a", ResultKind::Code, &[])],
+        })
+        .unwrap();
+        let (launched, mut worker) = f.launch("a");
+        let launched_ms = launched.jobs[0].launched_ms;
+        stop_at_limit(&mut worker);
+        let records = [f.lead.clone(), worker];
+        super::super::reconcile_at(&f.dir, "p", &records, false, launched_ms + 1).unwrap();
+        let failed = super::super::read(&f.dir, "p", "round1").unwrap();
+        assert_eq!(failed.jobs[0].state, JobState::Failed);
+        assert!(
+            failed.jobs[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("usage limit")
+        );
+        let preset = failed.jobs[0].preset.clone();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Retry {
+                assignment: "a".into(),
+                terminal: Some(claude_preset()),
+            },
+            &records,
+        )
+        .unwrap();
+        let retried = super::super::read(&f.dir, "p", "round1").unwrap();
+        assert_eq!(retried.jobs[0].state, JobState::Pending);
+        assert_eq!(retried.jobs[0].terminal.name, "Claude");
+        assert_eq!(retried.jobs[0].preset, preset);
+        assert_ne!(retried.jobs[0].request_id, failed.jobs[0].request_id);
     }
     #[test]
     fn changing_preset_queues_one_launch_and_rejects_the_superseded_lead() {

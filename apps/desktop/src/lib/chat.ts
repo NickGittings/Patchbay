@@ -19,6 +19,11 @@ export function chatBusy(session: SessionState | undefined) {
   )
 }
 
+/** Its last turn ended on a usage limit, so another prompt would only fail again. */
+export function limitStopped(session: Pick<SessionState, 'status'> | null | undefined) {
+  return session?.status?.agent?.limitStoppedMs != null
+}
+
 /** Bounded, editable context; provider transcripts are never silently copied. */
 export function chatHandoff(simple: SimpleState | null, branch: string, files: readonly string[]) {
   const messages = (simple?.log ?? [])

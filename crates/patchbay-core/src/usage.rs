@@ -65,6 +65,23 @@ pub struct Usage {
     pub codex_error: Option<String>,
 }
 
+impl Usage {
+    /// Whether `provider` has a fully spent window that has not reset yet.
+    #[must_use]
+    pub fn exhausted(&self, provider: Adapter, now_ms: u64) -> bool {
+        let usage = match provider {
+            Adapter::Claude => &self.claude,
+            Adapter::Codex => &self.codex,
+        };
+        usage.as_ref().is_some_and(|usage| {
+            [&usage.five_hour, &usage.weekly]
+                .into_iter()
+                .flatten()
+                .any(|w| w.used_percent >= 100.0 && w.resets_at_ms > now_ms)
+        })
+    }
+}
+
 impl ProviderUsage {
     fn expire(&mut self, now_ms: u64) {
         for window in [&mut self.five_hour, &mut self.weekly] {
@@ -800,6 +817,35 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn a_provider_is_exhausted_only_by_its_own_spent_unexpired_window() {
+        let window = |used_percent| Window {
+            used_percent,
+            resets_at_ms: 100,
+            window_minutes: 300,
+        };
+        let usage = Usage {
+            claude: Some(ProviderUsage {
+                provider: Adapter::Claude,
+                five_hour: Some(window(99.0)),
+                weekly: None,
+                observed_ms: 1,
+            }),
+            codex: Some(ProviderUsage {
+                provider: Adapter::Codex,
+                five_hour: None,
+                weekly: Some(window(100.0)),
+                observed_ms: 1,
+            }),
+            claude_capture: None,
+            claude_error: None,
+            codex_error: None,
+        };
+        assert!(usage.exhausted(Adapter::Codex, 99));
+        assert!(!usage.exhausted(Adapter::Codex, 100));
+        assert!(!usage.exhausted(Adapter::Claude, 99));
     }
 
     #[test]

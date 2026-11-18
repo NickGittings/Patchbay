@@ -194,6 +194,9 @@ pub enum Control {
     Stop,
     Retry {
         job: String,
+        /// Run the job on this agent instead of the one that failed.
+        #[serde(default)]
+        terminal: Option<TerminalSpec>,
     },
     ContinueJob {
         job: String,
@@ -535,6 +538,8 @@ pub fn reconcile(
 ) -> Result<Vec<Run>> {
     reconcile_at(root, project_id, records, restoring, now_ms())
 }
+const LIMIT_STOPPED: &str =
+    "Stopped at its usage limit. Retry on another agent, or after the limit resets";
 /// `sampled_ms` is captured before listing sessions; snapshots cannot judge later launches.
 pub fn reconcile_at(
     root: &Path,
@@ -596,7 +601,12 @@ pub fn reconcile_at(
                             ) || (a.state == crate::status::AgentState::Idle
                                 && j.observed_working))
                     });
-                    if record
+                    if agent.is_some_and(|a| a.limit_stopped_ms.is_some()) {
+                        j.state = JobState::Failed;
+                        j.error = Some(LIMIT_STOPPED.into());
+                        r.state = State::Paused;
+                        r.error.clone_from(&j.error);
+                    } else if record
                         .snapshot
                         .as_ref()
                         .is_some_and(|s| !s.running || s.status.stopped)
@@ -719,8 +729,12 @@ pub fn control(root: &Path, project_id: &str, id: &str, control: Control) -> Res
                 };
                 r.error = None;
             }
-            Control::Retry { job } => {
+            Control::Retry { job, terminal } => {
                 ensure!(r.state != State::Complete, "Run is complete");
+                ensure!(
+                    terminal.as_ref().is_none_or(chat::supported),
+                    "Choose a supported agent preset"
+                );
                 if r.kind == Kind::Scan {
                     ensure!(
                         source_revision(r)? == r.source_revision,
@@ -737,9 +751,17 @@ pub fn control(root: &Path, project_id: &str, id: &str, control: Control) -> Res
                     matches!(j.state, JobState::Failed | JobState::Launching),
                     "Only failed or unconfirmed jobs may be retried"
                 );
+                // An unconfirmed launch may still be live under its original agent.
+                ensure!(
+                    terminal.is_none() || j.state == JobState::Failed,
+                    "Only a failed job can change agent"
+                );
                 if j.state != JobState::Launching {
                     j.request_id = new_id();
                     j.session_id = None;
+                }
+                if let Some(terminal) = terminal {
+                    j.terminal = terminal;
                 }
                 j.state = JobState::Pending;
                 j.error = None;
@@ -2023,6 +2045,7 @@ mod tests {
             &r.id,
             Control::Retry {
                 job: r.jobs[0].id.clone(),
+                terminal: None,
             },
         )
         .unwrap();

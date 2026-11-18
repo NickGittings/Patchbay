@@ -150,9 +150,42 @@ fn codex(value: &Value) -> Option<AgentContext> {
     })
 }
 
+/// A turn the provider's transcript says ended on an account usage limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitStop {
+    pub at_ms: u64,
+    pub turn: Option<String>,
+}
+
+/// Codex finishes such a turn with `task_complete` carrying `usage_limit_exceeded`.
+fn codex_limit(value: &Value) -> Option<LimitStop> {
+    let payload = value.get("payload")?;
+    if value.get("type")?.as_str()? != "event_msg"
+        || payload.get("type")?.as_str()? != "task_complete"
+    {
+        return None;
+    }
+    let info = payload.get("error")?.get("codex_error_info")?;
+    if info.as_str() != Some("usage_limit_exceeded") && info.get("usage_limit_exceeded").is_none() {
+        return None;
+    }
+    Some(LimitStop {
+        at_ms: chrono::DateTime::parse_from_rfc3339(value.get("timestamp")?.as_str()?)
+            .ok()?
+            .timestamp_millis()
+            .try_into()
+            .ok()?,
+        turn: payload
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
 /// One exact conversation, bounded I/O per monitor tick, retaining incomplete JSONL writes.
 #[derive(Default)]
 pub struct CodexReader {
+    limit: Option<LimitStop>,
     root: Option<PathBuf>,
     resolving: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
     conversation: String,
@@ -203,6 +236,7 @@ impl CodexReader {
         }
         if self.conversation != conversation {
             self.conversation = conversation.into();
+            self.limit = None;
             self.file = None;
             self.discovery = None;
             self.offset = 0;
@@ -273,6 +307,9 @@ impl CodexReader {
                     }
                     continue;
                 }
+                if let Some(limit) = codex_limit(&value) {
+                    self.limit = Some(limit);
+                }
                 if let Some(context) = codex(&value) {
                     contexts.push(context);
                 }
@@ -291,6 +328,11 @@ impl CodexReader {
             self.discarding = true;
         }
         contexts
+    }
+
+    /// The newest limit stop read since the last call.
+    pub fn take_limit(&mut self) -> Option<LimitStop> {
+        self.limit.take()
     }
 
     /// Catch up before the watcher is removed permanently. Shell resolution may still
@@ -369,6 +411,23 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Write;
+
+    #[test]
+    fn codex_limit_stops_come_only_from_usage_limited_turn_completions() {
+        let event = |error: Value| {
+            json!({"timestamp":"2026-11-15T03:38:07.113Z","type":"event_msg","payload":{
+                "type":"task_complete","turn_id":"turn-1","last_agent_message":null,"error":error
+            }})
+        };
+        let stop = codex_limit(&event(json!({
+            "message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded"
+        })))
+        .unwrap();
+        assert_eq!(stop.turn.as_deref(), Some("turn-1"));
+        assert_eq!(stop.at_ms, 1_794_713_887_113);
+        assert!(codex_limit(&event(json!({"codex_error_info":"server_overloaded"}))).is_none());
+        assert!(codex_limit(&event(Value::Null)).is_none());
+    }
 
     #[test]
     fn claude_context_is_independent_of_account_limits_and_session_totals() {

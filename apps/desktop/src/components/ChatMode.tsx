@@ -40,6 +40,7 @@ import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
 import ChatAgentPicker from './ChatAgentPicker'
+import ChatLimitNotice from './ChatLimitNotice'
 import Dialog from './Dialog'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import './auto/auto.css'
@@ -443,6 +444,7 @@ export default function ChatMode({
       {team && (
         <ChatCoordinationAlerts key={team.id} team={team} openTerminal={openWorkerTerminal} />
       )}
+      <ChatLimitNotice records={model.records} />
       <ActivityHooksNotice providers={hookProviders} reporting={reporting} />
       {error && <p role="alert">{error}</p>}
       {source && dialog === 'review' && (

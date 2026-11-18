@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+// Status is the common event and is cloned into the bounded event ring, so it stays inline.
+#[allow(clippy::large_enum_variant)]
 pub enum TerminalEvent {
     Started {
         #[serde(default)]

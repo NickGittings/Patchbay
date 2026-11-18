@@ -9,11 +9,19 @@ import {
   type ProviderRun,
 } from './orchestration'
 import { profileHookProvider, commandProfile } from './agentProfiles'
-import { refreshUsage, usageBlock, usageWarnings } from './usage'
+import {
+  exhaustedWindows,
+  presetProvider,
+  providerName,
+  refreshUsage,
+  usageBlock,
+  usageWarnings,
+} from './usage'
 import { shallow } from 'zustand/shallow'
 import { projectOf, projectStateOf, useStore } from '../store'
 import {
   AGENT_ROLES,
+  type TerminalSpec,
   PLAN_SCOPE,
   TASK_ROOT_SCOPE,
   REVIEW_SCOPE,
@@ -50,7 +58,7 @@ import {
   graphValidationCancel,
 } from './ipc'
 import { graphActionIn } from './actions'
-import { agentDevices } from './plan'
+import { agentDevices, planTerminals } from './plan'
 import { implementPlannerPlan } from './planHandoff'
 import { refreshTasks } from './tasks'
 import { fixReviewFindings } from './reviewHandoff'
@@ -339,6 +347,7 @@ function pauseDefaults(update: Partial<AutoRun>): Partial<AutoRun> {
     return {
       resumeTrigger: undefined,
       usageWait: undefined,
+      limitedProviders: undefined,
       pauseKind: 'needsUser',
       pausedMs: Date.now(),
       ...update,
@@ -348,6 +357,7 @@ function pauseDefaults(update: Partial<AutoRun>): Partial<AutoRun> {
       ...update,
       resumeTrigger: undefined,
       usageWait: undefined,
+      limitedProviders: undefined,
       pauseKind: undefined,
       pausedMs: undefined,
     }
@@ -896,7 +906,123 @@ export function pauseAuto(
   ))
     void controlProviderRun(projectId, id, { kind: 'pause' }).catch(() => {})
 }
-export async function resumeAuto(projectId: string, task: string | null, scheduled = false) {
+const sessionAgent = (id: string | null | undefined) => {
+  if (!id) return undefined
+  const state = useStore.getState()
+  return (state.sessions[id] ?? state.sessionRecords.find((r) => r.id === id)?.snapshot)?.status
+    ?.agent
+}
+/** Provider jobs that failed because their agent reached its usage limit. */
+const limitedJobs = (provider: ProviderRun) =>
+  [provider.coordinator, ...provider.jobs].filter(
+    (job): job is NonNullable<typeof job> =>
+      job?.state === 'failed' && sessionAgent(job.sessionId)?.limitStoppedMs != null,
+  )
+/**
+ * Pause on a limit reached mid-turn. Stopping the tracked sessions frees their slots, so Resume
+ * starts the stage again on whichever agent it then has, and the reset time drives usage resume.
+ */
+async function pauseAtUsageLimit(
+  projectId: string,
+  task: string | null,
+  run: AutoRun,
+  agents: { sessionId?: string | null; provider?: 'claude' | 'codex' | null }[],
+) {
+  const providers = [...new Set(agents.flatMap((a) => a.provider ?? []))]
+  const who = providers.map(providerName).join(' and ') || 'The agent'
+  pauseAuto(
+    projectId,
+    task,
+    `${who} reached ${providers.length > 1 ? 'their usage limits' : 'its usage limit'}. Resume after the reset, or continue with another agent.`,
+    'usage',
+  )
+  patch(projectId, task, { limitedProviders: providers })
+  await stopOwned(
+    run,
+    agents.flatMap((a) => a.sessionId ?? []),
+  )
+  const usage = await refreshUsage()
+  const paused = autoRun(projectId, task)
+  if (paused?.runId !== run.runId || paused.status !== 'paused' || paused.pauseKind !== 'usage')
+    return
+  const resets = providers.flatMap((provider) =>
+    exhaustedWindows(usage, provider, Date.now()).map((w) => w.window.resetsAtMs),
+  )
+  if (!resets.length) return
+  const atMs = Math.max(...resets)
+  patch(projectId, task, {
+    usageWait: { providers, atMs },
+    resumeTrigger: paused.resumeOnUsageReset ? { kind: 'usage', atMs } : paused.resumeTrigger,
+  })
+}
+/** Move the limited work of a usage pause onto `deviceId`, then resume. */
+export async function resumeAutoWithAgent(
+  projectId: string,
+  task: string | null,
+  deviceId: string,
+) {
+  const run = autoRun(projectId, task)
+  if (!run) return
+  const devices = agentDevices(useStore.getState().devices)
+  const device = devices.find((d) => d.id === deviceId)
+  const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === deviceId)
+  if (!device || !terminal) throw new Error('This agent preset is no longer available.')
+  // Moved jobs relaunch without passing the launch checks, and a refused agent changes nothing.
+  await requireDeviceAuth(device, projectId, task)
+  await checkAutoHooks(deviceId)
+  if (autoRun(projectId, task) !== run) return
+  const stuck = run.limitedProviders ?? run.usageWait?.providers
+  const current = agentStage(run.stage) ? agentFor(run, run.stage) : undefined
+  const onLimited = (id: string) => {
+    const preset = devices.find((d) => d.id === id)
+    const provider = preset && presetProvider(preset)
+    return !!provider && !!stuck?.includes(provider)
+  }
+  // An agent outside any known subscription, such as OpenRouter, is replaced where it stopped.
+  const limited = runAgents(run).some(onLimited) ? onLimited : (id: string) => id === current
+  const swap = (ids?: string[]) =>
+    ids && [...new Set(ids.map((id) => (limited(id) ? deviceId : id)))]
+  patch(
+    projectId,
+    task,
+    {
+      agents: {
+        ...run.agents,
+        ...Object.fromEntries(
+          AGENT_ROLES.filter((role) => limited(agentFor(run, role))).map((role) => [
+            role,
+            deviceId,
+          ]),
+        ),
+      },
+      reviewers: swap(run.reviewers),
+      scanners: swap(run.scanners),
+      workers: swap(run.workers),
+    },
+    `Continuing with ${terminal.name}`,
+  )
+  try {
+    await resumeAuto(projectId, task, false, terminal)
+  } catch (e) {
+    // Still paused: a later Resume belongs to the original agents and their reset.
+    const latest = autoRun(projectId, task)
+    if (latest?.runId === run.runId && latest.status === 'paused')
+      patch(projectId, task, {
+        agents: run.agents,
+        reviewers: run.reviewers,
+        scanners: run.scanners,
+        workers: run.workers,
+        resumeTrigger: run.resumeTrigger,
+      })
+    throw e
+  }
+}
+export async function resumeAuto(
+  projectId: string,
+  task: string | null,
+  scheduled = false,
+  terminal?: TerminalSpec,
+) {
   snapshotReadEpoch++
   if (!scheduled) cancelAutoResume(projectId, task)
   const run = autoRun(projectId, task)
@@ -923,7 +1049,7 @@ export async function resumeAuto(projectId: string, task: string | null, schedul
     )
     if (build && autoRun(projectId, task) === run) {
       patch(projectId, task, { implementationRun: build.id, ...track([]) })
-      return resumeAuto(projectId, task, scheduled)
+      return resumeAuto(projectId, task, scheduled, terminal)
     }
   }
   if (run.stage === 'scan' || (run.stage === 'implement' && run.implementationRun)) {
@@ -932,6 +1058,10 @@ export async function resumeAuto(projectId: string, task: string | null, schedul
       const existing = (await providerRuns(projectId)).find((r) => r.id === id)
       // A scan ID is saved before creation; a failed write must be retried with that same ID.
       if (!existing && run.stage !== 'scan') throw new Error('The provider run is missing')
+      if (autoRun(projectId, task) !== run) return
+      // A retry replaces each limited job's stopped turn; Resume refuses failed jobs.
+      for (const job of existing ? limitedJobs(existing) : [])
+        await controlProviderRun(projectId, id, { kind: 'retry', job: job.id, terminal })
       if (autoRun(projectId, task) !== run) return
       if (existing?.state === 'paused') await controlProviderRun(projectId, id, { kind: 'resume' })
     }
@@ -1093,6 +1223,7 @@ function observe(run: AutoRun, waitingOn?: string) {
       !record &&
       (run.launchAtMs === undefined || Date.now() - run.launchAtMs > 5000)
     const done = !!agent?.authoritative && agent.state === 'review' && agent.sinceMs > since
+    const limited = agent?.limitStoppedMs != null && agent.limitStoppedMs >= since
     const idled =
       !!agent &&
       ['idle', 'ended'].includes(agent.state) &&
@@ -1113,8 +1244,10 @@ function observe(run: AutoRun, waitingOn?: string) {
       forgotten,
       relaunched,
       done,
+      limited,
       failed:
         forgotten ||
+        limited ||
         !!snapshot?.status?.stopped ||
         relaunched ||
         (!done && !!snapshot && (!snapshot.running || idled)),
@@ -1133,6 +1266,10 @@ export function autoHasWorkingSessions(run: AutoRun) {
 }
 
 type Observed = ReturnType<typeof observe>[number]
+/** Reviewers are matched to the findings by lane. */
+const wroteFindings = (r: Observed, findings: ReviewFindings | null) =>
+  r.lane !== undefined &&
+  !!findings?.reviewers.some((f) => f.finished && (f.lane ?? null) === r.lane)
 function failureReason(run: AutoRun, r: Observed, waitingOn?: string) {
   if (r.sessionId === run.sessionId)
     return r.forgotten
@@ -1168,9 +1305,7 @@ function roundStatus(
       status: 'superseded',
       reason: "A newer review replaced Auto's round; Resume to continue from it",
     }
-  const wrote = (r: Observed) =>
-    r.lane !== undefined &&
-    !!findings?.reviewers.some((f) => f.finished && (f.lane ?? null) === r.lane)
+  const wrote = (r: Observed) => wroteFindings(r, findings)
   const failed = reviewers.find((r) => r.failed && !wrote(r))
   if (failed) return { status: 'broken', reason: failureReason(run, failed, waitingOn) }
   // A launch that may not have started, which Auto doesn't track (one it tracks is judged above).
@@ -1859,6 +1994,16 @@ async function drive(projectId: string, task: string | null) {
       const providerRun = (await driveProviderRuns(projectId)).find((r) => r.id === id)
       if (!live()) return
       if (!providerRun) throw new Error('The provider run is missing')
+      const limitedWork = limitedJobs(providerRun)
+      if (limitedWork.length) {
+        await pauseAtUsageLimit(
+          projectId,
+          task,
+          run,
+          limitedWork.map((job) => ({ provider: sessionAgent(job.sessionId)?.provider })),
+        )
+        return
+      }
       if (run.autonomous && (await recoverProviderRun(projectId, task, providerRun))) return
       if (providerRun.state === 'paused' || providerRun.state === 'stopped') {
         pause(providerRun.error ?? 'Provider run is paused; inspect its results')
@@ -1963,6 +2108,24 @@ async function drive(projectId: string, task: string | null) {
         if (!integrated(outcome)) return false
         settleIntegrated(projectId, task, current)
         return true
+      }
+      // A limit pauses only unfinished work: the merge or findings may be done already.
+      const limited = reviewers.filter((r) => r.limited)
+      if (limited.length) {
+        if (await mergedByHand()) return
+        const findings =
+          run.stage === 'review' ? (await autoSnapshot(projectId, task, run)).findings : null
+        if (!current()) return
+        const unfinished = limited.filter((r) => !wroteFindings(r, findings))
+        if (unfinished.length) {
+          await pauseAtUsageLimit(
+            projectId,
+            task,
+            run,
+            unfinished.map((r) => ({ sessionId: r.sessionId, provider: r.agent?.provider })),
+          )
+          return
+        }
       }
       // Outside review, a failed agent pauses at once; a failed reviewer may have written first.
       if (failed.length && run.stage !== 'review') {
@@ -2433,7 +2596,7 @@ async function drive(projectId: string, task: string | null) {
             Date.now(),
           ).filter((w) => w.level === 'limit' && usageProviders.includes(w.provider))
           const usageWait = {
-            providers: [...new Set(usageProviders.filter((p): p is 'claude' | 'codex' => !!p))],
+            providers: [...new Set(warnings.map((w) => w.provider))],
             atMs: Math.max(...warnings.map((w) => w.window.resetsAtMs)),
           }
           pause(blocked, 'usage')

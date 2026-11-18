@@ -1,6 +1,7 @@
 import { useStore } from '../store'
+import type { SessionState } from '../types'
 import { leadDeliveryPending, teamFor, useChatTeams } from './chatTeams'
-import { chatAutoActive } from './chat'
+import { chatAutoActive, limitStopped } from './chat'
 import {
   forceable,
   forcedSettleAt,
@@ -55,6 +56,15 @@ function clearSettling(key?: string) {
     }
 }
 
+/** Whether Send now can deliver: into a working Codex turn, or to a limit-stopped agent's prompt. */
+export function sendableNow(queued: QueuedPrompt, session: SessionState | undefined) {
+  return (
+    forceable(session) ||
+    (limitStopped(session) &&
+      promptReady(session, lastSubmission(queued.sessionId, queued.generation)))
+  )
+}
+
 /** Remove before attempting delivery: a failed or uncertain write is never retried. */
 export async function flushQueued(key: string, force = false) {
   clearSettling(key)
@@ -93,6 +103,8 @@ export async function flushQueued(key: string, force = false) {
     return
   }
   if (!state.serviceConnected || session.disconnected || session.interrupted) return
+  // Held for Send or Send now, or returned as a draft once the agent is replaced.
+  if (!force && limitStopped(session)) return
   const submission = lastSubmission(queued.sessionId, queued.generation)
   if (!promptReady(session, submission) && !(force && forceable(session))) {
     const settleAt = forcedSettleAt(session, submission)

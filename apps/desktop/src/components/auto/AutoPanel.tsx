@@ -13,11 +13,15 @@ import {
   mergeNow,
   pauseAuto,
   resumeAuto,
+  resumeAutoWithAgent,
   skipStage,
   stopAuto,
   STAGE_LABELS,
 } from '../../lib/auto'
 import { revealTerminal } from '../../lib/attention'
+import { useClockNow } from '../../lib/clock'
+import { agentDevices } from '../../lib/plan'
+import { presetExhausted, useUsage } from '../../lib/usage'
 import AutoDialog from './AutoDialog'
 import type { HookProvider } from '../../lib/agentHooks'
 import { autoDraftKey, autoDrafts } from '../../lib/autoDrafts'
@@ -37,6 +41,45 @@ function validationSummary(reports: ActionReport[]) {
   const failed = checks.filter((check) => !taskPassed(check)).length
   if (failed) return `${failed} of ${checks.length} checks did not pass`
   return `${checks.length} ${checks.length === 1 ? 'check' : 'checks'} passed`
+}
+
+/** After a usage pause: continue now on a preset whose subscription still has usage. */
+function ResumeOnAgent({
+  disabled,
+  onChoose,
+}: {
+  disabled: boolean
+  onChoose: (device: string) => void
+}) {
+  const devices = useStore((s) => s.devices)
+  const usage = useUsage((s) => s.usage)
+  const presets = agentDevices(devices)
+  const now = useClockNow(
+    presets.flatMap((preset) => presetExhausted(usage, preset, 0)).map((w) => w.window.resetsAtMs),
+  )
+  return (
+    <label>
+      Continue with another agent
+      <select
+        value=""
+        disabled={disabled}
+        onChange={(e) => e.target.value && onChoose(e.target.value)}
+      >
+        <option value="" disabled>
+          Choose an agent…
+        </option>
+        {presets.map((device) => (
+          <option
+            value={device.id}
+            key={device.id}
+            disabled={presetExhausted(usage, device, now).length > 0}
+          >
+            {device.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
 }
 
 export default function AutoPanel({
@@ -296,6 +339,14 @@ export default function AutoPanel({
         )}
         {(!finished || run.resumeTrigger) && (
           <section className="auto-group" aria-label="Resume">
+            {run.status === 'paused' && run.pauseKind === 'usage' && (
+              <ResumeOnAgent
+                disabled={blocked('resumeAuto')}
+                onChoose={(device) =>
+                  act('resumeAuto', (id, task) => resumeAutoWithAgent(id, task, device))
+                }
+              />
+            )}
             {!finished && (
               <label className="auto-toggle">
                 <input

@@ -7,6 +7,8 @@ import {
   type UsageWindow,
 } from '../types'
 import {
+  presetExhausted,
+  presetProvider,
   usageAlerts,
   usageBlock,
   usageLevel,
@@ -460,4 +462,26 @@ test('missing usage and unsupported recipients stay unknown, while less than 100
       100,
     ),
   ).toEqual([])
+})
+
+test('a preset is exhausted only while its own subscription has a spent window', () => {
+  const window = { usedPercent: 100, resetsAtMs: 2000, windowMinutes: 300 }
+  const usage = {
+    ...DEFAULT_USAGE,
+    codex: { provider: 'codex', fiveHour: window, weekly: null, observedMs: 1 },
+  } as unknown as Usage
+  const codex = { command: 'codex', adapter: 'codex' as const }
+  expect(presetExhausted(usage, codex, 1000)).toHaveLength(1)
+  expect(presetExhausted(usage, codex, 2000)).toHaveLength(0)
+  expect(presetExhausted(usage, { command: 'claude', adapter: 'claude' }, 1000)).toHaveLength(0)
+})
+
+test.each([
+  ['codex --profile x', 'codex'],
+  ['env A=1 "/opt/my tools/codex.exe" --x', 'codex'],
+  ['B=2 /usr/bin/claude', 'claude'],
+  ['echo codex', null],
+  ['codex && echo done', null],
+])('a preset without an adapter takes its provider from %s', (command, provider) => {
+  expect(presetProvider({ command })).toBe(provider)
 })
