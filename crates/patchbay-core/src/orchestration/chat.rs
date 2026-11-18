@@ -114,6 +114,9 @@ pub struct FinishedWork {
     pub information: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub workflows: std::collections::BTreeSet<String>,
+    /// Completions already decided, so a retry after any outcome changes nothing.
+    #[serde(default)]
+    pub tasks: std::collections::BTreeSet<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -347,8 +350,12 @@ pub enum Control {
         session: String,
         #[serde(rename = "clearHistory")]
         clear_history: bool,
-        #[serde(default, rename = "completeTask")]
-        complete_task: bool,
+    },
+    /// The worktree's task finished at `since_ms`: start the next one with a fresh lead.
+    CompleteTask {
+        id: String,
+        #[serde(default, rename = "sinceMs")]
+        since_ms: Option<u64>,
     },
     ResolveDelivery {
         id: String,
@@ -1697,7 +1704,6 @@ pub fn control(
                 id,
                 session,
                 clear_history,
-                complete_task,
             } => {
                 valid_id(&id)?;
                 ensure_available_for_team(s, &t)?;
@@ -1718,8 +1724,7 @@ pub fn control(
                     ensure!(
                         reset.id == id
                             && reset.next_session == session
-                            && reset.clear_history == clear_history
-                            && reset.complete_task == complete_task,
+                            && reset.clear_history == clear_history,
                         "A lead replacement is already pending"
                     );
                 } else if t.last_reset_id.as_deref() != Some(&id)
@@ -1740,9 +1745,18 @@ pub fn control(
                         next_session: session,
                         phase: ResetPhase::Queued,
                         clear_history,
-                        complete_task,
+                        complete_task: false,
                         error: None,
                     });
+                }
+            }
+            Control::CompleteTask { id, since_ms } => {
+                valid_id(&id)?;
+                if t.state != State::Stopped
+                    && !t.finished.tasks.contains(&id)
+                    && t.reset.as_ref().is_none_or(|r| r.id != id)
+                {
+                    complete_task(s, &mut t, project, id, since_ms, records)?;
                 }
             }
             Control::ResolveDelivery { id, delivered } => {
@@ -1969,15 +1983,83 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         excerpt(&compact, MESSAGE_LIMIT - notice.len() - 2)
     ))
 }
+const SETTLED_WORKFLOWS: [&str; 2] = ["completed", "failed"];
+/// Workers may still report. A failed assignment waits for a decision and is not running.
+fn round_active(r: &Run) -> bool {
+    r.state != State::Stopped
+        && r.jobs
+            .iter()
+            .any(|j| !job_done(j) && j.state != JobState::Failed)
+}
+/// Work begun after the task finished belongs to the lead's current conversation.
+fn lead_moved_on(s: &Store, t: &Team, lead: &Record, since_ms: Option<u64>) -> bool {
+    let snapshot = lead.snapshot.as_ref();
+    snapshot.is_some_and(|s| s.running) && !ready(lead)
+        || since_ms.is_some_and(|since| {
+            snapshot
+                .and_then(|s| s.status.agent.as_ref())
+                .is_some_and(|a| a.since_ms >= since)
+        })
+        || s.runs
+            .iter()
+            .any(|r| r.chat_team.as_deref() == Some(&t.id) && round_active(r))
+        || t.information_requests
+            .iter()
+            .any(|r| r.response.is_none() && r.error.is_none())
+        || t.requests
+            .iter()
+            .any(|r| !SETTLED_WORKFLOWS.contains(&r.state.as_str()))
+}
+/// Decide a completion once. It joins a pending fresh conversation rather than competing with it.
+fn complete_task(
+    s: &Store,
+    t: &mut Team,
+    project: &str,
+    id: String,
+    since_ms: Option<u64>,
+    records: &[Record],
+) -> Result<()> {
+    let lead = record(records, project, &t.lead.session_id).ok();
+    if !lead.is_some_and(|r| lead_moved_on(s, t, r, since_ms)) {
+        if let Some(reset) = &mut t.reset {
+            // A prepared launch already carries the finished task in its briefing.
+            ensure!(
+                reset.clear_history && reset.launch.is_none(),
+                "A lead replacement is already pending"
+            );
+            reset.complete_task = true;
+        } else if lead.is_some() {
+            ensure_available_for_team(s, t)?;
+            t.reset = Some(Reset {
+                launch: None,
+                id: id.clone(),
+                next_session: t.lead.session_id.clone(),
+                phase: ResetPhase::Queued,
+                clear_history: true,
+                complete_task: true,
+                error: None,
+            });
+        } else {
+            // Nothing to replace: the next continuation starts from the cleared state.
+            finish_task(t, &s.runs, records);
+            t.lead.conversation = None;
+            t.recovery = true;
+        }
+    }
+    t.finished.tasks.insert(id);
+    Ok(())
+}
 /// A confirmed replacement after finished work: nothing tells the new lead to continue it.
-fn finish_task(t: &mut Team, runs: &[Run]) {
+fn finish_task(t: &mut Team, runs: &[Run], records: &[Record]) {
     let id = t.id.clone();
+    let rounds: Vec<_> = runs
+        .iter()
+        .filter(|r| r.chat_team.as_deref() == Some(&id))
+        .collect();
     t.finished.rounds.extend(
-        runs.iter()
-            .filter(|r| {
-                r.chat_team.as_deref() == Some(&id)
-                    && (r.state == State::Stopped || r.jobs.iter().all(job_done))
-            })
+        rounds
+            .iter()
+            .filter(|r| r.state == State::Stopped || r.jobs.iter().all(job_done))
             .map(|r| r.id.clone()),
     );
     let answered: Vec<_> = t
@@ -1990,15 +2072,44 @@ fn finish_task(t: &mut Team, runs: &[Run]) {
     let settled: Vec<_> = t
         .requests
         .iter()
-        .filter(|r| ["completed", "failed"].contains(&r.state.as_str()))
+        .filter(|r| SETTLED_WORKFLOWS.contains(&r.state.as_str()))
         .map(|r| r.id.clone())
         .collect();
     t.finished.workflows.extend(settled);
+    // Messages stay stored, so their stable ids can't be queued again.
+    let active: HashSet<_> = rounds
+        .iter()
+        .filter(|r| round_active(r))
+        .flat_map(|r| r.jobs.iter().map(|j| j.id.as_str()))
+        .collect();
+    for m in t.messages.iter_mut().filter(|m| {
+        m.recipient == "lead"
+            && m.state == DeliveryState::Pending
+            && m.assignment
+                .as_deref()
+                .is_none_or(|assignment| !active.contains(assignment))
+    }) {
+        m.state = DeliveryState::Delivered;
+    }
+    // Only agents still working have a finish the new lead needs to hear about.
+    let working: HashSet<_> = records
+        .iter()
+        .filter(|r| r.snapshot.as_ref().is_some_and(|s| s.running) && !ready(r))
+        .map(|r| r.id.as_str())
+        .collect();
+    t.observed_agents
+        .retain(|session, _| working.contains(session.as_str()));
+    t.noted_agents
+        .retain(|session| working.contains(session.as_str()));
+    t.noted_since
+        .retain(|session, _| working.contains(session.as_str()));
     t.checkpoint.goal.clear();
+    t.checkpoint.decisions.clear();
     t.checkpoint.remaining = "No task is in progress. Wait for the user's next request.".into();
     t.checkpoint.validation.clear();
     t.saved_context.clear();
     t.current_plan.clear();
+    t.original_briefing.clear();
 }
 pub(super) fn restore(s: &mut Store, project: &str) {
     for t in s.teams.iter_mut().filter(|t| t.project_id == project) {
@@ -2159,7 +2270,7 @@ pub fn reconcile(
                         t.lead.preset.name = r.metadata.name.clone();
                         t.lead.preset.adapter = r.metadata.adapter;
                         if reset.complete_task {
-                            finish_task(&mut t, &s.runs);
+                            finish_task(&mut t, &s.runs, records);
                         }
                         let text = format!(
                             "Goal: {}\nConstraints: {}\nDecisions: {}\nRemaining: {}\nValidation: {}\nRetained delegation rounds: {}. Pending worker updates will be delivered when ready.",
@@ -4016,7 +4127,6 @@ mod tests {
                 id: "reset1".into(),
                 session: f.lead.id.clone(),
                 clear_history: true,
-                complete_task: false,
             },
             std::slice::from_ref(&f.lead),
         )
@@ -4108,7 +4218,6 @@ mod tests {
                 id: "reset1".into(),
                 session: f.lead.id.clone(),
                 clear_history: true,
-                complete_task: false,
             },
             std::slice::from_ref(&f.lead),
         )
@@ -4196,11 +4305,9 @@ mod tests {
             &f.dir,
             "p",
             &f.team.id,
-            Control::Reset {
+            Control::CompleteTask {
                 id: "task-done-1".into(),
-                session: f.lead.id.clone(),
-                clear_history: true,
-                complete_task: true,
+                since_ms: None,
             },
             std::slice::from_ref(&f.lead),
         )
@@ -4212,9 +4319,9 @@ mod tests {
         let checkpoint = Checkpoint {
             goal: "Ship the finished feature".into(),
             constraints: "Keep public APIs".into(),
+            decisions: "Use the old adapter".into(),
             remaining: "Nothing else".into(),
             validation: "All green".into(),
-            ..Default::default()
         };
         f.cmd(Command::Checkpoint {
             checkpoint: checkpoint.clone(),
@@ -4229,6 +4336,19 @@ mod tests {
             },
         )
         .unwrap();
+        retain_briefing(&f.dir, "p", &f.team.id, "Finished task briefing").unwrap();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Note {
+                id: "merge".into(),
+                text: "The user started a merge.".into(),
+                sessions: vec!["merge-agent".into()],
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
         complete_task_reset(&f).unwrap();
         assert_eq!(f.state().checkpoint, checkpoint, "not confirmed yet");
 
@@ -4239,6 +4359,16 @@ mod tests {
         assert!(t.handoff.as_ref().unwrap().complete_task);
         assert!(t.checkpoint.goal.is_empty());
         assert!(t.checkpoint.validation.is_empty());
+        assert!(t.checkpoint.decisions.is_empty());
+        assert!(t.original_briefing.is_empty());
+        assert!(t.noted_agents.is_empty());
+        assert!(
+            t.messages
+                .iter()
+                .filter(|m| m.recipient == "lead")
+                .all(|m| m.state == DeliveryState::Delivered),
+            "finished work's messages never reach the new lead"
+        );
         assert_eq!(t.checkpoint.constraints, "Keep public APIs");
         assert!(t.finished.rounds.contains(&run.id));
         assert!(t.rounds.contains(&run.id), "history stays stored");
@@ -4249,6 +4379,93 @@ mod tests {
         // Polling repeats the request after it was applied.
         complete_task_reset(&f).unwrap();
         assert!(f.state().reset.is_none());
+    }
+
+    fn complete_since(f: &Fixture, since_ms: Option<u64>) -> Team {
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::CompleteTask {
+                id: "task-done-1".into(),
+                since_ms,
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap()
+    }
+
+    fn lead_agent(f: &mut Fixture) -> &mut crate::status::AgentReport {
+        let snapshot = f.lead.snapshot.as_mut().unwrap();
+        snapshot.status.agent.as_mut().unwrap()
+    }
+
+    #[test]
+    fn a_lead_with_newer_work_keeps_its_conversation_when_a_task_completes() {
+        let mut f = Fixture::new();
+        lead_agent(&mut f).since_ms = 500;
+        let t = complete_since(&f, Some(500));
+        assert!(t.reset.is_none(), "a turn since the task finished");
+        assert_eq!(t.checkpoint.goal, "Build feature");
+        assert!(t.finished.tasks.contains("task-done-1"));
+
+        // The decision stands, even once the lead is idle again.
+        lead_agent(&mut f).since_ms = 1;
+        assert!(complete_since(&f, Some(500)).reset.is_none());
+    }
+
+    #[test]
+    fn a_busy_lead_or_active_round_keeps_the_conversation() {
+        let mut f = Fixture::new();
+        lead_agent(&mut f).state = crate::status::AgentState::Working;
+        assert!(complete_since(&f, None).reset.is_none());
+
+        let f = Fixture::new();
+        f.delegate(vec![assignment("a", ResultKind::Report, &[])]);
+        assert!(complete_since(&f, None).reset.is_none());
+    }
+
+    #[test]
+    fn a_completion_joins_a_pending_fresh_conversation() {
+        let f = Fixture::new();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Reset {
+                id: "fresh".into(),
+                session: f.lead.id.clone(),
+                clear_history: true,
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        let reset = complete_since(&f, None).reset.unwrap();
+        assert_eq!(reset.id, "fresh");
+        assert!(reset.complete_task);
+    }
+
+    #[test]
+    fn a_completion_without_a_lead_session_clears_the_task_immediately() {
+        let f = Fixture::new();
+        let t = control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::CompleteTask {
+                id: "task-done-1".into(),
+                since_ms: None,
+            },
+            &[],
+        )
+        .unwrap();
+        assert!(t.reset.is_none());
+        assert!(t.checkpoint.goal.is_empty());
+        assert!(
+            t.lead.conversation.is_none(),
+            "nothing resumes the old turn"
+        );
+        assert!(t.recovery);
     }
 
     #[test]
@@ -4568,7 +4785,6 @@ mod tests {
                         id: "replacement-request".into(),
                         session: next.id.clone(),
                         clear_history: true,
-                        complete_task: false,
                     },
                     std::slice::from_ref(&next),
                 )
@@ -4630,7 +4846,6 @@ mod tests {
                 id: "reset1".into(),
                 session: f.lead.id.clone(),
                 clear_history: true,
-                complete_task: false,
             },
             std::slice::from_ref(&f.lead),
         )
@@ -4896,7 +5111,6 @@ mod tests {
                 id: "reset1".into(),
                 session: f.lead.id.clone(),
                 clear_history: true,
-                complete_task: false,
             },
             std::slice::from_ref(&f.lead),
         )

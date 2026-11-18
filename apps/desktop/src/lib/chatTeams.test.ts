@@ -141,35 +141,32 @@ test('fresh conversation queues a durable reset and keeps history until confirma
   expect(useStore.getState().simple?.log[0].text).toBe('Retain my changes')
   expect(useSimpleUi.getState().worktrees[simpleKey('p', null)].coordinationReset).toBe(true)
 })
-test('a completed task resets a live lead once under its stable id', async () => {
-  const current = team()
-  useChatTeams.setState({ teams: { p: [current] }, runs: {} })
-  useStore.setState({ sessionRecords: [{ id: 'lead' } as SessionRecord] })
+const answerTeams = (teams: ChatTeam[]) =>
+  vi
+    .mocked(invoke)
+    .mockImplementation(async (command) => (command === 'chat_teams' ? teams : teams[0]))
+test('a completed task reads durable teams, so an unloaded cache cannot skip it', async () => {
+  useChatTeams.setState({ teams: {}, runs: {} })
   vi.mocked(invoke).mockClear()
-  vi.mocked(invoke).mockResolvedValue(current)
-  await completeTeamTask('p', null, 'task-done-merge')
+  answerTeams([team()])
+  await completeTeamTask('p', null, 'task-done-merge', 42)
   expect(invoke).toHaveBeenCalledWith(
     'chat_team_control',
     expect.objectContaining({
-      control: expect.objectContaining({
-        kind: 'reset',
-        id: 'task-done-merge',
-        session: 'lead',
-        clearHistory: true,
-        completeTask: true,
-      }),
+      control: { kind: 'completeTask', id: 'task-done-merge', sinceMs: 42 },
     }),
   )
 })
-test('a completed task leaves stopped teams and forgotten leads alone', async () => {
+test('a completed task leaves stopped teams alone', async () => {
   vi.mocked(invoke).mockClear()
-  useChatTeams.setState({ teams: { p: [team({ state: 'stopped' })] }, runs: {} })
-  useStore.setState({ sessionRecords: [{ id: 'lead' } as SessionRecord] })
+  answerTeams([team({ state: 'stopped' })])
   await completeTeamTask('p', null, 'task-done-merge')
-  useChatTeams.setState({ teams: { p: [team()] }, runs: {} })
-  useStore.setState({ sessionRecords: [] })
-  await completeTeamTask('p', null, 'task-done-merge')
-  expect(invoke).not.toHaveBeenCalled()
+  expect(invoke).not.toHaveBeenCalledWith('chat_team_control', expect.anything())
+})
+test('a rejected reset releases the composer', async () => {
+  vi.mocked(invoke).mockRejectedValueOnce(new Error('Auto or another owner controls'))
+  await expect(resetLead(team())).rejects.toThrow('another owner')
+  expect(useSimpleUi.getState().worktrees[simpleKey('p', null)].coordinationReset).toBe(false)
 })
 test('a completed task hands off without repeating the finished work', async () => {
   useChatTeams.setState({ teams: { p: [] }, runs: {} })

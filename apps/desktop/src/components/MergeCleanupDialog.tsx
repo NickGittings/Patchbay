@@ -5,9 +5,9 @@ import { mergeCleanupPreview, type MergeCleanupPreview } from '../lib/ipc'
 import {
   cleanupJobs,
   deleteMergedWork,
-  handledCleanup,
+  finishCleanup,
   completeMergeChat,
-  completeTaskContext,
+  settleTaskContext,
   type CleanupJob,
 } from '../lib/mergeCleanup'
 
@@ -25,6 +25,10 @@ export default function MergeCleanupDialog() {
       if (checking || job || useStore.getState().restoring) return
       checking = true
       try {
+        for (const pending of cleanupJobs().filter((j) => j.contextPending)) {
+          if (disposed) break
+          await settleTaskContext(pending)
+        }
         for (const next of cleanupJobs().filter((j) => !j.handled)) {
           if (disposed) break
           if (!(await completeMergeChat(next).catch(() => false))) continue
@@ -67,10 +71,7 @@ export default function MergeCleanupDialog() {
               break
             }
           }
-          // A failure leaves the job for the next poll; the reset's stable id prevents repeats.
-          if (next.choice === 'keep' && !(await completeTaskContext(next).catch(() => false)))
-            continue
-          handledCleanup(next.id)
+          await finishCleanup(next)
         }
       } finally {
         checking = false
@@ -83,19 +84,10 @@ export default function MergeCleanupDialog() {
       clearInterval(timer)
     }
   }, [job])
-  const keep = async () => {
+  const keep = () => {
     if (busy || checkingPreview || !job) return
-    setBusy(true)
-    setError(undefined)
-    try {
-      await completeTaskContext(job)
-      handledCleanup(job.id)
-      setJob(undefined)
-    } catch (e) {
-      setError(`Could not start a fresh lead conversation: ${String(e)}`)
-    } finally {
-      setBusy(false)
-    }
+    void finishCleanup(job)
+    setJob(undefined)
   }
   const retryPreview = async () => {
     if (!job) return
@@ -115,10 +107,10 @@ export default function MergeCleanupDialog() {
   return (
     <Dialog
       title="Merge complete"
-      onClose={() => void keep()}
+      onClose={keep}
       footer={
         <>
-          <button autoFocus disabled={busy || checkingPreview} onClick={() => void keep()}>
+          <button autoFocus disabled={busy || checkingPreview} onClick={keep}>
             Keep
           </button>
           {!preview && (
@@ -134,7 +126,7 @@ export default function MergeCleanupDialog() {
               setError(undefined)
               void deleteMergedWork(job)
                 .then(() => {
-                  handledCleanup(job.id)
+                  void finishCleanup(job)
                   setJob(undefined)
                 })
                 .catch((e) => setError(String(e)))

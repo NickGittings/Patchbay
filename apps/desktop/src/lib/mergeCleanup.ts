@@ -22,6 +22,10 @@ export interface CleanupJob {
   autoOwnershipId?: string
   chatCleared?: boolean
   handled?: boolean
+  /** When the merge was started, to tell later lead work from the merged task's. */
+  startedMs?: number
+  /** Handled, but the lead hasn't been told the task is complete yet. */
+  contextPending?: boolean
 }
 
 export function cleanupJobs(): CleanupJob[] {
@@ -44,7 +48,7 @@ export function trackMergeCleanup(
       mergeCleanupJobs: [
         ...cleanupJobs().filter(
           (j) =>
-            !j.handled &&
+            (!j.handled || j.contextPending) &&
             !(
               j.projectId === project.projectId &&
               j.request.source === request.source &&
@@ -59,19 +63,24 @@ export function trackMergeCleanup(
           choice,
           auto,
           autoOwnershipId,
+          startedMs: Date.now(),
         },
       ],
     },
   }))
 }
 
-export function handledCleanup(id: string) {
+function patchCleanup(id: string, update: Partial<CleanupJob>) {
   useStore.setState((s) => ({
     workspaceSettings: {
       ...s.workspaceSettings,
-      mergeCleanupJobs: cleanupJobs().map((j) => (j.id === id ? { ...j, handled: true } : j)),
+      mergeCleanupJobs: cleanupJobs().map((j) => (j.id === id ? { ...j, ...update } : j)),
     },
   }))
+}
+
+export function handledCleanup(id: string) {
+  patchCleanup(id, { handled: true })
 }
 
 /** Only confirmed integration and a finished merge turn can offer cleanup. */
@@ -120,32 +129,37 @@ export async function completeMergeChat(job: CleanupJob) {
   useStore.getState().patchTask(job.projectId, task, {
     simple: clearedSimple(simple, useStore.getState().sessions, now),
   })
-  useStore.setState((s) => ({
-    workspaceSettings: {
-      ...s.workspaceSettings,
-      mergeCleanupJobs: cleanupJobs().map((j) =>
-        j.id === job.id ? { ...j, chatCleared: true } : j,
-      ),
-    },
-  }))
+  patchCleanup(job.id, { chatCleared: true })
   return true
 }
 
 /**
  * The merge into `main` finished the task and its worktree stays: stop the merge agent and give
- * the worktree's lead a fresh conversation. Rejects when the lead couldn't be reset.
+ * the worktree's lead a fresh conversation. False or a rejection means it should be retried.
  */
 export async function completeTaskContext(job: CleanupJob) {
   if (job.request.destinationBranch !== 'main') return true
   const state = projectStateOf(job.projectId)
-  if (!state) return true
+  if (!state) return false
   const source = state.tasks.find((t) => t.worktree === job.request.source)
   if (!source && job.request.source !== state.project?.root) return true
   const task = source?.id ?? null
   if (useStore.getState().sessions[job.sessionId]?.running)
     await terminalStop(job.sessionId).catch(() => {})
-  await completeTeamTask(job.projectId, task, `task-done-${job.id}`)
+  await completeTeamTask(job.projectId, task, `task-done-${job.id}`, job.startedMs)
   return true
+}
+
+/** Try the lead's completion. A job left pending is retried by the cleanup poll. */
+export async function settleTaskContext(job: CleanupJob) {
+  if (await completeTaskContext(job).catch(() => false))
+    patchCleanup(job.id, { contextPending: false })
+}
+
+/** The user's cleanup decision is final at once; the lead's fresh start never holds it up. */
+export async function finishCleanup(job: CleanupJob) {
+  patchCleanup(job.id, { handled: true, contextPending: true })
+  await settleTaskContext(job)
 }
 
 export async function deleteMergedWork(job: CleanupJob) {

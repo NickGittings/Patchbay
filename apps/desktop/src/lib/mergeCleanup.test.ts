@@ -5,6 +5,7 @@ import {
   completeMergeChat,
   completeTaskContext,
   deleteMergedWork,
+  finishCleanup,
   handledCleanup,
   readyCleanup,
   trackMergeCleanup,
@@ -91,7 +92,31 @@ test('a merge into main stops its agent and starts the next task with a fresh le
   useStore.setState({ sessions: { session: { running: true } } as never })
   expect(await completeTaskContext(cleanupJobs()[0])).toBe(true)
   expect(terminalStop).toHaveBeenCalledWith('session')
-  expect(completeTeamTask).toHaveBeenCalledWith('p', null, 'task-done-merge')
+  expect(completeTeamTask).toHaveBeenCalledWith(
+    'p',
+    null,
+    'task-done-merge',
+    cleanupJobs()[0].startedMs,
+  )
+})
+
+test('a cleanup decision stands while the lead completion waits for a retry', async () => {
+  vi.mocked(completeTeamTask).mockRejectedValueOnce(new Error('pending'))
+  trackMergeCleanup(
+    project,
+    { ...request, source: project.root },
+    'session',
+    'merge',
+    'keep',
+    false,
+  )
+  await finishCleanup(cleanupJobs()[0])
+  expect(cleanupJobs()[0]).toMatchObject({ handled: true, contextPending: true })
+  // A later merge must not forget the retry.
+  trackMergeCleanup(project, { ...request, source: '/other' }, 'next', 'later', 'keep', false)
+  expect(cleanupJobs().map((j) => j.id)).toEqual(['merge', 'later'])
+  await finishCleanup(cleanupJobs()[0])
+  expect(cleanupJobs()[0].contextPending).toBe(false)
 })
 
 test('a failed lead reset rejects so cleanup can retry it', async () => {

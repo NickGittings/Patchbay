@@ -50,6 +50,17 @@ test('agents that may still be needed keep running', () => {
   expect(only(builder, { queuedSession: 'builder' })).toEqual([])
 })
 
+test('an agent prompted since its last finished turn keeps running', () => {
+  const simple = {
+    startedMs: 1,
+    log: [
+      launch('implement', 'builder'),
+      { id: 'next', kind: 'prompt', atMs: 30, sessionId: 'builder', generation: 1, text: 'More' },
+    ],
+  } as unknown as SimpleState
+  expect(retirableStageAgents(input({ simple, sessions: { builder: session() } }))).toEqual([])
+})
+
 test('only stage agents this chat launched are retired', () => {
   const simple = {
     startedMs: 1,

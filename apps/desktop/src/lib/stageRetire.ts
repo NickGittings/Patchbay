@@ -3,6 +3,7 @@ import type { SessionState } from '../types'
 import { teamFor } from './chatTeams'
 import { terminalStop } from './ipc'
 import { workflowLog, type SimpleState } from './simple'
+import { awaitingTurn } from './simpleFlow'
 import { simpleKey, useSimpleUi } from './simpleUi'
 
 const STAGE_ACTIONS = new Set(['implement', 'fix', 'review'])
@@ -22,7 +23,8 @@ export interface RetirementInput {
 /**
  * Earlier stage agents the next stage has replaced. Launching that stage confirms the work is
  * done, since a finished turn alone may be a question. Only a turn that ended normally counts:
- * an interrupted agent is idle, and one still starting has no finished turn.
+ * an interrupted agent is idle, one still starting has no finished turn, and one just prompted
+ * still shows the turn before.
  */
 export function retirableStageAgents({
   simple,
@@ -47,6 +49,7 @@ export function retirableStageAgents({
       agent?.authoritative &&
       agent.state === 'review' &&
       !agent.approvalPending &&
+      !awaitingTurn(simple, id, session) &&
       !launched.includes(id) &&
       !foreign.has(id) &&
       id !== leadSession &&

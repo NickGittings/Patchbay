@@ -106,7 +106,8 @@ export type TeamControl =
   | { kind: 'block'; reason: string }
   | { kind: 'retry'; assignment: string }
   | { kind: 'settings'; workers: TerminalSpec[]; limit: number }
-  | { kind: 'reset'; id: string; session: string; clearHistory: boolean; completeTask?: boolean }
+  | { kind: 'reset'; id: string; session: string; clearHistory: boolean }
+  | { kind: 'completeTask'; id: string; sinceMs?: number }
   | { kind: 'resolveDelivery'; id: string; delivered: boolean }
   | { kind: 'handoffApplied'; id: string }
   | { kind: 'note'; id: string; text: string; sessions: string[] }
@@ -343,29 +344,49 @@ async function resolveChat(team: ChatTeam) {
   await reconcileFreshSessions()
   return result
 }
-export async function resetLead(
-  team: ChatTeam,
-  session = team.lead.sessionId,
-  options: { id?: string; completeTask?: boolean } = {},
-) {
-  useSimpleUi.getState().patch(simpleKey(team.projectId, team.task), { coordinationReset: true })
-  return controlTeam(team, {
-    kind: 'reset',
-    id: options.id ?? crypto.randomUUID(),
-    session,
-    clearHistory: true,
-    ...(options.completeTask ? { completeTask: true } : {}),
-  })
+export async function resetLead(team: ChatTeam, session = team.lead.sessionId) {
+  const key = simpleKey(team.projectId, team.task)
+  useSimpleUi.getState().patch(key, { coordinationReset: true })
+  try {
+    return await controlTeam(team, {
+      kind: 'reset',
+      id: crypto.randomUUID(),
+      session,
+      clearHistory: true,
+    })
+  } catch (error) {
+    useSimpleUi.getState().patch(key, { coordinationReset: !!team.reset })
+    throw error
+  }
 }
 /**
- * Start the next task with a fresh lead. `id` must be stable for this completion, so repeated
- * calls apply once. A stopped team stays stopped, and a forgotten lead has nothing to replace.
+ * Start the next task with a fresh lead, unless the lead has moved on since `sinceMs`. `id` must
+ * be stable for this completion, so retries apply once. Reads durable teams, because the cache may
+ * not be loaded yet after a restart. A stopped team stays stopped.
  */
-export async function completeTeamTask(projectId: string, task: string | null, id: string) {
-  const team = teamFor(projectId, task)
+export async function completeTeamTask(
+  projectId: string,
+  task: string | null,
+  id: string,
+  sinceMs?: number,
+) {
+  const teams = await invoke<ChatTeam[]>('chat_teams', { projectId })
+  const team = teams.find((t) => t.task === task)
   if (!team || team.state === 'stopped') return
-  if (!useStore.getState().sessionRecords.some((r) => r.id === team.lead.sessionId)) return
-  await resetLead(team, team.lead.sessionId, { id, completeTask: true })
+  await controlTeam(team, { kind: 'completeTask', id, sinceMs })
+}
+/** Complete a finished in-place run's task. The saved mark keeps this retrying across restarts. */
+export async function completeAutoTask(projectId: string, task: string | null) {
+  const state = projectStateOf(projectId)
+  const run = state && workspaceOf(state, task).auto
+  if (!run?.taskDoneAtMs || run.status !== 'done') return
+  await completeTeamTask(projectId, task, `task-done-${run.runId}`, run.taskDoneAtMs)
+  const latest = projectStateOf(projectId)
+  const current = latest && workspaceOf(latest, task).auto
+  if (current?.runId === run.runId)
+    useStore.getState().patchTask(projectId, task, {
+      auto: { ...current, taskDoneAtMs: undefined },
+    })
 }
 const pendingSideMessages = new Map<string, { id: string; text: string }>()
 export async function sendWorkerMessage(team: ChatTeam, assignment: string, text: string) {
@@ -462,7 +483,7 @@ export async function refreshChatTeams(projectId: string) {
                 task || null,
                 false,
                 workspace.auto.ownershipId ?? workspace.auto.runId,
-              ),
+              ).then(() => completeAutoTask(projectId, task || null)),
             ]
           : [],
       ),

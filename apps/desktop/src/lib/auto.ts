@@ -1,4 +1,4 @@
-import { autoOwnership, completeTeamTask } from './chatTeams'
+import { autoOwnership, completeAutoTask } from './chatTeams'
 import { requireDeviceAuth, ProviderSetupRequired } from './providerAuth'
 import { waitForSetup } from './worktreeSetup'
 import {
@@ -360,6 +360,8 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
   update = pauseDefaults(update)
   if (update.stage && update.stage !== run.stage) update.recovery = undefined
   if (update.status && update.status !== 'running') update.restartPending = false
+  // A run in place has no merge to finish its task, so finishing the run does.
+  if (update.status === 'done' && inPlace(run)) update.taskDoneAtMs = Date.now()
   const next = { ...run, ...update }
   if (
     next.stage !== 'scan' &&
@@ -380,12 +382,7 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
   })
   if (update.status === 'done' || update.status === 'stopped')
     void autoOwnership(projectId, task, false, run.ownershipId ?? run.runId)
-      // A run in place has no merge to finish its task, so finishing the run does.
-      .then(() =>
-        update.status === 'done' && inPlace(run)
-          ? completeTeamTask(projectId, task, `task-done-${run.runId}`)
-          : undefined,
-      )
+      .then(() => (update.status === 'done' ? completeAutoTask(projectId, task) : undefined))
       .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
   if (update.status === 'done')
     void completeAutoStories(projectId, task, run.runId).catch((e) =>
