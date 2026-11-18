@@ -68,9 +68,35 @@ pub fn window<'a>(
     if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() {
         return builder;
     }
-    builder
+    let builder = builder
         .initialization_script("window.__patchbaySmokeRun = true;")
-        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+    // Every instance of the app otherwise shares one WebKit store, so parallel runs (and the
+    // developer's own `tauri dev`) would see each other's localStorage. Keyed by the run's state
+    // dir, which the launchers create per run, so an app restarted within a run keeps its store.
+    let Some(state) = std::env::var_os("PATCHBAY_STATE_DIR") else {
+        return builder;
+    };
+    #[cfg(target_os = "macos")]
+    let builder = builder.data_store_identifier(store_identifier(&state));
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.data_directory(std::path::PathBuf::from(state).join("webview"));
+    builder
+}
+
+/// A UUID-shaped identifier (version 4 bits set) stable for one state dir.
+#[cfg(target_os = "macos")]
+fn store_identifier(state: &std::ffi::OsStr) -> [u8; 16] {
+    use std::hash::{Hash, Hasher};
+    let mut id = [0u8; 16];
+    for (seed, half) in id.chunks_mut(8).enumerate() {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (seed, state).hash(&mut hasher);
+        half.copy_from_slice(&hasher.finish().to_le_bytes());
+    }
+    id[6] = (id[6] & 0x0f) | 0x40;
+    id[8] = (id[8] & 0x3f) | 0x80;
+    id
 }
 
 /// Prepares the app for a smoke run; does nothing outside one.

@@ -9,7 +9,7 @@ git config user.name 'Auto smoke'
 git config user.email auto@patchbay.invalid
 git config commit.gpgsign false
 printf 'base\n' > shared.txt
-printf '%s\n' '{"schemaVersion":4,"name":"Auto smoke","components":[{"id":"root","name":"Root","path":".","kind":"app","notes":"","position":{"x":0,"y":0},"terminals":[{"id":"validate","name":"Validate","kind":"task","action":"validation","command":"test -f shared.txt"}]}],"links":[]}' > patchbay.json
+printf '%s\n' '{"schemaVersion":4,"name":"Auto smoke","components":[{"id":"root","name":"Root","path":".","kind":"app","notes":"","position":{"x":0,"y":0},"terminals":[{"id":"validate","name":"Validate","kind":"task","action":"validation","command":"test -f shared.txt"},{"id":"notifier","name":"Notifier","kind":"agent","command":"exec cat"}]}],"links":[]}' > patchbay.json
 git add .
 git commit -qm base
 git worktree add -q -b feature "$dir/feature"

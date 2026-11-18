@@ -190,6 +190,13 @@
     assert(button('Jump to latest (1 new reply)'), 'reconciliation counted duplicate reply')
     thread.scrollTop = 220
     thread.dispatchEvent(new Event('scroll'))
+    // The browser's own scroll event for this position, which re-anchors the reader, arrives
+    // later; wait for it rather than a fixed sleep, which can end first under load. Hidden smoke
+    // windows may never deliver it (nor animation frames), so a timer bounds the wait.
+    await new Promise((done) => {
+      thread.addEventListener('scroll', done, { once: true })
+      setTimeout(done, 500)
+    })
     await sleep(50)
     const visibleReply = thread.querySelector('.simple-reply:has(.markdown-code)')
     const offset = visibleReply.getBoundingClientRect().top - thread.getBoundingClientRect().top
@@ -208,7 +215,9 @@
       Math.abs(
         visibleReply.getBoundingClientRect().top - thread.getBoundingClientRect().top - offset,
       ) < 2,
-      'historical reconciliation moved the visible reply',
+      `historical reconciliation moved the visible reply (offset ${offset} → ${
+        visibleReply.getBoundingClientRect().top - thread.getBoundingClientRect().top
+      }, scrollTop ${thread.scrollTop} of ${thread.scrollHeight}, client ${thread.clientHeight})`,
     )
     assert(
       button('Jump to latest (1 new reply)'),

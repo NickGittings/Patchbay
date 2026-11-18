@@ -1,19 +1,24 @@
 // Runs smoke scripts against one build and one Vite server instead of a `tauri dev` per script.
-//   node scripts/smoke-all.mjs                  every script, in order, then a summary
+//   node scripts/smoke-all.mjs                  every script, then a summary
 //   node scripts/smoke-all.mjs views git        just those (the `npm run smoke:*` entries)
 //   node scripts/smoke-all.mjs --bail           stop at the first failure
-// Scripts run one at a time: fixtures use fixed temp paths and the checks are timing-sensitive.
+//   node scripts/smoke-all.mjs --jobs 1         one script at a time, output streamed (default 3)
+// Each script gets its own TMPDIR, so the fixed fixture paths under it never collide. With more
+// than one job, a script's output goes to a log printed when it finishes; `serial` scripts run
+// alone after the rest.
 import { spawn, execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { resolve, join, dirname } from 'node:path'
 import { createRequire } from 'node:module'
-import { readFileSync } from 'node:fs'
+import { closeSync, mkdtempSync, openSync, readFileSync } from 'node:fs'
 import { Script } from 'node:vm'
 import { desktop, root } from './smoke-lib.mjs'
 import { copySmokeProject } from './smoke-fixtures.mjs'
 const require = createRequire(import.meta.url)
-// Where the `smoke/*-fixture.sh` scripts put their repos (`${TMPDIR:-/tmp}`).
-const temp = tmpdir()
+// A path inside the run's own TMPDIR, where the `smoke/*-fixture.sh` scripts put their repos
+// (`${TMPDIR:-/tmp}`); resolved once each run has its folder.
+const RUN_TMP = '<run-tmp>'
+const tmp = (path) => `${RUN_TMP}/${path}`
 const at = (...parts) => resolve(desktop, ...parts)
 const defaultFixture = at('smoke', 'fixtures', 'project')
 const dockerFixture = join(root, 'examples/extensions/docker/fixture')
@@ -26,12 +31,12 @@ const SCRIPTS = {
   design: smoke('design.js'),
   auth: smoke(
     'auth.js',
-    { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-auth/project') },
+    { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-auth/project') },
     'auth-fixture.sh',
   ),
   providers: smoke(
     'providers.js',
-    { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-providers/project') },
+    { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-providers/project') },
     'providers-fixture.sh',
   ),
   validation: smoke('validation.js'),
@@ -40,7 +45,7 @@ const SCRIPTS = {
   auto: {
     ...smoke(
       'auto.js',
-      { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-auto/project') },
+      { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-auto/project') },
       'auto-fixture.sh',
     ),
     run: ['scripts/hooks-home.mjs'],
@@ -48,7 +53,7 @@ const SCRIPTS = {
   simple: {
     ...smoke(
       'simple.js',
-      { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-simple/project') },
+      { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-simple/project') },
       'simple-fixture.sh',
     ),
     run: ['scripts/hooks-home.mjs'],
@@ -56,7 +61,7 @@ const SCRIPTS = {
   planning: {
     ...smoke(
       'planning.js',
-      { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-simple/project') },
+      { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-simple/project') },
       'simple-fixture.sh',
     ),
     run: ['scripts/hooks-home.mjs'],
@@ -64,10 +69,12 @@ const SCRIPTS = {
   'chat-team': {
     ...smoke(
       'chat-team.js',
-      { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-team/project') },
+      { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-team/project') },
       'chat-team-fixture.sh',
     ),
     run: ['scripts/chat-team.mjs'],
+    // Its restart loses the saved draft under parallel load.
+    serial: true,
   },
   'chat-controls': smoke('chat-controls.js', {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,
@@ -79,7 +86,7 @@ const SCRIPTS = {
     ...smoke(
       'codex-network.js',
       {
-        PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-codex-network/project'),
+        PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-codex-network/project'),
         PATCHBAY_PROBE_DISABLED_FEATURE: 'network_proxy',
       },
       'codex-network-fixture.sh',
@@ -89,15 +96,15 @@ const SCRIPTS = {
   autosave: smoke(
     'autosave.js',
     {
-      PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-autosave/one'),
-      PATCHBAY_SMOKE_ROOT_2: join(temp, 'patchbay-smoke-autosave/two'),
+      PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-autosave/one'),
+      PATCHBAY_SMOKE_ROOT_2: tmp('patchbay-smoke-autosave/two'),
     },
     'autosave-fixture.sh',
   ),
   views: {
     ...smoke(
       'views.js',
-      { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-views/project') },
+      { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-views/project') },
       'views-fixture.sh',
     ),
     run: ['scripts/hooks-home.mjs'],
@@ -107,24 +114,24 @@ const SCRIPTS = {
   merge: smoke(
     'merge.js',
     {
-      PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-merge/project'),
+      PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-merge/project'),
     },
     'merge-fixture.sh',
   ),
   'merge-branches-chat': smoke(
     'merge-branches.js',
-    { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-merge/chat-primary') },
+    { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-merge/chat-primary') },
     'merge-branches-fixture.sh',
   ),
   'merge-branches-review': smoke(
     'merge-branches.js',
-    { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-merge/review-primary') },
+    { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-merge/review-primary') },
     'merge-branches-fixture.sh',
   ),
   git: smoke('git.js'),
   actions: smoke(
     'actions.js',
-    { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-actions/project') },
+    { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-actions/project') },
     'actions-fixture.sh',
   ),
   stack: smoke('stack.js'),
@@ -134,7 +141,7 @@ const SCRIPTS = {
   }),
   tasks: smoke(
     'tasks.js',
-    { PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-tasks/shop') },
+    { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-tasks/shop') },
     'tasks-fixture.sh',
   ),
   workspace: smoke('workspace.js', {
@@ -147,22 +154,24 @@ const SCRIPTS = {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,
   }),
   status: { run: ['scripts/status.mjs'] },
-  'conversation-context': { run: ['scripts/conversation-context.mjs'] },
+  // These time out under parallel load (the minimap toggle, the context observation), so they
+  // run alone after the rest, like chat-team.
+  'conversation-context': { run: ['scripts/conversation-context.mjs'], serial: true },
   lifecycle: { run: ['scripts/lifecycle.mjs'] },
-  navigation: { run: ['scripts/navigation-smoke.mjs'] },
+  navigation: { run: ['scripts/navigation-smoke.mjs'], serial: true },
   maintenance: smoke(
     'maintenance.js',
     {
-      PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-maintenance/project'),
-      PATCHBAY_SMOKE_ROOT_2: join(temp, 'patchbay-smoke-maintenance/second'),
+      PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-maintenance/project'),
+      PATCHBAY_SMOKE_ROOT_2: tmp('patchbay-smoke-maintenance/second'),
     },
     'maintenance-fixture.sh',
   ),
   dependencies: smoke(
     'dependencies.js',
     {
-      PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-dependencies/project'),
-      PATCHBAY_SMOKE_ROOT_2: join(temp, 'patchbay-smoke-dependencies/second'),
+      PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-dependencies/project'),
+      PATCHBAY_SMOKE_ROOT_2: tmp('patchbay-smoke-dependencies/second'),
     },
     'dependencies-fixture.sh',
   ),
@@ -170,7 +179,7 @@ const SCRIPTS = {
     'integrations.js',
     {
       PATCHBAY_EXTENSIONS_DIR: join(root, 'extensions'),
-      PATCHBAY_SMOKE_ROOT: join(temp, 'patchbay-smoke-integrations/shop/web folder'),
+      PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-integrations/shop/web folder'),
     },
     'integrations-fixture.sh',
   ),
@@ -184,12 +193,26 @@ const SCRIPTS = {
     ),
     run: ['scripts/readme-shots.mjs'],
     manual: true,
+    serial: true,
   },
 }
+// Started first, so the longest scripts don't queue behind short ones and stretch the run.
+const LONGEST = ['simple', 'stack', 'merge', 'tasks', 'chat-team', 'workspace', 'stories']
 
 const args = process.argv.slice(2)
 const bail = args.includes('--bail')
-const names = args.filter((a) => !a.startsWith('--'))
+let jobs = 3
+const names = []
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i]
+  if (arg === '--jobs' || arg.startsWith('--jobs=')) {
+    jobs = Number(arg === '--jobs' ? args[++i] : arg.slice('--jobs='.length))
+    if (!Number.isInteger(jobs) || jobs < 1) {
+      console.error('--jobs takes a whole number of at least 1')
+      process.exit(2)
+    }
+  } else if (!arg.startsWith('--')) names.push(arg)
+}
 const unknown = names.filter((n) => !(n in SCRIPTS))
 if (unknown.length) {
   console.error(`Unknown smoke script: ${unknown.join(', ')} (have ${Object.keys(SCRIPTS)})`)
@@ -250,30 +273,41 @@ while (!(await answers()) || viteExited) {
 
 // Each script runs in its own process group, so an interrupt reaches its app too; the launchers
 // then stop their session service before exiting.
-let current
+const active = new Set()
 let stopping = false
+const stopGroup = (child) => {
+  if (child.exitCode !== null) return
+  if (process.platform === 'win32') child.kill()
+  else process.kill(-child.pid, 'SIGTERM')
+}
 for (const signal of ['SIGINT', 'SIGTERM'])
   process.on(signal, () => {
     stopping = true
-    if (!current || current.exitCode !== null) process.exit(130)
-    if (process.platform === 'win32') current.kill()
-    else process.kill(-current.pid, 'SIGTERM')
+    if (!active.size) process.exit(130)
+    for (const child of active) stopGroup(child)
   })
-const run = (command, argv, env) =>
+const streamed = jobs === 1
+const run = (command, argv, env, log) =>
   new Promise((done) => {
-    current = spawn(command, argv, {
+    const child = spawn(command, argv, {
       cwd: desktop,
       env,
-      stdio: 'inherit',
+      stdio: log === undefined ? 'inherit' : ['ignore', log, log],
       detached: process.platform !== 'win32',
     })
-    current.on('error', () => done(1))
-    current.on('exit', (code) => done(code ?? 1))
+    active.add(child)
+    child.on('error', () => (active.delete(child), done(1)))
+    child.on('exit', (code) => (active.delete(child), done(code ?? 1)))
   })
-const results = []
-for (const name of selected) {
+
+const resolveTmp = (value, runTmp) =>
+  value?.startsWith(RUN_TMP) ? runTmp + value.slice(RUN_TMP.length) : value
+let halted = false
+async function runOne(name) {
   const entry = SCRIPTS[name]
-  const env = { ...process.env, ...entry.env, PATCHBAY_SMOKE_PREBUILT: '1' }
+  const runTmp = mkdtempSync(join(tmpdir(), 'pb-run-'))
+  const env = { ...process.env, ...entry.env, PATCHBAY_SMOKE_PREBUILT: '1', TMPDIR: runTmp }
+  for (const key of Object.keys(entry.env ?? {})) env[key] = resolveTmp(env[key], runTmp)
   // Every in-checkout project is a read-only template. Both workspace roots get their own
   // writable Git repositories; explicit temporary fixtures already provide their own isolation.
   for (const key of ['PATCHBAY_SMOKE_ROOT', 'PATCHBAY_SMOKE_ROOT_2']) {
@@ -287,23 +321,62 @@ for (const name of selected) {
     }
   }
   const started = Date.now()
-  console.log(`\n── smoke ${name} ──`)
-  let code = entry.fixture ? await run('sh', [at('smoke', entry.fixture)], env) : 0
-  if (code === 0)
+  const logPath = join(runTmp, 'smoke.log')
+  const log = streamed ? undefined : openSync(logPath, 'w')
+  console.log(streamed ? `\n── smoke ${name} ──` : `start ${name}`)
+  let code = entry.fixture ? await run('sh', [at('smoke', entry.fixture)], env, log) : 0
+  if (code === 0 && halted) code = 1
+  else if (code === 0)
     code = await run(
       process.execPath,
       entry.run.map((p) => at(p)),
       env,
+      log,
     )
-  results.push({ name, code, seconds: (Date.now() - started) / 1000 })
-  if (stopping) process.exit(130)
-  if (code !== 0 && bail) break
+  const seconds = (Date.now() - started) / 1000
+  // Stopped because another script failed under --bail, not a failure of its own.
+  const status = halted && code !== 0 ? 'STOP' : code === 0 ? 'PASS' : 'FAIL'
+  if (log !== undefined) {
+    closeSync(log)
+    const lines = readFileSync(logPath, 'utf8').split('\n')
+    console.log(`\n── smoke ${name}: ${status} in ${seconds.toFixed(1)}s ──`)
+    if (status === 'FAIL') {
+      if (lines.length > 200) console.log(`… (full log: ${logPath})`)
+      console.log(lines.slice(-200).join('\n'))
+    } else console.log(lines.filter((l) => l.startsWith('PATCHBAY_SMOKE:')).join('\n'))
+  }
+  if (status === 'FAIL' && bail && !halted) {
+    halted = true
+    for (const child of active) stopGroup(child)
+  }
+  return { name, status, seconds }
 }
 
+const order = [
+  ...LONGEST.filter((n) => selected.includes(n)),
+  ...selected.filter((n) => !LONGEST.includes(n)),
+]
+const queue = order.filter((n) => !SCRIPTS[n].serial)
+const serial = order.filter((n) => SCRIPTS[n].serial)
+const results = []
+const runStarted = Date.now()
+const worker = async () => {
+  while (queue.length && !halted && !stopping) results.push(await runOne(queue.shift()))
+}
+await Promise.all(Array.from({ length: Math.min(jobs, queue.length) }, worker))
+for (const name of serial) {
+  if (halted || stopping) break
+  results.push(await runOne(name))
+}
+if (stopping) process.exit(130)
+
 console.log('\n── smoke summary ──')
-for (const { name, code, seconds } of results)
-  console.log(`${code === 0 ? 'PASS' : 'FAIL'}  ${name.padEnd(13)} ${seconds.toFixed(1)}s`)
-const total = results.reduce((sum, r) => sum + r.seconds, 0)
-const failed = results.filter((r) => r.code !== 0).length
-console.log(`${results.length - failed}/${results.length} passed in ${total.toFixed(1)}s`)
+for (const { name, status, seconds } of results)
+  console.log(`${status}  ${name.padEnd(21)} ${seconds.toFixed(1)}s`)
+const failed = results.filter((r) => r.status !== 'PASS').length
+const wall = (Date.now() - runStarted) / 1000
+console.log(
+  `${results.length - failed}/${selected.length} passed in ${wall.toFixed(1)}s` +
+    (jobs > 1 ? ` (${jobs} jobs)` : ''),
+)
 process.exit(failed || results.length < selected.length ? 1 : 0)
