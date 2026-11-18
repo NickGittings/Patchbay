@@ -40,6 +40,7 @@ import {
 } from '../../types'
 
 import { CloseMenu } from '../menuContext'
+import PanelStatus from '../PanelStatus'
 
 /**
  * Pick the worktree where planning and implementation terminals run; with `copyPlan` (Plan's
@@ -367,6 +368,16 @@ function WorktreeRow({
             {task.branch ? <code>{task.branch}</code> : null} is kept.
           </span>
           <button
+            onClick={() =>
+              void removeTask(task.id, false).catch((e) =>
+                useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
+              )
+            }
+          >
+            Forget only
+          </button>
+          <button onClick={() => setConfirming(false)}>Cancel</button>
+          <button
             className="danger"
             disabled={task.current}
             onClick={() =>
@@ -377,16 +388,6 @@ function WorktreeRow({
           >
             Remove worktree
           </button>
-          <button
-            onClick={() =>
-              void removeTask(task.id, false).catch((e) =>
-                useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
-              )
-            }
-          >
-            Forget only
-          </button>
-          <button onClick={() => setConfirming(false)}>Cancel</button>
         </div>
       )}
       {error && (
@@ -474,7 +475,9 @@ function WorktreeRow({
         >
           {() => (
             <>
-              {!review && !error && <p>Loading changes…</p>}
+              {!review && !error && (
+                <PanelStatus compact kind="loading" message="Loading changes…" />
+              )}
               {review && !changedCount && !review.affected.length && <p>No changes.</p>}
               {(changed.length > 0 || projectFiles > 0) && (
                 <div className="worktree-detail">

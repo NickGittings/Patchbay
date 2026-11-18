@@ -170,15 +170,15 @@ export default function SourceBranches({ projectId }: { projectId: string }) {
                 Delete local branch <code>{deleting}</code>? It must be merged into the current
                 source branch. Remote branches are kept.
               </p>
+              <button disabled={busy} onClick={() => setConfirm(false)}>
+                Cancel
+              </button>
               <button
                 className="danger"
                 disabled={busy}
                 onClick={() => void run({ kind: 'delete', branch: deleting })}
               >
-                Confirm delete branch
-              </button>
-              <button disabled={busy} onClick={() => setConfirm(false)}>
-                Cancel
+                Delete branch
               </button>
             </div>
           )}

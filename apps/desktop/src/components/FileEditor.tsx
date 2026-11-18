@@ -238,9 +238,12 @@ export default function FileEditor({
       {prompt && (
         <div className="file-editor-prompt" role="alertdialog" aria-label="Unsaved changes">
           <p>Save changes before continuing?</p>
-          <button onClick={() => prompt.resolve('save')}>Save</button>
-          <button onClick={() => prompt.resolve('discard')}>Discard</button>
+          <button onClick={() => prompt.resolve('discard')}>Don’t Save</button>
+          <span className="grow" />
           <button onClick={() => prompt.resolve('cancel')}>Cancel</button>
+          <button autoFocus className="primary" onClick={() => prompt.resolve('save')}>
+            Save
+          </button>
         </div>
       )}
       {tab.file && (

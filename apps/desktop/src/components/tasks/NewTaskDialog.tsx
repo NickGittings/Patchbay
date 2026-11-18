@@ -4,12 +4,13 @@ import { gitWorktrees } from '../../lib/ipc'
 import { attachTask, branchFor, cancelNewTask, createTask } from '../../lib/tasks'
 import { useStore } from '../../store'
 import type { Worktree } from '../../types'
+import Dialog from '../Dialog'
 
 export default function NewTaskDialog() {
   const seed = useStore((s) => s.newTask)
-  return seed ? <Dialog seed={seed} /> : null
+  return seed ? <NewTask seed={seed} /> : null
 }
-function Dialog({ seed }: { seed: { components: string[]; title?: string } }) {
+function NewTask({ seed }: { seed: { components: string[]; title?: string } }) {
   const nodes = useStore((s) => s.nodes)
   const tasks = useStore((s) => s.tasks)
   const projectId = useStore((s) => s.project?.id)
@@ -57,30 +58,14 @@ function Dialog({ seed }: { seed: { components: string[]; title?: string } }) {
     }
   }
   return (
-    <div
-      className="extension-overlay"
-      onClick={() => {
-        if (!busy) close()
-      }}
-    >
+    <Dialog title="New task" onClose={close} dismissible={!busy}>
       <form
-        className="extensions-panel panel task-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label="New task"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && !busy) close()
-        }}
+        className="task-dialog"
         onSubmit={(e) => {
           e.preventDefault()
           if (!busy) void submit()
         }}
       >
-        <div className="row">
-          <h2>New task</h2>
-          <span className="spacer" />
-        </div>
         <label>
           Goal title
           <input
@@ -191,6 +176,6 @@ function Dialog({ seed }: { seed: { components: string[]; title?: string } }) {
           </button>
         </div>
       </form>
-    </div>
+    </Dialog>
   )
 }

@@ -537,6 +537,9 @@ export function StackReview({ pending, projectId }: { pending: PendingStack; pro
         })}
       </div>
       <div className="row">
+        <button disabled={busy} onClick={() => void discardStackProposal(projectId, pending.id)}>
+          Discard
+        </button>
         <button
           className="primary"
           disabled={
@@ -549,9 +552,6 @@ export function StackReview({ pending, projectId }: { pending: PendingStack; pro
           onClick={() => void applyStackProposal(pending, chosen, projectId, includeSetup)}
         >
           Apply
-        </button>
-        <button disabled={busy} onClick={() => void discardStackProposal(projectId, pending.id)}>
-          Discard
         </button>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react'
+import Dialog from './Dialog'
 import ReviewerPicker from './ReviewerPicker'
 import { roleDevices } from '../lib/agentRoles'
 import { agentDevices } from '../lib/plan'
@@ -71,27 +72,14 @@ export default function AgentJobDialog({
     }
   }
   return (
-    <div
-      className="extension-overlay centered"
-      onClick={() => {
-        if (!busy) close()
-      }}
-    >
+    <Dialog title={title} className="centered" onClose={close} dismissible={!busy}>
       <form
-        className="extensions-panel task-dialog merge-agent-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && !busy) close()
-        }}
+        className="task-dialog merge-agent-dialog"
         onSubmit={(e) => {
           e.preventDefault()
           void submit()
         }}
       >
-        <h2>{title}</h2>
         {sourceField ? (
           sourceField({ busy, clearError: () => setError('') })
         ) : !compact ? (
@@ -194,6 +182,6 @@ export default function AgentJobDialog({
           </button>
         </div>
       </form>
-    </div>
+    </Dialog>
   )
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { historyRequest, type HistorySelection } from '../../lib/history'
 import type { ChangedFile } from '../../types'
 import DiffView from './DiffView'
+import PanelStatus from '../PanelStatus'
 
 export default function CommitDetails({
   selection,
@@ -56,7 +57,7 @@ export default function CommitDetails({
             {failure.text} <button onClick={() => setRetry((n) => n + 1)}>Retry</button>
           </div>
         ) : !files ? (
-          <div className="hint">Loading files…</div>
+          <PanelStatus compact kind="loading" message="Loading files…" />
         ) : !files.length ? (
           <div className="hint">No changed files.</div>
         ) : (

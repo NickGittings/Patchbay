@@ -286,11 +286,11 @@ export default function StoryEditor({
                 </p>
               )}
               <div className="row">
-                <button type="button" className="danger" onClick={() => void act('delete')}>
-                  Delete
-                </button>
                 <button type="button" onClick={() => setDeleting(false)}>
                   Cancel
+                </button>
+                <button type="button" className="danger" onClick={() => void act('delete')}>
+                  Delete
                 </button>
               </div>
             </div>

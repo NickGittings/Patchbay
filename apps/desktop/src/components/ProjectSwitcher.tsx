@@ -72,7 +72,7 @@ export default function ProjectSwitcher() {
           </div>
         )
       })}
-      {!order.length && <p>No open projects.</p>}
+      {!order.length && <p className="panel-empty">No open projects.</p>}
     </div>
   )
 }

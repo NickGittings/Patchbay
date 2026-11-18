@@ -357,9 +357,10 @@
     )
     choose('Delete local branch', 'finished')
     button('Delete branch', region).click()
-    const confirmDelete = await until('branch deletion confirmation', () =>
-      button('Confirm delete branch', region),
-    )
+    const confirmDelete = await until('branch deletion confirmation', () => {
+      const confirm = region.querySelector('.worktree-confirm')
+      return confirm && button('Delete branch', confirm)
+    })
     confirmDelete.click()
     await until(
       'unused local branch deleted',

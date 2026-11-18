@@ -11,6 +11,7 @@ import { KIND_LABEL, splitPath } from '../../lib/review'
 import type { ChangedFile, FileDiff } from '../../types'
 import DiffStat from './DiffStat'
 import CopyButton from '../CopyButton'
+import PanelStatus from '../PanelStatus'
 
 /** Rendering more lines than this makes scrolling sluggish; the rest is summarized. */
 const MAX_LINES = 5000
@@ -157,7 +158,7 @@ export default function DiffView({
   const body = () => {
     if (error) return <div className="hint diff-error">{error}</div>
     // Keep showing the previous diff until the new one arrives only if it is the same file.
-    if (!loaded) return <div className="hint">Loading diff…</div>
+    if (!loaded) return <PanelStatus kind="loading" message="Loading diff…" />
     if (loaded.binary) return <div className="hint">Binary file changed.</div>
     if (!parsed?.hunks.length) return <div className="hint">No textual changes.</div>
     const controls = (

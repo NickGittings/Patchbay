@@ -1,5 +1,6 @@
 import { mapEditsBlocked } from '../lib/mapSave'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import Dialog from './Dialog'
 import { useStore } from '../store'
 import { roleTerminal } from '../lib/agentRoles'
 import { planTerminals } from '../lib/plan'
@@ -14,7 +15,7 @@ import {
   startDependencyAgent,
   unlinked,
   useDependencies,
-  type DependencyDialog as Dialog,
+  type DependencyDialog as DialogState,
   type FoundLink,
 } from '../lib/dependencies'
 
@@ -49,27 +50,17 @@ function Shell({
   children: React.ReactNode
 }) {
   const busy = useBusy(projectId)
-  // The dialog opens by itself (after a save, or when an agent submits), so focus is elsewhere.
-  useEffect(() => {
-    const escape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busy) close()
-    }
-    window.addEventListener('keydown', escape)
-    return () => window.removeEventListener('keydown', escape)
-  }, [busy, close])
+  // The dialog opens by itself (after a save, or when an agent submits); Dialog takes focus so
+  // Escape reaches it, and hands focus back to where it was when it closes.
   return (
-    <div className="maintenance-backdrop" onClick={() => !busy && close()}>
-      <section
-        className="map-maintenance-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2>{title}</h2>
-        {children}
-      </section>
-    </div>
+    <Dialog
+      title={title}
+      className="centered map-maintenance-dialog"
+      onClose={close}
+      dismissible={!busy}
+    >
+      {children}
+    </Dialog>
   )
 }
 
@@ -124,7 +115,7 @@ function AgentLauncher({
   )
 }
 
-function Offer({ dialog }: { dialog: Extract<Dialog, { mode: 'offer' }> }) {
+function Offer({ dialog }: { dialog: Extract<DialogState, { mode: 'offer' }> }) {
   const busy = useBusy(dialog.projectId)
   const blocked = useBlocked(dialog.projectId)
   const close = () => closeDependencies(dialog.projectId)
@@ -169,7 +160,7 @@ function Offer({ dialog }: { dialog: Extract<Dialog, { mode: 'offer' }> }) {
 
 const key = (l: FoundLink) => `${l.source}\n${l.target}`
 
-function Review({ dialog }: { dialog: Extract<Dialog, { mode: 'review' }> }) {
+function Review({ dialog }: { dialog: Extract<DialogState, { mode: 'review' }> }) {
   const nodes = useStore((s) => s.nodes)
   const edges = useStore((s) => s.edges)
   const busy = useBusy(dialog.projectId)

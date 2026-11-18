@@ -333,7 +333,7 @@
     // A component's saved terminal joins the task through the Add terminal dialog, stopped.
     const openAddTerminal = async () => {
       click(query('button.add-task-terminal-button'))
-      return until('add terminal dialog', () => query('form[aria-label="Add terminal"]'))
+      return until('add terminal dialog', () => query('[role="dialog"][aria-label="Add terminal"]'))
     }
     const addTerminal = async (target, key) => {
       const dialog = await openAddTerminal()
@@ -344,8 +344,8 @@
       )
       choose(terminal, key)
       await until('choice picked', () => terminal.value === key)
-      click(query('form[aria-label="Add terminal"] button[type=submit]'))
-      await until('dialog closed', () => !query('form[aria-label="Add terminal"]'))
+      click(query('[role="dialog"][aria-label="Add terminal"] button[type=submit]'))
+      await until('dialog closed', () => !query('[role="dialog"][aria-label="Add terminal"]'))
     }
     const fetch = window.fetch
     const snapshotUrl = window.__TAURI_INTERNALS__.convertFileSrc('terminal_snapshot', 'ipc')
@@ -541,7 +541,7 @@
       'Add terminal does not offer agents first',
     )
     click(dialog.querySelector('.row button[type=button]'))
-    await until('dialog cancelled', () => !query('form[aria-label="Add terminal"]'))
+    await until('dialog cancelled', () => !query('[role="dialog"][aria-label="Add terminal"]'))
     assert(!query('select[aria-label="Start agent"]'), 'Start agent select is still shown')
     const rootsBefore = state().rootTerminals.length
     await addTerminal('@task', 'custom')

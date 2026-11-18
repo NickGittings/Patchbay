@@ -67,7 +67,9 @@ export default function ExtensionsPanel() {
             {message}
           </SettingsFeedback>
         ))}
-        {!registry.extensions.length && <p>No local extensions installed.</p>}
+        {!registry.extensions.length && (
+          <p className="panel-empty">No local extensions installed.</p>
+        )}
         {registry.extensions.map((extension, i) => (
           <div className="extension-entry" key={`${extension.dir}-${i}`}>
             <div className="row">

@@ -358,7 +358,6 @@ input[type='radio'] {
 .toast,
 .extensions-panel,
 .node-extension-menu,
-.map-maintenance-dialog,
 .search-results {
   background: var(--panel);
   border: 0;
@@ -2401,12 +2400,8 @@ button.review-name:hover:not(:disabled) {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
-.add-task-terminal {
+.add-task-terminal-dialog .dialog-shell {
   width: min(380px, 90vw);
-}
-.add-task-terminal h2 {
-  margin: 0 0 4px;
-  font-size: var(--text-md);
 }
 .add-task-terminal select {
   width: 100%;
@@ -2660,14 +2655,16 @@ button.review-name:hover:not(:disabled) {
   width: 100%;
 }
 
-.map-maintenance-dialog {
+/* Map and dependency reviews open by themselves, so they sit above other dialogs. */
+.extension-overlay.map-maintenance-dialog {
+  z-index: var(--z-system);
+}
+.map-maintenance-dialog .dialog-shell {
   width: min(720px, 90vw);
   max-height: 85vh;
-  overflow: auto;
-  padding: 24px;
 }
-.map-maintenance-dialog h2 {
-  margin-top: 0;
+.map-maintenance-dialog .dialog-body {
+  padding: 16px 20px;
 }
 .maintenance-proposals {
   display: flex;
@@ -2698,14 +2695,6 @@ button.review-name:hover:not(:disabled) {
 }
 .maintenance-origin button {
   margin-left: 8px;
-}
-.maintenance-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-system);
-  background: var(--overlay);
-  display: grid;
-  place-items: center;
 }
 
 /* Empty states: what an area is for and how to fill it */
@@ -4141,6 +4130,7 @@ kbd {
 .workspace-popover {
   left: 0;
   right: auto;
+  transform-origin: bottom left;
 }
 .workspace-popover-content {
   overflow: auto;
@@ -4750,6 +4740,12 @@ kbd {
 .panel-status p {
   margin: 0 0 10px;
 }
+.panel-status.compact {
+  padding: 6px 0;
+}
+.panel-status.compact p {
+  margin: 0;
+}
 .panel-status[data-kind='error'] p {
   color: var(--text);
 }
@@ -4777,17 +4773,20 @@ kbd {
 .menu-list.right.above {
   transform-origin: bottom right;
 }
-.extension-overlay,
-.maintenance-backdrop {
+.extension-overlay {
   animation: scrim-in var(--dur-base) var(--ease-out);
 }
 /* `scale` rather than `transform`, so Popover's portal check sees no containing block. */
-.dialog-shell,
-.map-maintenance-dialog {
+.dialog-shell {
   animation: dialog-in var(--dur-base) var(--ease-out);
 }
 .rail-tooltip {
   animation: scrim-in var(--dur-fast) var(--ease-out);
+}
+/* Footer popovers rise from the footer control that opened them. */
+.footer-popover {
+  transform-origin: bottom right;
+  animation: surface-in 150ms var(--ease-out);
 }
 @keyframes surface-in {
   from {
@@ -4808,8 +4807,8 @@ kbd {
 }
 @media (prefers-reduced-motion: reduce) {
   .menu-list,
-  .dialog-shell,
-  .map-maintenance-dialog {
+  .footer-popover,
+  .dialog-shell {
     animation-name: scrim-in;
   }
 }
@@ -4820,12 +4819,10 @@ kbd {
   .toast,
   .extensions-panel,
   .node-extension-menu,
-  .map-maintenance-dialog,
   .search-results {
     border: 1px solid var(--border-hover);
   }
-  .extension-overlay,
-  .maintenance-backdrop {
+  .extension-overlay {
     background: rgb(0 0 0 / 85%);
   }
 }
@@ -4838,4 +4835,11 @@ kbd {
 .session-worktree-count,
 .usage-window-label {
   font-variant-numeric: tabular-nums;
+}
+
+/* Focusable scroll regions and popups show focus only when it came from the keyboard. */
+.diff-view:focus-visible,
+.menu-list:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }

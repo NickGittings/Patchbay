@@ -108,7 +108,7 @@ export default function NotificationCenter() {
             </button>
           </div>
           <div className="notification-history">
-            {!history.length && <p className="hint">No notifications yet.</p>}
+            {!history.length && <p className="panel-empty">No notifications yet.</p>}
             {history.map((entry) => {
               const link = entry.link
               const live =

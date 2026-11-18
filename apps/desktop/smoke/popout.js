@@ -150,7 +150,7 @@
         document.querySelector('[role="alertdialog"]'),
       )
       ;[...discard.querySelectorAll('button')]
-        .find((button) => button.textContent === 'Discard')
+        .find((button) => button.textContent === 'Don’t Save')
         .click()
       await until('pop-out editor closed', () => !document.querySelector('.file-editor'))
     } finally {

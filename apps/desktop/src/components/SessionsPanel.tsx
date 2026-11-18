@@ -134,7 +134,7 @@ function SessionList({
   }, [legacyIds])
   return (
     <>
-      {!records.length && <p>No retained sessions.</p>}
+      {!records.length && <p className="panel-empty">No retained sessions.</p>}
       <div className="panel-section-head">
         {' '}
         <label>
@@ -436,6 +436,9 @@ export default function SessionsPanel({
               hidden by filters. In-progress graph actions will be cancelled. Output will be kept.
             </p>
             <div className="row">
+              <button disabled={busy} onClick={() => setConfirmStopAll(false)}>
+                Cancel
+              </button>
               <button
                 className="danger"
                 disabled={!connected || busy}
@@ -445,9 +448,6 @@ export default function SessionsPanel({
                 }}
               >
                 Stop every project
-              </button>
-              <button disabled={busy} onClick={() => setConfirmStopAll(false)}>
-                Cancel
               </button>
             </div>
           </section>

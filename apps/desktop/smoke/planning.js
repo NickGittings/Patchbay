@@ -229,7 +229,7 @@
     input(editor, '# Unsaved editor handoff\n\nKeep scope independent.')
     button('＋ New task').click()
     const dialog = await until('new worktree dialog', () =>
-      document.querySelector('form[aria-label="New task"]'),
+      document.querySelector('[role="dialog"][aria-label="New task"]'),
     )
     input(dialog.querySelector('input'), 'Draft handoff')
     ;(

@@ -5,6 +5,7 @@ import Popover from '../Popover'
 import { CloseMenu } from '../menuContext'
 import ChangeList from './ChangeList'
 import { useComponentChanges } from './useComponentChanges'
+import PanelStatus from '../PanelStatus'
 
 function Changes({ componentId }: { componentId: string }) {
   const { files, error, base, task } = useComponentChanges(componentId)
@@ -14,7 +15,7 @@ function Changes({ componentId }: { componentId: string }) {
       {error ? (
         <div className="hint file-tree-error">{error}</div>
       ) : !files ? (
-        <div className="hint">Loading…</div>
+        <PanelStatus compact kind="loading" message="Loading changes…" />
       ) : !files.length ? (
         <div className="hint">No uncommitted changes.</div>
       ) : (

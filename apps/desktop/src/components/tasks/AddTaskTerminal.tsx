@@ -3,6 +3,7 @@ import { addTaskTerminal, type TaskTerminalChoice } from '../../lib/implement'
 import { agentDevices } from '../../lib/plan'
 import { useStore } from '../../store'
 import { TASK_ROOT_SCOPE } from '../../types'
+import Dialog from '../Dialog'
 
 interface Option {
   key: string
@@ -93,23 +94,15 @@ function AddTaskTerminalDialog({ close }: { close: () => void }) {
     }
   }
   return (
-    <div className="extension-overlay centered" onClick={close}>
+    <Dialog title="Add terminal" className="centered add-task-terminal-dialog" onClose={close}>
       <form
-        className="extensions-panel task-dialog add-task-terminal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Add terminal"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') close()
-        }}
+        className="task-dialog add-task-terminal"
         onSubmit={(e) => {
           e.preventDefault()
           void submit()
         }}
       >
         {error && <p role="alert">{error}</p>}
-        <h2>Add terminal</h2>
         <label>
           Where
           <select
@@ -155,6 +148,6 @@ function AddTaskTerminalDialog({ close }: { close: () => void }) {
           </button>
         </div>
       </form>
-    </div>
+    </Dialog>
   )
 }

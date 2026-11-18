@@ -28,7 +28,8 @@ export default function Dialog({
     if (dismissible) onClose()
   }
   useEffect(() => {
-    card.current?.focus()
+    // A child with autoFocus (Cancel in a confirmation, a form's first field) keeps focus.
+    if (!card.current?.contains(document.activeElement)) card.current?.focus()
     return () => previous.current?.focus()
   }, [])
   return (
