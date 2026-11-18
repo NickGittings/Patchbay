@@ -863,6 +863,8 @@ export interface NotificationLink {
   sid: string
   /** Owner plus terminal or lane and worktree, so links in one batch stay distinguishable. */
   label: string
+  /** The card's heading, such as "Builder finished"; older links fall back to their kind's. */
+  heading?: string
   message?: string
   kind?: 'finished' | 'needsInput' | 'failed'
   atMs?: number

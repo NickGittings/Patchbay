@@ -1,6 +1,10 @@
 import type { NotificationLink, NotificationToast, ToastPosition } from '../types'
 import type { Notice } from './notificationHistory'
 
+/** A link as one line of the toast's combined text: its heading, then its message. */
+const linkText = (entry: NotificationLink) =>
+  [entry.heading, entry.message].filter(Boolean).join(' — ')
+
 export function mergeNotificationToast(
   current: NotificationToast | null,
   incoming: NotificationToast | null,
@@ -20,7 +24,7 @@ export function mergeNotificationToast(
   // A notice without links stays above the unread agent links until explicitly dismissed.
   if (!incoming.sessions.length) {
     const links = current.sessions.every((entry) => entry.message !== undefined)
-      ? current.sessions.map((entry) => entry.message).join('\n')
+      ? current.sessions.map(linkText).join('\n')
       : current.message
     return {
       ...(incoming.kind ? { kind: incoming.kind } : {}),
@@ -49,7 +53,7 @@ export function mergeNotificationToast(
     ...((incoming.heading ?? current.heading)
       ? { heading: incoming.heading ?? current.heading }
       : {}),
-    message: entries.map((entry) => entry.message).join('\n'),
+    message: entries.map(linkText).join('\n'),
     sessions: entries,
   }
 }
@@ -63,7 +67,9 @@ export function removeNotificationSession(
   return sessions.length
     ? {
         ...current,
-        message: sessions.map((entry) => entry.message ?? current.message).join('\n'),
+        message: sessions
+          .map((entry) => (entry.message === undefined ? current.message : linkText(entry)))
+          .join('\n'),
         sessions,
       }
     : current.notice

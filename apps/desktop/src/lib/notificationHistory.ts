@@ -34,6 +34,7 @@ export function toastNotices(toast: NotificationToast, id: number, at: number): 
   const entries: Notice[] = toast.sessions.map((link) => ({
     id: linkEventId(link),
     kind: linkKind(link),
+    heading: link.heading,
     message: link.message ?? toast.message,
     at,
     read: false,

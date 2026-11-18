@@ -27,7 +27,37 @@ const mock = vi.hoisted(() => ({
   dismiss: vi.fn(),
   activate: vi.fn(),
   reveal: vi.fn(),
+  chat: { teams: {}, runs: {} } as ChatState,
+  chatListeners: new Set<(next: ChatState, prev: ChatState) => void>(),
 }))
+type ChatState = {
+  teams: Record<
+    string,
+    {
+      lead: { sessionId: string | null }
+      state?: string
+      reset?: { nextSession: string } | null
+      scopes?: object
+      id?: string
+    }[]
+  >
+  runs: Record<string, unknown[]>
+}
+vi.mock('./chatTeams', () => ({
+  useChatTeams: {
+    getState: () => mock.chat,
+    subscribe: (listener: (next: ChatState, prev: ChatState) => void) => {
+      mock.chatListeners.add(listener)
+      return () => mock.chatListeners.delete(listener)
+    },
+  },
+}))
+/** Replaces the Chat teams and tells subscribers, like the real store. */
+function setTeams(teams: ChatState['teams']) {
+  const prev = mock.chat
+  mock.chat = { ...prev, teams }
+  for (const listener of mock.chatListeners) listener(mock.chat, prev)
+}
 vi.mock('../store', () => ({
   projectStateOf: (id: string, s = mock.state) =>
     s.project?.id === id ? s : s.projects[id]?.state,
@@ -55,6 +85,7 @@ const {
   sessionIdentity,
   describe,
   isCurrent,
+  oneLine,
   sendTestNotification,
   revealNotification,
 } = await import('./notifications')
@@ -105,6 +136,8 @@ beforeEach(() => {
   vi.resetAllMocks()
   forgetNotificationPermission()
   mock.focused.mockReturnValue(false)
+  mock.chat = { teams: {}, runs: {} }
+  mock.chatListeners.clear()
   mock.granted.mockResolvedValue(true)
   mock.request.mockResolvedValue('denied')
   mock.toast.mockImplementation((toast) => {
@@ -185,7 +218,7 @@ test('batches projects and worktrees into one native summary', async () => {
   expect(mock.send).toHaveBeenCalledWith('plugin:notification|notify', {
     options: {
       title: '3 agents finished',
-      body: expect.stringContaining('Review agent: auth-refactor · Patchbay · Claude'),
+      body: expect.stringContaining('Review agent: Claude · auth-refactor · Patchbay'),
     },
   })
   expect(mock.message).not.toHaveBeenCalled()
@@ -199,9 +232,14 @@ test('an unfocused main window gets native delivery and sessions seen during deb
   expect(mock.send).toHaveBeenCalledOnce()
   expect(mock.granted).toHaveBeenCalledOnce()
   expect(mock.toast).toHaveBeenCalledWith({
-    message: expect.stringContaining('Needs input — Review agent'),
+    message: expect.stringContaining('Review agent needs input — Claude · auth-refactor'),
     sessions: [
-      expect.objectContaining({ sid: 'two', label: 'Review agent · Claude · auth-refactor' }),
+      expect.objectContaining({
+        sid: 'two',
+        label: 'Review agent · Claude · auth-refactor',
+        heading: 'Review agent needs input',
+        message: 'Claude · auth-refactor',
+      }),
     ],
   })
   expect(mock.toast.mock.calls[0][0].message).not.toContain('see Attention')
@@ -261,11 +299,12 @@ test('descriptions label special scopes and project folders without an active pr
     [MERGE_SCOPE, 'Merge agent'],
   ]) {
     mock.state.sessionRecords = [record('one', { componentId, task: null, taskTitle: null })]
-    expect(describe(mock.state, 'one')).toEqual({
+    expect(describe(mock.state, 'one', 'finished')).toEqual({
       owner,
+      title: `${owner} finished`,
       label: `${owner} · Claude · Project folder`,
-      body: 'Project folder · Patchbay · Claude',
-      toastBody: 'Project folder · Claude',
+      body: 'Claude · Project folder · Patchbay',
+      toastBody: 'Claude · Project folder',
     })
   }
 })
@@ -347,7 +386,9 @@ test('review and merge records without task metadata resolve their worktree titl
         },
       },
     } as unknown as Snapshot['projects']
-    expect(describe(mock.state, 'one').body).toBe('Review this worktree · Patchbay · Claude')
+    expect(describe(mock.state, 'one', 'finished').body).toBe(
+      'Claude · Review this worktree · Patchbay',
+    )
   }
 })
 
@@ -422,10 +463,10 @@ test('only the latest state per session is included in a batch', async () => {
   transition('one', report('needsInput', 1200))
   await vi.advanceTimersByTimeAsync(750)
   expect(mock.toast).toHaveBeenCalledWith({
-    message: expect.stringContaining('Needs input'),
+    message: expect.stringContaining('billing needs input'),
     sessions: [expect.objectContaining({ sid: 'one', label: 'billing · Claude · auth-refactor' })],
   })
-  expect(mock.toast.mock.calls[0][0].message).not.toContain('Agent finished')
+  expect(mock.toast.mock.calls[0][0].message).not.toContain('finished')
 })
 
 test('native success retains an in-app copy in case the OS suppresses the alert', async () => {
@@ -581,7 +622,7 @@ test('live events with no identity wait for records instead of being lost', asyn
   })
   await vi.advanceTimersByTimeAsync(750)
   expect(mock.send).toHaveBeenCalledOnce()
-  expect(mock.state.notificationToast?.message).toContain('Agent failed')
+  expect(mock.state.notificationToast?.message).toContain('Review agent failed')
 })
 
 test('an unidentified session acknowledged before reconciliation stays silent', async () => {
@@ -605,8 +646,8 @@ test('later batches retain earlier unread input requests even after native succe
   await vi.advanceTimersByTimeAsync(750)
   expect(mock.send).toHaveBeenCalledTimes(2)
   expect(mock.state.notificationToast?.sessions.map((s) => s.sid)).toEqual(['one', 'two'])
-  expect(mock.state.notificationToast?.message).toContain('Needs input')
-  expect(mock.state.notificationToast?.message).toContain('Agent finished')
+  expect(mock.state.notificationToast?.message).toContain('billing needs input')
+  expect(mock.state.notificationToast?.message).toContain('Review agent finished')
 })
 
 test('task-root kind lookup respects the active workspace and other-project shell presets', () => {
@@ -717,7 +758,7 @@ test('links of one owner name their terminal or lane, worktree and other project
       label: 'Review agent · Claude · auth-refactor',
       project: { id: 'other', name: 'Patchbay' },
     }),
-    expect.objectContaining({ label: 'Review agent · codex · Project folder' }),
+    expect.objectContaining({ label: 'Review agent · codex · Claude · Project folder' }),
   ])
 })
 
@@ -1116,7 +1157,7 @@ test('an Auto run alerts once per pause, links to its panel and drops out when r
     label: 'Auto mode · Project folder',
     auto: { projectId: 'other', task: null },
   })
-  expect(link.message).toContain('Auto mode asks to merge')
+  expect(link.heading).toBe('Auto mode asks to merge')
   expect(link.message).not.toContain('Approve the merge')
   // The same pause, republished, doesn't alert again.
   setAuto(autoRun({ status: 'waitingOnYou', stage: 'mergeGate', reason: 'Approve the merge' }))
@@ -1167,10 +1208,11 @@ function setTaskAuto(run: AutoRun, tasks: { id: string; title: string }[] = []) 
 test('session and Auto titles are short; merge approval omits its redundant reason', async () => {
   const title = 'Fix trends nutrition graphs. When navigating between timeframes it is broken.'
   mock.state.sessionRecords[0] = record('one', { taskTitle: title })
-  expect(describe(mock.state, 'one')).toMatchObject({
+  expect(describe(mock.state, 'one', 'finished')).toMatchObject({
+    title: 'billing finished',
     label: 'billing · Claude · Fix trends nutrition graphs…',
-    body: 'Fix trends nutrition graphs… · Patchbay · Claude',
-    toastBody: 'Fix trends nutrition graphs… · Claude',
+    body: 'Claude · Fix trends nutrition graphs… · Patchbay',
+    toastBody: 'Claude · Fix trends nutrition graphs…',
   })
   setTaskAuto(autoRun(), [{ id: 't1', title }])
   stop = followNotifications()
@@ -1185,7 +1227,8 @@ test('session and Auto titles are short; merge approval omits its redundant reas
   await vi.advanceTimersByTimeAsync(750)
   expect(mock.state.notificationToast?.sessions[0]).toMatchObject({
     label: 'Auto mode · Fix trends nutrition graphs…',
-    message: 'Auto mode asks to merge — Fix trends nutrition graphs…',
+    heading: 'Auto mode asks to merge',
+    message: 'Fix trends nutrition graphs…',
     project: { id: 'other', name: 'Patchbay' },
   })
   expect(mock.send).toHaveBeenCalledWith('plugin:notification|notify', {
@@ -1303,3 +1346,86 @@ test.each([true, false])(
     expect(mock.toast).toHaveBeenCalledTimes(failed ? 1 : 0)
   },
 )
+
+test('a Chat lead never notifies, whatever its event, and its shown links drop out', async () => {
+  stop = followNotifications()
+  transition('one')
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.state.notificationToast?.sessions.map((l) => l.sid)).toEqual(['one'])
+  setTeams({ other: [{ lead: { sessionId: 'one' }, state: 'running' }] })
+  expect(mock.dismiss).toHaveBeenCalledWith('one')
+  mock.send.mockClear()
+  for (const session of [
+    report('review', 2000),
+    report('needsInput', 3000),
+    { running: false, exitCode: 1, exitedMs: 4000 },
+  ]) {
+    transition('one', working)
+    transition('one', session)
+    await vi.advanceTimersByTimeAsync(750)
+  }
+  expect(mock.send).not.toHaveBeenCalled()
+})
+
+test('a lead identified only after queuing is dropped at flush', async () => {
+  stop = followNotifications()
+  transition('one')
+  mock.chat = { teams: { other: [{ lead: { sessionId: 'one' }, state: 'running' }] }, runs: {} }
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.send).not.toHaveBeenCalled()
+  expect(mock.toast).not.toHaveBeenCalled()
+})
+
+test('a Chat worker names its role, name and provider, never its assignment', async () => {
+  mock.chat = {
+    teams: { other: [{ id: 'team', lead: { sessionId: 'lead' }, scopes: { one: {} } }] },
+    runs: {},
+  }
+  mock.state.sessionRecords[0] = record('one', { name: 'Backend', adapter: 'codex' })
+  const plan = '## Plan\n1. Rewrite the auth module\n2. Add tests\n3. Update docs'
+  const finished = report('review')
+  finished.status!.agent!.prompt = plan
+  mock.state.sessions.one = finished
+  expect(describe(mock.state, 'one', 'finished')).toEqual({
+    owner: 'Builder',
+    title: 'Builder finished',
+    label: 'Builder · Backend · Codex · auth-refactor',
+    toastBody: 'Backend · Codex · auth-refactor',
+    body: 'Backend · Codex · auth-refactor · Patchbay',
+  })
+})
+
+test('input waits add their reason on one short line; failures add the exit code', () => {
+  const asking = report('needsInput')
+  asking.status!.agent!.message = `Allow Bash?\n\n${'rm -rf build && '.repeat(10)}`
+  mock.state.sessions.one = asking
+  const { toastBody } = describe(mock.state, 'one', 'needsInput')
+  expect(toastBody).toMatch(/^Claude · auth-refactor — “Allow Bash\? rm -rf build/)
+  expect(toastBody).not.toContain('\n')
+  expect(toastBody).toMatch(/…”$/)
+  expect(toastBody).not.toContain('Fix the login redirect')
+  mock.state.sessions.one = { running: false, exitCode: 2, exitedMs: 1100 }
+  expect(describe(mock.state, 'one', 'failed').toastBody).toBe('Claude · auth-refactor — exit 2')
+})
+
+test('a lead of a finished team alerts again, and an incoming lead is already silent', async () => {
+  mock.chat = {
+    teams: {
+      other: [
+        { lead: { sessionId: 'one' }, state: 'stopped' },
+        { lead: { sessionId: 'old' }, state: 'running', reset: { nextSession: 'two' } },
+      ],
+    },
+    runs: {},
+  }
+  stop = followNotifications()
+  transition('one')
+  transition('two')
+  await vi.advanceTimersByTimeAsync(750)
+  expect(mock.state.notificationToast?.sessions.map((l) => l.sid)).toEqual(['one'])
+})
+
+test('a summary keeps whole emoji when it shortens a line', () => {
+  const text = `${'a'.repeat(78)}🚀 and more`
+  expect(oneLine(text)).toBe(`${'a'.repeat(78)}🚀…`)
+})

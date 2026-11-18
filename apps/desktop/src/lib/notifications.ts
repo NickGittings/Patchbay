@@ -17,6 +17,8 @@ import { autoRuns } from './autoState'
 import { finished } from './autoSettings'
 import { terminalStatus } from './display'
 import { shortTitle } from './shortTitle'
+import { agentProviderLabel, chatRole, leadsActiveTeam, providerLabel } from './chatIdentity'
+import { useChatTeams } from './chatTeams'
 
 const KIND_HEALTH = { finished: 'review', needsInput: 'input', failed: 'fail' } as const
 
@@ -77,6 +79,7 @@ export function sessionIdentity(s: Snapshot, sid: string) {
         ? planTerminals(s.devices).find((t) => t.id === terminalId)
         : undefined)
   return {
+    record,
     projectId,
     componentId,
     state,
@@ -93,10 +96,17 @@ export function sessionIdentity(s: Snapshot, sid: string) {
       record?.metadata.kind ??
       terminal?.kind ??
       (componentId && isReviewAgentScope(componentId) ? 'agent' : undefined),
+    /** Chat leads never notify: the user is already talking to them. */
+    chatLead: leadsActiveTeam(sid, useChatTeams.getState().teams),
   }
 }
 
 export type NotificationIdentity = ReturnType<typeof sessionIdentity>
+
+/** Whether the session may alert at all: an agent the user isn't already talking to in Chat. */
+function alerting(identity: NotificationIdentity) {
+  return !identity.chatLead && (!identity.kind || identity.kind === 'agent')
+}
 
 /** Whether a link to the session can be followed: its project is open in a tab. */
 export function revealable(
@@ -178,30 +188,76 @@ export function isCurrent(s: Snapshot, sid: string, event: AgentEvent) {
   )
 }
 
-export function describe(s: Snapshot, sid: string, identity = sessionIdentity(s, sid)) {
-  const { componentId, state, task, taskTitle, projectName, terminalName, lane } = identity
-  const owner = sessionOwner(componentId, state?.nodes ?? [])
+/** One line, at most `max` characters: a notification names what happened, never the whole text. */
+export function oneLine(text: string, max = 80) {
+  // Code points, so an emoji is never split in half.
+  const chars = Array.from(text.replace(/\s+/g, ' ').trim())
+  return chars.length > max
+    ? `${chars
+        .slice(0, max - 1)
+        .join('')
+        .trimEnd()}…`
+    : chars.join('')
+}
+
+/** What happened, for one agent and for several. */
+const PHRASES = {
+  finished: ['finished', 'finished'],
+  needsInput: ['needs input', 'need input'],
+  failed: ['failed', 'failed'],
+} as const
+
+/**
+ * Who the agent is (role, name, provider), where it works, and the one fact its event needs: why
+ * it asks, or how it exited. Never its prompt, which for a Chat worker is the whole assignment.
+ */
+export function describe(
+  s: Snapshot,
+  sid: string,
+  kind: AgentEvent['kind'],
+  identity = sessionIdentity(s, sid),
+) {
+  const {
+    record,
+    componentId,
+    projectId,
+    state,
+    task,
+    taskTitle,
+    projectName,
+    terminalName,
+    lane,
+  } = identity
+  const teams = useChatTeams.getState()
+  const role = chatRole(record, teams.teams[projectId ?? ''], teams.runs[projectId ?? ''])
+  const owner = role === 'Builder' ? role : sessionOwner(componentId, state?.nodes ?? [])
   const worktree = taskTitle ? shortTitle(taskTitle) : task || 'Project folder'
-  const agent = s.sessions[sid]?.status?.agent
-  const detail = [agent?.message, agent?.prompt].filter(Boolean).join(' — ')
-  // Several reviewer lanes, merge agents or planner tabs can share an owner within one batch.
-  const terminal = terminalName ?? lane
+  const session = s.sessions[sid]
+  const provider = agentProviderLabel(record) ?? providerLabel(session?.status?.agent?.provider)
+  // Role, then name, then provider, each once: a preset named "Claude" adds nothing to Claude.
+  // The name keeps reviewer lanes, merge agents or planner tabs sharing an owner apart.
+  const who: string[] = []
+  for (const part of [owner, terminalName ?? lane, provider])
+    if (part && !who.some((w) => w.toLowerCase() === part.toLowerCase())) who.push(part)
+  const message = session?.status?.agent?.message
+  const exitCode = session?.exitCode
+  const detail =
+    kind === 'needsInput' && message
+      ? `“${oneLine(message)}”`
+      : kind === 'failed' && exitCode
+        ? `exit ${exitCode}`
+        : undefined
+  const line = (...parts: (string | undefined)[]) =>
+    [[...who.slice(1), ...parts].filter(Boolean).join(' · '), detail].filter(Boolean).join(' — ')
   return {
     owner,
-    label: [owner, terminal !== owner && terminal, worktree].filter(Boolean).join(' · '),
-    toastBody: [[worktree, terminalName].filter(Boolean).join(' · '), detail && `“${detail}”`]
-      .filter(Boolean)
-      .join(' — '),
-    body: [
-      [worktree, projectName, terminalName].filter(Boolean).join(' · '),
-      detail && `“${detail}”`,
-    ]
-      .filter(Boolean)
-      .join(' — '),
+    title: `${owner} ${PHRASES[kind][0]}`,
+    label: [...who, worktree].join(' · '),
+    toastBody: line(worktree),
+    body: line(worktree, projectName),
   }
 }
 
-const TITLES = { finished: 'Agent finished', needsInput: 'Needs input', failed: 'Agent failed' }
 let permissionRequest: Promise<boolean> | undefined
 let permissionGranted = false
 
@@ -310,7 +366,7 @@ function summarize(events: NotificationEvent[]): NotificationDelivery {
   if (events.length === 1) return { ...events[0], events }
   const sameKind = events.every((e) => e.kind === events[0].kind)
   const title = sameKind
-    ? `${events.length} agents ${{ finished: 'finished', needsInput: 'need input', failed: 'failed' }[events[0].kind]}`
+    ? `${events.length} agents ${PHRASES[events[0].kind][1]}`
     : `${events.length} agent updates`
   return { title, body: events.map((e) => `${e.owner}: ${e.body}`).join('\n'), events }
 }
@@ -392,11 +448,13 @@ export function followNotifications() {
         autoPauseCurrent(s, e.auto) &&
         (e.kind === 'failed' || !watching(s, e.auto.projectId, e.auto.task))
       )
+    const identity = sessionIdentity(s, e.sid)
     return (
       e.atMs > (delivered.get(e.sid)?.[e.kind] ?? 0) &&
       isCurrent(s, e.sid, e) &&
       !(e.kind === 'finished' && autoTracked(s, e.sid)) &&
-      revealable(sessionIdentity(s, e.sid), s)
+      alerting(identity) &&
+      revealable(identity, s)
     )
   }
   const flush = async () => {
@@ -425,7 +483,8 @@ export function followNotifications() {
       sessions: events.map((e): NotificationLink => ({
         sid: e.sid,
         label: e.label,
-        message: `${e.title} — ${e.toastBody}`,
+        heading: e.title,
+        message: e.toastBody,
         kind: e.kind,
         atMs: e.atMs,
         project: e.project,
@@ -458,7 +517,7 @@ export function followNotifications() {
     const identity = sessionIdentity(s, sid)
     // Branch jobs can emit live events before their first session-record reconciliation, and a
     // closed project's sessions keep running.
-    if (identity.kind && identity.kind !== 'agent') return
+    if (!alerting(identity)) return
     if (!identity.kind || !revealable(identity, s)) {
       deferred.set(sid, event)
       return
@@ -466,12 +525,10 @@ export function followNotifications() {
     if (event.kind === 'finished' && autoTracked(s, sid)) return
     // Actual terminal visibility is acknowledged through seenMs. An active worktree alone
     // does not mean its terminal is on screen (Review, hidden tabs and collapsed panes).
-    const description = describe(s, sid, identity)
     const entry: NotificationEvent = {
       ...event,
       sid,
-      ...description,
-      title: `${TITLES[event.kind]} — ${description.owner}`,
+      ...describe(s, sid, event.kind, identity),
       project: identity.projectName
         ? { id: identity.projectId, name: identity.projectName }
         : undefined,
@@ -504,7 +561,9 @@ export function followNotifications() {
         const { item, target, projectName } = pause
         const worktree = item.taskTitle ? shortTitle(item.taskTitle) : (task ?? 'Project folder')
         const reason =
-          run.status !== 'failed' && run.stage === 'mergeGate' ? undefined : item.status.detail
+          (run.status !== 'failed' && run.stage === 'mergeGate') || !item.status.detail
+            ? undefined
+            : oneLine(item.status.detail)
         const entry: NotificationEvent = {
           kind: run.status === 'failed' ? 'failed' : 'needsInput',
           atMs: item.sinceMs,
@@ -531,13 +590,16 @@ export function followNotifications() {
   considerAuto(useStore.getState())
 
   const prune = (s: Snapshot) => {
-    const stale = (s.notificationToast?.sessions ?? []).filter(({ sid, kind, atMs, auto }) =>
-      auto
-        ? !autoPauseCurrent(s, auto)
-        : kind &&
+    const stale = (s.notificationToast?.sessions ?? []).filter(({ sid, kind, atMs, auto }) => {
+      if (auto) return !autoPauseCurrent(s, auto)
+      const identity = sessionIdentity(s, sid)
+      return (
+        !alerting(identity) ||
+        (kind &&
           atMs !== undefined &&
-          (!isCurrent(s, sid, { kind, atMs }) || !revealable(sessionIdentity(s, sid), s)),
-    )
+          (!isCurrent(s, sid, { kind, atMs }) || !revealable(identity, s)))
+      )
+    })
     for (const { sid } of stale) useStore.getState().dismissNotificationSession(sid)
   }
 
@@ -599,9 +661,18 @@ export function followNotifications() {
     )
       prune(s)
   })
+  // Team membership lives in its own store: a session that starts leading drops its links, and a
+  // deferred event is rechecked once its role is known.
+  const unsubscribeTeams = useChatTeams.subscribe((teams, prev) => {
+    if (teams.teams === prev.teams) return
+    const s = useStore.getState()
+    for (const [sid, event] of [...deferred]) consider(s, sid, event)
+    if (s.notificationToast?.sessions.length) prune(s)
+  })
   return () => {
     disposed = true
     unsubscribe()
+    unsubscribeTeams()
     clearTimeout(timer)
     pending.clear()
     deferred.clear()
