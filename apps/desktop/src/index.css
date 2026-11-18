@@ -54,6 +54,13 @@
   --radius-sm: 6px;
   --shadow: 0 0 0 1px var(--border-strong), 0 16px 48px rgb(0 0 0 / 70%);
   --overlay: rgb(0 0 0 / 70%);
+  /* Pressed fill: one step past --hover, so a press reads before release. */
+  --active: #2e2e34;
+  /* Motion: quick feedback for state changes, a slightly longer beat for surfaces. */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --ease-out: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --sans: -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', sans-serif;
   --mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
   color-scheme: dark;
@@ -94,9 +101,10 @@ select {
   padding: 4px 10px;
   cursor: pointer;
   transition:
-    background 0.12s,
-    border-color 0.12s,
-    color 0.12s;
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 select {
   background: var(--bg);
@@ -105,6 +113,24 @@ button:hover:not(:disabled),
 select:hover {
   border-color: var(--border-hover);
   background: var(--hover);
+}
+/* Feedback lands on press, not release: the pressed fill appears at once and eases back out. */
+:is(button, summary):active:not(:disabled) {
+  background: var(--active);
+  border-color: var(--border-hover);
+  transition-duration: 0s;
+}
+button.primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 80%, #000);
+  border-color: color-mix(in srgb, var(--accent) 80%, #000);
+}
+button.danger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--bad) 28%, transparent);
+  border-color: color-mix(in srgb, var(--bad) 70%, transparent);
+}
+/* Standalone actions also give slightly under the pointer; rows and tabs only change fill. */
+:is(button.primary, button.danger):active:not(:disabled) {
+  transform: scale(0.97);
 }
 button:focus-visible {
   outline: 2px solid var(--accent);
@@ -145,8 +171,8 @@ textarea {
   width: 100%;
   min-width: 0;
   transition:
-    border-color 0.12s,
-    box-shadow 0.12s;
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
 }
 input::placeholder,
 textarea::placeholder {
@@ -202,6 +228,13 @@ input[type='radio'] {
   flex: 1;
 }
 
+/* Registered so separators can fade their line color instead of switching it. */
+@property --resize-line {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}
+
 /* Status dots shared by chips, tabs, and terminal rows */
 .status-dot {
   width: 8px;
@@ -213,7 +246,7 @@ input[type='radio'] {
 .health-running .status-dot {
   background: var(--running);
   box-shadow: 0 0 6px var(--running);
-  animation: pulse 1.6s infinite;
+  animation: pulse 2.4s ease-in-out infinite;
 }
 .health-ok .status-dot {
   background: var(--ok);
@@ -224,7 +257,7 @@ input[type='radio'] {
 .health-working .status-dot {
   background: var(--running);
   box-shadow: 0 0 6px var(--running);
-  animation: pulse 0.9s infinite;
+  animation: pulse 1.6s ease-in-out infinite;
 }
 .health-waiting .status-dot {
   background: transparent;
@@ -233,7 +266,7 @@ input[type='radio'] {
 .health-input .status-dot {
   background: var(--input);
   box-shadow: 0 0 8px var(--input);
-  animation: pulse 1.2s infinite;
+  animation: pulse 2s ease-in-out infinite;
 }
 .health-review .status-dot {
   background: var(--review);
@@ -401,9 +434,15 @@ input[type='radio'] {
   font-size: 12px;
   color: var(--muted);
 }
+/* Gentle enough to sit in peripheral vision; reduced motion holds the dot steady. */
 @keyframes pulse {
   50% {
-    opacity: 0.45;
+    opacity: 0.6;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-dot {
+    animation: none;
   }
 }
 
@@ -422,7 +461,7 @@ input[type='radio'] {
   background: linear-gradient(var(--resize-line), var(--resize-line)) center / 1px 100% no-repeat;
   --resize-line: var(--border);
   position: relative;
-  transition: background 0.15s;
+  transition: --resize-line var(--dur-fast) var(--ease-out);
 }
 .separator.horizontal {
   width: auto;
@@ -723,7 +762,7 @@ input[type='radio'] {
   flex: none;
   color: var(--muted);
   font-size: 16px;
-  transition: transform 120ms ease-out;
+  transition: transform var(--dur-fast) var(--ease-out);
 }
 .inspector-terminal-disclosure[aria-expanded='true'] .inspector-chevron {
   transform: rotate(90deg);
@@ -780,10 +819,6 @@ input[type='radio'] {
 .inspector .context {
   margin-top: 0;
 }
-.inspector :is(button, select, summary):active:not(:disabled) {
-  background: var(--accent-soft);
-  transition: none;
-}
 .inspector :is(button, select, summary):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -797,11 +832,8 @@ input[type='radio'] {
   height: 100%;
 }
 @media (prefers-reduced-motion: reduce) {
-  .inspector :is(button, select, .inspector-chevron) {
+  .inspector-chevron {
     transition: none;
-  }
-  .inspector .status-dot {
-    animation: none;
   }
 }
 .terminal-row {
@@ -886,8 +918,8 @@ input[type='radio'] {
   border-radius: 10px;
   box-shadow: 0 2px 6px rgb(0 0 0 / 25%);
   transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
 }
 .component-node::before {
   content: '';
@@ -3314,6 +3346,7 @@ kbd {
   position: relative;
   background: linear-gradient(var(--resize-line), var(--resize-line)) center / 1px 100% no-repeat;
   touch-action: none;
+  transition: --resize-line var(--dur-fast) var(--ease-out);
 }
 .sessions-content {
   min-width: 0;
@@ -4592,7 +4625,7 @@ kbd {
   transform: translate(-50%, -50%);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 .separator.horizontal::after {
   width: 28px;
@@ -4602,19 +4635,10 @@ kbd {
 .utility-resize:is(:hover, :focus-visible, [data-resizing])::after {
   opacity: 1;
 }
+/* Reduced motion keeps color and opacity fades; only movement and scaling are removed. */
 @media (prefers-reduced-motion: reduce) {
-  .separator,
-  .separator::after,
-  .utility-resize,
-  .utility-resize::after,
-  .component-node,
-  .workspace-rail > button,
-  .canvas-controls .react-flow__controls-button,
-  .dock-actions button,
-  .dock-tabs .tab,
-  .file-editor-tab button,
-  .view-tabs button {
-    transition: none;
+  :is(button.primary, button.danger):active:not(:disabled) {
+    transform: none;
   }
 }
 
