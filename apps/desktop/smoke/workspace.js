@@ -153,8 +153,11 @@
       message: 'Unrelated agent alert',
       sessions: [{ sid: 'smoke-notification', label: 'Smoke agent' }],
     })
+    // Match by message: a real usage warning on this machine can share the heading.
     const warning = await until('standalone notice in inbox', () =>
-      inbox.querySelector('[aria-label="Dismiss Usage limit"]'),
+      Array.from(inbox.querySelectorAll('.notification-entry'))
+        .find((entry) => entry.textContent.includes('Notification smoke warning'))
+        ?.querySelector('[aria-label="Dismiss Usage limit"]'),
     )
     warning.click()
     await until(
