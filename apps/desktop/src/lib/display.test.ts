@@ -3,10 +3,26 @@ import type { AgentReport, SessionState, SessionStatus, TerminalKind } from '../
 import {
   describeTerminal,
   foldedStatus,
+  serviceBlock,
   paneAutoStarts,
   sessionRun,
   terminalStatus,
 } from './display'
+
+test('a service block follows the issue and survives a stop in progress', () => {
+  const service = {
+    serviceConnected: false,
+    serviceRetirement: 'idle' as const,
+  }
+  expect(serviceBlock(service)).toBeUndefined()
+  expect(serviceBlock({ ...service, serviceIssue: 'olderServiceBusy' })).toBe('older')
+  expect(serviceBlock({ ...service, serviceIssue: 'newerService' })).toBe('newer')
+  expect(serviceBlock({ ...service, serviceRetirement: 'reconnecting' })).toBe('older')
+  expect(serviceBlock({ ...service, serviceRetirementError: 'connection lost' })).toBe('older')
+  expect(
+    serviceBlock({ ...service, serviceConnected: true, serviceIssue: 'olderServiceBusy' }),
+  ).toBeUndefined()
+})
 
 const NOW = 1_000_000
 const status = (patch: Partial<SessionStatus> = {}): SessionStatus => ({

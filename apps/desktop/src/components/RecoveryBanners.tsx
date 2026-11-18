@@ -4,12 +4,14 @@ import { projectRelink } from '../lib/ipc'
 import { reloadSavedMap, saveMapNow } from '../lib/mapSave'
 import { closeProjectTab } from '../lib/project'
 import { forgetMainWorktree, refreshMainWorktree } from '../lib/mainWorktree'
+import ServiceBanner from './ServiceBanner'
 
 /** Recovery and map-save failures stay visible even with utility panels closed. */
 export default function RecoveryBanners() {
   const active = useStore((s) => s.projects[s.activeProjectId ?? ''])
   return (
     <>
+      <ServiceBanner />
       {active?.mapSave?.status === 'error' && (
         <div className="recovery-banner" role="alert">
           <span>Map save failed{active.mapSave.error ? `: ${active.mapSave.error}` : '.'}</span>

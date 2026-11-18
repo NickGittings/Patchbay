@@ -645,6 +645,9 @@ export interface PlanText {
   cut: boolean
 }
 
+/** Mirrors `session::ServiceIssue`: a connection failure the user has to resolve. */
+export type ServiceIssue = 'olderServiceBusy' | 'newerService'
+
 export interface TerminalSnapshot {
   chatStartup?: 'pending' | 'ready' | null
   /** Session lists leave `replies` out and name only the latest one's sequence. */
@@ -682,7 +685,6 @@ export interface SessionState {
   generation?: number
   disconnected?: boolean
   interrupted?: boolean
-  truncated?: boolean
   running: boolean
   exitCode?: number
   /** When the current or last run started and ended, in Unix milliseconds. */

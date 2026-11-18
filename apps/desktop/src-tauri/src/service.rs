@@ -413,7 +413,7 @@ impl Bridge {
                         Err(e) => {
                             let _ = app.emit(
                                 "patchbay://service",
-                                serde_json::json!({"connected": false, "error": e.to_string()}),
+                                serde_json::json!({"connected": false, "issue": session::service_issue(&e)}),
                             );
                             std::thread::sleep(Duration::from_millis(delay));
                             delay = (delay * 2).min(5000);
@@ -463,12 +463,12 @@ impl Bridge {
                             100
                         }
                     }
-                    Err(e) => {
+                    Err(_) => {
                         poller = None;
                         bridge.disconnected();
                         let _ = app.emit(
                             "patchbay://service",
-                            serde_json::json!({"connected": false, "error": e.to_string()}),
+                            serde_json::json!({"connected": false}),
                         );
                         0
                     }

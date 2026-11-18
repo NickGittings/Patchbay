@@ -1383,7 +1383,6 @@ test('replies read for a newer run keep every field of its snapshot', async () =
     replies,
     activity,
     notice: 'Briefing notice',
-    truncated: true,
   } as TerminalSnapshot)
   vi.mocked(ipc.sessionsList).mockResolvedValue([
     { ...r, snapshot: { ...r.snapshot!, generation: 2, running: false, lastReply: 2 } },
@@ -1395,7 +1394,6 @@ test('replies read for a newer run keep every field of its snapshot', async () =
     replies,
     activity,
     notice: 'Briefing notice',
-    truncated: true,
   })
   // The listing's `interrupted` described its run, not the newer one just read.
   expect(useStore.getState().sessions[r.id].interrupted).toBeUndefined()

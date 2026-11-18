@@ -2,16 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import {
   INTERRUPTED_SESSION_DETAIL,
   paneAutoStarts,
+  serviceBlock,
   sessionRun,
   terminalStatus,
 } from '../lib/display'
 import { terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
-import { hydrateSession, retireOlderService, startTerminal } from '../lib/sessions'
+import { hydrateSession, startTerminal } from '../lib/sessions'
 import { attach, detachHost, fit, hostVisible, ownsTerminalHost } from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
-import { confirmAction } from '../lib/confirm'
 
 /**
  * Shared xterm host with snapshot replay, sizing and first-use shell startup. Shows the session of
@@ -36,7 +36,7 @@ export default function TerminalPane({
   const task = taskProp === undefined ? activeTask : taskProp
   const sid = existingSessionId ?? sessionId(componentId, terminal.id, task)
   const connected = useStore((s) => s.serviceConnected)
-  const serviceError = useStore((s) => s.serviceError)
+  const blocked = useStore(serviceBlock)
   const session = useStore((s) => s.sessions[sid])
   const status = terminalStatus(terminal.kind, session)
   const unseen = status.unseenSince
@@ -47,7 +47,6 @@ export default function TerminalPane({
   // Dismissal lasts for one run; a restart shows its own notice again.
   const noticeRun = sessionRun(sid, session)
   const [dismissed, setDismissed] = useState<string>()
-  const [truncationDismissed, setTruncationDismissed] = useState<string>()
 
   useEffect(() => {
     const host = hostRef.current
@@ -163,25 +162,11 @@ export default function TerminalPane({
     <div className="terminal-area">
       {!connected && (
         <div className="terminal-notice" role="status">
-          {serviceError?.includes('still running work') ? (
-            <OutdatedService />
-          ) : serviceError?.includes('protocol mismatch') ? (
-            serviceError
-          ) : (
-            'Disconnected · reconnecting to session service…'
-          )}
-        </div>
-      )}
-      {session?.truncated && truncationDismissed !== noticeRun && (
-        <div className="terminal-notice" role="status">
-          <span>Earlier output truncated</span>
-          <button
-            title="Dismiss"
-            aria-label="Dismiss truncation notice"
-            onClick={() => setTruncationDismissed(noticeRun)}
-          >
-            ×
-          </button>
+          {blocked === 'older'
+            ? 'Disconnected · older Patchbay sessions are blocking the session service'
+            : blocked === 'newer'
+              ? 'Disconnected · a newer Patchbay version is running the session service'
+              : 'Disconnected · reconnecting to session service…'}
         </div>
       )}
       {session?.interrupted && (
@@ -210,42 +195,5 @@ export default function TerminalPane({
         </div>
       )}
     </div>
-  )
-}
-
-/** An older Patchbay version's service still runs work; offer to end it so this one can start. */
-function OutdatedService() {
-  const retirement = useStore((s) => s.serviceRetirement)
-  const error = useStore((s) => s.serviceRetirementError)
-  const stop = async () => {
-    if (useStore.getState().serviceRetirement !== 'idle') return
-    if (
-      !(await confirmAction({
-        title: 'Stop older sessions',
-        message:
-          'Stop the sessions still running from an older Patchbay version? Their running work ends.',
-        detail: 'Their history is kept.',
-        confirmLabel: 'Stop sessions',
-      })) ||
-      useStore.getState().serviceRetirement !== 'idle'
-    )
-      return
-    void retireOlderService()
-  }
-  return (
-    <>
-      <span>
-        Sessions from an older Patchbay version are still running, so this version can't start its
-        session service yet. They were left running.
-        {error && ` Stopping them failed: ${error}`}
-      </span>
-      <button disabled={retirement !== 'idle'} onClick={() => void stop()}>
-        {retirement === 'stopping'
-          ? 'Stopping…'
-          : retirement === 'reconnecting'
-            ? 'Reconnecting…'
-            : 'Stop older sessions'}
-      </button>
-    </>
   )
 }

@@ -26,6 +26,5 @@ export function sessionFromSnapshot(
     activity: hydrateActivity(previous, snapshot.generation, snapshot.activity),
     notice: snapshot.notice ?? undefined,
     interrupted,
-    truncated: snapshot.truncated,
   }
 }

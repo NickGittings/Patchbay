@@ -105,6 +105,44 @@ impl std::fmt::Display for RetirementRefused {
 }
 impl std::error::Error for RetirementRefused {}
 
+/// The running service speaks another protocol, so this client can't use it.
+#[derive(Debug)]
+struct ProtocolMismatch {
+    protocol: u32,
+}
+impl std::fmt::Display for ProtocolMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Session service protocol mismatch (service {}, this build {PROTOCOL}). Use a matching Patchbay version. A newer build can replace an idle older service, or offer to stop its running sessions.",
+            self.protocol
+        )
+    }
+}
+impl std::error::Error for ProtocolMismatch {}
+
+/// A connection failure the user has to resolve; reconnecting alone won't clear it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ServiceIssue {
+    /// An older service is kept alive by running work and can be stopped on request.
+    OlderServiceBusy,
+    /// A newer version's service is running; it is never replaced.
+    NewerService,
+}
+
+/// Classifies an error from connecting to the session service.
+#[must_use]
+pub fn service_issue(error: &anyhow::Error) -> Option<ServiceIssue> {
+    if error.is::<RetirementRefused>() {
+        return Some(ServiceIssue::OlderServiceBusy);
+    }
+    error
+        .downcast_ref::<ProtocolMismatch>()
+        .is_some_and(|mismatch| mismatch.protocol > PROTOCOL)
+        .then_some(ServiceIssue::NewerService)
+}
+
 /// Only cache confirmed refusals, keyed by runtime directory and service instance.
 /// A restarted service gets a fresh attempt; explicit retirement bypasses the cache.
 static RETIREMENT_REFUSALS: OnceLock<Mutex<HashMap<PathBuf, (String, RetirementRefused)>>> =
@@ -580,11 +618,12 @@ impl Client {
     fn connect_until(dir: &Path, client: Option<&str>, until: Instant) -> Result<Self> {
         let endpoint: Endpoint =
             serde_json::from_slice(&std::fs::read(dir.join("endpoint.json"))?)?;
-        anyhow::ensure!(
-            endpoint.protocol == PROTOCOL,
-            "Session service protocol mismatch (service {}, this build {PROTOCOL}). Use a matching Patchbay version. A newer build can replace an idle older service, or offer to stop its running sessions.",
-            endpoint.protocol
-        );
+        if endpoint.protocol != PROTOCOL {
+            return Err(ProtocolMismatch {
+                protocol: endpoint.protocol,
+            }
+            .into());
+        }
         let stream = connect_endpoint(&endpoint, client, until)?;
         Ok(Self {
             stream,
@@ -3175,18 +3214,20 @@ mod tests {
         });
         let refused = retire_outdated(&dir, false).unwrap_err().to_string();
         assert!(refused.contains("still running work"), "{refused}");
+        // An older service is only a user-facing issue once it has refused.
+        let mismatch = Client::connect_as(&dir, None).err().unwrap();
+        assert_eq!(service_issue(&mismatch), None);
         // Reconnects do not keep asking this instance to shut down.
         assert!(
             retire_outdated(&dir, false)
                 .unwrap_err()
                 .is::<RetirementRefused>()
         );
-        assert!(
-            Client::ensure(&dir, Path::new("missing helper"))
-                .err()
-                .unwrap()
-                .is::<RetirementRefused>()
-        );
+        let error = Client::ensure(&dir, Path::new("missing helper"))
+            .err()
+            .unwrap();
+        assert!(error.is::<RetirementRefused>());
+        assert_eq!(service_issue(&error), Some(ServiceIssue::OlderServiceBusy));
         assert_eq!(retire_outdated(&dir, true).unwrap(), Some(old));
         assert_eq!(server.join().unwrap(), [false, true]);
         drop(lifetime);
@@ -3267,6 +3308,7 @@ mod tests {
         .err()
         .unwrap();
         assert!(error.to_string().contains("unavailable"), "{error}");
+        assert_eq!(service_issue(&error), Some(ServiceIssue::NewerService));
         // No connection, and in particular no Shutdown, was sent to the newer service.
         f.listener.set_nonblocking(true).unwrap();
         assert_eq!(

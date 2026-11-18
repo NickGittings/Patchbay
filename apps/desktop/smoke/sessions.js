@@ -565,7 +565,23 @@
       if (!disabled) smoke.store.setState({ serviceConnected: false })
       return disabled
     })
-    smoke.store.setState({ serviceConnected: true })
+    // One banner carries the older-service action in every mode, with or without a terminal.
+    const stopOlderButtons = () =>
+      [...document.querySelectorAll('button')].filter(
+        (button) => button.textContent.trim() === 'Stop older sessions',
+      )
+    for (const simple of [true, false]) {
+      state().setSimpleMode(simple)
+      await until(`older-service banner (${simple ? 'chat' : 'full'} mode)`, () => {
+        const buttons = stopOlderButtons()
+        if (buttons.length === 1 && buttons[0].closest('.recovery-banner')) return true
+        // The two-second reconciler clears both fields because the real service is connected.
+        smoke.store.setState({ serviceConnected: false, serviceIssue: 'olderServiceBusy' })
+        return false
+      })
+    }
+    smoke.store.setState({ serviceConnected: true, serviceIssue: undefined })
+    await until('older-service banner cleared', () => stopOlderButtons().length === 0)
     for (const closePanel of [
       () => document.querySelector('.workspace-rail [aria-label="Sessions"]').click(),
       () =>
