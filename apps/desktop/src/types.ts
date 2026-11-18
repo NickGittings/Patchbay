@@ -189,6 +189,8 @@ export interface AutoRun {
    * run ends after a clean review instead of merging.
    */
   baseCommit?: string
+  /** When a run in place finished, until its lead has been told the task is complete. */
+  taskDoneAtMs?: number
   round: number
   sessionId?: string
   /** Auto may stop only a session it launched, in the recorded process generation. */

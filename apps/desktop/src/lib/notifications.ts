@@ -16,6 +16,7 @@ import { autoAttentionItems, recordTask, revealTerminal, sessionOwner } from './
 import { autoRuns } from './autoState'
 import { finished } from './autoSettings'
 import { terminalStatus } from './display'
+import { distinctLabels } from './sessionList'
 import { shortTitle } from './shortTitle'
 import { agentProviderLabel, chatRole, leadsActiveTeam, providerLabel } from './chatIdentity'
 import { useChatTeams } from './chatTeams'
@@ -57,8 +58,11 @@ export function agentEvent(prev: SessionState | undefined, next: SessionState): 
 }
 
 /** Retained identity wins over edited presets and the currently selected project. */
-export function sessionIdentity(s: Snapshot, sid: string) {
-  const record = s.sessionRecords.find((r) => r.id === sid)
+export function sessionIdentity(
+  s: Snapshot,
+  sid: string,
+  record = s.sessionRecords.find((r) => r.id === sid),
+) {
   const runtime = s.runtimeTerminals[sid]
   const metadata = sessionMetadata.get(sid)
   const projectId = record?.metadata.projectId ?? runtime?.projectId ?? metadata?.projectId
@@ -236,9 +240,7 @@ export function describe(
   const provider = agentProviderLabel(record) ?? providerLabel(session?.status?.agent?.provider)
   // Role, then name, then provider, each once: a preset named "Claude" adds nothing to Claude.
   // The name keeps reviewer lanes, merge agents or planner tabs sharing an owner apart.
-  const who: string[] = []
-  for (const part of [owner, terminalName ?? lane, provider])
-    if (part && !who.some((w) => w.toLowerCase() === part.toLowerCase())) who.push(part)
+  const who = distinctLabels([owner, terminalName ?? lane, provider])
   const message = session?.status?.agent?.message
   const exitCode = session?.exitCode
   const detail =

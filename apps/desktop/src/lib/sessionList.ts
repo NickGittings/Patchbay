@@ -1,11 +1,15 @@
 import {
+  COORDINATOR_SCOPE,
   MAP_SCOPE,
   PLAN_SCOPE,
   PROJECT_DRAFT,
   plannerChatTask,
   REVIEW_SCOPE,
   MERGE_SCOPE,
+  SCAN_SCOPE,
   STACK_AGENT_TERMINAL,
+  TASK_ROOT_SCOPE,
+  WORKER_SCOPE,
   isReservedScope,
   type SessionRecord,
   type Task,
@@ -18,7 +22,9 @@ export interface SessionRole {
 }
 
 /** The purpose of a session, independent of its terminal's saved name. */
-export function sessionRole(metadata: SessionMetadata): SessionRole {
+export function sessionRole(
+  metadata: Pick<SessionMetadata, 'componentId' | 'kind' | 'terminalId' | 'extensionId' | 'branch'>,
+): SessionRole {
   if (metadata.extensionId) return { role: 'Extension', tone: 'task' }
   if (metadata.kind === 'shell') return { role: 'Shell', tone: 'shell' }
   switch (metadata.componentId) {
@@ -33,11 +39,18 @@ export function sessionRole(metadata: SessionMetadata): SessionRole {
       return metadata.terminalId === STACK_AGENT_TERMINAL
         ? { role: 'Stack', tone: 'plan' }
         : { role: 'Dependencies', tone: 'plan' }
+    case SCAN_SCOPE:
+      return { role: 'Scan', tone: 'plan' }
+    case COORDINATOR_SCOPE:
+      return { role: 'Coordinator', tone: 'implement' }
+    case WORKER_SCOPE:
+      return { role: 'Worker', tone: 'implement' }
     default:
-      // Root terminals and component terminals alike: agents implement, the rest run tasks.
-      return metadata.kind === 'agent'
-        ? { role: 'Build', tone: 'implement' }
-        : { role: 'Task', tone: 'task' }
+      if (metadata.kind !== 'agent') return { role: 'Task', tone: 'task' }
+      // A root agent with a reviewed branch is fixing that review's findings.
+      return metadata.componentId === TASK_ROOT_SCOPE && metadata.branch
+        ? { role: 'Fix', tone: 'implement' }
+        : { role: 'Build', tone: 'implement' }
   }
 }
 
@@ -85,6 +98,21 @@ const newestRow = (rows: readonly SessionRow[]) =>
     return bTime > aTime || (bTime === aTime && compareIds(b.record.id, a.record.id) < 0) ? b : a
   })
 
+/** Each label once, ignoring case: a preset named "Claude" adds nothing beside Claude. */
+export function distinctLabels(parts: readonly (string | null | undefined)[]): string[] {
+  const kept: string[] = []
+  for (const part of parts)
+    if (part && !kept.some((k) => k.toLowerCase() === part.toLowerCase())) kept.push(part)
+  return kept
+}
+
+/** What a session list calls a worktree; `path` names one whose task title is unknown. */
+export function worktreeLabel(task: string | null, title: string | undefined, path: string) {
+  if (task === null) return 'Main worktree'
+  if (task === PROJECT_DRAFT) return 'Project draft'
+  return title ?? `Worktree · ${path.split(/[\\/]/).filter(Boolean).at(-1) ?? path}`
+}
+
 /** Group the full project history before filtering, so labels and paths stay stable. */
 export function groupByWorktree(
   records: readonly SessionRecord[],
@@ -102,17 +130,15 @@ export function groupByWorktree(
   for (const group of groups.values()) {
     // Folder moves and mixed legacy records must not make the displayed sort choose the path.
     group.path = newestRow(group.rows).record.metadata.projectRoot
-    if (group.task === null) group.title = 'Main worktree'
-    else if (group.task === PROJECT_DRAFT) group.title = 'Project draft'
-    else {
-      group.branch = knownTasks.get(group.task)?.branch
-      const named = group.rows.filter((row) => row.record.metadata.taskTitle)
-      // Cached/read-only task lists support records saved before taskTitle was introduced.
-      group.title =
-        (named.length ? newestRow(named).record.metadata.taskTitle : undefined) ??
-        knownTasks.get(group.task)?.title ??
-        `Worktree · ${group.path.split(/[\\/]/).filter(Boolean).at(-1) ?? group.path}`
-    }
+    const known = group.task === null ? undefined : knownTasks.get(group.task)
+    if (group.task !== PROJECT_DRAFT) group.branch = known?.branch
+    const named = group.rows.filter((row) => row.record.metadata.taskTitle)
+    // Cached/read-only task lists support records saved before taskTitle was introduced.
+    group.title = worktreeLabel(
+      group.task,
+      (named.length ? newestRow(named).record.metadata.taskTitle : undefined) ?? known?.title,
+      group.path,
+    )
     group.rows = group.rows.filter(({ record }) => matchesFilter(record, options.filter))
   }
   return [...groups.values()]

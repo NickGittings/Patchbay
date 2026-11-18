@@ -72,7 +72,7 @@ export function flow(
     !own ||
     (!!session &&
       (!session.running ||
-        (!awaitingTurn(snapshot, own, session) &&
+        (!awaitingTurn(snapshot.simple, own.id, session) &&
           (state?.state === 'review' ||
             state?.state === 'ended' ||
             (state?.state === 'idle' && !!state.authoritative)))))
@@ -165,7 +165,9 @@ export function flow(
     model.records.find((r) => {
       if (recordStage(r) !== 'review') return false
       const s = snapshot.sessions[r.id] ?? r.snapshot
-      return reviewerBusy(s, !!s?.running) || (!!s?.running && awaitingTurn(snapshot, r, s))
+      return (
+        reviewerBusy(s, !!s?.running) || (!!s?.running && awaitingTurn(snapshot.simple, r.id, s))
+      )
     })
   if (pendingReviewer)
     return {
@@ -278,14 +280,14 @@ export function flow(
  * its provider confirms `idle` at startup, before the kickoff or prompt arrives. A run nobody
  * here prompted (a resume from another view) is idle at its prompt and done.
  */
-function awaitingTurn(
-  snapshot: FlowSnapshot,
-  agent: SessionRecord,
+export function awaitingTurn(
+  simple: FlowSnapshot['simple'] | undefined,
+  agentId: string,
   session: import('../types').SessionState | import('../types').TerminalSnapshot,
 ) {
-  const latest = workflowLog(snapshot.simple).findLast(
+  const latest = workflowLog(simple).findLast(
     (e) =>
-      e.sessionId === agent.id &&
+      e.sessionId === agentId &&
       e.kind !== 'reply' &&
       e.generation !== undefined &&
       e.generation === session.generation,

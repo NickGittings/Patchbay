@@ -52,6 +52,28 @@ The existing **Merge complete** confirmation still controls branch/worktree dele
 returning the original checkout to the destination branch. Chat clears whether the merged
 branch/worktree is kept or deleted. Merges into other destination branches leave Chat history intact.
 
+Every stage already launches a fresh conversation, so finishing work retires agents rather than
+clearing them. A finished turn alone proves nothing, because an agent may have stopped to ask a
+question. Launching the next stage is the confirmation: after a review, fix or merge launch from
+Chat or its dialogs, `stageRetire.ts` stops earlier build, fix and review agents this chat launched.
+It keeps any agent that is not in an authoritative `review` state, has a pending approval or queued
+prompt, was prompted since that state, belongs to another chat, or is the lead, and does nothing
+while Auto owns the worktree.
+Stopped agents keep their conversations, so messaging one resumes it.
+
+The task itself finishes on a confirmed merge into `main` whose checkout survives cleanup, or when
+an Auto run in place reaches `done`. The cleanup choice is final immediately: `contextPending` on
+the job, or `taskDoneAtMs` on the run, keeps retrying `completeTeamTask` across restarts. Its
+`completeTask` control carries a stable `task-done-<id>`, recorded in `Team.finished.tasks`, so each
+completion is decided once. A lead that is busy, has had a turn since the merge or run finished, or
+has active rounds or open requests keeps its conversation. Otherwise the completion queues a fresh
+conversation or joins one already pending; without a lead session it clears the task at once.
+Stopped teams stay stopped; paused teams keep the reset queued until **Continue work**. Once the
+replacement is confirmed, the checkpoint's goal, decisions, remaining work and validation, the saved
+context, plan copy and retained briefing are cleared. Waiting lead messages from finished work are
+settled, and `Team.finished` keeps settled rounds and requests out of recovery text while durable
+records retain them. A failed replacement changes nothing.
+
 The composer subscribes to provider usage and the shared clock. It shows every unexpired window at or above 100% for its recipient’s provider, falling back to the selected worktree planner before launch. Each warning names the provider, window, reset time and countdown. Warnings expire at reset and do not depend on notification preferences or Auto thresholds, and do not disable Send or terminal access. Missing data stays unknown.
 
 ### Usage limits

@@ -76,6 +76,8 @@ For long-lived, resumed plan and implementation sessions, consider an earlier th
 
 Leave provider defaults for review, fix and merge unless there is a measured reason to tune them. [Claude's override can only lower the threshold](https://code.claude.com/docs/en/env-vars#variables); values above its default are ignored. For Codex, keep any override safely below the selected model's context window so compaction can run before context is exhausted. These overrides need no dedicated Patchbay setting.
 
+Compaction trims a running conversation. Finished work is handled separately: see stage retirement and task completion in [Chat mode](chat-mode.md).
+
 ### Navigation presentation
 
 The navigation rail defaults to compact (52px). Its bottom toggle saves optional labels
