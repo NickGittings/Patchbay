@@ -101,13 +101,14 @@ export default function NotificationCenter() {
             <button
               className="footer-popover-icon"
               aria-label="Close notifications"
+              title="Close"
               onClick={close}
             >
               ×
             </button>
           </div>
           <div className="notification-history">
-            {!history.length && <p className="hint">No notifications yet.</p>}
+            {!history.length && <p className="panel-empty">No notifications yet.</p>}
             {history.map((entry) => {
               const link = entry.link
               const live =
@@ -173,6 +174,7 @@ export default function NotificationCenter() {
                   <button
                     className="toast-close"
                     aria-label={`Dismiss ${entry.heading ?? entry.message}`}
+                    title="Dismiss"
                     onClick={() => {
                       const state = useStore.getState()
                       if (live && link) state.dismissNotificationSession(link.sid)

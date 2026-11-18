@@ -52,6 +52,7 @@
     scope().querySelector('.session-menu .menu-trigger').click()
     await until('session menu closed', () => !sessionMenu())
   }
+  const confirmAsk = () => document.querySelector('.confirm-dialog [role="alertdialog"]')
   const click = async (scope, label) => {
     let opened
     const button = await until(`${label} button`, () => {
@@ -496,8 +497,10 @@
         panel()?.querySelectorAll('.panel-section-head select')[1].value === 'oldest',
     )
     await click(() => row(first, 'Live A'), 'Stop')
+    await click(confirmAsk, 'Stop session')
     await until('first stopped session disappears', () => !names(first).includes('Live A'))
     await click(() => row(first, 'Live B'), 'Stop')
+    await click(confirmAsk, 'Stop session')
     await until(
       'empty running group',
       () => names(first).length === 0 && group(first).textContent.includes('No running sessions'),
@@ -631,6 +634,7 @@
       })
     })
     await click(() => row(first, 'Live A'), 'Stop')
+    await click(confirmAsk, 'Stop session')
     await until('starting session stopped', async () => {
       await smoke.reconcileSessions()
       return !state().sessionRecords.find((r) => r.id === idsOne[0])?.snapshot?.running
@@ -855,6 +859,7 @@
     )
     state().activateProject(two.id)
     await click(() => worktree('Alpha work')?.querySelector('.session-row'), 'Stop')
+    await click(confirmAsk, 'Stop session')
     await until('only selected worktree stopped', async () => {
       await smoke.reconcileSessions()
       return (

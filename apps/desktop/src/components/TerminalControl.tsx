@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { autoControlsAgent, newConversation, startTerminal, stopTerminal } from '../lib/sessions'
 import {
@@ -9,6 +9,7 @@ import {
   type SessionState,
   type TerminalSpec,
 } from '../types'
+import { confirmAction } from '../lib/confirm'
 
 /** Header actions stay available even when the pane cannot load its saved output. */
 export default function TerminalControl({
@@ -44,15 +45,32 @@ export default function TerminalControl({
     kind === 'agent' &&
     (!isReservedScope(componentId) || componentId === PLAN_SCOPE || componentId === TASK_ROOT_SCOPE)
   const busy = restarting || freshPending
+  // The confirmation is async, so the props it was opened with may be stale once it's answered.
+  const props = useRef({ disabled, restarting })
+  useEffect(() => {
+    props.current = { disabled, restarting }
+  })
   const fresh = async () => {
     if (pending.current || busy || disabled || auto || !connected) return
-    if (
-      !window.confirm(
-        'Start a new conversation with the current Patchbay briefing? This stops the current agent. Saved history remains available.',
-      )
-    )
-      return
     pending.current = true
+    const ok = await confirmAction({
+      title: 'New conversation',
+      message:
+        'Start a new conversation with the current Patchbay briefing? This stops the current agent.',
+      detail: 'Saved history remains available.',
+      confirmLabel: 'Start new conversation',
+    })
+    // Auto may have taken the agent over, or the service dropped, while the dialog was open.
+    if (
+      !ok ||
+      props.current.disabled ||
+      props.current.restarting ||
+      autoControlsAgent(ownerProject, sid) ||
+      !useStore.getState().serviceConnected
+    ) {
+      pending.current = false
+      return
+    }
     setFreshPending(true)
     try {
       await newConversation(componentId, terminalId, task, projectId)

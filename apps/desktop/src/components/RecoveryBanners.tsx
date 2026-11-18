@@ -62,7 +62,7 @@ export default function RecoveryBanners() {
           >
             Locate folder
           </button>
-          <button onClick={() => void closeProjectTab(active.id)}>Remove</button>
+          <button onClick={() => void closeProjectTab(active.id)}>Close project</button>
         </div>
       )}
       {active?.conflict && !active.unavailable && (

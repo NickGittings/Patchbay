@@ -3,7 +3,7 @@ import RailTooltip from './RailTooltip'
 import UsagePanel from './UsagePanel'
 import { useUsage, usageWarnings } from '../lib/usage'
 import { useClockTick } from '../lib/clock'
-import { useEffect, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../store'
 import { worktreeAttention } from '../lib/attention'
@@ -114,15 +114,23 @@ export default function WorkspaceRail() {
     window.addEventListener('resize', resize)
     return () => window.removeEventListener('resize', resize)
   }, [])
-  const changeWidth = (value: number) => {
-    const next = panelWidth(value, window.innerWidth, navigationWidth)
-    setWidth(next)
+  const saveWidth = (next: number) => {
     try {
       localStorage.setItem('patchbay.utilityPanelWidth', String(next))
     } catch {
       /* Storage may be unavailable. */
     }
   }
+  const changeWidth = (value: number, save = true) => {
+    const next = panelWidth(value, window.innerWidth, navigationWidth)
+    setWidth(next)
+    if (save) saveWidth(next)
+    return next
+  }
+  // A drag keeps the edge where it was grabbed and saves the width once, when it ends.
+  const drag = useRef<{ offset: number; width?: number }>(undefined)
+  const railRight = () =>
+    document.querySelector('.workspace-rail')?.getBoundingClientRect().right ?? navigationWidth
   const utility = (id: UtilityPanel) => {
     const { label } = utilities[id]
     const status =
@@ -253,6 +261,7 @@ export default function WorkspaceRail() {
               )}
               <button
                 aria-label={`Close ${utilities[panel].label} panel`}
+                title="Close panel"
                 onClick={() => {
                   selectPanel(null)
                   focusPanelTrigger(panel)
@@ -308,18 +317,22 @@ export default function WorkspaceRail() {
             onPointerDown={(e) => {
               e.preventDefault()
               e.currentTarget.setPointerCapture(e.pointerId)
+              drag.current = { offset: e.clientX - (railRight() + actualWidth) }
               setResizing(true)
             }}
             onPointerMove={(e) => {
-              if (e.currentTarget.hasPointerCapture(e.pointerId))
-                changeWidth(
-                  e.clientX -
-                    (document.querySelector('.workspace-rail')?.getBoundingClientRect().right ??
-                      navigationWidth),
+              if (drag.current && e.currentTarget.hasPointerCapture(e.pointerId))
+                drag.current.width = changeWidth(
+                  e.clientX - drag.current.offset - railRight(),
+                  false,
                 )
             }}
             onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
-            onLostPointerCapture={() => setResizing(false)}
+            onLostPointerCapture={() => {
+              if (drag.current?.width !== undefined) saveWidth(drag.current.width)
+              drag.current = undefined
+              setResizing(false)
+            }}
           />
         </>
       )}

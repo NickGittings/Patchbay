@@ -46,11 +46,12 @@ export default function ProjectSwitcher() {
               onClick={() => activate(id)}
             >
               <span className="project-name">{entry.name}</span>
-              {entry.unavailable && <span className="worktree-tag bad">unavailable</span>}
+              {entry.unavailable && <span className="worktree-tag bad">Unavailable</span>}
             </button>
             <button
               className="panel-row-actions"
               aria-label={`Close ${entry.name}`}
+              title="Close project"
               onClick={() => void closeProjectTab(id)}
             >
               ×
@@ -71,7 +72,7 @@ export default function ProjectSwitcher() {
           </div>
         )
       })}
-      {!order.length && <p>No open projects.</p>}
+      {!order.length && <p className="panel-empty">No open projects.</p>}
     </div>
   )
 }

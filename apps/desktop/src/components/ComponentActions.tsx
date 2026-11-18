@@ -109,7 +109,7 @@ export function ContextMenu({
         ref={menu}
         className="node-extension-menu"
         style={{ left: at.x, top: at.y }}
-        role="dialog"
+        role="menu"
         aria-label="Component actions"
       >
         {children}
@@ -146,11 +146,17 @@ export function ComponentMenuItems({
   }
   return (
     <>
-      <button onClick={() => act(() => void openInEditor({ path }))}>Open in editor</button>
-      <button onClick={() => act(() => void revealPath(path).catch(navigationError))}>
+      <button role="menuitem" onClick={() => act(() => void openInEditor({ path }))}>
+        Open in editor
+      </button>
+      <button
+        role="menuitem"
+        onClick={() => act(() => void revealPath(path).catch(navigationError))}
+      >
         {revealLabel}
       </button>
       <button
+        role="menuitem"
         onClick={() =>
           act(() => {
             // In a task's worktree only the backend knows where the component's folder is.
@@ -165,12 +171,15 @@ export function ComponentMenuItems({
       >
         Copy path
       </button>
-      <button onClick={() => act(() => void openComponentWindow(id, name))}>Open in window</button>
+      <button role="menuitem" onClick={() => act(() => void openComponentWindow(id, name))}>
+        Open in window
+      </button>
       {!planning && (
         <>
-          {terminals.length > 0 && <hr />}
+          {terminals.length > 0 && <hr role="separator" />}
           {terminals.map((t, i) => (
             <button
+              role="menuitem"
               key={t.id}
               onClick={() =>
                 act(() => {
@@ -187,7 +196,7 @@ export function ComponentMenuItems({
           ))}
         </>
       )}
-      <ExtensionMenu slot="component/actions" componentId={id} separator />
+      <ExtensionMenu slot="component/actions" componentId={id} separator itemRole="menuitem" />
     </>
   )
 }

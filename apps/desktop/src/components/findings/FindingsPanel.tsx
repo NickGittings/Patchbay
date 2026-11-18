@@ -8,6 +8,7 @@ import type { LoadedFindings } from '../../lib/useReviewFindings'
 import { SEVERITIES, type ReviewFindings, type Severity } from '../../types'
 import Markdown from './Markdown'
 import './findings.css'
+import PanelStatus from '../PanelStatus'
 
 export type FindingsStatus = 'none' | 'current' | 'stale'
 
@@ -122,7 +123,7 @@ export default function FindingsPanel({
   if (!loaded)
     return (
       <div className="findings-panel">
-        <p className="hint">Loading findings…</p>
+        <PanelStatus compact kind="loading" message="Loading findings…" />
       </div>
     )
   if (loaded.error)
@@ -215,9 +216,11 @@ export default function FindingsPanel({
         {findings.truncated && <p className="findings-note">Findings truncated at 64 KiB.</p>}
       </header>
       <div className="findings-body">
-        {!findings.text.trim() && <p className="hint">No findings saved yet.</p>}
+        {!findings.text.trim() && (
+          <p className="panel-empty panel-empty-start">No findings saved yet.</p>
+        )}
         {filter.length > 0 && !filter.some((s) => parsed[s]) && (
-          <p className="hint">No findings of the selected severities.</p>
+          <p className="panel-empty panel-empty-start">No findings of the selected severities.</p>
         )}
         {sections.map((section, i) => {
           const items = section.items

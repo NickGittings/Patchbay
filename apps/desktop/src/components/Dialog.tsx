@@ -7,6 +7,10 @@ export default function Dialog({
   children,
   className = '',
   footer,
+  role = 'dialog',
+  dismissible = true,
+  takeFocus = true,
+  returnFocus,
 }: {
   title: string
   subtitle?: string
@@ -14,22 +18,56 @@ export default function Dialog({
   children: ReactNode
   footer?: ReactNode
   className?: string
+  role?: 'dialog' | 'alertdialog'
+  /** False while work is in flight: Escape, the backdrop, and × leave the dialog open. */
+  dismissible?: boolean
+  /**
+   * False for a dialog that opens by itself (a review after a save): focus stays where the person
+   * is typing, and Escape anywhere still closes it.
+   */
+  takeFocus?: boolean
+  /** Where focus goes on close, when not the element focused as the dialog opened. */
+  returnFocus?: Element | null
 }) {
   const heading = useId()
   const card = useRef<HTMLDivElement>(null)
   // Capture before child autoFocus runs during the mount commit.
-  const previous = useRef(document.activeElement as HTMLElement | null)
+  const previous = useRef(returnFocus !== undefined ? returnFocus : document.activeElement)
+  const close = () => {
+    if (dismissible) onClose()
+  }
+  const latestClose = useRef(close)
   useEffect(() => {
-    card.current?.focus()
-    return () => previous.current?.focus()
+    latestClose.current = close
+  })
+  useEffect(() => {
+    const back = previous.current
+    if (takeFocus) {
+      // A child with autoFocus (Cancel in a confirmation, a form's first field) keeps focus.
+      if (!card.current?.contains(document.activeElement)) card.current?.focus()
+    }
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) latestClose.current()
+    }
+    if (!takeFocus) window.addEventListener('keydown', escape)
+    return () => {
+      window.removeEventListener('keydown', escape)
+      // Only reclaim focus the dialog held (it falls to <body> as the dialog unmounts), and only
+      // for an element still on the page.
+      const active = document.activeElement
+      if ((!active || active === document.body) && back instanceof HTMLElement && back.isConnected)
+        back.focus()
+    }
+    // Mount-only: focus and the Escape listener belong to this dialog's lifetime.
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   return (
-    <div className={`extension-overlay ${className}`} onClick={onClose}>
+    <div className={`extension-overlay ${className}`} onClick={close}>
       <div
         ref={card}
         tabIndex={-1}
         className="extensions-panel panel dialog-shell"
-        role="dialog"
+        role={role}
         aria-modal="true"
         aria-label={title}
         aria-labelledby={heading}
@@ -37,7 +75,7 @@ export default function Dialog({
         onKeyDown={(e) => {
           if (e.key === 'Escape' && !e.defaultPrevented) {
             e.stopPropagation()
-            onClose()
+            close()
           }
           if (e.key === 'Tab') {
             const nodes = Array.from(
@@ -68,7 +106,12 @@ export default function Dialog({
             <h2 id={heading}>{title}</h2>
             {subtitle && <small title={subtitle}>{subtitle}</small>}
           </div>
-          <button aria-label={`Close ${title}`} onClick={onClose}>
+          <button
+            aria-label={`Close ${title}`}
+            title="Close"
+            disabled={!dismissible}
+            onClick={close}
+          >
             ×
           </button>
         </header>

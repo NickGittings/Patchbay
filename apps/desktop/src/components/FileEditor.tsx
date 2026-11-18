@@ -198,7 +198,12 @@ export default function FileEditor({
     <aside className="file-editor" aria-label="File editor">
       <header className="file-editor-header">
         <span className="panel-title">File editor</span>
-        <button aria-label="Close File editor" disabled={!!prompt} onClick={() => void close()}>
+        <button
+          aria-label="Close File editor"
+          title="Close"
+          disabled={!!prompt}
+          onClick={() => void close()}
+        >
           ×
         </button>
       </header>
@@ -218,6 +223,7 @@ export default function FileEditor({
             <button
               disabled={!!prompt}
               aria-label={`Close ${item.target.path}`}
+              title="Close file"
               onClick={() => void close(item.id)}
             >
               ×
@@ -232,9 +238,12 @@ export default function FileEditor({
       {prompt && (
         <div className="file-editor-prompt" role="alertdialog" aria-label="Unsaved changes">
           <p>Save changes before continuing?</p>
-          <button onClick={() => prompt.resolve('save')}>Save</button>
-          <button onClick={() => prompt.resolve('discard')}>Discard</button>
+          <button onClick={() => prompt.resolve('discard')}>Don’t Save</button>
+          <span className="grow" />
           <button onClick={() => prompt.resolve('cancel')}>Cancel</button>
+          <button autoFocus className="primary" onClick={() => prompt.resolve('save')}>
+            Save
+          </button>
         </div>
       )}
       {tab.file && (

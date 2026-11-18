@@ -123,7 +123,7 @@ export function ChatCoordinationAlerts({ team, openTerminal }: Props) {
       {requests.map((r) => (
         <p role="alert" key={r.id}>
           {r.result ?? `${r.action} ${r.state}`}{' '}
-          <button onClick={showSessions}>Inspect Sessions</button>
+          <button onClick={showSessions}>Open Sessions</button>
           <button onClick={showSettings}>Agent settings</button>
         </p>
       ))}

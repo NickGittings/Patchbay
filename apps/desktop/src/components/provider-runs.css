@@ -3,7 +3,7 @@
   overflow: auto;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--text-sm);
   flex: none;
 }
 .provider-runs .row {

@@ -1,9 +1,11 @@
-import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 import type { Worktree } from '../types'
 import { changeBranch } from './branches'
 import { gitBranchAction } from './ipc'
+import { confirmAction } from './confirm'
 
 vi.mock('./ipc', () => ({ gitBranchAction: vi.fn() }))
+vi.mock('./confirm', () => ({ confirmAction: vi.fn() }))
 
 const current: Worktree = {
   path: '/repo',
@@ -16,14 +18,13 @@ const action = { kind: 'switch', branch: 'main' } as const
 
 beforeEach(() => {
   vi.resetAllMocks()
-  vi.stubGlobal('window', { confirm: vi.fn(() => true) })
+  vi.mocked(confirmAction).mockResolvedValue(true)
 })
-afterEach(() => vi.unstubAllGlobals())
 
 test('an idle worktree switches without a prompt', async () => {
   vi.mocked(gitBranchAction).mockResolvedValue('applied')
   expect(await changeBranch('p', current, action)).toBe(true)
-  expect(window.confirm).not.toHaveBeenCalled()
+  expect(confirmAction).not.toHaveBeenCalled()
   expect(gitBranchAction).toHaveBeenCalledExactlyOnceWith(
     'p',
     'original-head',
@@ -36,11 +37,13 @@ test('an idle worktree switches without a prompt', async () => {
 
 test('cancelling leaves running work and the branch alone', async () => {
   vi.mocked(gitBranchAction).mockResolvedValue('needsStop')
-  vi.mocked(window.confirm).mockReturnValue(false)
+  vi.mocked(confirmAction).mockResolvedValue(false)
   expect(await changeBranch('p', current, action)).toBe(false)
   expect(gitBranchAction).toHaveBeenCalledOnce()
-  expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('switch to “main”'))
-  expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('/repo'))
+  expect(confirmAction).toHaveBeenCalledWith(
+    expect.objectContaining({ message: expect.stringContaining('switch to “main”') }),
+  )
+  expect(confirmAction).toHaveBeenCalledWith(expect.objectContaining({ detail: '/repo' }))
 })
 
 test('confirmation retries with permission to stop and the original checkout identity', async () => {
@@ -54,13 +57,13 @@ test('confirmation retries with permission to stop and the original checkout ide
     '/repo',
     true,
   )
-  expect(window.confirm).toHaveBeenCalledOnce()
+  expect(confirmAction).toHaveBeenCalledOnce()
 })
 
 test('Git or stop failures propagate without another attempt', async () => {
   vi.mocked(gitBranchAction).mockRejectedValueOnce(new Error('Commit your changes'))
   await expect(changeBranch('p', current, action)).rejects.toThrow('Commit your changes')
-  expect(window.confirm).not.toHaveBeenCalled()
+  expect(confirmAction).not.toHaveBeenCalled()
   vi.mocked(gitBranchAction)
     .mockResolvedValueOnce('needsStop')
     .mockRejectedValueOnce(new Error('Stop failed'))

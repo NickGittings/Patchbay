@@ -34,6 +34,7 @@ import { closePanel } from '../lib/rail'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import TerminalPane from './TerminalPane'
 import TerminalControl from './TerminalControl'
+import { confirmAction } from '../lib/confirm'
 
 const EMPTY: Record<SessionFilter, string> = {
   all: 'No sessions',
@@ -133,7 +134,7 @@ function SessionList({
   }, [legacyIds])
   return (
     <>
-      {!records.length && <p>No retained sessions.</p>}
+      {!records.length && <p className="panel-empty">No retained sessions.</p>}
       <div className="panel-section-head">
         {' '}
         <label>
@@ -274,7 +275,17 @@ function SessionList({
                             {live && (
                               <MenuItem
                                 disabled={unavailable}
-                                onClick={() => void perform(() => terminalStop(r.id))}
+                                onClick={async () => {
+                                  if (
+                                    await confirmAction({
+                                      title: `Stop ${r.metadata.name}`,
+                                      message: `Stop ${r.metadata.name}? Its running work ends.`,
+                                      detail: 'Its output and history are kept.',
+                                      confirmLabel: 'Stop session',
+                                    })
+                                  )
+                                    void perform(() => terminalStop(r.id))
+                                }}
                               >
                                 Stop
                               </MenuItem>
@@ -425,6 +436,9 @@ export default function SessionsPanel({
               hidden by filters. In-progress graph actions will be cancelled. Output will be kept.
             </p>
             <div className="row">
+              <button disabled={busy} onClick={() => setConfirmStopAll(false)}>
+                Cancel
+              </button>
               <button
                 className="danger"
                 disabled={!connected || busy}
@@ -434,9 +448,6 @@ export default function SessionsPanel({
                 }}
               >
                 Stop every project
-              </button>
-              <button disabled={busy} onClick={() => setConfirmStopAll(false)}>
-                Cancel
               </button>
             </div>
           </section>

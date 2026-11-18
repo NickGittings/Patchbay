@@ -13,11 +13,14 @@ export default function ExtensionMenu({
   componentId,
   asMenuItems = false,
   separator = false,
+  itemRole,
 }: {
   slot: string
   componentId?: string | null
   asMenuItems?: boolean
   separator?: boolean
+  /** For plain buttons inside a custom `role="menu"` container. */
+  itemRole?: 'menuitem'
 }) {
   // Inside a menu, re-read the component's files each time it opens (as the palette does).
   const opens = useContext(MenuOpens)
@@ -28,7 +31,12 @@ export default function ExtensionMenu({
     <>
       {asMenuItems ? <MenuSeparator /> : separator && <hr />}
       {entries.map((e) => (
-        <Item key={e.id} data-extension-command={e.id} onClick={() => run(e.id)}>
+        <Item
+          key={e.id}
+          role={asMenuItems ? undefined : itemRole}
+          data-extension-command={e.id}
+          onClick={() => run(e.id)}
+        >
           {e.title}
         </Item>
       ))}

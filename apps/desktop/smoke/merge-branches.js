@@ -23,7 +23,7 @@
   const smoke = await until('smoke hooks', () => window.__patchbaySmoke)
   if (new URLSearchParams(location.search).has('component')) return
   const state = () => smoke.store.getState()
-  const originalConfirm = window.confirm
+  let stopAnswering = () => {}
   try {
     smoke.acceptOpened(await smoke.openProject())
     await smoke.resizeWindow(1440, 900)
@@ -154,7 +154,11 @@
       start.click()
     }
     const form = await until('shared branch dialog', () =>
-      visible(chat ? 'form[aria-label="Merge"]' : 'form[aria-label="Start merge agent"]'),
+      visible(
+        chat
+          ? '[role="dialog"][aria-label="Merge"] form'
+          : '[role="dialog"][aria-label="Start merge agent"] form',
+      ),
     )
     assert(
       form.querySelector('[aria-label="Source worktree"]').value === root,
@@ -302,10 +306,10 @@
     await startWriters()
     let approveStop = false
     const prompts = []
-    window.confirm = (message) => {
+    stopAnswering = smoke.answerConfirms((message) => {
       prompts.push(message)
       return approveStop
-    }
+    })
     const footerSwitch = document.querySelector('.workspace-context [aria-label="Switch branch"]')
     assert(footerSwitch, 'footer branch selector missing')
     footerSwitch.click()
@@ -357,9 +361,10 @@
     )
     choose('Delete local branch', 'finished')
     button('Delete branch', region).click()
-    const confirmDelete = await until('branch deletion confirmation', () =>
-      button('Confirm delete branch', region),
-    )
+    const confirmDelete = await until('branch deletion confirmation', () => {
+      const confirm = region.querySelector('.worktree-confirm')
+      return confirm && button('Delete branch', confirm)
+    })
     confirmDelete.click()
     await until(
       'unused local branch deleted',
@@ -380,6 +385,6 @@
       `FAIL merge-branches: ${error?.message ?? error} ${error?.stack ?? ''}; message=${state().message}; step=${visible('.simple-step')?.textContent}; chat=${visible('.simple-chat')?.textContent.slice(-1600)}`,
     )
   } finally {
-    window.confirm = originalConfirm
+    stopAnswering()
   }
 })()

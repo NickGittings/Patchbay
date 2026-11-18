@@ -22,6 +22,10 @@
   --running: #22d3ee;
   --input: #f5a524;
   --review: #a78bfa;
+  --warn-strong: #ff8a4c;
+  /* Text on filled accent and danger surfaces. */
+  --on-accent: #fff;
+  --danger-text: #ffc9c9;
   --task: var(--review);
   --role-lead: var(--accent);
   --role-builder: #2dd4bf;
@@ -50,11 +54,42 @@
   --del-gutter: color-mix(in srgb, var(--bad) 15%, var(--bg));
   --del-text: #ffc2c2;
   --hunk-bg: color-mix(in srgb, var(--accent) 7%, var(--bg));
-  --radius: 8px;
+  /* Type scale: dense UI text sits at --text-sm; headings step up by size and weight together. */
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 15px;
+  --text-lg: 17px;
+  --text-2xl: 28px;
+  /* Small uppercase labels open up slightly; large display text tightens. */
+  --tracking-caps: 0.06em;
+  --tracking-display: -0.02em;
+  /* Stacking layers, lowest first: workspace chrome, its popovers, the canvas node menu, modal
+     dialogs, then app-level overlays (provider setup, maintenance review, tooltips). */
+  --z-chrome: 30;
+  --z-popover: 40;
+  --z-node-menu: 90;
+  --z-modal: 100;
+  --z-system: 1000;
+  /* Corner scale: chips, controls, cards and panels, floating surfaces. */
+  --radius-xs: 4px;
   --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  /* Elevation: resting controls, raised cards and tips, then floating menus and dialogs. */
+  --shadow-1: 0 2px 6px rgb(0 0 0 / 22%);
+  --shadow-2: 0 4px 16px rgb(0 0 0 / 26%);
   --shadow: 0 0 0 1px var(--border-strong), 0 16px 48px rgb(0 0 0 / 70%);
   --overlay: rgb(0 0 0 / 70%);
-  --sans: Inter, -apple-system, 'Segoe UI', system-ui, sans-serif;
+  /* Pressed fill: one step past --hover, so a press reads before release. */
+  --active: #2e2e34;
+  /* Motion: quick feedback for state changes, a slightly longer beat for surfaces. */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --ease-out: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --sans: -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', sans-serif;
   --mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
   color-scheme: dark;
   font-family: var(--sans);
@@ -80,7 +115,7 @@ body,
 code,
 .mono {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 /* Controls */
@@ -94,9 +129,10 @@ select {
   padding: 4px 10px;
   cursor: pointer;
   transition:
-    background 0.12s,
-    border-color 0.12s,
-    color 0.12s;
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 select {
   background: var(--bg);
@@ -105,6 +141,24 @@ button:hover:not(:disabled),
 select:hover {
   border-color: var(--border-hover);
   background: var(--hover);
+}
+/* Feedback lands on press, not release: the pressed fill appears at once and eases back out. */
+:is(button, summary):active:not(:disabled) {
+  background: var(--active);
+  border-color: var(--border-hover);
+  transition-duration: 0s;
+}
+button.primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 80%, #000);
+  border-color: color-mix(in srgb, var(--accent) 80%, #000);
+}
+button.danger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--bad) 28%, transparent);
+  border-color: color-mix(in srgb, var(--bad) 70%, transparent);
+}
+/* Standalone actions also give slightly under the pointer; rows and tabs only change fill. */
+:is(button.primary, button.danger):active:not(:disabled) {
+  transform: scale(0.97);
 }
 button:focus-visible {
   outline: 2px solid var(--accent);
@@ -117,7 +171,7 @@ button:disabled {
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-weight: 600;
 }
 button.primary:hover:not(:disabled) {
@@ -127,7 +181,7 @@ button.primary:hover:not(:disabled) {
 button.danger {
   background: color-mix(in srgb, var(--bad) 12%, transparent);
   border-color: color-mix(in srgb, var(--bad) 40%, transparent);
-  color: #ffc9c9;
+  color: var(--danger-text);
 }
 button.danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--bad) 20%, transparent);
@@ -145,8 +199,8 @@ textarea {
   width: 100%;
   min-width: 0;
   transition:
-    border-color 0.12s,
-    box-shadow 0.12s;
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
 }
 input::placeholder,
 textarea::placeholder {
@@ -182,7 +236,7 @@ input[type='radio'] {
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border: 2px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
@@ -202,6 +256,13 @@ input[type='radio'] {
   flex: 1;
 }
 
+/* Registered so separators can fade their line color instead of switching it. */
+@property --resize-line {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}
+
 /* Status dots shared by chips, tabs, and terminal rows */
 .status-dot {
   width: 8px;
@@ -213,7 +274,7 @@ input[type='radio'] {
 .health-running .status-dot {
   background: var(--running);
   box-shadow: 0 0 6px var(--running);
-  animation: pulse 1.6s infinite;
+  animation: pulse 2.4s ease-in-out infinite;
 }
 .health-ok .status-dot {
   background: var(--ok);
@@ -224,7 +285,7 @@ input[type='radio'] {
 .health-working .status-dot {
   background: var(--running);
   box-shadow: 0 0 6px var(--running);
-  animation: pulse 0.9s infinite;
+  animation: pulse 1.6s ease-in-out infinite;
 }
 .health-waiting .status-dot {
   background: transparent;
@@ -233,7 +294,7 @@ input[type='radio'] {
 .health-input .status-dot {
   background: var(--input);
   box-shadow: 0 0 8px var(--input);
-  animation: pulse 1.2s infinite;
+  animation: pulse 2s ease-in-out infinite;
 }
 .health-review .status-dot {
   background: var(--review);
@@ -256,7 +317,7 @@ input[type='radio'] {
   align-items: center;
   gap: 6px;
   flex: none;
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
   color: var(--tone);
 }
@@ -295,14 +356,12 @@ input[type='radio'] {
 /* Floating surfaces share the merge dialog's treatment; layout stays with each surface. */
 .menu-list,
 .toast,
-.command-palette,
 .extensions-panel,
 .node-extension-menu,
-.map-maintenance-dialog,
 .search-results {
   background: var(--panel);
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
 }
 
@@ -323,7 +382,7 @@ input[type='radio'] {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  z-index: 41;
+  z-index: calc(var(--z-popover) + 1);
   display: flex;
   flex-direction: column;
   min-width: 200px;
@@ -367,7 +426,7 @@ input[type='radio'] {
 }
 .menu-shortcut {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .menu-row {
@@ -399,12 +458,18 @@ input[type='radio'] {
 }
 .attention-label {
   flex: none;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
+/* Gentle enough to sit in peripheral vision; reduced motion holds the dot steady. */
 @keyframes pulse {
   50% {
-    opacity: 0.45;
+    opacity: 0.6;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-dot {
+    animation: none;
   }
 }
 
@@ -423,7 +488,7 @@ input[type='radio'] {
   background: linear-gradient(var(--resize-line), var(--resize-line)) center / 1px 100% no-repeat;
   --resize-line: var(--border);
   position: relative;
-  transition: background 0.15s;
+  transition: --resize-line var(--dur-fast) var(--ease-out);
 }
 .separator.horizontal {
   width: auto;
@@ -449,7 +514,7 @@ input[type='radio'] {
   padding: 3px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--radius);
 }
 /* Map, Stories and Chat's Changes put these tabs at one spot: the map's panel sits as far in as
    the other two headers pad, and both headers are the same height. */
@@ -467,7 +532,7 @@ input[type='radio'] {
 .view-tabs button {
   min-height: 34px;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   white-space: nowrap;
   background: none;
@@ -490,7 +555,7 @@ input[type='radio'] {
   position: absolute;
   top: calc(100% + 8px);
   right: 12px;
-  z-index: 30;
+  z-index: var(--z-chrome);
 }
 .toast {
   position: relative;
@@ -499,7 +564,7 @@ input[type='radio'] {
   gap: 10px;
   max-width: min(440px, calc(100vw - 24px));
   padding: 10px 38px 10px 14px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 .toast-text {
@@ -542,10 +607,10 @@ input[type='radio'] {
 }
 .panel-title,
 .section-title {
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: var(--tracking-caps);
   color: var(--muted);
 }
 .panel-title {
@@ -556,7 +621,7 @@ input[type='radio'] {
 }
 .hint {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   padding: 0;
 }
@@ -569,7 +634,7 @@ input[type='radio'] {
 }
 .count {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   color: var(--muted);
 }
 
@@ -611,7 +676,7 @@ input[type='radio'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   line-height: 1.4;
 }
@@ -621,7 +686,7 @@ input[type='radio'] {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 .inspector .inspector-actions-trigger,
@@ -651,7 +716,7 @@ input[type='radio'] {
   border: 0;
   border-radius: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
   box-shadow: inset 0 -2px 0 transparent;
 }
@@ -668,7 +733,7 @@ input[type='radio'] {
   width: 100%;
   text-align: left;
   color: var(--accent-text);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .inspector-body {
   flex: 1;
@@ -687,7 +752,7 @@ input[type='radio'] {
   gap: 4px;
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   min-width: 0;
 }
 .inspector :is(input, select, textarea) {
@@ -724,7 +789,7 @@ input[type='radio'] {
   flex: none;
   color: var(--muted);
   font-size: 16px;
-  transition: transform 120ms ease-out;
+  transition: transform var(--dur-fast) var(--ease-out);
 }
 .inspector-terminal-disclosure[aria-expanded='true'] .inspector-chevron {
   transform: rotate(90deg);
@@ -739,19 +804,19 @@ input[type='radio'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 500;
 }
 .inspector-terminal-meta {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
 }
 .inspector-terminal-action {
   flex: none;
   padding: 4px 8px;
   color: var(--accent-text);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .inspector-terminal-settings:not([hidden]) {
   display: grid;
@@ -761,7 +826,7 @@ input[type='radio'] {
 .inspector-terminal-settings > button {
   justify-self: start;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .inspector .add-terminal {
   margin-top: 10px;
@@ -769,21 +834,17 @@ input[type='radio'] {
   border-color: transparent;
   background: transparent;
   color: var(--accent-text);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .inspector .add-terminal:hover {
   background: var(--hover);
 }
 .inspector .maintenance-origin {
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 .inspector .context {
   margin-top: 0;
-}
-.inspector :is(button, select, summary):active:not(:disabled) {
-  background: var(--accent-soft);
-  transition: none;
 }
 .inspector :is(button, select, summary):focus-visible {
   outline: 2px solid var(--accent);
@@ -798,11 +859,8 @@ input[type='radio'] {
   height: 100%;
 }
 @media (prefers-reduced-motion: reduce) {
-  .inspector :is(button, select, .inspector-chevron) {
+  .inspector-chevron {
     transition: none;
-  }
-  .inspector .status-dot {
-    animation: none;
   }
 }
 .terminal-row {
@@ -824,7 +882,7 @@ input[type='radio'] {
   border-style: dashed;
 }
 .relation {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   padding: 3px 0;
 }
@@ -837,12 +895,12 @@ input[type='radio'] {
 .context summary {
   cursor: pointer;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .context pre {
   white-space: pre-wrap;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -884,11 +942,11 @@ input[type='radio'] {
   width: 260px;
   background: var(--panel-2);
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  box-shadow: 0 2px 6px rgb(0 0 0 / 25%);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
   transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
 }
 .component-node::before {
   content: '';
@@ -904,7 +962,7 @@ input[type='radio'] {
   border-color: var(--accent);
   box-shadow:
     0 0 0 1px var(--accent),
-    0 3px 8px rgb(0 0 0 / 30%);
+    var(--shadow-2);
 }
 .component-header {
   display: flex;
@@ -916,10 +974,10 @@ input[type='radio'] {
   opacity: 0;
 }
 .kind-badge {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: var(--text-xs);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-caps);
   color: var(--kind);
 }
 .component-name {
@@ -932,18 +990,18 @@ input[type='radio'] {
 }
 .git-badge {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--text-2xs);
   color: var(--accent-text);
   background: var(--accent-soft);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 1px 5px;
 }
 .repo-badge {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 0 5px;
   max-width: 90px;
   overflow: hidden;
@@ -961,7 +1019,7 @@ input[type='radio'] {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -1012,7 +1070,7 @@ input[type='radio'] {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   padding: 1px 8px;
   border-radius: 999px;
@@ -1119,7 +1177,7 @@ input[type='radio'] {
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
 }
 .terminal-notice button {
@@ -1317,7 +1375,7 @@ input[type='radio'] {
   border-color: var(--accent);
   box-shadow:
     0 0 0 1px var(--accent),
-    0 3px 8px rgb(0 0 0 / 30%);
+    var(--shadow-2);
 }
 .component-node.nearby {
   border-color: var(--border-hover);
@@ -1361,7 +1419,7 @@ input[type='radio'] {
   width: 100%;
   margin-top: 6px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   resize: vertical;
 }
 .scope-chips {
@@ -1380,7 +1438,7 @@ input[type='radio'] {
   color: var(--input);
   background: var(--panel-2);
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .implementation-view {
   display: flex;
@@ -1403,7 +1461,7 @@ input[type='radio'] {
   flex: none;
   height: 28px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text);
   background: var(--panel-2);
   border-color: var(--border);
@@ -1507,9 +1565,9 @@ input[type='radio'] {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 1px 8px;
   color: var(--muted);
 }
@@ -1531,7 +1589,7 @@ input[type='radio'] {
 }
 .validation-chip button {
   padding: 0 4px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
 }
 
@@ -1552,7 +1610,7 @@ input[type='radio'] {
   background: transparent;
   text-align: left;
   padding: 4px 12px 4px 18px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .change-row:hover:not(:disabled) {
   background: var(--panel-2);
@@ -1584,7 +1642,7 @@ input[type='radio'] {
   text-overflow: ellipsis;
   direction: rtl;
   text-align: left;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .path-dir {
   color: var(--muted);
@@ -1604,9 +1662,9 @@ input[type='radio'] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 1px 7px;
-  font-size: 10.5px;
+  font-size: var(--text-2xs);
   font-weight: 600;
   color: var(--tone);
   background: color-mix(in srgb, var(--tone) 14%, transparent);
@@ -1617,7 +1675,7 @@ input[type='radio'] {
   height: 18px;
   padding: 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .kind-pill.kind-added,
 .kind-pill.kind-untracked {
@@ -1639,7 +1697,7 @@ input[type='radio'] {
   align-items: center;
   gap: 6px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 500;
   text-transform: none;
   letter-spacing: 0;
@@ -1687,7 +1745,7 @@ input[type='radio'] {
   padding: 9px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  font-size: 12.5px;
+  font-size: var(--text-sm);
 }
 .diff-file-path {
   flex: 1;
@@ -1696,7 +1754,7 @@ input[type='radio'] {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .diff-file-path .path-name {
   font-weight: 600;
@@ -1704,7 +1762,7 @@ input[type='radio'] {
 .diff {
   --gutter: 5ch;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.6;
   min-width: max-content;
   padding-bottom: 12px;
@@ -1784,7 +1842,7 @@ input[type='radio'] {
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   font-family: var(--sans);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 .diff-hunk:first-child {
   margin-top: 0;
@@ -1821,7 +1879,7 @@ input[type='radio'] {
 }
 .review-totals {
   flex: 1;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .review-refresh {
   padding: 2px 8px;
@@ -1837,7 +1895,7 @@ input[type='radio'] {
   gap: 6px;
   border-radius: 999px;
   padding: 2px 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   background: transparent;
 }
@@ -1849,7 +1907,7 @@ input[type='radio'] {
 }
 .filter-count {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--text-2xs);
   color: var(--muted);
 }
 .kind-dot.project {
@@ -1923,12 +1981,12 @@ button.review-name:hover:not(:disabled) {
 .review-count {
   flex: 1;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
 }
 .review-via {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1942,39 +2000,18 @@ button.review-name:hover:not(:disabled) {
 .extension-overlay {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--z-modal);
   background: var(--overlay);
-  backdrop-filter: blur(4px);
   display: flex;
   justify-content: center;
   align-items: flex-start;
   padding: 10vh 24px;
 }
-.command-palette,
 .extensions-panel {
   width: min(680px, 90vw);
   max-height: 75vh;
   overflow: auto;
   padding: 16px;
-}
-.command-palette input {
-  width: 100%;
-  margin-bottom: 8px;
-}
-.command-palette button {
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
-  padding: 10px;
-  text-align: left;
-  border-color: transparent;
-}
-.command-palette button.active {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-}
-.command-palette small {
-  opacity: 0.6;
 }
 .extension-entry {
   padding: 16px 0;
@@ -1984,13 +2021,10 @@ button.review-name:hover:not(:disabled) {
   overflow-wrap: anywhere;
   opacity: 0.7;
 }
-.extension-error {
-  color: var(--bad);
-}
 .extension-badge {
   --tone: var(--accent);
-  border-radius: 4px;
-  font-size: 10px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-2xs);
   padding: 2px 5px;
   color: color-mix(in srgb, var(--tone) 50%, #fff);
   background: color-mix(in srgb, var(--tone) 20%, transparent);
@@ -2015,7 +2049,7 @@ button.review-name:hover:not(:disabled) {
 .node-menu-overlay {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  z-index: var(--z-node-menu);
 }
 .node-extension-menu {
   position: fixed;
@@ -2094,17 +2128,9 @@ button.review-name:hover:not(:disabled) {
 .session-worktree-label .row {
   flex-wrap: wrap;
 }
-.session-worktree-eyebrow {
-  display: block;
-  margin-bottom: 4px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-}
 .session-worktree-heading h4 {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 700;
 }
 .session-worktree-branch {
@@ -2114,14 +2140,9 @@ button.review-name:hover:not(:disabled) {
   border-radius: var(--radius-sm);
   overflow-wrap: anywhere;
 }
-.session-worktree-count,
-.session-worktree-path {
+.session-worktree-count {
   color: var(--muted);
-  font-size: 12px;
-}
-.session-worktree-path {
-  max-width: 100%;
-  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
 }
 .session-worktree-rows {
   margin: 4px 0 0 12px;
@@ -2162,7 +2183,7 @@ button.review-name:hover:not(:disabled) {
   background: color-mix(in srgb, var(--role-color) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--role-color) 25%, transparent);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 .session-role.plan {
@@ -2198,7 +2219,7 @@ button.review-name:hover:not(:disabled) {
   align-items: center;
   gap: 4px;
   margin-left: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .component-groups {
@@ -2271,7 +2292,7 @@ button.review-name:hover:not(:disabled) {
   flex-direction: column;
   gap: 4px;
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .component-group .group-option {
@@ -2293,7 +2314,7 @@ button.review-name:hover:not(:disabled) {
   align-items: center;
   gap: 6px;
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .component-group .group-member .group-option {
@@ -2310,7 +2331,7 @@ button.review-name:hover:not(:disabled) {
   text-align: left;
   margin: 4px 0;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .action-result .failed {
   color: var(--bad);
@@ -2336,10 +2357,10 @@ button.review-name:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--task) 60%, var(--border-strong));
 }
 .task-badge {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--task);
   background: color-mix(in srgb, var(--task) 14%, transparent);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 1px 5px;
 }
 
@@ -2353,7 +2374,7 @@ button.review-name:hover:not(:disabled) {
   gap: 4px;
   margin: 10px 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .task-dialog .row {
   gap: 8px;
@@ -2362,12 +2383,25 @@ button.review-name:hover:not(:disabled) {
   align-items: center;
   padding: 24px;
 }
-.add-task-terminal {
-  width: min(380px, 90vw);
+/* Confirmations ask one short question; keep them compact and centered. */
+.confirm-dialog .dialog-shell {
+  width: min(480px, 90vw);
 }
-.add-task-terminal h2 {
-  margin: 0 0 4px;
-  font-size: 15px;
+.confirm-dialog .dialog-body p {
+  margin: 0 0 8px;
+}
+.confirm-dialog .dialog-body p:last-child {
+  margin-bottom: 0;
+}
+.confirm-dialog .settings-footer {
+  padding: 10px 12px;
+}
+.confirm-dialog .confirm-detail {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.add-task-terminal-dialog .dialog-shell {
+  width: min(380px, 90vw);
 }
 .add-task-terminal select {
   width: 100%;
@@ -2377,7 +2411,7 @@ button.review-name:hover:not(:disabled) {
 }
 .worktree-row {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--panel-2);
   min-width: 0;
   padding: 6px 8px;
@@ -2439,9 +2473,9 @@ button.review-name:hover:not(:disabled) {
   flex-wrap: wrap;
 }
 .worktree-tag {
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 1px 7px;
-  border-radius: 9px;
+  border-radius: var(--radius);
   border: 1px solid var(--border-strong);
   color: var(--muted);
 }
@@ -2475,9 +2509,9 @@ button.review-name:hover:not(:disabled) {
   flex-wrap: wrap;
   gap: 4px;
   padding: 5px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .worktree-detail {
   display: grid;
@@ -2621,14 +2655,16 @@ button.review-name:hover:not(:disabled) {
   width: 100%;
 }
 
-.map-maintenance-dialog {
+/* Map and dependency reviews open by themselves, so they sit above other dialogs. */
+.extension-overlay.map-maintenance-dialog {
+  z-index: var(--z-system);
+}
+.map-maintenance-dialog .dialog-shell {
   width: min(720px, 90vw);
   max-height: 85vh;
-  overflow: auto;
-  padding: 24px;
 }
-.map-maintenance-dialog h2 {
-  margin-top: 0;
+.map-maintenance-dialog .dialog-body {
+  padding: 16px 20px;
 }
 .maintenance-proposals {
   display: flex;
@@ -2646,28 +2682,19 @@ button.review-name:hover:not(:disabled) {
 }
 .map-issue {
   color: var(--input);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .map-issue strong,
 .component-node .map-issue {
   text-transform: capitalize;
 }
 .maintenance-origin {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   margin: 12px 0;
 }
 .maintenance-origin button {
   margin-left: 8px;
-}
-.maintenance-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  background: var(--overlay);
-  backdrop-filter: blur(4px);
-  display: grid;
-  place-items: center;
 }
 
 /* Empty states: what an area is for and how to fill it */
@@ -2694,7 +2721,7 @@ button.review-name:hover:not(:disabled) {
   height: 40px;
   margin-bottom: 4px;
   border: 1px solid var(--border-strong);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: linear-gradient(180deg, var(--panel-2), var(--bg));
   color: var(--muted);
   font-size: 18px;
@@ -2705,7 +2732,7 @@ button.review-name:hover:not(:disabled) {
 .empty-state-text {
   max-width: 380px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 .empty-state-actions {
@@ -2720,14 +2747,14 @@ kbd {
   min-width: 18px;
   padding: 0 5px;
   font-family: var(--sans);
-  font-size: 10.5px;
+  font-size: var(--text-2xs);
   line-height: 17px;
   text-align: center;
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--border-strong);
   border-bottom-width: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 /* Welcome */
@@ -2759,9 +2786,9 @@ kbd {
 }
 .welcome-card h1 {
   margin: 0 0 8px;
-  font-size: 28px;
+  font-size: var(--text-2xl);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--tracking-display);
   color: var(--text);
 }
 .welcome-card > p {
@@ -2786,7 +2813,7 @@ kbd {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   color: var(--muted);
 }
@@ -2798,7 +2825,7 @@ kbd {
 }
 .welcome-keys {
   color: var(--faint);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .terminal-close-confirm {
@@ -2818,7 +2845,7 @@ kbd {
   padding: 0;
   margin: 4px 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -2835,7 +2862,7 @@ kbd {
   height: 28px;
   padding: 0;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   border-color: transparent;
 }
@@ -2914,7 +2941,7 @@ kbd {
 }
 .review-merge-button,
 .review-agent-button {
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .review-merge-terminal {
   display: flex;
@@ -2930,19 +2957,7 @@ kbd {
 }
 .merge-agent-dialog code {
   overflow-wrap: anywhere;
-  font-size: 12px;
-}
-.agent-role-field {
-  display: grid;
-  gap: 4px;
-  margin: 12px 0;
-}
-.agent-role-field > select,
-.agent-role-field > .reviewer-picker {
-  width: min(360px, 100%);
-}
-.agent-role-field > .hint {
-  margin: 0;
+  font-size: var(--text-sm);
 }
 .reviewer-picker {
   min-width: 0;
@@ -2989,7 +3004,7 @@ kbd {
   margin: 0;
   padding: 6px 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
@@ -3004,7 +3019,7 @@ kbd {
 
 .review-status {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   padding: 4px 0;
 }
 .review-status-row {
@@ -3018,7 +3033,7 @@ kbd {
   align-items: center;
   gap: 6px;
   padding: 2px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .review-findings-button.on,
 .review-findings-button.on:hover:not(:disabled) {
@@ -3065,7 +3080,7 @@ kbd {
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
-  z-index: 30;
+  z-index: var(--z-chrome);
 }
 .top-bar.mac-titlebar {
   padding-inline: 88px;
@@ -3106,7 +3121,7 @@ kbd {
   height: 28px;
   border-color: transparent;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .workspace-context > button:hover:not(:disabled),
 .workspace-context > button[aria-expanded='true'] {
@@ -3169,7 +3184,7 @@ kbd {
 .unified-search > input {
   width: 100%;
   height: 28px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .search-results {
   position: absolute;
@@ -3178,12 +3193,12 @@ kbd {
   right: 0;
   max-height: min(65vh, 600px);
   overflow: auto;
-  z-index: 100;
+  z-index: var(--z-modal);
   padding: 8px;
 }
 .search-results h3 {
   margin: 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 .search-results p {
@@ -3268,11 +3283,11 @@ kbd {
   position: absolute;
   top: -2px;
   right: -1px;
-  font-size: 10px;
+  font-size: var(--text-2xs);
   background: var(--accent);
   color: var(--bg);
   font-weight: 600;
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 1px 4px;
 }
 .workspace-rail sup[data-status='error'] {
@@ -3321,7 +3336,8 @@ kbd {
   min-width: 0;
 }
 .utility-header h2 {
-  font-size: 14px;
+  font-size: var(--text-md);
+  font-weight: 600;
   margin: 0 0 4px;
 }
 .utility-header small {
@@ -3346,6 +3362,7 @@ kbd {
   position: relative;
   background: linear-gradient(var(--resize-line), var(--resize-line)) center / 1px 100% no-repeat;
   touch-action: none;
+  transition: --resize-line var(--dur-fast) var(--ease-out);
 }
 .sessions-content {
   min-width: 0;
@@ -3371,29 +3388,6 @@ kbd {
 .worktree-detail {
   display: flex;
   flex-direction: column;
-}
-.rail-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  margin-top: 12px;
-}
-/* Plain list actions; nested controls (forms, the detection row) keep normal button styling. */
-.rail-actions > button {
-  text-align: left;
-  border: 0;
-  background: none;
-}
-.rail-actions > button:hover:not(:disabled) {
-  background: var(--hover);
-}
-.rail-actions .section-title {
-  margin: 0 0 4px;
-}
-.rail-actions .hint {
-  margin: 0 8px 6px;
-  font-size: 12px;
 }
 .project-list .grow,
 .project-list .grow:hover:not(:disabled) {
@@ -3480,7 +3474,7 @@ kbd {
   gap: 8px;
   min-width: 0;
   padding: 6px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .project-list .panel-list-row {
   border: 1px solid transparent;
@@ -3535,17 +3529,9 @@ kbd {
     opacity: 1;
   }
 }
-
-.dialog-body .agent-role-field {
-  display: grid;
-  grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr);
-  align-items: center;
-  gap: 8px;
-}
-
 .stack-card {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--panel-2);
   padding: 10px 12px;
   margin: 0 0 10px;
@@ -3559,7 +3545,7 @@ kbd {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   min-width: 0;
 }
@@ -3639,12 +3625,6 @@ kbd {
 .notifications-toggle input {
   order: 1;
 }
-.button-link {
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  padding: 0;
-}
 .diff-nav {
   flex: none;
   display: inline-flex;
@@ -3653,7 +3633,7 @@ kbd {
 }
 .diff-nav button {
   padding: 1px 8px;
-  font-size: 14px;
+  font-size: var(--text-md);
   line-height: 1.2;
 }
 .diff-nav-count {
@@ -3661,7 +3641,7 @@ kbd {
   text-align: center;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .diff-view:focus {
   outline: none;
@@ -3669,12 +3649,12 @@ kbd {
 
 .usage-panel .usage-note {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.5;
 }
 .usage-panel h3 {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 .usage-window {
   margin: 12px 0;
@@ -3682,7 +3662,7 @@ kbd {
 .usage-window-label {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .usage-window progress {
   width: 100%;
@@ -3690,16 +3670,16 @@ kbd {
   accent-color: var(--accent);
 }
 .usage-window[data-level='warn'] progress {
-  accent-color: #d4a448;
+  accent-color: var(--input);
 }
 .usage-window[data-level='limit'] progress {
-  accent-color: #e16b68;
+  accent-color: var(--bad);
 }
 .usage-window small,
 .usage-source {
   display: block;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .usage-source {
   overflow-wrap: anywhere;
@@ -3710,7 +3690,7 @@ kbd {
   justify-content: space-between;
   gap: 8px;
   margin: 12px 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .usage-controls input[type='number'] {
   width: 58px;
@@ -3724,12 +3704,12 @@ kbd {
   flex: none;
 }
 .workspace-rail .usage-dot {
-  background: #d4a448;
+  background: var(--input);
 }
 
 /* Provider setup overlays the launch dialog, whose selections stay mounted. */
 .provider-setup-overlay {
-  z-index: 1000;
+  z-index: var(--z-system);
 }
 
 /* Settings share a shell and form rhythm without changing workflow dialogs. */
@@ -3783,7 +3763,7 @@ kbd {
 .settings-section h3,
 .settings-section legend {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
 }
 .settings-section legend {
@@ -3916,7 +3896,7 @@ kbd {
 .rail-section-header h3 {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 .rail-section-header .panel-actions {
@@ -3924,7 +3904,7 @@ kbd {
 }
 .rail-details {
   border-top: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .rail-details > summary {
   padding: 10px 0;
@@ -4030,8 +4010,8 @@ kbd {
   border-color: transparent;
 }
 .notification-badge {
-  font-size: 10px;
-  border-radius: 8px;
+  font-size: var(--text-2xs);
+  border-radius: var(--radius);
   padding: 0 5px;
   color: var(--bg);
   background: var(--accent);
@@ -4051,7 +4031,7 @@ kbd {
 .notification-center .toast-region[data-position='bottom-left'],
 .notification-center .toast-region[data-position^='top-'] {
   position: fixed;
-  z-index: 29;
+  z-index: calc(var(--z-chrome) - 1);
   width: min(440px, calc(100vw - var(--rail-width) - 24px));
 }
 .notification-center .toast-region[data-position='bottom-left'] {
@@ -4102,7 +4082,7 @@ kbd {
 .notice-heading {
   display: block;
   margin-bottom: 3px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .footer-popover {
   position: absolute;
@@ -4112,11 +4092,11 @@ kbd {
   max-height: min(560px, calc(100dvh - 100px));
   display: flex;
   flex-direction: column;
-  z-index: 40;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  z-index: var(--z-popover);
+  border: 0;
+  border-radius: var(--radius-lg);
   background: var(--panel);
-  box-shadow: 0 12px 40px #0004;
+  box-shadow: var(--shadow);
 }
 .footer-popover-header {
   display: flex;
@@ -4135,7 +4115,7 @@ kbd {
   height: 28px;
   min-width: 28px;
   padding: 0 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .footer-popover-header .footer-popover-icon {
   flex: none;
@@ -4150,6 +4130,7 @@ kbd {
 .workspace-popover {
   left: 0;
   right: auto;
+  transform-origin: bottom left;
 }
 .workspace-popover-content {
   overflow: auto;
@@ -4192,7 +4173,7 @@ kbd {
   align-items: flex-start;
   gap: 8px;
   padding: 12px 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .notification-entry + .notification-entry {
   border-top: 1px solid var(--border);
@@ -4205,7 +4186,7 @@ kbd {
   flex-wrap: wrap;
   gap: 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   margin-bottom: 6px;
 }
 .notification-entry .toast-close {
@@ -4251,30 +4232,29 @@ kbd {
   --toast-from: -8px;
 }
 .toast-region > .toast {
-  animation: toast-in 240ms cubic-bezier(0.2, 0.9, 0.3, 1) backwards;
   transition:
-    opacity 160ms ease-in,
-    transform 160ms ease-in;
+    opacity 240ms var(--ease-out),
+    transform 240ms var(--ease-out);
+}
+/* Transitions, not keyframes: dismissing a card mid-entrance reverses it from where it is. */
+@starting-style {
+  .toast-region > .toast {
+    opacity: 0;
+    transform: translateY(var(--toast-from)) scale(0.98);
+  }
 }
 .toast-region > .toast[data-leaving] {
   opacity: 0;
   transform: translateY(var(--toast-from)) scale(0.98);
   pointer-events: none;
-}
-@keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(var(--toast-from)) scale(0.98);
-  }
-}
-@keyframes toast-fade {
-  from {
-    opacity: 0;
-  }
+  transition-duration: 160ms;
+  transition-timing-function: var(--ease-in);
 }
 @media (prefers-reduced-motion: reduce) {
-  .toast-region > .toast {
-    animation-name: toast-fade;
+  @starting-style {
+    .toast-region > .toast {
+      transform: none;
+    }
   }
   .toast-region > .toast[data-leaving] {
     transform: none;
@@ -4286,7 +4266,7 @@ kbd {
   gap: 8px;
   align-items: center;
   padding: 8px 14px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .windowed-diff .diff-hunk {
   white-space: nowrap;
@@ -4371,7 +4351,7 @@ kbd {
 }
 .file-editor-path {
   padding: 8px 12px;
-  font: 11px var(--mono);
+  font: var(--text-xs) var(--mono);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -4428,7 +4408,7 @@ kbd {
 .file-editor-code textarea {
   margin: 0;
   padding: 12px;
-  font: 12px / 20px var(--mono);
+  font: var(--text-sm) / 20px var(--mono);
   tab-size: 4;
 }
 .file-editor-code pre {
@@ -4484,7 +4464,7 @@ kbd {
   max-width: 100%;
   min-height: 34px;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .dock-tab-label {
   min-width: 0;
@@ -4511,7 +4491,7 @@ kbd {
   flex-wrap: wrap;
   gap: 6px;
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   border-left: 1px solid var(--border);
   white-space: normal;
 }
@@ -4547,7 +4527,7 @@ kbd {
 }
 .file-editor-tab button {
   min-height: 34px;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .component-header > :not(.component-name) {
   flex: none;
@@ -4573,7 +4553,7 @@ kbd {
 }
 .rail-tooltip {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-system);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -4583,15 +4563,15 @@ kbd {
   border-radius: var(--radius-sm);
   background: var(--panel-2);
   color: var(--text);
-  box-shadow: 0 3px 12px rgb(0 0 0 / 30%);
-  font-size: 12px;
+  box-shadow: var(--shadow-2);
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
   pointer-events: none;
 }
 .rail-tooltip kbd {
   flex: none;
   color: var(--muted);
-  font: 11px var(--mono);
+  font: var(--text-xs) var(--mono);
 }
 .canvas {
   container-type: inline-size;
@@ -4601,7 +4581,7 @@ kbd {
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  box-shadow: 0 2px 6px rgb(0 0 0 / 20%);
+  box-shadow: var(--shadow-1);
 }
 .canvas-controls .react-flow__controls-button {
   width: 30px;
@@ -4661,7 +4641,7 @@ kbd {
   transform: translate(-50%, -50%);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 .separator.horizontal::after {
   width: 28px;
@@ -4671,19 +4651,10 @@ kbd {
 .utility-resize:is(:hover, :focus-visible, [data-resizing])::after {
   opacity: 1;
 }
+/* Reduced motion keeps color and opacity fades; only movement and scaling are removed. */
 @media (prefers-reduced-motion: reduce) {
-  .separator,
-  .separator::after,
-  .utility-resize,
-  .utility-resize::after,
-  .component-node,
-  .workspace-rail > button,
-  .canvas-controls .react-flow__controls-button,
-  .dock-actions button,
-  .dock-tabs .tab,
-  .file-editor-tab button,
-  .view-tabs button {
-    transition: none;
+  :is(button.primary, button.danger):active:not(:disabled) {
+    transform: none;
   }
 }
 
@@ -4733,7 +4704,7 @@ kbd {
 .workspace-rail[data-expanded='true'] .rail-label,
 .workspace-rail[data-expanded='true'] .rail-group-label {
   display: block;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .rail-group-label {
   padding: 4px 10px;
@@ -4756,7 +4727,7 @@ kbd {
 .review-context span,
 .review-context summary {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .review-title-row,
 .review-status-row {
@@ -4769,6 +4740,12 @@ kbd {
 .panel-status p {
   margin: 0 0 10px;
 }
+.panel-status.compact {
+  padding: 6px 0;
+}
+.panel-status.compact p {
+  margin: 0;
+}
 .panel-status[data-kind='error'] p {
   color: var(--text);
 }
@@ -4778,5 +4755,85 @@ kbd {
 .panel-status pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 12px var(--mono);
+  font: var(--text-sm) var(--mono);
+}
+
+/* Surfaces arrive from what opened them: menus and popovers grow from their trigger's corner,
+   dialogs settle in place over a fading scrim. Closing stays immediate, like macOS menus. */
+.menu-list {
+  transform-origin: top left;
+  animation: surface-in 150ms var(--ease-out);
+}
+.menu-list.right {
+  transform-origin: top right;
+}
+.menu-list.above {
+  transform-origin: bottom left;
+}
+.menu-list.right.above {
+  transform-origin: bottom right;
+}
+.extension-overlay {
+  animation: scrim-in var(--dur-base) var(--ease-out);
+}
+/* Opacity only: any transform, even mid-animation, would make the dialog a containing block
+   for fixed popups and send a Popover opened inside it to the document body. */
+.dialog-shell {
+  animation: scrim-in var(--dur-base) var(--ease-out);
+}
+.rail-tooltip {
+  animation: scrim-in var(--dur-fast) var(--ease-out);
+}
+/* Footer popovers rise from the footer control that opened them. */
+.footer-popover {
+  transform-origin: bottom right;
+  animation: surface-in 150ms var(--ease-out);
+}
+@keyframes surface-in {
+  from {
+    opacity: 0;
+    scale: 0.97;
+  }
+}
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu-list,
+  .footer-popover {
+    animation-name: scrim-in;
+  }
+}
+
+/* Higher contrast: floating surfaces get a defined edge and scrims go fully dark. */
+@media (prefers-contrast: more) {
+  .menu-list,
+  .toast,
+  .extensions-panel,
+  .node-extension-menu,
+  .search-results {
+    border: 1px solid var(--border-hover);
+  }
+  .extension-overlay {
+    background: rgb(0 0 0 / 85%);
+  }
+}
+
+/* Counters and stats keep their width as digits change. */
+.notification-badge,
+.workspace-rail sup,
+.review-count,
+.review-totals,
+.session-worktree-count,
+.usage-window-label {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Focusable scroll regions and popups show focus only when it came from the keyboard. */
+.diff-view:focus-visible,
+.menu-list:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }

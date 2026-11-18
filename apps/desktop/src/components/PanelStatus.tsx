@@ -4,14 +4,17 @@ export default function PanelStatus({
   message,
   details,
   onRetry,
+  compact = false,
 }: {
   kind: 'loading' | 'error'
   message: string
   details?: string
   onRetry?: () => void
+  /** Inside a list or popover: no panel padding. */
+  compact?: boolean
 }) {
   return (
-    <div className="panel-status" data-kind={kind}>
+    <div className={compact ? 'panel-status compact' : 'panel-status'} data-kind={kind}>
       <p role={kind === 'error' ? 'alert' : 'status'}>{message}</p>
       {onRetry && <button onClick={onRetry}>Retry</button>}
       {details && (

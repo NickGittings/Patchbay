@@ -266,13 +266,12 @@
     if (getComputedStyle(dot).animationName !== 'none')
       throw new Error('Project running count dot must remain static')
     // Both Project close entry points must confirm while work is running.
-    const originalConfirm = window.confirm
     const confirmations = []
+    const stopAnswering = smoke.answerConfirms((message) => {
+      confirmations.push(message)
+      return false
+    })
     try {
-      window.confirm = (message) => {
-        confirmations.push(message)
-        return false
-      }
       ;(await projectMenu()).querySelector(`[aria-label="Close ${one.project.name}"]`).click()
       await until('rail close confirmation', () => confirmations.length === 1)
       document.querySelector('[aria-label="Project actions"]').click()
@@ -286,7 +285,7 @@
       if (!s().projects[one.id] || !s().sessions[sidOne]?.running)
         throw new Error('Canceling project close changed running work')
     } finally {
-      window.confirm = originalConfirm
+      stopAnswering()
     }
     // Rail and dock remain usable down to the native minimum window size.
     const originalSize = { width: innerWidth, height: innerHeight }

@@ -8,6 +8,7 @@ import { refreshTasks } from '../../lib/tasks'
 import { requestGitRefresh } from '../../lib/git'
 import { useStore } from '../../store'
 import type { Worktree } from '../../types'
+import PanelStatus from '../PanelStatus'
 
 export default function FooterBranchPicker({
   projectId,
@@ -85,7 +86,7 @@ function BranchChoices({
     }
   }, [projectId, worktree])
   if (error) return <p role="alert">{error}</p>
-  if (!data) return <p>Loading branches…</p>
+  if (!data) return <PanelStatus compact kind="loading" message="Loading branches…" />
   const current = data.trees.find((t) => (worktree ? t.path === worktree : t.current))
   if (!current) return <p>Selected worktree is no longer available.</p>
   return (

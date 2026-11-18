@@ -10,6 +10,7 @@ import { flushMapSaves, saveMapNow } from './mapSave'
 import { closeComponentWindows } from './windows'
 import { forgetMainWorktree } from './mainWorktree'
 import { runningInProject } from './sessionList'
+import { confirmAction } from './confirm'
 
 const fitSoon = (fitView: ReturnType<typeof useReactFlow>['fitView']) =>
   requestAnimationFrame(() => void fitView({ padding: 0.25, maxZoom: 1 }))
@@ -112,11 +113,16 @@ export async function closeProjectTab(id: string) {
   const running = runningInProject(s.sessionRecords, s.sessions, id)
   if (
     running &&
-    !window.confirm(
-      `Close ${entry.name}? ${running} terminal(s) will keep running and remain available in Sessions.`,
-    )
+    !(await confirmAction({
+      title: `Close ${entry.name}`,
+      message: `Close ${entry.name}? ${running} ${running === 1 ? 'terminal' : 'terminals'} will keep running and remain available in Sessions.`,
+      confirmLabel: 'Close project',
+      destructive: false,
+    }))
   )
     return
+  // Closed another way (a recovery banner, another window) while the dialog was open.
+  if (!useStore.getState().projects[id]) return
   try {
     if (!(await flushMapSaves(id))) {
       useStore

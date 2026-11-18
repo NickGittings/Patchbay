@@ -10,6 +10,7 @@ import {
 } from '../../lib/history'
 import { useStore } from '../../store'
 import './history.css'
+import PanelStatus from '../PanelStatus'
 
 const colors = ['#8b9eff', '#d598ed', '#65c9b0', '#eab66b', '#76bce7']
 
@@ -92,7 +93,7 @@ function HistoryBrowser({
         >
           {open ? '▾' : '▸'} Recent commits
         </button>
-        <button aria-label="Refresh history" onClick={retry}>
+        <button aria-label="Refresh history" title="Refresh history" onClick={retry}>
           ↻
         </button>
       </header>
@@ -121,13 +122,13 @@ function HistoryBrowser({
               {error} <button onClick={retry}>Retry</button>
             </div>
           ) : !repos ? (
-            <div className="hint">Loading repositories…</div>
+            <PanelStatus compact kind="loading" message="Loading repositories…" />
           ) : !repos.length ? (
             <div className="hint">No Git repository.</div>
           ) : !page ? (
-            <div className="hint">Loading commits…</div>
+            <PanelStatus compact kind="loading" message="Loading commits…" />
           ) : !page.commits.length ? (
-            <div className="hint">No commits yet.</div>
+            <p className="panel-empty panel-empty-start">No commits yet.</p>
           ) : (
             page.commits.map((commit, i) => {
               const row = rows[i]
@@ -226,7 +227,7 @@ function CommitFiles({
       {error ? (
         <div className="hint">{error}</div>
       ) : !files ? (
-        <div className="hint">Loading files…</div>
+        <PanelStatus compact kind="loading" message="Loading files…" />
       ) : !files.length ? (
         <div className="hint">No changed files.</div>
       ) : (

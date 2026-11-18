@@ -15,6 +15,7 @@ import { useStore } from '../store'
 import type { ChangedFile, DirEntry } from '../types'
 import DiffView from './changes/DiffView'
 import { useComponentChanges } from './changes/useComponentChanges'
+import PanelStatus from './PanelStatus'
 
 /**
  * What the tree marks: a component's uncommitted files and those its agents touched, with the
@@ -80,7 +81,7 @@ function Directory({ path, depth, refresh }: { path: string; depth: number; refr
     }
   }, [path, refresh, projectId, task])
   if (error) return <div className="hint file-tree-error">{error}</div>
-  if (!entries) return <div className="hint">Loading…</div>
+  if (!entries) return <PanelStatus compact kind="loading" message="Loading files…" />
   if (!entries.length)
     return (
       <div className="hint" style={{ paddingLeft: 12 + depth * 16 }}>

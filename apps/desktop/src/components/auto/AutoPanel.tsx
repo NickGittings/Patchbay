@@ -63,23 +63,42 @@ export default function AutoPanel({
     finished &&
     (newRunFor === JSON.stringify([projectId, task, run.runId]) ||
       !!autoDrafts.get(autoDraftKey(projectId, task))?.story)
+  // Run controls whose call is in flight, so a second press can't send one twice. Controls that
+  // advance the run (merge, resume, skip) exclude each other; Pause and Stop stay available so
+  // they can still cancel a slow Resume.
+  const [pending, setPending] = useState<ReadonlySet<SimpleAction>>(new Set())
+  const advancing = (['mergeApproval', 'resumeAuto', 'skipStage'] as SimpleAction[]).some((a) =>
+    pending.has(a),
+  )
+  const blocked = (action: SimpleAction) =>
+    pending.has(action) ||
+    (advancing && ['mergeApproval', 'resumeAuto', 'skipStage'].includes(action))
   const act = (
     action: SimpleAction,
     fn: (id: string, task: string | null) => void | Promise<void>,
   ) => {
-    if (projectId)
-      void Promise.resolve(fn(projectId, task))
-        .then(() => {
-          if (simple)
-            // Auto controls name the agent for the conversation but never claim its run.
-            logSimple(projectId, task, {
-              kind: 'action',
-              action,
-              stage: simpleStageOf(run?.stage),
-              sessionId: run?.sessionId,
-            })
-        })
-        .catch((e) => setError(String(e)))
+    if (!projectId || blocked(action)) return
+    setPending((current) => new Set(current).add(action))
+    void Promise.resolve()
+      .then(() => fn(projectId, task))
+      .then(() => {
+        if (simple)
+          // Auto controls name the agent for the conversation but never claim its run.
+          logSimple(projectId, task, {
+            kind: 'action',
+            action,
+            stage: simpleStageOf(run?.stage),
+            sessionId: run?.sessionId,
+          })
+      })
+      .catch((e) => setError(String(e)))
+      .finally(() =>
+        setPending((current) => {
+          const next = new Set(current)
+          next.delete(action)
+          return next
+        }),
+      )
   }
   // Opens Power when sleep prevention can't do its job, so the warning isn't left collapsed.
   const powerProblem =
@@ -222,18 +241,25 @@ export default function AutoPanel({
         )}
         <div className="auto-controls">
           {run.stage === 'mergeGate' && run.status === 'waitingOnYou' && !inPlace(run) && (
-            <button className="primary" onClick={() => act('mergeApproval', mergeNow)}>
+            <button
+              className="primary"
+              disabled={blocked('mergeApproval')}
+              onClick={() => act('mergeApproval', mergeNow)}
+            >
               Merge now
             </button>
           )}
           {run.status === 'running' ? (
-            <button onClick={() => act('pauseAuto', pauseAuto)}>Pause</button>
+            <button disabled={blocked('pauseAuto')} onClick={() => act('pauseAuto', pauseAuto)}>
+              Pause
+            </button>
           ) : (
             stoppable && (
               <button
                 className={
                   run.stage === 'mergeGate' && run.status === 'waitingOnYou' ? undefined : 'primary'
                 }
+                disabled={blocked('resumeAuto')}
                 onClick={() => act('resumeAuto', (id, task) => resumeAuto(id, task))}
               >
                 {run.resumeTrigger ? 'Resume now' : 'Resume'}
@@ -249,12 +275,16 @@ export default function AutoPanel({
             </button>
           )}
           {['paused', 'failed', 'waitingOnYou'].includes(run.status) && (
-            <button onClick={() => act('skipStage', skipStage)}>
+            <button disabled={blocked('skipStage')} onClick={() => act('skipStage', skipStage)}>
               {run.stage === 'scan' ? 'Continue with available findings' : 'Skip stage'}
             </button>
           )}
           {stoppable && (
-            <button className="auto-stop" onClick={() => act('stopAuto', stopAuto)}>
+            <button
+              className="auto-stop"
+              disabled={blocked('stopAuto')}
+              onClick={() => act('stopAuto', stopAuto)}
+            >
               Stop
             </button>
           )}

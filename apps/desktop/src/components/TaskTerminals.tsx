@@ -8,6 +8,7 @@ import { useStore } from '../store'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 import TerminalControl from './TerminalControl'
+import { confirmAction } from '../lib/confirm'
 
 export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) {
   const sessions = useStore((s) => s.sessions)
@@ -47,6 +48,7 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
             aria-label={
               maximized === sid ? `Restore ${terminal.name}` : `Maximize ${terminal.name}`
             }
+            title={maximized === sid ? 'Restore' : 'Maximize'}
             onClick={() => s.setMaximizedTerminal(maximized === sid ? null : sid)}
           >
             {maximized === sid ? '⤡' : '⤢'}
@@ -56,6 +58,7 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
               <button
                 className="group-popout"
                 aria-label={`Open ${label} in its own window`}
+                title="Open in its own window"
                 onClick={() => void openComponentWindow(componentId, label)}
               >
                 ⧉
@@ -64,6 +67,7 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
           {!entry.retained && (
             <button
               title="Configure terminal command"
+              aria-label={`Configure ${terminal.name} command`}
               onClick={() => setEditing(editing === sid ? null : sid)}
             >
               ⚙
@@ -72,8 +76,15 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
           <button
             aria-label={`Remove ${terminal.name}`}
             title="Remove from this task"
-            onClick={() => {
-              if (session?.running && !window.confirm(`Stop ${terminal.name} and remove it?`))
+            onClick={async () => {
+              if (
+                session?.running &&
+                !(await confirmAction({
+                  title: `Remove ${terminal.name}`,
+                  message: `Stop ${terminal.name} and remove it from this task?`,
+                  confirmLabel: 'Stop and remove',
+                }))
+              )
                 return
               void removeTaskTerminal(componentId, terminal.id, sid)
             }}

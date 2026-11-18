@@ -334,6 +334,7 @@ export default function PlanView() {
                   Story: {stories.find((s) => s.id === planStory)?.title ?? planStory}{' '}
                   <button
                     aria-label="Dismiss story"
+                    title="Dismiss story"
                     onClick={() =>
                       projectId &&
                       useStore
