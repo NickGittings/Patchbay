@@ -35,7 +35,7 @@ Prerequisites: Rust via rustup (edition 2024) and Node.js matching `apps/desktop
 | Run a smoke subset                 | `node scripts/smoke-all.mjs views git --bail`                    |
 | Retake README screenshots (macOS)  | `npm run screenshots`                                            |
 
-For code changes, run the Rust formatting, lint and test checks and `npm run check`. Run the desktop smoke suite (`npm run smoke:all`) only when validating a merge, on the merged tree. If a desktop session is unavailable at merge time, report the skipped suite. `npm run check` includes TypeScript, Oxlint, Prettier, Vitest, and Node smoke-fixture tests. See `package.json` for area-specific `smoke:*` scripts. Install optional nextest with `cargo install cargo-nextest --locked`.
+For code changes, run the Rust formatting, lint and test checks and `npm run check`. Before merging into `main`, run the desktop smoke suite (`npm run smoke:all`) on the proposed merge result in a temporary worktree. Update `main` after the suite passes. If a desktop session is unavailable, report the blocker before updating `main`. `npm run check` includes TypeScript, Oxlint, Prettier, Vitest, and Node smoke-fixture tests. See `package.json` for area-specific `smoke:*` scripts. Install optional nextest with `cargo install cargo-nextest --locked`.
 
 ### Testing constraints
 
