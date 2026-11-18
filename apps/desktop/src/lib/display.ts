@@ -2,6 +2,7 @@ import {
   isReviewAgentScope,
   TASK_ROOT_SCOPE,
   type ComponentKind,
+  type ServiceIssue,
   type SessionState,
   type TerminalKind,
   type TerminalSpec,
@@ -11,9 +12,25 @@ import { ago } from './review'
 export const INTERRUPTED_SESSION_DETAIL =
   'The session service restarted. Choose Resume in Sessions or Restart to recover.'
 
-/** Whether an older version's service, kept alive by running work, blocks this one. */
-export const isOutdatedServiceError = (error: string | undefined) =>
-  error?.includes('still running work') ?? false
+/**
+ * Which service problem needs the user. A stop in progress or just failed stays on `older` even
+ * though the connection error changes while the old service exits.
+ */
+export function serviceBlock(state: {
+  serviceConnected: boolean
+  serviceIssue?: ServiceIssue
+  serviceRetirement: 'idle' | 'stopping' | 'reconnecting'
+  serviceRetirementError?: string
+}): 'older' | 'newer' | undefined {
+  if (state.serviceConnected) return undefined
+  if (
+    state.serviceIssue === 'olderServiceBusy' ||
+    state.serviceRetirement !== 'idle' ||
+    state.serviceRetirementError
+  )
+    return 'older'
+  return state.serviceIssue === 'newerService' ? 'newer' : undefined
+}
 
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 

@@ -565,25 +565,23 @@
       if (!disabled) smoke.store.setState({ serviceConnected: false })
       return disabled
     })
-    // Chat has no terminal pane to carry the older-service action, so its banner offers it.
-    const outdatedBanner = () =>
-      [...document.querySelectorAll('.recovery-banner')].find((banner) =>
-        [...banner.querySelectorAll('button')].some(
-          (button) => button.textContent.trim() === 'Stop older sessions',
-        ),
+    // One banner carries the older-service action in every mode, with or without a terminal.
+    const stopOlderButtons = () =>
+      [...document.querySelectorAll('button')].filter(
+        (button) => button.textContent.trim() === 'Stop older sessions',
       )
-    state().setSimpleMode(true)
-    smoke.store.setState({
-      serviceError: 'an older Patchbay session service is still running work',
-    })
-    await until('older-service banner in chat', () => {
-      const banner = outdatedBanner()
-      if (!banner) smoke.store.setState({ serviceConnected: false })
-      return banner
-    })
-    smoke.store.setState({ serviceConnected: true, serviceError: undefined })
-    await until('older-service banner cleared', () => !outdatedBanner())
-    state().setSimpleMode(false)
+    for (const simple of [true, false]) {
+      state().setSimpleMode(simple)
+      await until(`older-service banner (${simple ? 'chat' : 'full'} mode)`, () => {
+        const buttons = stopOlderButtons()
+        if (buttons.length === 1 && buttons[0].closest('.recovery-banner')) return true
+        // The two-second reconciler clears both fields because the real service is connected.
+        smoke.store.setState({ serviceConnected: false, serviceIssue: 'olderServiceBusy' })
+        return false
+      })
+    }
+    smoke.store.setState({ serviceConnected: true, serviceIssue: undefined })
+    await until('older-service banner cleared', () => stopOlderButtons().length === 0)
     for (const closePanel of [
       () => document.querySelector('.workspace-rail [aria-label="Sessions"]').click(),
       () =>

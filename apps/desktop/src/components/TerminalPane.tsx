@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   INTERRUPTED_SESSION_DETAIL,
-  isOutdatedServiceError,
   paneAutoStarts,
+  serviceBlock,
   sessionRun,
   terminalStatus,
 } from '../lib/display'
@@ -12,7 +12,6 @@ import { attach, detachHost, fit, hostVisible, ownsTerminalHost } from '../lib/t
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
-import OutdatedServiceNotice from './OutdatedServiceNotice'
 
 /**
  * Shared xterm host with snapshot replay, sizing and first-use shell startup. Shows the session of
@@ -37,7 +36,7 @@ export default function TerminalPane({
   const task = taskProp === undefined ? activeTask : taskProp
   const sid = existingSessionId ?? sessionId(componentId, terminal.id, task)
   const connected = useStore((s) => s.serviceConnected)
-  const serviceError = useStore((s) => s.serviceError)
+  const blocked = useStore(serviceBlock)
   const session = useStore((s) => s.sessions[sid])
   const status = terminalStatus(terminal.kind, session)
   const unseen = status.unseenSince
@@ -163,13 +162,11 @@ export default function TerminalPane({
     <div className="terminal-area">
       {!connected && (
         <div className="terminal-notice" role="status">
-          {isOutdatedServiceError(serviceError) ? (
-            <OutdatedServiceNotice />
-          ) : serviceError?.includes('protocol mismatch') ? (
-            serviceError
-          ) : (
-            'Disconnected · reconnecting to session service…'
-          )}
+          {blocked === 'older'
+            ? 'Disconnected · older Patchbay sessions are blocking the session service'
+            : blocked === 'newer'
+              ? 'Disconnected · a newer Patchbay version is running the session service'
+              : 'Disconnected · reconnecting to session service…'}
         </div>
       )}
       {session?.interrupted && (

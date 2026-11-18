@@ -4,23 +4,14 @@ import { projectRelink } from '../lib/ipc'
 import { reloadSavedMap, saveMapNow } from '../lib/mapSave'
 import { closeProjectTab } from '../lib/project'
 import { forgetMainWorktree, refreshMainWorktree } from '../lib/mainWorktree'
-import { isOutdatedServiceError } from '../lib/display'
-import OutdatedServiceNotice from './OutdatedServiceNotice'
+import ServiceBanner from './ServiceBanner'
 
 /** Recovery and map-save failures stay visible even with utility panels closed. */
 export default function RecoveryBanners() {
   const active = useStore((s) => s.projects[s.activeProjectId ?? ''])
-  // Chat rarely has a terminal on screen to carry this notice.
-  const outdatedService = useStore(
-    (s) => s.simpleMode && !s.serviceConnected && isOutdatedServiceError(s.serviceError),
-  )
   return (
     <>
-      {outdatedService && (
-        <div className="recovery-banner" role="alert">
-          <OutdatedServiceNotice />
-        </div>
-      )}
+      <ServiceBanner />
       {active?.mapSave?.status === 'error' && (
         <div className="recovery-banner" role="alert">
           <span>Map save failed{active.mapSave.error ? `: ${active.mapSave.error}` : '.'}</span>

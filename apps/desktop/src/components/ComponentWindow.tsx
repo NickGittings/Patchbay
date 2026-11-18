@@ -24,6 +24,7 @@ import { type Project } from '../types'
 import ChangesPanel from './changes/ChangesPanel'
 import FileTree from './FileTree'
 import FileEditor from './FileEditor'
+import ServiceBanner from './ServiceBanner'
 import TerminalGrid from './TerminalGrid'
 
 /** Panel sizes saved for this window, applied once the project model has loaded. */
@@ -153,6 +154,7 @@ export default function ComponentWindow({ id }: { id: string }) {
           {revealLabel}
         </button>
       </header>
+      <ServiceBanner />
       {message && (
         <div className="window-message" role="status">
           {message}

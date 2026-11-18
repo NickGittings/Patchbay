@@ -3,24 +3,25 @@ import type { AgentReport, SessionState, SessionStatus, TerminalKind } from '../
 import {
   describeTerminal,
   foldedStatus,
-  isOutdatedServiceError,
+  serviceBlock,
   paneAutoStarts,
   sessionRun,
   terminalStatus,
 } from './display'
 
-test('only a service kept alive by running work counts as outdated', () => {
+test('a service block follows the issue and survives a stop in progress', () => {
+  const service = {
+    serviceConnected: false,
+    serviceRetirement: 'idle' as const,
+  }
+  expect(serviceBlock(service)).toBeUndefined()
+  expect(serviceBlock({ ...service, serviceIssue: 'olderServiceBusy' })).toBe('older')
+  expect(serviceBlock({ ...service, serviceIssue: 'newerService' })).toBe('newer')
+  expect(serviceBlock({ ...service, serviceRetirement: 'reconnecting' })).toBe('older')
+  expect(serviceBlock({ ...service, serviceRetirementError: 'connection lost' })).toBe('older')
   expect(
-    isOutdatedServiceError(
-      'Session service protocol mismatch (service 1, this build 2): an older Patchbay session service is still running work, which was preserved',
-    ),
-  ).toBe(true)
-  expect(
-    isOutdatedServiceError(
-      'Session service protocol mismatch (service 3, this build 2). Use a matching Patchbay version.',
-    ),
-  ).toBe(false)
-  expect(isOutdatedServiceError(undefined)).toBe(false)
+    serviceBlock({ ...service, serviceConnected: true, serviceIssue: 'olderServiceBusy' }),
+  ).toBeUndefined()
 })
 
 const NOW = 1_000_000

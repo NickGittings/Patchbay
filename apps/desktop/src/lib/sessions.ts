@@ -34,6 +34,7 @@ import {
   type TerminalEvent,
   type TerminalSnapshot,
   type TerminalSpec,
+  type ServiceIssue,
 } from '../types'
 import {
   mapAgentStart,
@@ -178,11 +179,14 @@ export function listenForTerminals() {
   listening ??= Promise.all([
     onTerminalEvent(handleTerminalEvent),
     listen<ServiceRetirement>('patchbay://service-retirement', (e) => applyRetirement(e.payload)),
-    listen<{ connected: boolean; instanceId?: string; error?: string }>(
+    listen<{ connected: boolean; instanceId?: string; issue?: ServiceIssue | null }>(
       'patchbay://service',
       (e) => {
         if (!e.payload.connected)
-          useStore.setState({ serviceConnected: false, serviceError: e.payload.error })
+          useStore.setState({
+            serviceConnected: false,
+            serviceIssue: e.payload.issue ?? undefined,
+          })
         else void reconcileSessions().catch(() => {})
       },
     ),
@@ -1101,7 +1105,6 @@ function sameSession(a: SessionState | undefined, b: SessionState) {
     a.exitedMs === b.exitedMs &&
     a.notice === b.notice &&
     a.interrupted === b.interrupted &&
-    a.truncated === b.truncated &&
     a.disconnected === undefined &&
     JSON.stringify(a.status) === JSON.stringify(b.status) &&
     JSON.stringify(a.activity) === JSON.stringify(b.activity) &&
@@ -1299,7 +1302,7 @@ export function reconcileSessions(force = true): Promise<void> {
       }
       useStore.setState({
         serviceConnected: true,
-        serviceError: undefined,
+        serviceIssue: undefined,
         serviceRetirement: 'idle',
         serviceRetirementError: undefined,
       })

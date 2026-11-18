@@ -48,6 +48,7 @@ import type {
   Link,
   DetectionProvenance,
   Project,
+  ServiceIssue,
   SessionState,
   Task,
   TerminalSpec,
@@ -277,8 +278,8 @@ interface State {
   sessionRecords: SessionRecord[]
   serviceInstance: string
   serviceConnected: boolean
-  /** Why the last connection to the session service failed, if it did. */
-  serviceError?: string
+  /** What the user must resolve before the session service can connect, if anything. */
+  serviceIssue?: ServiceIssue
   serviceRetirement: 'idle' | 'stopping' | 'reconnecting'
   serviceRetirementError?: string
   /** The rail's open utility panel, Sessions and Activity included (UI only). */
