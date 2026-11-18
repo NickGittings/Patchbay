@@ -1,12 +1,14 @@
 import NoticeContent from './NoticeContent'
 import { linkEventId, linkKind, type Notice } from '../lib/notificationHistory'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { revealNotification } from '../lib/notifications'
 import { notificationLinkLabel, toastPlacement } from '../lib/notificationToast'
 import { focusTerminal } from '../lib/terminals'
 
 const HIDE_AFTER_MS = 8000
+/** Matches the leave transition in index.css. */
+const LEAVE_MS = 160
 
 /**
  * Each incoming notice, agent link and app message gets its own card in the chosen corner. Every card
@@ -46,6 +48,16 @@ function ToastCard({ card }: { card: Notice }) {
   const activeProjectId = useStore((s) => s.project?.id ?? null)
   const messageId = useStore((s) => s.messageId)
   const action = useStore((s) => s.messageAction)
+  const [leaving, setLeaving] = useState(false)
+  const leaveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  // Plays the leave transition, then removes the card, once: later auto-hides and clicks are
+  // ignored, and a card unmounted meanwhile is already gone.
+  const leave = (remove: () => void) => {
+    if (leaveTimer.current) return
+    setLeaving(true)
+    leaveTimer.current = setTimeout(remove, LEAVE_MS)
+  }
+  useEffect(() => () => clearTimeout(leaveTimer.current), [])
 
   useEffect(() => {
     // Checked when due rather than tracked, so a card that appears under the pointer counts, and
@@ -54,7 +66,7 @@ function ToastCard({ card }: { card: Notice }) {
     const hide = () => {
       if (!document.hasFocus() || element.current?.matches(':hover'))
         timer = setTimeout(hide, HIDE_AFTER_MS)
-      else hideCard(card)
+      else leave(() => hideCard(card))
     }
     const restart = () => {
       clearTimeout(timer)
@@ -72,9 +84,9 @@ function ToastCard({ card }: { card: Notice }) {
   if (link) {
     const label = notificationLinkLabel({ ...link, label: card.message }, activeProjectId)
     return (
-      <div className="toast" ref={element}>
+      <div className="toast" ref={element} data-leaving={leaving || undefined}>
         <div className="toast-text notification-row">
-          <NoticeContent kind={linkKind(link)}>
+          <NoticeContent kind={linkKind(link)} heading={card.heading}>
             <span className="notification-message" title={label}>
               {label}
             </span>
@@ -100,7 +112,7 @@ function ToastCard({ card }: { card: Notice }) {
         <button
           className="toast-close"
           aria-label="Dismiss notification"
-          onClick={() => useStore.getState().dismissToastCard(card.id)}
+          onClick={() => leave(() => useStore.getState().dismissToastCard(card.id))}
         >
           ×
         </button>
@@ -117,7 +129,7 @@ function ToastCard({ card }: { card: Notice }) {
       ? action
       : null
   return (
-    <div className="toast" ref={element}>
+    <div className="toast" ref={element} data-leaving={leaving || undefined}>
       <NoticeContent kind={card.kind} heading={card.heading}>
         <span className="toast-text">{card.message}</span>
       </NoticeContent>
@@ -125,7 +137,7 @@ function ToastCard({ card }: { card: Notice }) {
       <button
         className="toast-close"
         aria-label={message ? 'Dismiss' : 'Dismiss notification'}
-        onClick={() => hideCard(card)}
+        onClick={() => leave(() => hideCard(card))}
       >
         ×
       </button>
