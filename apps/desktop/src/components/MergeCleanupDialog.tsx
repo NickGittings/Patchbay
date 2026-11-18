@@ -7,6 +7,7 @@ import {
   deleteMergedWork,
   handledCleanup,
   completeMergeChat,
+  completeTaskContext,
   type CleanupJob,
 } from '../lib/mergeCleanup'
 
@@ -66,6 +67,9 @@ export default function MergeCleanupDialog() {
               break
             }
           }
+          // A failure leaves the job for the next poll; the reset's stable id prevents repeats.
+          if (next.choice === 'keep' && !(await completeTaskContext(next).catch(() => false)))
+            continue
           handledCleanup(next.id)
         }
       } finally {
@@ -79,10 +83,19 @@ export default function MergeCleanupDialog() {
       clearInterval(timer)
     }
   }, [job])
-  const keep = () => {
+  const keep = async () => {
     if (busy || checkingPreview || !job) return
-    handledCleanup(job.id)
-    setJob(undefined)
+    setBusy(true)
+    setError(undefined)
+    try {
+      await completeTaskContext(job)
+      handledCleanup(job.id)
+      setJob(undefined)
+    } catch (e) {
+      setError(`Could not start a fresh lead conversation: ${String(e)}`)
+    } finally {
+      setBusy(false)
+    }
   }
   const retryPreview = async () => {
     if (!job) return
@@ -102,10 +115,10 @@ export default function MergeCleanupDialog() {
   return (
     <Dialog
       title="Merge complete"
-      onClose={keep}
+      onClose={() => void keep()}
       footer={
         <>
-          <button autoFocus disabled={busy || checkingPreview} onClick={keep}>
+          <button autoFocus disabled={busy || checkingPreview} onClick={() => void keep()}>
             Keep
           </button>
           {!preview && (

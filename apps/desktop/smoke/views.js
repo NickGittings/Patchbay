@@ -326,6 +326,12 @@
     await until('implementation agent', () => tiles('@task').length === 2)
     const agent = state().rootTerminals.find((t) => t.kind === 'agent')
     const agentSid = smoke.sessionId('@task', agent.id)
+    const agentHeader = query(`.terminal-tile[data-session="${agentSid}"] .terminal-tile-header`)
+    assert(
+      agentHeader?.querySelector('.hint')?.textContent === 'Build ›',
+      'root agent tile does not name its role',
+    )
+    assert(!agentHeader.textContent.includes('Task root'), 'root agent tile says Task root')
     await until('automatic plan handoff', () => textOf(agentSid).includes('# Smoke handoff'))
     await until('planner stopped after handoff', () => !state().sessions[sid]?.running)
     assert(!tiles('alpha').length, 'highlighting a component added its terminals to the task')

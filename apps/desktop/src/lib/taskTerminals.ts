@@ -1,17 +1,20 @@
 import type { TaskWorkspace, FlowNode } from '../store'
+import { sessionRole } from './sessionList'
 import {
   MAP_SCOPE,
   TASK_ROOT_SCOPE,
   showsInDock,
   sessionId,
   type RuntimeTerminal,
+  type SessionRecord,
   type SessionState,
   type TerminalSpec,
 } from '../types'
 
 export interface TaskTerminal {
   componentId: string
-  label: string
+  /** The map component's name; absent when no component on the map owns the terminal. */
+  label?: string
   terminal: TerminalSpec
   sid: string
   retained?: boolean
@@ -38,7 +41,6 @@ export function taskTerminals(
   const entries: TaskTerminal[] = [
     ...workspace.rootTerminals.map((terminal) => ({
       componentId: TASK_ROOT_SCOPE,
-      label: 'Task root',
       terminal,
       sid: sessionId(TASK_ROOT_SCOPE, terminal.id, task, projectId),
     })),
@@ -77,11 +79,27 @@ export function retainedTerminal(
 ): TaskTerminal {
   return {
     componentId: runtime.componentId,
-    label: nodes.find((n) => n.id === runtime.componentId)?.data.name ?? 'Task root',
+    label: nodes.find((n) => n.id === runtime.componentId)?.data.name,
     terminal: runtime.terminal,
     sid,
     retained: true,
   }
+}
+/**
+ * What a tile's header leads with: its component, else the kind of agent it holds. The session's
+ * record decides when there is one, since only it knows a root agent is fixing a review.
+ */
+export function tileLabel(
+  { componentId, label, terminal }: Pick<TaskTerminal, 'componentId' | 'label' | 'terminal'>,
+  record?: Pick<SessionRecord, 'metadata'>,
+): string | undefined {
+  if (label) return label
+  const metadata = record?.metadata ?? {
+    componentId,
+    kind: terminal.kind,
+    terminalId: terminal.id,
+  }
+  return metadata.kind === 'agent' ? sessionRole(metadata).role : undefined
 }
 /** With a maximized terminal, only that one. */
 export function shownTaskTerminals(entries: TaskTerminal[], maximized: string | null) {

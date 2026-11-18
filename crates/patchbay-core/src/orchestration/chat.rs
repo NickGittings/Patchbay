@@ -79,6 +79,9 @@ pub struct Reset {
     pub next_session: String,
     pub phase: ResetPhase,
     pub clear_history: bool,
+    /// The worktree's task finished: the new lead starts without its checkpoint or results.
+    #[serde(default)]
+    pub complete_task: bool,
     pub error: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +101,19 @@ pub struct Handoff {
     pub generation: u64,
     pub text: String,
     pub clear_history: bool,
+    #[serde(default)]
+    pub complete_task: bool,
+}
+/// Work settled before a task completed. It stays stored but leaves later lead handoffs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishedWork {
+    #[serde(default)]
+    pub rounds: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub information: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub workflows: std::collections::BTreeSet<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -228,6 +244,8 @@ pub struct Team {
     pub checkpoint_required: bool,
     #[serde(default)]
     pub last_reset_id: Option<String>,
+    #[serde(default)]
+    pub finished: FinishedWork,
     pub error: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,6 +347,8 @@ pub enum Control {
         session: String,
         #[serde(rename = "clearHistory")]
         clear_history: bool,
+        #[serde(default, rename = "completeTask")]
+        complete_task: bool,
     },
     ResolveDelivery {
         id: String,
@@ -567,6 +587,7 @@ pub fn initialize(
             checkpoint,
             checkpoint_required: false,
             last_reset_id: None,
+            finished: FinishedWork::default(),
             error: None,
         };
         s.owners.push(Owner {
@@ -1676,6 +1697,7 @@ pub fn control(
                 id,
                 session,
                 clear_history,
+                complete_task,
             } => {
                 valid_id(&id)?;
                 ensure_available_for_team(s, &t)?;
@@ -1696,7 +1718,8 @@ pub fn control(
                     ensure!(
                         reset.id == id
                             && reset.next_session == session
-                            && reset.clear_history == clear_history,
+                            && reset.clear_history == clear_history
+                            && reset.complete_task == complete_task,
                         "A lead replacement is already pending"
                     );
                 } else if t.last_reset_id.as_deref() != Some(&id)
@@ -1717,6 +1740,7 @@ pub fn control(
                         next_session: session,
                         phase: ResetPhase::Queued,
                         clear_history,
+                        complete_task,
                         error: None,
                     });
                 }
@@ -1855,7 +1879,22 @@ fn retained_briefing(text: &str) -> String {
     excerpt(text.trim_end(), 8000)
 }
 fn recovery_text(s: &Store, t: &Team) -> Result<String> {
-    let rounds: Vec<_> = s.runs.iter().filter(|r| r.chat_team.as_deref() == Some(&t.id)).map(|r| serde_json::json!({
+    let open_runs: Vec<_> = s
+        .runs
+        .iter()
+        .filter(|r| r.chat_team.as_deref() == Some(&t.id) && !t.finished.rounds.contains(&r.id))
+        .collect();
+    let open_information: Vec<_> = t
+        .information_requests
+        .iter()
+        .filter(|r| !t.finished.information.contains(&r.id))
+        .collect();
+    let open_workflows: Vec<_> = t
+        .requests
+        .iter()
+        .filter(|r| !t.finished.workflows.contains(&r.id))
+        .collect();
+    let rounds: Vec<_> = open_runs.iter().map(|r| serde_json::json!({
         "id": r.id, "state": r.state, "target": r.target, "integratedHead": r.integrated_head, "error": r.error,
         "assignments": r.jobs.iter().map(|j| serde_json::json!({"id":j.id,"sessionId":j.session_id,"instructions":j.instructions,"components":j.components,"paths":j.paths,"dependencies":j.dependencies,"sharedWorktree":j.shared_worktree,"resultKind":j.result_kind,"preset":j.preset,"state":j.state,"base":j.base,"commit":j.commit,"summary":j.summary,"integratedHead":j.integrated_head,"error":j.error})).collect::<Vec<_>>()
     })).collect();
@@ -1883,8 +1922,8 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         t.original_briefing,
         t.current_plan,
         t.saved_context,
-        serde_json::to_string(&t.information_requests)?,
-        serde_json::to_string(&t.requests)?,
+        serde_json::to_string(&open_information)?,
+        serde_json::to_string(&open_workflows)?,
         t.state
     );
     let full = format!("{}{}", render(&t.checkpoint, &rounds)?, supplement);
@@ -1900,16 +1939,16 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         remaining: excerpt(&t.checkpoint.remaining, 1024),
         validation: excerpt(&t.checkpoint.validation, 1024),
     };
-    let rounds: Vec<_> = s.runs.iter().rev().filter(|r| r.chat_team.as_deref() == Some(&t.id)).take(8).map(|r| serde_json::json!({
+    let rounds: Vec<_> = open_runs.iter().rev().take(8).map(|r| serde_json::json!({
         "id": r.id, "state": r.state, "integratedHead": r.integrated_head,
         "assignments": r.jobs.len(), "unfinishedAssignments": r.jobs.iter().filter(|j| !job_done(j)).count(),
         "error": r.error.as_deref().map(|e| excerpt(e, 256)),
     })).collect();
-    let information: Vec<_> = t.information_requests.iter().rev().filter(|r| r.response.is_none()).chain(t.information_requests.iter().rev().filter(|r| r.response.is_some())).take(16).map(|r| serde_json::json!({
+    let information: Vec<_> = open_information.iter().rev().filter(|r| r.response.is_none()).chain(open_information.iter().rev().filter(|r| r.response.is_some())).take(16).map(|r| serde_json::json!({
         "id": r.id, "recipient": r.recipient, "generation": r.generation,
         "question": excerpt(&r.question, 256), "response": r.response.as_deref().map(|text| excerpt(text, 512)), "error": r.error,
     })).collect();
-    let workflows: Vec<_> = t.requests.iter().rev().take(16).map(|r| serde_json::json!({
+    let workflows: Vec<_> = open_workflows.iter().rev().take(16).map(|r| serde_json::json!({
         "id": r.id, "action": r.action, "state": r.state, "result": r.result.as_deref().map(|text| excerpt(text, 256)),
     })).collect();
     let compact = format!(
@@ -1918,7 +1957,7 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         excerpt(&t.original_briefing, 2048),
         excerpt(&t.current_plan, 4000),
         excerpt(&t.saved_context, 8000),
-        t.information_requests.len(),
+        open_information.len(),
         serde_json::to_string(&information)?,
         serde_json::to_string(&workflows)?,
         excerpt(&scopes, 2048),
@@ -1929,6 +1968,37 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         "{}\n\n{notice}",
         excerpt(&compact, MESSAGE_LIMIT - notice.len() - 2)
     ))
+}
+/// A confirmed replacement after finished work: nothing tells the new lead to continue it.
+fn finish_task(t: &mut Team, runs: &[Run]) {
+    let id = t.id.clone();
+    t.finished.rounds.extend(
+        runs.iter()
+            .filter(|r| {
+                r.chat_team.as_deref() == Some(&id)
+                    && (r.state == State::Stopped || r.jobs.iter().all(job_done))
+            })
+            .map(|r| r.id.clone()),
+    );
+    let answered: Vec<_> = t
+        .information_requests
+        .iter()
+        .filter(|r| r.response.is_some() || r.error.is_some())
+        .map(|r| r.id.clone())
+        .collect();
+    t.finished.information.extend(answered);
+    let settled: Vec<_> = t
+        .requests
+        .iter()
+        .filter(|r| ["completed", "failed"].contains(&r.state.as_str()))
+        .map(|r| r.id.clone())
+        .collect();
+    t.finished.workflows.extend(settled);
+    t.checkpoint.goal.clear();
+    t.checkpoint.remaining = "No task is in progress. Wait for the user's next request.".into();
+    t.checkpoint.validation.clear();
+    t.saved_context.clear();
+    t.current_plan.clear();
 }
 pub(super) fn restore(s: &mut Store, project: &str) {
     for t in s.teams.iter_mut().filter(|t| t.project_id == project) {
@@ -2088,6 +2158,9 @@ pub fn reconcile(
                         }
                         t.lead.preset.name = r.metadata.name.clone();
                         t.lead.preset.adapter = r.metadata.adapter;
+                        if reset.complete_task {
+                            finish_task(&mut t, &s.runs);
+                        }
                         let text = format!(
                             "Goal: {}\nConstraints: {}\nDecisions: {}\nRemaining: {}\nValidation: {}\nRetained delegation rounds: {}. Pending worker updates will be delivered when ready.",
                             t.checkpoint.goal,
@@ -2104,6 +2177,7 @@ pub fn reconcile(
                             generation,
                             text,
                             clear_history: reset.clear_history,
+                            complete_task: reset.complete_task,
                         });
                         t.last_reset_id = Some(reset.id.clone());
                         t.reset = None;
@@ -2301,6 +2375,7 @@ fn prepare_lead(
             next_session,
             phase: ResetPhase::Queued,
             clear_history,
+            complete_task: false,
             error: None,
             launch: Some(LeadLaunch { metadata, spec }),
         });
@@ -2461,6 +2536,7 @@ pub fn continue_lead(
                             next_session: r.id.clone(),
                             phase: ResetPhase::Queued,
                             clear_history: false,
+                            complete_task: false,
                             error: None,
                             launch: None,
                         });
@@ -3940,6 +4016,7 @@ mod tests {
                 id: "reset1".into(),
                 session: f.lead.id.clone(),
                 clear_history: true,
+                complete_task: false,
             },
             std::slice::from_ref(&f.lead),
         )
@@ -4031,6 +4108,7 @@ mod tests {
                 id: "reset1".into(),
                 session: f.lead.id.clone(),
                 clear_history: true,
+                complete_task: false,
             },
             std::slice::from_ref(&f.lead),
         )
@@ -4111,6 +4189,92 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    fn complete_task_reset(f: &Fixture) -> Result<Team> {
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Reset {
+                id: "task-done-1".into(),
+                session: f.lead.id.clone(),
+                clear_history: true,
+                complete_task: true,
+            },
+            std::slice::from_ref(&f.lead),
+        )
+    }
+
+    #[test]
+    fn completed_task_reset_drops_finished_work_once_the_new_lead_is_confirmed() {
+        let mut f = Fixture::new();
+        let checkpoint = Checkpoint {
+            goal: "Ship the finished feature".into(),
+            constraints: "Keep public APIs".into(),
+            remaining: "Nothing else".into(),
+            validation: "All green".into(),
+            ..Default::default()
+        };
+        f.cmd(Command::Checkpoint {
+            checkpoint: checkpoint.clone(),
+        })
+        .unwrap();
+        f.delegate(vec![assignment("a", ResultKind::Report, &[])]);
+        let (run, worker) = f.launch("a");
+        f.worker_cmd(
+            &worker,
+            Command::Report {
+                summary: "finished feature report".into(),
+            },
+        )
+        .unwrap();
+        complete_task_reset(&f).unwrap();
+        assert_eq!(f.state().checkpoint, checkpoint, "not confirmed yet");
+
+        f.lead.request_ids.push("task-done-1".into());
+        f.lead.snapshot.as_mut().unwrap().generation = 2;
+        reconcile(&f.dir, "p", &[f.lead.clone(), worker], false).unwrap();
+        let t = f.state();
+        assert!(t.handoff.as_ref().unwrap().complete_task);
+        assert!(t.checkpoint.goal.is_empty());
+        assert!(t.checkpoint.validation.is_empty());
+        assert_eq!(t.checkpoint.constraints, "Keep public APIs");
+        assert!(t.finished.rounds.contains(&run.id));
+        assert!(t.rounds.contains(&run.id), "history stays stored");
+        let text = recovery_text(&load(&f.dir).unwrap(), &t).unwrap();
+        assert!(!text.contains("Ship the finished feature"));
+        assert!(!text.contains(&run.id));
+
+        // Polling repeats the request after it was applied.
+        complete_task_reset(&f).unwrap();
+        assert!(f.state().reset.is_none());
+    }
+
+    #[test]
+    fn failed_completed_task_reset_keeps_the_checkpoint() {
+        let f = Fixture::new();
+        let checkpoint = Checkpoint {
+            goal: "Keep me".into(),
+            ..Default::default()
+        };
+        f.cmd(Command::Checkpoint {
+            checkpoint: checkpoint.clone(),
+        })
+        .unwrap();
+        complete_task_reset(&f).unwrap();
+        replace_lead(
+            &f.dir,
+            "p",
+            &f.team.id,
+            std::slice::from_ref(&f.lead),
+            |_| Err(anyhow!("launch refused")),
+        )
+        .unwrap();
+        let t = f.state();
+        assert_eq!(t.reset.unwrap().phase, ResetPhase::Failed);
+        assert_eq!(t.checkpoint, checkpoint);
+        assert!(t.finished.rounds.is_empty());
     }
 
     #[test]
@@ -4404,6 +4568,7 @@ mod tests {
                         id: "replacement-request".into(),
                         session: next.id.clone(),
                         clear_history: true,
+                        complete_task: false,
                     },
                     std::slice::from_ref(&next),
                 )
@@ -4465,6 +4630,7 @@ mod tests {
                 id: "reset1".into(),
                 session: f.lead.id.clone(),
                 clear_history: true,
+                complete_task: false,
             },
             std::slice::from_ref(&f.lead),
         )
@@ -4730,6 +4896,7 @@ mod tests {
                 id: "reset1".into(),
                 session: f.lead.id.clone(),
                 clear_history: true,
+                complete_task: false,
             },
             std::slice::from_ref(&f.lead),
         )

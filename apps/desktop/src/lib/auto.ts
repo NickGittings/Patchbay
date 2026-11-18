@@ -1,4 +1,4 @@
-import { autoOwnership } from './chatTeams'
+import { autoOwnership, completeTeamTask } from './chatTeams'
 import { requireDeviceAuth, ProviderSetupRequired } from './providerAuth'
 import { waitForSetup } from './worktreeSetup'
 import {
@@ -379,9 +379,14 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
     },
   })
   if (update.status === 'done' || update.status === 'stopped')
-    void autoOwnership(projectId, task, false, run.ownershipId ?? run.runId).catch((e) =>
-      useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
-    )
+    void autoOwnership(projectId, task, false, run.ownershipId ?? run.runId)
+      // A run in place has no merge to finish its task, so finishing the run does.
+      .then(() =>
+        update.status === 'done' && inPlace(run)
+          ? completeTeamTask(projectId, task, `task-done-${run.runId}`)
+          : undefined,
+      )
+      .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
   if (update.status === 'done')
     void completeAutoStories(projectId, task, run.runId).catch((e) =>
       useStore

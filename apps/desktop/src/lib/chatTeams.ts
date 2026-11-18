@@ -79,6 +79,7 @@ export interface ChatTeam {
     nextSession: string
     phase: 'queued' | 'launching' | 'failed'
     clearHistory: boolean
+    completeTask?: boolean
     error: string | null
   } | null
   handoff: {
@@ -88,6 +89,7 @@ export interface ChatTeam {
     generation: number
     text: string
     clearHistory: boolean
+    completeTask?: boolean
   } | null
   error: string | null
 }
@@ -104,7 +106,7 @@ export type TeamControl =
   | { kind: 'block'; reason: string }
   | { kind: 'retry'; assignment: string }
   | { kind: 'settings'; workers: TerminalSpec[]; limit: number }
-  | { kind: 'reset'; id: string; session: string; clearHistory: boolean }
+  | { kind: 'reset'; id: string; session: string; clearHistory: boolean; completeTask?: boolean }
   | { kind: 'resolveDelivery'; id: string; delivered: boolean }
   | { kind: 'handoffApplied'; id: string }
   | { kind: 'note'; id: string; text: string; sessions: string[] }
@@ -341,14 +343,29 @@ async function resolveChat(team: ChatTeam) {
   await reconcileFreshSessions()
   return result
 }
-export async function resetLead(team: ChatTeam, session = team.lead.sessionId) {
+export async function resetLead(
+  team: ChatTeam,
+  session = team.lead.sessionId,
+  options: { id?: string; completeTask?: boolean } = {},
+) {
   useSimpleUi.getState().patch(simpleKey(team.projectId, team.task), { coordinationReset: true })
   return controlTeam(team, {
     kind: 'reset',
-    id: crypto.randomUUID(),
+    id: options.id ?? crypto.randomUUID(),
     session,
     clearHistory: true,
+    ...(options.completeTask ? { completeTask: true } : {}),
   })
+}
+/**
+ * Start the next task with a fresh lead. `id` must be stable for this completion, so repeated
+ * calls apply once. A stopped team stays stopped, and a forgotten lead has nothing to replace.
+ */
+export async function completeTeamTask(projectId: string, task: string | null, id: string) {
+  const team = teamFor(projectId, task)
+  if (!team || team.state === 'stopped') return
+  if (!useStore.getState().sessionRecords.some((r) => r.id === team.lead.sessionId)) return
+  await resetLead(team, team.lead.sessionId, { id, completeTask: true })
 }
 const pendingSideMessages = new Map<string, { id: string; text: string }>()
 export async function sendWorkerMessage(team: ChatTeam, assignment: string, text: string) {
@@ -418,9 +435,11 @@ export async function applyTeamHandoff(team: ChatTeam) {
       stage: 'build',
       sessionId: handoff.sessionId,
       generation: handoff.generation,
-      text: handoff.clearHistory
-        ? `New lead conversation. A concise work handoff is retained.\n\n${handoff.text}`
-        : 'Context restored from the saved conversation and team state.',
+      text: handoff.completeTask
+        ? 'Task complete. New lead conversation.'
+        : handoff.clearHistory
+          ? `New lead conversation. A concise work handoff is retained.\n\n${handoff.text}`
+          : 'Context restored from the saved conversation and team state.',
     })
   }
   await controlTeam(team, { kind: 'handoffApplied', id: handoff.id })

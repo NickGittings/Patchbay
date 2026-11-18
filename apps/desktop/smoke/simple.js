@@ -483,6 +483,7 @@
       'review findings',
       () => workflowText().includes('1 issues found.') && button('Fix'),
     )
+    await until('review retired the finished builder', () => !state().sessions[builder]?.running)
     inChat()
     click(
       await until('finding file reference', () =>
@@ -550,14 +551,22 @@
       characterData: true,
     })
     await smoke.report('INFO simple: changes and review passed')
+    const launchedBy = (action) => state().simple.log.findLast((e) => e.action === action).sessionId
+    const finishedReviewer = launchedBy('review')
     click(button('Fix'))
     await until('fix done', () => workflowText().includes('Fixes done.'))
     monitor.disconnect()
     assert(!flashed, 'Fixes done flashed before the fix session existed')
+    await until(
+      'fix retired the finished reviewer',
+      () => !state().sessions[finishedReviewer]?.running,
+    )
+    const fixer = launchedBy('fix')
     click(button('Review again'))
     await until('clean follow-up review', () =>
       workflowText().includes('No issues. Merge into main?'),
     )
+    await until('review retired the finished fixer', () => !state().sessions[fixer]?.running)
     click(button('Merge'))
     await until('no conflict prompt', () =>
       workflowText().includes('No conflicts with main. Merge?'),

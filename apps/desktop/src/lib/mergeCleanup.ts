@@ -1,6 +1,7 @@
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
 import type { MergeCleanup, MergeRequest, Project } from '../types'
-import { mergeCleanup, mergeCleanupPreview, mergeOutcome } from './ipc'
+import { mergeCleanup, mergeCleanupPreview, mergeOutcome, terminalStop } from './ipc'
+import { completeTeamTask } from './chatTeams'
 import { autoRuns } from './autoState'
 import { reviewerBusy } from './review'
 import { sessionLive } from './sessionList'
@@ -127,6 +128,23 @@ export async function completeMergeChat(job: CleanupJob) {
       ),
     },
   }))
+  return true
+}
+
+/**
+ * The merge into `main` finished the task and its worktree stays: stop the merge agent and give
+ * the worktree's lead a fresh conversation. Rejects when the lead couldn't be reset.
+ */
+export async function completeTaskContext(job: CleanupJob) {
+  if (job.request.destinationBranch !== 'main') return true
+  const state = projectStateOf(job.projectId)
+  if (!state) return true
+  const source = state.tasks.find((t) => t.worktree === job.request.source)
+  if (!source && job.request.source !== state.project?.root) return true
+  const task = source?.id ?? null
+  if (useStore.getState().sessions[job.sessionId]?.running)
+    await terminalStop(job.sessionId).catch(() => {})
+  await completeTeamTask(job.projectId, task, `task-done-${job.id}`)
   return true
 }
 

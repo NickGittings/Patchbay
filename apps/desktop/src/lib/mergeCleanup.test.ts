@@ -3,12 +3,14 @@ import { useStore } from '../store'
 import {
   cleanupJobs,
   completeMergeChat,
+  completeTaskContext,
   deleteMergedWork,
   handledCleanup,
   readyCleanup,
   trackMergeCleanup,
 } from './mergeCleanup'
-import { gitWorktrees, mergeCleanup, mergeCleanupPreview, mergeOutcome } from './ipc'
+import { gitWorktrees, mergeCleanup, mergeCleanupPreview, mergeOutcome, terminalStop } from './ipc'
+import { completeTeamTask } from './chatTeams'
 import { forgetMainWorktree, refreshMainWorktree, useMainWorktree } from './mainWorktree'
 import type { Project, SessionRecord, SessionState } from '../types'
 import { restoredSimple, visibleReply, type SimpleState } from './simple'
@@ -19,7 +21,9 @@ vi.mock('./ipc', () => ({
   mergeCleanup: vi.fn(),
   mergeCleanupPreview: vi.fn(),
   gitWorktrees: vi.fn(),
+  terminalStop: vi.fn().mockResolvedValue(undefined),
 }))
+vi.mock('./chatTeams', () => ({ completeTeamTask: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('./tasks', () => ({ refreshTasks: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('./git', () => ({ requestGitRefresh: vi.fn().mockResolvedValue(undefined) }))
@@ -72,6 +76,51 @@ test.each([false, true])(
     await vi.waitFor(() => expect(useMainWorktree.getState().p?.branch).toBe('main'))
   },
 )
+
+test('a merge into main stops its agent and starts the next task with a fresh lead', async () => {
+  vi.mocked(completeTeamTask).mockClear()
+  vi.mocked(terminalStop).mockClear()
+  trackMergeCleanup(
+    project,
+    { ...request, source: project.root },
+    'session',
+    'merge',
+    'keep',
+    false,
+  )
+  useStore.setState({ sessions: { session: { running: true } } as never })
+  expect(await completeTaskContext(cleanupJobs()[0])).toBe(true)
+  expect(terminalStop).toHaveBeenCalledWith('session')
+  expect(completeTeamTask).toHaveBeenCalledWith('p', null, 'task-done-merge')
+})
+
+test('a failed lead reset rejects so cleanup can retry it', async () => {
+  vi.mocked(completeTeamTask).mockRejectedValueOnce(new Error('pending'))
+  trackMergeCleanup(
+    project,
+    { ...request, source: project.root },
+    'session',
+    'merge',
+    'keep',
+    false,
+  )
+  await expect(completeTaskContext(cleanupJobs()[0])).rejects.toThrow('pending')
+})
+
+test('merges into other branches and unattached worktrees keep the lead', async () => {
+  vi.mocked(completeTeamTask).mockClear()
+  trackMergeCleanup(
+    project,
+    { ...request, source: project.root, destinationBranch: 'develop' },
+    'session',
+    'develop',
+    'keep',
+    false,
+  )
+  trackMergeCleanup(project, request, 'session', 'unattached', 'keep', false)
+  for (const job of cleanupJobs()) expect(await completeTaskContext(job)).toBe(true)
+  expect(completeTeamTask).not.toHaveBeenCalled()
+})
 
 test('tracks cleanup independently of the visible view and remembers dismissal', () => {
   trackMergeCleanup(project, request, 'session', 'merge', 'ask', false)

@@ -19,6 +19,7 @@ import {
   continueChat,
   continuationContext,
   cacheTeam,
+  completeTeamTask,
   initializeTeam,
   leadDeliveryPending,
   leadNotes,
@@ -139,6 +140,55 @@ test('fresh conversation queues a durable reset and keeps history until confirma
   )
   expect(useStore.getState().simple?.log[0].text).toBe('Retain my changes')
   expect(useSimpleUi.getState().worktrees[simpleKey('p', null)].coordinationReset).toBe(true)
+})
+test('a completed task resets a live lead once under its stable id', async () => {
+  const current = team()
+  useChatTeams.setState({ teams: { p: [current] }, runs: {} })
+  useStore.setState({ sessionRecords: [{ id: 'lead' } as SessionRecord] })
+  vi.mocked(invoke).mockClear()
+  vi.mocked(invoke).mockResolvedValue(current)
+  await completeTeamTask('p', null, 'task-done-merge')
+  expect(invoke).toHaveBeenCalledWith(
+    'chat_team_control',
+    expect.objectContaining({
+      control: expect.objectContaining({
+        kind: 'reset',
+        id: 'task-done-merge',
+        session: 'lead',
+        clearHistory: true,
+        completeTask: true,
+      }),
+    }),
+  )
+})
+test('a completed task leaves stopped teams and forgotten leads alone', async () => {
+  vi.mocked(invoke).mockClear()
+  useChatTeams.setState({ teams: { p: [team({ state: 'stopped' })] }, runs: {} })
+  useStore.setState({ sessionRecords: [{ id: 'lead' } as SessionRecord] })
+  await completeTeamTask('p', null, 'task-done-merge')
+  useChatTeams.setState({ teams: { p: [team()] }, runs: {} })
+  useStore.setState({ sessionRecords: [] })
+  await completeTeamTask('p', null, 'task-done-merge')
+  expect(invoke).not.toHaveBeenCalled()
+})
+test('a completed task hands off without repeating the finished work', async () => {
+  useChatTeams.setState({ teams: { p: [] }, runs: {} })
+  vi.mocked(invoke).mockResolvedValue(team())
+  await applyTeamHandoff(
+    team({
+      handoff: {
+        id: 'task-done-merge',
+        sessionId: 'lead',
+        generation: 2,
+        text: 'Goal: old work',
+        clearHistory: true,
+        completeTask: true,
+      },
+    }),
+  )
+  const texts = useStore.getState().simple?.log.map((e) => e.text)
+  expect(texts).toContain('Task complete. New lead conversation.')
+  expect(texts?.join('\n')).not.toContain('old work')
 })
 test('failed fresh reset retains the saved conversation and workers', async () => {
   const current = team()
