@@ -573,12 +573,6 @@
   color: var(--muted);
 }
 
-.chat-coordination {
-  padding: 0 0.75rem;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-}
-
 .simple-dismiss {
   margin-left: auto;
 }
@@ -608,14 +602,54 @@
   padding: 6px;
   border-top: 1px solid var(--border);
 }
+/* Problems that need the user sit above the composer; routine status stays in the popover. */
 .chat-coordination {
+  flex-shrink: 0;
   max-height: 30%;
   overflow: auto;
-  flex-shrink: 0;
+  padding: 0 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 .chat-workers-flag {
   color: var(--bad);
   font-weight: 600;
+}
+/* A non-blocking status panel anchored above its composer button. */
+.chat-workers-popover {
+  width: min(440px, calc(100vw - 16px));
+  max-height: min(60vh, 520px);
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  transform-origin: bottom right;
+}
+.chat-workers-popover .chat-workers {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.chat-workers-popover .chat-workers > ul,
+.chat-workers-popover .chat-workers > details,
+.chat-workers-popover .chat-workers > p {
+  align-self: stretch;
+  margin: 0;
+}
+.chat-workers-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.chat-workers .assignment-instructions summary {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.chat-workers-dismissed summary {
+  color: var(--muted);
+  cursor: pointer;
 }
 .chat-workers ul {
   padding-left: 16px;
@@ -642,12 +676,6 @@
   margin: 0 0 6px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.chat-workers .assignment-instructions {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 .chat-workers li p {
   white-space: pre-wrap;

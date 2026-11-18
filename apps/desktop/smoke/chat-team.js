@@ -35,6 +35,14 @@
     )
   }
   const confirmDialog = (title) => document.querySelector(`[role="dialog"][aria-label="${title}"]`)
+  const assignmentsButton = () =>
+    [...document.querySelectorAll('.simple-composer-controls button')].find((b) =>
+      b.textContent.startsWith('Assignments ('),
+    )
+  const openAssignments = async () => {
+    ;(await until('assignments button', assignmentsButton)).click()
+    return until('assignments popup', () => confirmDialog('Assignments'))
+  }
   const input = (el, value, event = 'input') => {
     assert(el, 'missing input')
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set.call(el, value)
@@ -108,15 +116,15 @@
       }
       assert(rejected, `Manual provider ${control.kind} bypassed chat team ownership`)
     }
-    const workers = await until('worker disclosure', () => document.querySelector('.chat-workers'))
-    assert(!workers.open, 'workers should start collapsed')
-    workers.open = true
+    assert(!confirmDialog('Assignments'), 'Assignments popup should start closed')
+    const workers = await openAssignments()
     const workerButton = await until('worker terminal action', () => {
       const b = button('View worker terminal', workers)
       return b && !b.disabled && b
     })
     workerButton.click()
     await until('worker drawer', () => document.querySelector('.simple-terminal-drawer'))
+    assert(!confirmDialog('Assignments'), 'Opening the worker terminal left the popup open')
     assert(state().simple.selectedAgent === lead, 'opening worker changed composer recipient')
     assert(
       document.querySelector('.chat-recipient').textContent.includes('Lead · Codex'),
@@ -153,10 +161,7 @@
     )
     assert(!confirmDialog('Clear lead context'), 'worktree inherited fresh confirmation')
     state().setActiveTask(null)
-    await until(
-      'return from fresh scope',
-      () => !state().activeTask && document.querySelector('[aria-label="Work status"]'),
-    )
+    await until('return from fresh scope', () => !state().activeTask && assignmentsButton())
     assert(!confirmDialog('Clear lead context'), 'return reopened fresh confirmation')
     const originalGeneration = team().lead.generation
     await chatMenu('Clear lead context')
@@ -180,20 +185,39 @@
       'Build showed chat assignments',
     )
     state().setSimpleMode(true)
-    await until('chat restored', () => document.querySelector('[aria-label="Work status"]'))
+    await until('chat restored', () => assignmentsButton())
     assert(state().simple.selectedAgent === team().lead.sessionId, 'lead selection lost')
     assert(
       !document.querySelector('.simple-thread').textContent.includes('WORKER-SIDE-THREAD-ONLY'),
       'worker reply entered main transcript',
     )
+    const results = await openAssignments()
     assert(
-      document.querySelector('.chat-workers')?.textContent.includes('Inspect baseline'),
+      results.textContent.includes('Inspected the committed baseline'),
       'Completed assignment missing from Chat',
     )
     assert(
-      document.querySelector('.chat-workers')?.textContent.includes('Implement worker file'),
+      results.textContent.includes('Implemented worker file'),
       'Code awaiting integration disappeared',
     )
+    const reportRow = [...results.querySelectorAll('li')].find((row) =>
+      row.textContent.includes('Inspected the committed baseline'),
+    )
+    button('Dismiss', reportRow).click()
+    await until('dismissed report', () => !results.contains(reportRow))
+    assert(assignmentsButton().textContent.includes('Assignments (1)'), 'Count retained dismissal')
+    assert(jobs().length === 2, 'Dismissal removed a coordination record')
+    button('Undo', results).click()
+    await until('undone dismissal', () =>
+      assignmentsButton().textContent.includes('Assignments (2)'),
+    )
+    const restoredRow = [...results.querySelectorAll('li')].find((row) =>
+      row.textContent.includes('Inspected the committed baseline'),
+    )
+    button('Dismiss', restoredRow).click()
+    await until('dismissed again', () => button('Restore', results))
+    assignmentsButton().click()
+    await until('assignments popup closed', () => !confirmDialog('Assignments'))
     assert(!button('Open side thread'), 'Side-thread controls remain in Chat')
     ;(await chatMenu('Pause work')).click()
     await until('paused team', () => team().state === 'paused')
@@ -262,15 +286,10 @@
     )
     await smoke.createTask({ title: 'Other chat', branch: 'other-chat', components: ['app'] })
     await until('other worktree', () => state().activeTask !== null)
-    assert(
-      !document.querySelector('[aria-label="Work status"]'),
-      'another worktree showed the first team',
-    )
+    assert(!assignmentsButton(), 'another worktree showed the first team')
     assert(!state().simple?.selectedAgent, 'another worktree inherited the lead')
     state().setActiveTask(null)
-    await until('original worktree team', () =>
-      document.querySelector('[aria-label="Work status"]'),
-    )
+    await until('original worktree team', () => assignmentsButton())
     ;(await chatMenu('Stop work')).click()
     button('Stop work', await until('stop confirmation', () => confirmDialog('Stop work'))).click()
     await until('stopped team', () => team().state === 'stopped')

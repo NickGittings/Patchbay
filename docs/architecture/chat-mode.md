@@ -133,7 +133,7 @@ The lead routes dependencies between workers. The desktop's typed team commands 
 resume, stop, retry, worker settings, new-lead selection, side messages and explicit delivery recovery.
 Auto, chat and manual provider runs share exclusive target ownership; stopping a team releases its
 target without deleting results or worktrees.
-Chat shows its team's assignments in Work status. Pause and stop use the Chat menu; retry uses the failed assignment's inline action. Manual plan handoffs cannot
+The Assignments button in the chat composer opens the team's work status popup. Pause and stop use the Chat menu; retry uses the failed assignment's inline action. Manual plan handoffs cannot
 adopt chat-owned coordinators.
 A Build, Review, Fix or Merge the user starts from Chat's step card is told to the lead once
 (`chatTeams.ts` `noteLead` → `Control::Note`, a `patchbay` inbox message keyed by the launch's
@@ -150,11 +150,16 @@ messages in sequence at a hook-confirmed ready prompt. It checks session generat
 authority and the last delivered ready turn. It never forces an automated message. A lost submission
 reply stays uncertain until explicitly marked delivered or retried. Explicit results, failures and native input
 waits notify the lead. Worker conversations remain available through Sessions; Chat shows one lead
-conversation, compact coordination status (non-zero counts only) and actionable failures. Each failed or
-input-waiting assignment raises an alert line (Retry work and Agent settings, or View worker terminal).
-The **Assignments** disclosure's summary names failure and input counts and opens whenever a new one
-appears; it lists active jobs, failures with inline retry, and completed jobs with their summary and
-a labelled Report disclosure. The status area is the one scroll region. Chat-owned rounds appear here only;
+conversation. Failed and input-waiting workers, coordination errors and unconfirmed deliveries raise
+alert lines above the composer with their recovery actions (Retry work and Agent settings, View worker
+terminal, Mark delivered or Retry delivery). The composer's **Assignments** button shows the count and
+how many items are flagged; its accessible name carries the breakdown. It opens a non-blocking popover
+anchored above the button with routine status: active jobs, failures with retry and settings actions,
+long instructions behind a first-line disclosure, and completed jobs with summaries and reports.
+Dismissing a failed or completed assignment hides its current result from the popover, count and
+alerts, offers Undo (which takes focus), and lists it under Dismissed with Restore. The worktree's chat
+UI persists dismissals locally, pruned to the team's current results. Retried work appears again, and
+coordination retains its results. Chat-owned rounds appear here only;
 other provider runs remain in Plan or Build. **View worker terminal** opens the exact project session
 without changing the composer recipient. Messages and queued prompts take their recipient's workflow
 stage, so messaging a build lead after a merge resumes the build flow.

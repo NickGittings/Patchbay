@@ -27,6 +27,8 @@ export type PopoverProps = {
    * dialog the list stays in that dialog, so assistive tech doesn't treat it as inert.
    */
   portal?: boolean
+  /** With `portal`, open above the trigger (for controls along the window's bottom edge). */
+  above?: boolean
   /** Open the same popup at a context-menu pointer position whenever this object changes. */
   contextRequest?: { x: number; y: number }
   children: ReactNode
@@ -68,6 +70,7 @@ export default function Popover({
   caret = true,
   keepMounted = false,
   portal = false,
+  above = false,
   contextRequest,
   role = 'dialog',
   initialFocus,
@@ -129,7 +132,7 @@ export default function Popover({
           Math.max(
             8,
             Math.min(
-              open.at ? open.at.y : anchor.bottom + 4,
+              open.at ? open.at.y : above ? anchor.top - popup.height - 4 : anchor.bottom + 4,
               window.innerHeight - popup.height - 8,
             ),
           ) - originY
@@ -139,7 +142,7 @@ export default function Popover({
     }
     place()
     return () => cancelAnimationFrame(frame)
-  }, [open, portal, align])
+  }, [open, portal, align, above])
 
   useLayoutEffect(() => {
     if (portal) setContainer(portalTarget(root.current))

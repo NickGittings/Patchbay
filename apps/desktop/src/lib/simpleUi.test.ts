@@ -96,7 +96,7 @@ test('a pin whose session was forgotten closes the drawer and yields to input wa
   })
 })
 
-test('dismissed workflow prompts survive persistence and rehydration', async () => {
+test('dismissed assignments and workflow prompts survive persistence and rehydration', async () => {
   let saved: StorageValue<unknown> | null = null
   const previous = useSimpleUi.persist.getOptions().storage
   useSimpleUi.persist.setOptions({
@@ -113,13 +113,15 @@ test('dismissed workflow prompts survive persistence and rehydration', async () 
   try {
     const key = simpleKey('p', 't')
     useSimpleUi.setState({ worktrees: {} })
-    useSimpleUi
-      .getState()
-      .patch(key, { dismissedPrompts: ['attempt-1:status', 'attempt-1:checkMerge'] })
+    useSimpleUi.getState().patch(key, {
+      dismissedAssignments: ['failed-worker'],
+      dismissedPrompts: ['attempt-1:status', 'attempt-1:checkMerge'],
+    })
     const persisted = structuredClone(saved)
     useSimpleUi.setState({ worktrees: {} })
     saved = persisted
     await useSimpleUi.persist.rehydrate()
+    expect(useSimpleUi.getState().worktrees[key].dismissedAssignments).toEqual(['failed-worker'])
     expect(useSimpleUi.getState().worktrees[key].dismissedPrompts).toEqual([
       'attempt-1:status',
       'attempt-1:checkMerge',

@@ -35,7 +35,7 @@ import { useChatIdentity } from '../lib/chatIdentity'
 import { stopTerminal } from '../lib/sessions'
 import { useRail } from '../lib/rail'
 import ChatModeTimeline from './ChatModeTimeline'
-import ChatCoordination from './ChatCoordination'
+import ChatCoordination, { ChatCoordinationAlerts } from './ChatCoordination'
 import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
@@ -243,6 +243,15 @@ export default function ChatMode({
             ? 'Merge complete'
             : 'Review'
   const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
+  const openWorkerTerminal = (record: SessionRecord) =>
+    useSimpleUi.getState().patch(key, {
+      terminal: 'user',
+      terminalSession: {
+        id: record.id,
+        generation: s.sessions[record.id]?.generation,
+        pinned: true,
+      },
+    })
   return (
     <div className="simple-chat" ref={chatRef}>
       <header>
@@ -432,20 +441,7 @@ export default function ChatMode({
         </div>
       )}
       {team && (
-        <ChatCoordination
-          key={team.id}
-          team={team}
-          openTerminal={(record) =>
-            useSimpleUi.getState().patch(key, {
-              terminal: 'user',
-              terminalSession: {
-                id: record.id,
-                generation: s.sessions[record.id]?.generation,
-                pinned: true,
-              },
-            })
-          }
-        />
+        <ChatCoordinationAlerts key={team.id} team={team} openTerminal={openWorkerTerminal} />
       )}
       <ActivityHooksNotice providers={hookProviders} reporting={reporting} />
       {error && <p role="alert">{error}</p>}
@@ -558,7 +554,9 @@ export default function ChatMode({
             },
           })
         }
-      />
+      >
+        {team && <ChatCoordination key={team.id} team={team} openTerminal={openWorkerTerminal} />}
+      </SimpleComposer>
     </div>
   )
 }
