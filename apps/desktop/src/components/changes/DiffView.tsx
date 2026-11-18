@@ -10,6 +10,7 @@ import { gitDiff } from '../../lib/ipc'
 import { KIND_LABEL, splitPath } from '../../lib/review'
 import type { ChangedFile, FileDiff } from '../../types'
 import DiffStat from './DiffStat'
+import CopyButton from '../CopyButton'
 
 /** Rendering more lines than this makes scrolling sluggish; the rest is summarized. */
 const MAX_LINES = 5000
@@ -161,18 +162,10 @@ export default function DiffView({
     if (!parsed?.hunks.length) return <div className="hint">No textual changes.</div>
     const controls = (
       <div className="diff-actions">
-        <button
-          onClick={async () => {
-            try {
-              await navigator.clipboard.writeText(loaded.patch)
-              useStore.getState().setMessage('Patch copied')
-            } catch (e) {
-              useStore.getState().setMessage(String(e), undefined, undefined, 'error')
-            }
-          }}
-        >
-          {loaded.truncated ? 'Copy available patch' : 'Copy patch'}
-        </button>
+        <CopyButton
+          text={loaded.patch}
+          label={loaded.truncated ? 'Copy available patch' : 'Copy patch'}
+        />
         {!history && file.kind !== 'deleted' && projectId && (
           <button
             onClick={() =>

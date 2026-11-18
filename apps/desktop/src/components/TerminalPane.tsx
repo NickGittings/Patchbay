@@ -11,6 +11,7 @@ import { attach, detachHost, fit, hostVisible, ownsTerminalHost } from '../lib/t
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
+import { confirmAction } from '../lib/confirm'
 
 /**
  * Shared xterm host with snapshot replay, sizing and first-use shell startup. Shows the session of
@@ -174,7 +175,11 @@ export default function TerminalPane({
       {session?.truncated && truncationDismissed !== noticeRun && (
         <div className="terminal-notice" role="status">
           <span>Earlier output truncated</span>
-          <button title="Dismiss" onClick={() => setTruncationDismissed(noticeRun)}>
+          <button
+            title="Dismiss"
+            aria-label="Dismiss truncation notice"
+            onClick={() => setTruncationDismissed(noticeRun)}
+          >
             ×
           </button>
         </div>
@@ -187,7 +192,11 @@ export default function TerminalPane({
       {session?.notice && dismissed !== noticeRun && (
         <div className="terminal-notice" role="status">
           <span>{session.notice}</span>
-          <button title="Dismiss" onClick={() => setDismissed(noticeRun)}>
+          <button
+            title="Dismiss"
+            aria-label="Dismiss terminal notice"
+            onClick={() => setDismissed(noticeRun)}
+          >
             ×
           </button>
         </div>
@@ -208,12 +217,17 @@ export default function TerminalPane({
 function OutdatedService() {
   const retirement = useStore((s) => s.serviceRetirement)
   const error = useStore((s) => s.serviceRetirementError)
-  const stop = () => {
+  const stop = async () => {
     if (useStore.getState().serviceRetirement !== 'idle') return
     if (
-      !window.confirm(
-        'Stop the sessions still running from an older Patchbay version? Their running work ends; their history is kept.',
-      )
+      !(await confirmAction({
+        title: 'Stop older sessions',
+        message:
+          'Stop the sessions still running from an older Patchbay version? Their running work ends.',
+        detail: 'Their history is kept.',
+        confirmLabel: 'Stop sessions',
+      })) ||
+      useStore.getState().serviceRetirement !== 'idle'
     )
       return
     void retireOlderService()
@@ -225,7 +239,7 @@ function OutdatedService() {
         session service yet. They were left running.
         {error && ` Stopping them failed: ${error}`}
       </span>
-      <button disabled={retirement !== 'idle'} onClick={stop}>
+      <button disabled={retirement !== 'idle'} onClick={() => void stop()}>
         {retirement === 'stopping'
           ? 'Stopping…'
           : retirement === 'reconnecting'

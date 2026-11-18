@@ -34,6 +34,7 @@ import { closePanel } from '../lib/rail'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import TerminalPane from './TerminalPane'
 import TerminalControl from './TerminalControl'
+import { confirmAction } from '../lib/confirm'
 
 const EMPTY: Record<SessionFilter, string> = {
   all: 'No sessions',
@@ -274,7 +275,17 @@ function SessionList({
                             {live && (
                               <MenuItem
                                 disabled={unavailable}
-                                onClick={() => void perform(() => terminalStop(r.id))}
+                                onClick={async () => {
+                                  if (
+                                    await confirmAction({
+                                      title: `Stop ${r.metadata.name}`,
+                                      message: `Stop ${r.metadata.name}? Its running work ends.`,
+                                      detail: 'Its output and history are kept.',
+                                      confirmLabel: 'Stop session',
+                                    })
+                                  )
+                                    void perform(() => terminalStop(r.id))
+                                }}
                               >
                                 Stop
                               </MenuItem>

@@ -245,6 +245,24 @@ const hooks = {
   sessionGeneration,
   terminalNavigationState,
   flushWorkspace,
+  /** Answers each in-app confirmation through its own buttons, given the dialog's text; returns
+   *  a function that stops answering. Stands in for overriding `window.confirm`. */
+  answerConfirms: (answer: (text: string) => boolean) => {
+    const seen = new WeakSet<Element>()
+    const observer = new MutationObserver(() => {
+      const dialog = document.querySelector('.confirm-dialog [role="alertdialog"]')
+      if (!dialog || seen.has(dialog)) return
+      seen.add(dialog)
+      const text = [...dialog.querySelectorAll('.dialog-body p')]
+        .map((p) => p.textContent)
+        .join('\n\n')
+      const [cancel, confirm] =
+        dialog.querySelectorAll<HTMLButtonElement>('.settings-footer button')
+      ;(answer(text) ? confirm : cancel).click()
+    })
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  },
   resizeWindow: async (width: number, height: number) => {
     const { getCurrentWindow, LogicalSize } = await import('@tauri-apps/api/window')
     await getCurrentWindow().setSize(new LogicalSize(width, height))

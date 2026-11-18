@@ -253,6 +253,7 @@ export default function WorkspaceRail() {
               )}
               <button
                 aria-label={`Close ${utilities[panel].label} panel`}
+                title="Close panel"
                 onClick={() => {
                   selectPanel(null)
                   focusPanelTrigger(panel)

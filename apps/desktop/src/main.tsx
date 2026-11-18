@@ -6,6 +6,7 @@ import './index.css'
 import App from './App'
 import ComponentWindow from './components/ComponentWindow'
 import ProviderSetupDialog from './components/ProviderSetupDialog'
+import ConfirmHost from './components/ConfirmHost'
 import { trackActiveWindow } from './lib/windows'
 
 const component = new URLSearchParams(window.location.search).get('component')
@@ -19,5 +20,6 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {component !== null ? <ComponentWindow id={component} /> : <App />}
     <ProviderSetupDialog />
+    <ConfirmHost />
   </StrictMode>,
 )

@@ -92,7 +92,7 @@ function HistoryBrowser({
         >
           {open ? '▾' : '▸'} Recent commits
         </button>
-        <button aria-label="Refresh history" onClick={retry}>
+        <button aria-label="Refresh history" title="Refresh history" onClick={retry}>
           ↻
         </button>
       </header>

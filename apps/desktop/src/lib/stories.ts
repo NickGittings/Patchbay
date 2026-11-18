@@ -21,6 +21,7 @@ import { stopAndWait } from './stopAndWait'
 import { startTerminal } from './sessions'
 import { seedNewTask } from './tasks'
 import { logLaunch } from './simpleActions'
+import { confirmAction } from './confirm'
 
 const ordered = (items: Story[]) =>
   [...items].sort(
@@ -277,7 +278,13 @@ export async function planStory(projectId: string, story: Story) {
   if (autoRuns(s).some(({ run }) => unfinished(run.status) && run.sessionId === sid))
     throw new Error('Stop the Auto run before using its planner for a story')
   if ((await terminalSnapshot(sid, 0))?.running) {
-    if (!window.confirm('Stop the running planner and replace it with this story’s planner?'))
+    if (
+      !(await confirmAction({
+        title: 'Replace planner',
+        message: 'Stop the running planner and replace it with this story’s planner?',
+        confirmLabel: 'Stop and replace',
+      }))
+    )
       return
     await stopAndWait(sid, 'The previous planner is still stopping. Try Plan again.')
     const now = useStore.getState()

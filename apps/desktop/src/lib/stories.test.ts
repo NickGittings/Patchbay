@@ -3,6 +3,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { projectStateOf, useStore } from '../store'
 import { PLAN_SCOPE, plannerSessionId, type AutoRun, type Story, type Task } from '../types'
 import type { StoryFilter, StoryProgress } from './stories'
+import { confirmAction } from './confirm'
 vi.mock('./ipc', () => ({
   storyList: vi.fn(),
   storyUpdate: vi.fn(),
@@ -12,6 +13,7 @@ vi.mock('./ipc', () => ({
   sessionsList: vi.fn(async () => []),
 }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
+vi.mock('./confirm', () => ({ confirmAction: vi.fn() }))
 const {
   tree,
   filterStories,
@@ -411,13 +413,13 @@ test('Plan refuses an Auto-owned planner across worktrees before changing highli
 })
 test('Plan asks before replacing a manual planner, and cancellation leaves it alone', async () => {
   planner()
-  vi.stubGlobal('window', { confirm: vi.fn(() => false) })
+  vi.mocked(confirmAction).mockResolvedValue(false)
   vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ running: true } as never)
   await planStory('p', story('s'))
-  expect(window.confirm).toHaveBeenCalledOnce()
+  expect(confirmAction).toHaveBeenCalledOnce()
   expect(ipc.terminalStop).not.toHaveBeenCalled()
   expect(startTerminal).not.toHaveBeenCalled()
-  vi.stubGlobal('window', { confirm: vi.fn(() => true) })
+  vi.mocked(confirmAction).mockResolvedValue(true)
   vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ running: true } as never)
   await planStory('p', story('s'))
   expect(ipc.terminalStop).toHaveBeenCalledOnce()
@@ -536,7 +538,7 @@ test('a replacing story planner logs its new run, and a worktree switch while st
   useStore.getState().setSimpleMode(true)
   const sid = plannerSessionId('agent', 'p')
   useStore.getState().setSession(sid, { generation: 4, running: false })
-  vi.stubGlobal('window', { confirm: vi.fn(() => true) })
+  vi.mocked(confirmAction).mockResolvedValue(true)
   vi.mocked(ipc.terminalSnapshot)
     .mockResolvedValueOnce({ running: true } as never)
     .mockResolvedValueOnce({ running: false } as never)

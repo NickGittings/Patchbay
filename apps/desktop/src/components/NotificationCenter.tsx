@@ -101,6 +101,7 @@ export default function NotificationCenter() {
             <button
               className="footer-popover-icon"
               aria-label="Close notifications"
+              title="Close"
               onClick={close}
             >
               ×
@@ -173,6 +174,7 @@ export default function NotificationCenter() {
                   <button
                     className="toast-close"
                     aria-label={`Dismiss ${entry.heading ?? entry.message}`}
+                    title="Dismiss"
                     onClick={() => {
                       const state = useStore.getState()
                       if (live && link) state.dismissNotificationSession(link.sid)

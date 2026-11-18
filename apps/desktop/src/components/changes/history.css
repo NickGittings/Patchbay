@@ -1,5 +1,5 @@
 .commit-history {
-  border-top: 1px solid var(--border, #383838);
+  border-top: 1px solid var(--border);
   margin-top: 16px;
   padding-top: 8px;
 }
@@ -24,7 +24,7 @@
 }
 .commit-row:hover,
 .commit-row.active {
-  background: var(--selection, #ffffff12);
+  background: var(--hover);
 }
 .commit-row svg {
   flex-shrink: 0;
@@ -56,7 +56,7 @@
 }
 .commit-details > header {
   padding: 12px;
-  border-bottom: 1px solid var(--border, #383838);
+  border-bottom: 1px solid var(--border);
   max-height: 40%;
   overflow: auto;
 }
@@ -86,5 +86,5 @@
   font-size: 12px;
 }
 .commit-files button.active {
-  background: var(--selection, #ffffff12);
+  background: var(--hover);
 }

@@ -28,6 +28,7 @@ import { useStore, type FlowNode } from '../store'
 import { runGraphAction, stopGroup } from '../lib/actions'
 import { statusTitle, terminalStatus } from '../lib/display'
 import { MAP_SCOPE, parseSessionId, sessionId, type ComponentGroup } from '../types'
+import { confirmAction } from '../lib/confirm'
 
 const MAX_TIMEOUT = 3600
 
@@ -175,7 +176,15 @@ function GroupEditor({ group }: { group: ComponentGroup }) {
           </MenuItem>
           <MenuItem
             disabled={busy || stopping}
-            onClick={() => {
+            onClick={async () => {
+              if (
+                !(await confirmAction({
+                  title: `Delete ${group.name}`,
+                  message: `Delete the ${group.name} stack? Its terminals stop in every worktree.`,
+                  confirmLabel: 'Delete stack',
+                }))
+              )
+                return
               void stopGroup(group.id, true).then((stopped) => {
                 if (stopped) removeGroup(group.id)
               })

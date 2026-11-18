@@ -54,7 +54,7 @@
   --radius-sm: 6px;
   --shadow: 0 0 0 1px var(--border-strong), 0 16px 48px rgb(0 0 0 / 70%);
   --overlay: rgb(0 0 0 / 70%);
-  --sans: Inter, -apple-system, 'Segoe UI', system-ui, sans-serif;
+  --sans: -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', sans-serif;
   --mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
   color-scheme: dark;
   font-family: var(--sans);
@@ -295,7 +295,6 @@ input[type='radio'] {
 /* Floating surfaces share the merge dialog's treatment; layout stays with each surface. */
 .menu-list,
 .toast,
-.command-palette,
 .extensions-panel,
 .node-extension-menu,
 .map-maintenance-dialog,
@@ -1950,31 +1949,11 @@ button.review-name:hover:not(:disabled) {
   align-items: flex-start;
   padding: 10vh 24px;
 }
-.command-palette,
 .extensions-panel {
   width: min(680px, 90vw);
   max-height: 75vh;
   overflow: auto;
   padding: 16px;
-}
-.command-palette input {
-  width: 100%;
-  margin-bottom: 8px;
-}
-.command-palette button {
-  display: flex;
-  justify-content: space-between;
-  width: 100%;
-  padding: 10px;
-  text-align: left;
-  border-color: transparent;
-}
-.command-palette button.active {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-}
-.command-palette small {
-  opacity: 0.6;
 }
 .extension-entry {
   padding: 16px 0;
@@ -1983,9 +1962,6 @@ button.review-name:hover:not(:disabled) {
 .extension-entry small {
   overflow-wrap: anywhere;
   opacity: 0.7;
-}
-.extension-error {
-  color: var(--bad);
 }
 .extension-badge {
   --tone: var(--accent);
@@ -2094,14 +2070,6 @@ button.review-name:hover:not(:disabled) {
 .session-worktree-label .row {
   flex-wrap: wrap;
 }
-.session-worktree-eyebrow {
-  display: block;
-  margin-bottom: 4px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-}
 .session-worktree-heading h4 {
   margin: 0;
   font-size: 13px;
@@ -2114,14 +2082,9 @@ button.review-name:hover:not(:disabled) {
   border-radius: var(--radius-sm);
   overflow-wrap: anywhere;
 }
-.session-worktree-count,
-.session-worktree-path {
+.session-worktree-count {
   color: var(--muted);
   font-size: 12px;
-}
-.session-worktree-path {
-  max-width: 100%;
-  overflow-wrap: anywhere;
 }
 .session-worktree-rows {
   margin: 4px 0 0 12px;
@@ -2361,6 +2324,23 @@ button.review-name:hover:not(:disabled) {
 .extension-overlay.centered {
   align-items: center;
   padding: 24px;
+}
+/* Confirmations ask one short question; keep them compact and centered. */
+.confirm-dialog .dialog-shell {
+  width: min(480px, 90vw);
+}
+.confirm-dialog .dialog-body p {
+  margin: 0 0 8px;
+}
+.confirm-dialog .dialog-body p:last-child {
+  margin-bottom: 0;
+}
+.confirm-dialog .settings-footer {
+  padding: 10px 12px;
+}
+.confirm-dialog .confirm-detail {
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 .add-task-terminal {
   width: min(380px, 90vw);
@@ -2932,18 +2912,6 @@ kbd {
   overflow-wrap: anywhere;
   font-size: 12px;
 }
-.agent-role-field {
-  display: grid;
-  gap: 4px;
-  margin: 12px 0;
-}
-.agent-role-field > select,
-.agent-role-field > .reviewer-picker {
-  width: min(360px, 100%);
-}
-.agent-role-field > .hint {
-  margin: 0;
-}
 .reviewer-picker {
   min-width: 0;
 }
@@ -3372,29 +3340,6 @@ kbd {
   display: flex;
   flex-direction: column;
 }
-.rail-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  margin-top: 12px;
-}
-/* Plain list actions; nested controls (forms, the detection row) keep normal button styling. */
-.rail-actions > button {
-  text-align: left;
-  border: 0;
-  background: none;
-}
-.rail-actions > button:hover:not(:disabled) {
-  background: var(--hover);
-}
-.rail-actions .section-title {
-  margin: 0 0 4px;
-}
-.rail-actions .hint {
-  margin: 0 8px 6px;
-  font-size: 12px;
-}
 .project-list .grow,
 .project-list .grow:hover:not(:disabled) {
   min-width: 0;
@@ -3535,14 +3480,6 @@ kbd {
     opacity: 1;
   }
 }
-
-.dialog-body .agent-role-field {
-  display: grid;
-  grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr);
-  align-items: center;
-  gap: 8px;
-}
-
 .stack-card {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -3638,12 +3575,6 @@ kbd {
 }
 .notifications-toggle input {
   order: 1;
-}
-.button-link {
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  padding: 0;
 }
 .diff-nav {
   flex: none;

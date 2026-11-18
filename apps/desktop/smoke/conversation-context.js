@@ -118,23 +118,21 @@
         () => agent()?.state === 'idle' && context()?.usedPercent == null,
       )
       const generation = state().sessions[sid].generation
-      const confirm = window.confirm
       const asked = []
+      let approve = false
+      const stopAnswering = smoke.answerConfirms((message) => {
+        asked.push(message)
+        return approve
+      })
       try {
-        window.confirm = (message) => {
-          asked.push(message)
-          return false
-        }
         button('New conversation').click()
+        await until('cancelled confirmation', () => asked.length === 1)
         await sleep(100)
         assert(
           state().sessions[sid].generation === generation,
           'Cancelled confirmation replaced the run',
         )
-        window.confirm = (message) => {
-          asked.push(message)
-          return true
-        }
+        approve = true
         const fresh = button('New conversation')
         fresh.click()
         fresh.click()
@@ -149,7 +147,7 @@
         assert(asked.length === 2, 'Duplicate click opened another confirmation')
         assert(
           asked[1] ===
-            'Start a new conversation with the current Patchbay briefing? This stops the current agent. Saved history remains available.',
+            'Start a new conversation with the current Patchbay briefing? This stops the current agent.\n\nSaved history remains available.',
           'Confirmation changed',
         )
         assert(context()?.usedPercent == null, 'Fresh run inherited context usage')
@@ -173,7 +171,7 @@
         await until('Auto disables New conversation', () => button('New conversation')?.disabled)
         state().patchTask(opened.id, null, { auto: null })
       } finally {
-        window.confirm = confirm
+        stopAnswering()
       }
       if (provider === 'claude') {
         await smoke.terminalWrite(sid, 'context\r')

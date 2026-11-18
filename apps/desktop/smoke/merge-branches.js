@@ -23,7 +23,7 @@
   const smoke = await until('smoke hooks', () => window.__patchbaySmoke)
   if (new URLSearchParams(location.search).has('component')) return
   const state = () => smoke.store.getState()
-  const originalConfirm = window.confirm
+  let stopAnswering = () => {}
   try {
     smoke.acceptOpened(await smoke.openProject())
     await smoke.resizeWindow(1440, 900)
@@ -302,10 +302,10 @@
     await startWriters()
     let approveStop = false
     const prompts = []
-    window.confirm = (message) => {
+    stopAnswering = smoke.answerConfirms((message) => {
       prompts.push(message)
       return approveStop
-    }
+    })
     const footerSwitch = document.querySelector('.workspace-context [aria-label="Switch branch"]')
     assert(footerSwitch, 'footer branch selector missing')
     footerSwitch.click()
@@ -380,6 +380,6 @@
       `FAIL merge-branches: ${error?.message ?? error} ${error?.stack ?? ''}; message=${state().message}; step=${visible('.simple-step')?.textContent}; chat=${visible('.simple-chat')?.textContent.slice(-1600)}`,
     )
   } finally {
-    window.confirm = originalConfirm
+    stopAnswering()
   }
 })()

@@ -1,9 +1,4 @@
 /* Auto mode panel: one column, grouped by purpose, status carried by tone rather than text. */
-.auto-popover {
-  width: min(420px, calc(100vw - 24px));
-  max-height: 80vh;
-  overflow: auto;
-}
 .auto-content {
   padding: 0;
   display: flex;

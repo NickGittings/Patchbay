@@ -318,8 +318,8 @@ function WorktreeRow({
             <code title={task?.branch ?? branch}>{task?.branch ?? branch}</code>
           )}
         </button>
-        {task?.current && <span className="worktree-tag">main worktree</span>}
-        {task?.missing && <span className="worktree-tag bad">worktree missing</span>}
+        {task?.current && <span className="worktree-tag">Main worktree</span>}
+        {task?.missing && <span className="worktree-tag bad">Worktree missing</span>}
         <button
           disabled={!!task?.missing}
           onClick={() => {

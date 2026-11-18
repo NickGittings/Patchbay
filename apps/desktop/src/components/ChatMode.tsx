@@ -332,7 +332,7 @@ export default function ChatMode({
       {confirm?.kind === 'clear' && (
         <Dialog
           title="Clear chat"
-          className="centered chat-confirm"
+          className="centered confirm-dialog"
           onClose={closeConfirm}
           footer={
             <>
@@ -358,7 +358,7 @@ export default function ChatMode({
       {team && confirm?.kind === 'fresh' && (
         <Dialog
           title="Clear lead context"
-          className="centered chat-confirm"
+          className="centered confirm-dialog"
           onClose={closeConfirm}
           footer={
             <>
@@ -389,7 +389,7 @@ export default function ChatMode({
       {team && confirm?.kind === 'stop' && (
         <Dialog
           title="Stop work"
-          className="centered chat-confirm"
+          className="centered confirm-dialog"
           onClose={closeConfirm}
           footer={
             <>

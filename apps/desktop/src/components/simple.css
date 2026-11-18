@@ -323,26 +323,6 @@
   flex: 1;
   min-width: 0;
 }
-.simple-scope-chip {
-  border-radius: 10px;
-  padding: 2px 6px;
-  background: var(--hover);
-  margin-right: 4px;
-}
-.simple-activity {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-.simple-activity li {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  overflow-wrap: anywhere;
-  margin: 4px 0;
-}
 .simple-hook-notice {
   padding: 8px 12px;
   color: var(--muted);
@@ -684,17 +664,4 @@
 .simple-composer [role='option'][aria-selected='true'] {
   background: var(--hover);
   outline: 1px solid var(--border);
-}
-/* Chat menu confirmations ask one short question; keep them compact and centered. */
-.chat-confirm .dialog-shell {
-  width: min(480px, 90vw);
-}
-.chat-confirm .dialog-body p {
-  margin: 0 0 8px;
-}
-.chat-confirm .dialog-body p:last-child {
-  margin-bottom: 0;
-}
-.chat-confirm .settings-footer {
-  padding: 10px 12px;
 }

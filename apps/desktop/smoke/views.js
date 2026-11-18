@@ -171,12 +171,11 @@
           assert(!event.defaultPrevented, 'Review captured an arrow before any click')
         }
       }
-      const confirm = window.confirm
       let prompts = 0
-      window.confirm = () => {
+      const stopAnswering = smoke.answerConfirms(() => {
         prompts++
         return false
-      }
+      })
       try {
         for (const selection of ['edge', 'component']) {
           if (selection === 'component') state().select('alpha')
@@ -194,7 +193,7 @@
           )
         }
       } finally {
-        window.confirm = confirm
+        stopAnswering()
       }
     }
     state().select(null)
@@ -585,15 +584,14 @@
     const nearbySid = smoke.sessionId('nearby', 'task')
     await until('nearby task running', () => state().sessions[nearbySid]?.running)
     await until('running nearby listed', () => tiles('nearby').length)
-    const confirm = window.confirm
     const asked = []
-    window.confirm = (message) => (asked.push(message), true)
+    const stopAnswering = smoke.answerConfirms((message) => (asked.push(message), true))
     try {
       click(tiles('nearby')[0].querySelector('button[aria-label="Remove Task"]'))
+      await until('remove confirmation answered', () => asked.length === 1)
     } finally {
-      window.confirm = confirm
+      stopAnswering()
     }
-    assert(asked.length === 1, 'removing a running terminal did not ask first')
     await until(
       'nearby stopped and gone',
       () => !state().sessions[nearbySid]?.running && !tiles('nearby').length,

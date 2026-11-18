@@ -7,6 +7,8 @@ export default function Dialog({
   children,
   className = '',
   footer,
+  role = 'dialog',
+  dismissible = true,
 }: {
   title: string
   subtitle?: string
@@ -14,22 +16,28 @@ export default function Dialog({
   children: ReactNode
   footer?: ReactNode
   className?: string
+  role?: 'dialog' | 'alertdialog'
+  /** False while work is in flight: Escape, the backdrop, and × leave the dialog open. */
+  dismissible?: boolean
 }) {
   const heading = useId()
   const card = useRef<HTMLDivElement>(null)
   // Capture before child autoFocus runs during the mount commit.
   const previous = useRef(document.activeElement as HTMLElement | null)
+  const close = () => {
+    if (dismissible) onClose()
+  }
   useEffect(() => {
     card.current?.focus()
     return () => previous.current?.focus()
   }, [])
   return (
-    <div className={`extension-overlay ${className}`} onClick={onClose}>
+    <div className={`extension-overlay ${className}`} onClick={close}>
       <div
         ref={card}
         tabIndex={-1}
         className="extensions-panel panel dialog-shell"
-        role="dialog"
+        role={role}
         aria-modal="true"
         aria-label={title}
         aria-labelledby={heading}
@@ -37,7 +45,7 @@ export default function Dialog({
         onKeyDown={(e) => {
           if (e.key === 'Escape' && !e.defaultPrevented) {
             e.stopPropagation()
-            onClose()
+            close()
           }
           if (e.key === 'Tab') {
             const nodes = Array.from(
@@ -68,7 +76,12 @@ export default function Dialog({
             <h2 id={heading}>{title}</h2>
             {subtitle && <small title={subtitle}>{subtitle}</small>}
           </div>
-          <button aria-label={`Close ${title}`} onClick={onClose}>
+          <button
+            aria-label={`Close ${title}`}
+            title="Close"
+            disabled={!dismissible}
+            onClick={close}
+          >
             ×
           </button>
         </header>

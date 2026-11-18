@@ -110,7 +110,7 @@ export default function StoryEditor({
         <h3>
           {item ? 'Edit' : 'New'} {kind}
         </h3>
-        <button disabled={busy} onClick={onClose} aria-label="Close story editor">
+        <button disabled={busy} onClick={onClose} aria-label="Close story editor" title="Close">
           ×
         </button>
       </header>

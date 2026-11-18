@@ -198,7 +198,12 @@ export default function FileEditor({
     <aside className="file-editor" aria-label="File editor">
       <header className="file-editor-header">
         <span className="panel-title">File editor</span>
-        <button aria-label="Close File editor" disabled={!!prompt} onClick={() => void close()}>
+        <button
+          aria-label="Close File editor"
+          title="Close"
+          disabled={!!prompt}
+          onClick={() => void close()}
+        >
           ×
         </button>
       </header>
@@ -218,6 +223,7 @@ export default function FileEditor({
             <button
               disabled={!!prompt}
               aria-label={`Close ${item.target.path}`}
+              title="Close file"
               onClick={() => void close(item.id)}
             >
               ×

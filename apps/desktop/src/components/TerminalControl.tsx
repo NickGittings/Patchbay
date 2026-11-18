@@ -9,6 +9,7 @@ import {
   type SessionState,
   type TerminalSpec,
 } from '../types'
+import { confirmAction } from '../lib/confirm'
 
 /** Header actions stay available even when the pane cannot load its saved output. */
 export default function TerminalControl({
@@ -46,13 +47,18 @@ export default function TerminalControl({
   const busy = restarting || freshPending
   const fresh = async () => {
     if (pending.current || busy || disabled || auto || !connected) return
-    if (
-      !window.confirm(
-        'Start a new conversation with the current Patchbay briefing? This stops the current agent. Saved history remains available.',
-      )
-    )
-      return
     pending.current = true
+    const ok = await confirmAction({
+      title: 'New conversation',
+      message:
+        'Start a new conversation with the current Patchbay briefing? This stops the current agent.',
+      detail: 'Saved history remains available.',
+      confirmLabel: 'Start new conversation',
+    })
+    if (!ok) {
+      pending.current = false
+      return
+    }
     setFreshPending(true)
     try {
       await newConversation(componentId, terminalId, task, projectId)

@@ -5,6 +5,7 @@ import { projectClose } from './ipc'
 import { flushMapSaves } from './mapSave'
 import { flushWorkspace } from './workspace'
 import { closeComponentWindows } from './windows'
+import { confirmAction } from './confirm'
 import type { SessionRecord } from '../types'
 
 vi.mock('./ipc', () => ({ projectClose: vi.fn() }))
@@ -12,10 +13,11 @@ vi.mock('./mapSave', () => ({ flushMapSaves: vi.fn() }))
 vi.mock('./workspace', () => ({ flushWorkspace: vi.fn() }))
 vi.mock('./windows', () => ({ closeComponentWindows: vi.fn() }))
 vi.mock('./maintenance', () => ({ reviewRescan: vi.fn() }))
+vi.mock('./confirm', () => ({ confirmAction: vi.fn() }))
 
 beforeEach(() => {
   vi.resetAllMocks()
-  vi.stubGlobal('window', { confirm: vi.fn(() => true) })
+  vi.mocked(confirmAction).mockResolvedValue(true)
   useStore.setState(useStore.getInitialState(), true)
   useStore.getState().loadProject({
     projectId: 'one',
@@ -120,9 +122,13 @@ test('canceling close with a running terminal leaves the project and windows unt
     sessionRecords: [projectSession()],
     sessions: { session: { running: true } },
   })
-  vi.mocked(window.confirm).mockReturnValue(false)
+  vi.mocked(confirmAction).mockResolvedValue(false)
   await closeProjectTab('one')
-  expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('Close One? 1 terminal(s)'))
+  expect(confirmAction).toHaveBeenCalledWith(
+    expect.objectContaining({
+      message: expect.stringContaining('Close One? 1 terminal will keep running'),
+    }),
+  )
   expect(useStore.getState().projects.one).toBeDefined()
   expect(flushMapSaves).not.toHaveBeenCalled()
   expect(closeComponentWindows).not.toHaveBeenCalled()
@@ -136,7 +142,7 @@ test('confirming close detaches running work and removes its project tab', async
     sessions: { session: { running: true } },
   })
   await closeProjectTab('one')
-  expect(window.confirm).toHaveBeenCalledOnce()
+  expect(confirmAction).toHaveBeenCalledOnce()
   expect(projectClose).toHaveBeenCalledWith('one')
   expect(useStore.getState().projects.one).toBeUndefined()
   expect(useStore.getState().sessions.session.running).toBe(true)
@@ -146,9 +152,11 @@ test('closing an inactive project checks that project for running work', async (
   const one = useStore.getState().toProject()
   useStore.getState().loadProject({ ...one, projectId: 'two', name: 'Two', root: '/tmp/two' })
   useStore.setState({ sessionRecords: [projectSession()] })
-  vi.mocked(window.confirm).mockReturnValue(false)
+  vi.mocked(confirmAction).mockResolvedValue(false)
   await closeProjectTab('one')
-  expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('Close One?'))
+  expect(confirmAction).toHaveBeenCalledWith(
+    expect.objectContaining({ message: expect.stringContaining('Close One?') }),
+  )
   expect(useStore.getState().projects.one).toBeDefined()
   expect(useStore.getState().activeProjectId).toBe('two')
 })
@@ -156,7 +164,7 @@ test('closing an inactive project checks that project for running work', async (
 test('terminals from another project do not require confirmation', async () => {
   useStore.setState({ sessionRecords: [projectSession('other')] })
   await closeProjectTab('one')
-  expect(window.confirm).not.toHaveBeenCalled()
+  expect(confirmAction).not.toHaveBeenCalled()
   expect(projectClose).toHaveBeenCalledWith('one')
 })
 
@@ -166,6 +174,6 @@ test('the latest terminal exit takes precedence over an older live session recor
     sessions: { session: { running: false } },
   })
   await closeProjectTab('one')
-  expect(window.confirm).not.toHaveBeenCalled()
+  expect(confirmAction).not.toHaveBeenCalled()
   expect(projectClose).toHaveBeenCalledWith('one')
 })

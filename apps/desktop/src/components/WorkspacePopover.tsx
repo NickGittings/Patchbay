@@ -40,6 +40,7 @@ export default function WorkspacePopover({
         <button
           className="footer-popover-icon"
           aria-label={`Close ${label.toLowerCase()}`}
+          title="Close"
           onClick={onClose}
         >
           ×
