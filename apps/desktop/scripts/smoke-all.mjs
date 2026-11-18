@@ -73,6 +73,8 @@ const SCRIPTS = {
       'chat-team-fixture.sh',
     ),
     run: ['scripts/chat-team.mjs'],
+    // Its restart loses the saved draft under parallel load.
+    serial: true,
   },
   'chat-controls': smoke('chat-controls.js', {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,
@@ -152,8 +154,8 @@ const SCRIPTS = {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,
   }),
   status: { run: ['scripts/status.mjs'] },
-  // These two time out under parallel load (the minimap toggle, the context observation), so
-  // they run alone after the rest.
+  // These time out under parallel load (the minimap toggle, the context observation), so they
+  // run alone after the rest, like chat-team.
   'conversation-context': { run: ['scripts/conversation-context.mjs'], serial: true },
   lifecycle: { run: ['scripts/lifecycle.mjs'] },
   navigation: { run: ['scripts/navigation-smoke.mjs'], serial: true },

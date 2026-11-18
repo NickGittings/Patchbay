@@ -190,9 +190,14 @@
     assert(button('Jump to latest (1 new reply)'), 'reconciliation counted duplicate reply')
     thread.scrollTop = 220
     thread.dispatchEvent(new Event('scroll'))
-    // The browser's own scroll event for this position, which re-anchors the reader, arrives on
-    // a later frame; a fixed sleep can end first under load and record a stale offset.
-    for (let i = 0; i < 2; i++) await new Promise((done) => requestAnimationFrame(done))
+    // The browser's own scroll event for this position, which re-anchors the reader, arrives
+    // later; wait for it rather than a fixed sleep, which can end first under load. Hidden smoke
+    // windows may never deliver it (nor animation frames), so a timer bounds the wait.
+    await new Promise((done) => {
+      thread.addEventListener('scroll', done, { once: true })
+      setTimeout(done, 500)
+    })
+    await sleep(50)
     const visibleReply = thread.querySelector('.simple-reply:has(.markdown-code)')
     const offset = visibleReply.getBoundingClientRect().top - thread.getBoundingClientRect().top
     const historical = {
