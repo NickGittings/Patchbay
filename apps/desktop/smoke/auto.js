@@ -56,7 +56,8 @@
     smoke.acceptOpened(await smoke.openProject())
     const projectId = state().project.id
     state().setMessage('Notification regression: keep this error')
-    const notificationSid = smoke.sessionId('root', 'validate')
+    // Only agents notify (commands' links are pruned), so the links name the fixture's agent.
+    const notificationSid = smoke.sessionId('root', 'notifier')
     state().setNotificationToast({
       message: 'Agent finished — notification fixture',
       sessions: [{ sid: notificationSid, label: 'Root' }],
