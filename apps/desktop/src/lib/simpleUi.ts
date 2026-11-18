@@ -36,6 +36,7 @@ export interface SimpleUi {
   }
   connection?: 'Connecting…' | 'Restoring context…'
   chatPreset?: string
+  dismissedAssignments?: string[]
   dismissedPrompts?: string[]
   coordinationReset?: boolean
   inputRequests?: import('./chat').ChatInputRequest[]
@@ -164,6 +165,7 @@ export const useSimpleUi = create<{
               ...emptySimpleUi(),
               ...appendDraft(ui, ui.queued ?? { draft: '', mentions: [] }),
               unconfirmed: ui.unconfirmed,
+              dismissedAssignments: ui.dismissedAssignments,
               dismissedPrompts: ui.dismissedPrompts,
             },
           ]),

@@ -1,4 +1,4 @@
-import type { SessionRecord } from '../types'
+import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE, type SessionRecord } from '../types'
 import { profileHookProvider } from './agentProfiles'
 import { useChatTeams, type ChatTeam } from './chatTeams'
 import type { ProviderRun } from './orchestration'
@@ -15,23 +15,22 @@ export function agentProviderLabel(record: SessionRecord | undefined) {
   )
 }
 
-/** Roles come from durable membership, never the workflow stage or selected terminal. */
-export function chatRole(
-  record: SessionRecord | undefined,
-  teams: readonly ChatTeam[] = [],
-  runs: readonly ProviderRun[] = [],
-) {
-  return teams.some((t) => t.lead.sessionId === record?.id)
-    ? 'Lead'
-    : record &&
-        (teams.some((t) => Object.hasOwn(t.scopes ?? {}, record.id)) ||
-          runs.some(
-            (r) =>
-              teams.some((t) => t.id === r.chatTeam) &&
-              r.jobs.some((j) => j.sessionId === record.id),
-          ))
-      ? 'Builder'
-      : 'Agent'
+export type ChatRoleKey = 'lead' | 'builder' | 'planner' | 'reviewer' | 'merge' | 'agent'
+
+const ROLE_LABELS: Record<ChatRoleKey, string> = {
+  lead: 'Lead',
+  builder: 'Builder',
+  planner: 'Planner',
+  reviewer: 'Reviewer',
+  merge: 'Merge agent',
+  agent: 'Agent',
+}
+
+/** Workflow agents keep the role of the scope they were launched in. */
+const SCOPE_ROLES: Record<string, ChatRoleKey> = {
+  [PLAN_SCOPE]: 'planner',
+  [REVIEW_SCOPE]: 'reviewer',
+  [MERGE_SCOPE]: 'merge',
 }
 
 /** Whether `sid` leads, or is about to lead, a team that is still going. */
@@ -45,18 +44,46 @@ export function leadsActiveTeam(sid: string, teams: Record<string, readonly Chat
   )
 }
 
+/** Roles come from durable membership, never the workflow stage or selected terminal. */
+function chatRoleKey(
+  record: SessionRecord | undefined,
+  teams: readonly ChatTeam[] = [],
+  runs: readonly ProviderRun[] = [],
+): ChatRoleKey {
+  return teams.some((t) => t.lead.sessionId === record?.id)
+    ? 'lead'
+    : record &&
+        (teams.some((t) => Object.hasOwn(t.scopes ?? {}, record.id)) ||
+          runs.some(
+            (r) =>
+              teams.some((t) => t.id === r.chatTeam) &&
+              r.jobs.some((j) => j.sessionId === record.id),
+          ))
+      ? 'builder'
+      : (SCOPE_ROLES[record?.metadata.componentId ?? ''] ?? 'agent')
+}
+
+export function chatRole(
+  record: SessionRecord | undefined,
+  teams: readonly ChatTeam[] = [],
+  runs: readonly ProviderRun[] = [],
+) {
+  return ROLE_LABELS[chatRoleKey(record, teams, runs)]
+}
+
 export function chatIdentity(
   record: SessionRecord | undefined,
   teams: readonly ChatTeam[] = [],
   runs: readonly ProviderRun[] = [],
 ) {
-  const role = chatRole(record, teams, runs)
-  const provider = agentProviderLabel(record)
+  const roleKey = chatRoleKey(record, teams, runs)
+  const role = ROLE_LABELS[roleKey]
+  const providerLabel = agentProviderLabel(record)
   const preset = record?.metadata.name
-  const label = [role, provider].filter(Boolean).join(' · ')
   // A preset named after its provider adds nothing beside the provider label.
-  const distinct = preset && preset.toLowerCase() !== provider?.toLowerCase()
-  return { role, title: distinct ? `${label} · ${preset}` : label }
+  const distinct = preset && preset.toLowerCase() !== providerLabel?.toLowerCase()
+  const detail = [providerLabel, distinct ? preset : undefined].filter(Boolean).join(' · ')
+  return { role, roleKey, detail, title: detail ? `${role} · ${detail}` : role }
 }
 
 export function useChatIdentity(record: SessionRecord | undefined) {

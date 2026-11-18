@@ -23,6 +23,13 @@
   --input: #f5a524;
   --review: #a78bfa;
   --task: var(--review);
+  --role-lead: var(--accent);
+  --role-builder: #2dd4bf;
+  --role-planner: #f472b6;
+  --role-reviewer: var(--review);
+  /* Neutral, so a merge agent never reads as the amber 'needs attention' signal. */
+  --role-merge: color-mix(in srgb, var(--text) 75%, var(--muted));
+  --role-agent: var(--muted);
   --terminal-selection: #1e3a7a;
   --terminal-yellow: #f5c451;
   --terminal-blue: #5b8cff;

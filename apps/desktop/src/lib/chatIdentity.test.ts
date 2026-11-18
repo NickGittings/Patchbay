@@ -35,6 +35,8 @@ const run = { chatTeam: 'team', jobs: [{ sessionId: 'worker' }] } as ProviderRun
 test('role follows durable team membership; a preset named after its provider is omitted', () => {
   expect(chatIdentity(record('lead'), [team], [run])).toEqual({
     role: 'Lead',
+    roleKey: 'lead',
+    detail: 'Codex · Thorough coding',
     title: 'Lead · Codex · Thorough coding',
   })
   expect(
@@ -44,6 +46,14 @@ test('role follows durable team membership; a preset named after its provider is
   ).toBe('Lead · Codex')
   expect(chatIdentity(record('worker'), [team], [run]).role).toBe('Builder')
   expect(chatIdentity(record('unknown'), [team], [run]).role).toBe('Agent')
+  const scoped = (componentId: string) => ({
+    ...record('scoped'),
+    metadata: { ...record('scoped').metadata, componentId },
+  })
+  expect(chatIdentity(scoped('@review'), [team], [run]).role).toBe('Reviewer')
+  expect(chatIdentity(scoped('@plan')).role).toBe('Planner')
+  expect(chatIdentity(scoped('@merge')).title).toBe('Merge agent · Codex · Thorough coding')
+  expect(chatIdentity(scoped('@merge')).roleKey).toBe('merge')
   expect(chatIdentity(record('worker'), [team], [{ ...run, chatTeam: 'other' }]).role).toBe('Agent')
   expect(
     chatIdentity(record('adopted'), [

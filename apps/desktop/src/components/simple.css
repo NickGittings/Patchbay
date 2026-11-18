@@ -47,13 +47,43 @@
   overflow-anchor: none;
 }
 .simple-agent {
+  --role: var(--role-agent);
   margin: 16px 0;
+  padding-left: 12px;
+  border-left: 2px solid color-mix(in srgb, var(--role) 60%, transparent);
   overflow-wrap: anywhere;
+}
+.simple-agent[data-role='lead'] {
+  --role: var(--role-lead);
+}
+.simple-agent[data-role='builder'] {
+  --role: var(--role-builder);
+}
+.simple-agent[data-role='planner'] {
+  --role: var(--role-planner);
+}
+.simple-agent[data-role='reviewer'] {
+  --role: var(--role-reviewer);
+}
+.simple-agent[data-role='merge'] {
+  --role: var(--role-merge);
 }
 .simple-agent > header {
   display: flex;
   align-items: center;
   gap: 8px;
+  color: var(--muted);
+}
+.chat-role {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--role) 14%, transparent);
+  color: color-mix(in srgb, var(--role) 70%, var(--text));
+  font-size: 12px;
+  font-weight: 600;
+}
+.chat-role-detail {
   color: var(--muted);
 }
 .simple-prompt {
@@ -115,6 +145,40 @@
 .simple-result .findings-panel {
   min-height: 80px;
   max-height: 480px;
+}
+.chat-progress {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 8px;
+}
+.chat-stepper {
+  flex: 1;
+  min-width: 0;
+}
+.chat-auto-pause {
+  flex: none;
+}
+/* Waiting for your go, nothing wrong: the accent, distinct from amber attention. */
+.chat-stepper li[data-state='ready'] {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.chat-stepper li[data-state='ready']::before {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--accent) 0 6px,
+    color-mix(in srgb, var(--accent) 35%, transparent) 6px 9px
+  );
+}
+.chat-stepper li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-stepper small {
+  font-size: inherit;
+  font-weight: 400;
 }
 .simple-step {
   position: relative;
@@ -509,12 +573,6 @@
   color: var(--muted);
 }
 
-.chat-coordination {
-  padding: 0 0.75rem;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-}
-
 .simple-dismiss {
   margin-left: auto;
 }
@@ -544,16 +602,80 @@
   padding: 6px;
   border-top: 1px solid var(--border);
 }
+/* Problems that need the user sit above the composer; routine status stays in the popover. */
 .chat-coordination {
+  flex-shrink: 0;
   max-height: 30%;
   overflow: auto;
-  flex-shrink: 0;
+  padding: 0 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.chat-workers-flag {
+  color: var(--bad);
+  font-weight: 600;
+}
+/* A non-blocking status panel anchored above its composer button. */
+.chat-workers-popover {
+  width: min(440px, calc(100vw - 16px));
+  max-height: min(60vh, 520px);
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  transform-origin: bottom right;
+}
+.chat-workers-popover .chat-workers {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.chat-workers-popover .chat-workers > ul,
+.chat-workers-popover .chat-workers > details,
+.chat-workers-popover .chat-workers > p {
+  align-self: stretch;
+  margin: 0;
+}
+.chat-workers-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.chat-workers .assignment-instructions summary {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.chat-workers-dismissed summary {
+  color: var(--muted);
+  cursor: pointer;
 }
 .chat-workers ul {
-  padding-left: 20px;
+  padding-left: 16px;
 }
 .chat-workers li {
-  margin: 10px 0;
+  margin: 6px 0;
+}
+.chat-workers li[data-status='complete'] {
+  color: var(--muted);
+}
+.chat-workers li[data-status='failed'] > strong {
+  color: var(--bad);
+}
+.chat-workers li[data-status='awaiting input'] > strong {
+  color: var(--input);
+}
+.assignment-report dl {
+  margin: 4px 0;
+}
+.assignment-report dt {
+  font-weight: 600;
+}
+.assignment-report dd {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .chat-workers li p {
   white-space: pre-wrap;

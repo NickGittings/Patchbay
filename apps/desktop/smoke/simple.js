@@ -529,14 +529,14 @@
     click(
       await until('reviewer terminal button', () => {
         const article = document.querySelector(`[data-session="${reviewer}"]`)
-        return article && button('View Agent terminal', article)
+        return article && button('View Reviewer terminal', article)
       }),
     )
     await until('reviewer drawer shows its terminal', () =>
-      document.querySelector('.simple-terminal-drawer[aria-label="Agent terminal"] .xterm'),
+      document.querySelector('.simple-terminal-drawer[aria-label="Reviewer terminal"] .xterm'),
     )
     assert(state().simple.selectedAgent === planner, 'reviewer View changed selected agent')
-    click(button('Hide Agent terminal'))
+    click(button('Hide Reviewer terminal'))
     await until('reviewer drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
     let flashed = false
     const monitor = new MutationObserver(() => {

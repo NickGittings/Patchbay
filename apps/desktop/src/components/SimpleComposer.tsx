@@ -23,11 +23,11 @@ import {
 } from '../lib/chatTeams'
 import { selectPanel, useRail } from '../lib/rail'
 import { persistReplies } from '../lib/simpleReplies'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import type { SessionRecord } from '../types'
-import { type SimpleStage } from '../lib/simple'
+import { recordStage, type SimpleStage } from '../lib/simple'
 import { useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import {
   composerStatus,
@@ -51,12 +51,14 @@ import { refreshSession, reconcileFreshSessions, restartTerminal } from '../lib/
 import { openIntegrations, useAgentHooksInstalled } from '../lib/agentHooks'
 
 export default function SimpleComposer({
+  children,
   scopeKey,
   stage,
   records,
   terminalRecord,
   openTerminal,
 }: {
+  children?: ReactNode
   scopeKey: string
   stage: SimpleStage
   records: SessionRecord[]
@@ -212,7 +214,7 @@ export default function SimpleComposer({
           text,
           draft,
           mentions,
-          stage,
+          stage: recordStage(recipient),
           atMs: Date.now(),
         })
       } catch (error) {
@@ -327,7 +329,7 @@ export default function SimpleComposer({
           text,
           draft,
           mentions,
-          stage,
+          stage: recordStage(target!),
           atMs: Date.now(),
         })
         return
@@ -339,7 +341,7 @@ export default function SimpleComposer({
         generation,
         text,
         mentions: mentions.map((m) => m.id),
-        stage,
+        stage: recordStage(target!),
         force,
         current: stillCurrent,
       })
@@ -523,6 +525,7 @@ export default function SimpleComposer({
             ? `${identity.title} · ${ui.connection ?? status.label}`
             : (ui.connection ?? status.label)}
         </span>
+        {children}
         {canInterrupt && (
           <button
             disabled={pending}

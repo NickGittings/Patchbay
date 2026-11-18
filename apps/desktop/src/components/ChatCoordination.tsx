@@ -1,37 +1,64 @@
 import { useStore } from '../store'
 import { controlTeam, RESTART_NOTICE, useChatTeams, type ChatTeam } from '../lib/chatTeams'
+import { simpleKey, useSimpleUi } from '../lib/simpleUi'
+import type { ProviderJob, ScanReport } from '../lib/orchestration'
 import { selectPanel, useRail } from '../lib/rail'
-import { useState } from 'react'
+import Popover from './Popover'
+import { CloseMenu } from './menuContext'
+import { useContext, useEffect, useRef, useState } from 'react'
 import type { SessionRecord } from '../types'
 import { activityLabel, turnSteps } from '../lib/activity'
 import { teamJobs, workerCounts, workerSession, workerStatus } from '../lib/chatProgress'
 
-/** Only coordination status and actionable exceptions belong beside the lead conversation. */
-export default function ChatCoordination({
-  team,
-  openTerminal,
-}: {
-  team: ChatTeam
-  openTerminal: (record: SessionRecord) => void
-}) {
+type Props = { team: ChatTeam; openTerminal: (record: SessionRecord) => void }
+
+/** A job's current result: a retry or a new failure is a new result, so it shows again. */
+const dismissalKey = (job: ProviderJob) => JSON.stringify([job.requestId, job.state, job.error])
+const failed = (job: ProviderJob) =>
+  job.state === 'failed' || (job.state === 'launching' && !!job.error)
+const showSettings = () => useRail.setState({ settings: 'roles' })
+const showSessions = () => selectPanel('sessions')
+
+/** The team's assignments, split by whether the user dismissed their current result. */
+function useTeamWork(team: ChatTeam) {
   const runs = useChatTeams((s) => s.runs[team.projectId])
   const sessions = useStore((s) => s.sessions)
-  const records = useStore((s) => s.sessionRecords)
-  const jobs = teamJobs(runs ?? [], team.id)
-  const counts = workerCounts(jobs, sessions)
-  const active = jobs.filter((job) => workerStatus(job, sessions) !== 'complete')
-  const terminalAction = (job: (typeof jobs)[number]) => {
-    const record = workerSession(job, records, team.projectId)
-    return (
-      <button disabled={!record} onClick={() => record && openTerminal(record)}>
-        View worker terminal
-      </button>
+  const key = simpleKey(team.projectId, team.task)
+  const dismissedKeys = useSimpleUi((s) => s.worktrees[key]?.dismissedAssignments)
+  const allJobs = teamJobs(runs ?? [], team.id)
+  const isDismissed = (job: ProviderJob) => !!dismissedKeys?.includes(dismissalKey(job))
+  const jobs = allJobs.filter((job) => !isDismissed(job))
+  const restartNotice = team.error === RESTART_NOTICE
+  const issues = {
+    teamError: !!team.error && !restartNotice,
+    requests: (team.requests ?? []).filter((r) => ['failed', 'uncertain'].includes(r.state)),
+    messages: team.messages.filter((m) => m.state === 'uncertain'),
+  }
+  // Reads the store at click time, so quick successive dismissals never overwrite each other,
+  // and keeps only keys for current results, so the persisted list cannot grow without bound.
+  const setDismissed = (job: ProviderJob, dismissed: boolean) => {
+    const ui = useSimpleUi.getState()
+    const live = new Set(allJobs.map(dismissalKey))
+    const id = dismissalKey(job)
+    const kept = (ui.worktrees[key]?.dismissedAssignments ?? []).filter(
+      (k) => live.has(k) && k !== id,
     )
+    ui.patch(key, { dismissedAssignments: dismissed ? [...kept, id] : kept })
   }
-  const workerStep = (job: (typeof jobs)[number]) => {
-    const step = job.sessionId ? turnSteps(sessions[job.sessionId]).at(-1) : undefined
-    return step && activityLabel(step, workerSession(job, records, team.projectId)?.spec.cwd)
+  return {
+    sessions,
+    allJobs,
+    jobs,
+    dismissed: allJobs.filter(isDismissed),
+    failures: jobs.filter(failed),
+    asking: jobs.filter((job) => workerStatus(job, sessions) === 'awaiting input'),
+    restartNotice,
+    issues,
+    setDismissed,
   }
+}
+
+function useTeamAction(team: ChatTeam) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const act = async (control: Parameters<typeof controlTeam>[1]) => {
@@ -45,92 +72,283 @@ export default function ChatCoordination({
       setBusy(false)
     }
   }
-  // The restart notice is informational; it replaces "Paused" instead of raising an alert.
-  const restartNotice = team.error === RESTART_NOTICE
-  const failures = jobs.filter((j) => j.state === 'failed' || (j.state === 'launching' && j.error))
-  const asking = jobs.filter((j) => workerStatus(j, sessions) === 'awaiting input')
+  return { act, busy, error }
+}
+
+/**
+ * Problems that need the user, shown in the chat itself and announced as they appear: failed and
+ * input-waiting workers, coordination errors and unconfirmed deliveries. Routine status stays in
+ * the composer's Assignments popover.
+ */
+export function ChatCoordinationAlerts({ team, openTerminal }: Props) {
+  const records = useStore((s) => s.sessionRecords)
+  const work = useTeamWork(team)
+  const { act, busy, error } = useTeamAction(team)
+  const { teamError, requests, messages } = work.issues
+  const terminal = (job: ProviderJob) => workerSession(job, records, team.projectId)
+  if (
+    !work.failures.length &&
+    !work.asking.length &&
+    !teamError &&
+    !team.reset?.error &&
+    !requests.length &&
+    !messages.length &&
+    !error
+  )
+    return null
   return (
-    <div className="chat-coordination" aria-label="Work status">
+    <div className="chat-coordination" aria-label="Work alerts">
+      {work.failures.map((job) => (
+        <p role="alert" key={job.id}>
+          {job.terminal.name} · failed{job.error && <> · {job.error}</>}{' '}
+          <button disabled={busy} onClick={() => void act({ kind: 'retry', assignment: job.id })}>
+            Retry work
+          </button>
+          <button onClick={showSettings}>Agent settings</button>
+        </p>
+      ))}
+      {work.asking.map((job) => {
+        const record = terminal(job)
+        return (
+          <p role="alert" key={job.id}>
+            {job.terminal.name} · awaiting input{' '}
+            <button disabled={!record} onClick={() => record && openTerminal(record)}>
+              View worker terminal
+            </button>
+          </p>
+        )
+      })}
+      {team.reset?.error && <p role="alert">{team.reset.error}</p>}
+      {teamError && <p role="alert">{team.error}</p>}
+      {requests.map((r) => (
+        <p role="alert" key={r.id}>
+          {r.result ?? `${r.action} ${r.state}`}{' '}
+          <button onClick={showSessions}>Inspect Sessions</button>
+          <button onClick={showSettings}>Agent settings</button>
+        </p>
+      ))}
+      {messages.map((m) => (
+        <div role="alert" key={m.id}>
+          Message delivery was not confirmed. Inspect the recipient’s terminal before retrying.{' '}
+          <button onClick={showSessions}>Open Sessions</button>
+          <button
+            disabled={busy}
+            onClick={() => void act({ kind: 'resolveDelivery', id: m.id, delivered: true })}
+          >
+            Mark delivered
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => void act({ kind: 'resolveDelivery', id: m.id, delivered: false })}
+          >
+            Retry delivery
+          </button>
+        </div>
+      ))}
+      {error && <p role="alert">{error}</p>}
+    </div>
+  )
+}
+
+/**
+ * The composer's Assignments button and its anchored, non-blocking popover. The button names how
+ * many items need the user; the alerts above the composer carry the details and recovery actions.
+ */
+export default function ChatCoordination(props: Props) {
+  const work = useTeamWork(props.team)
+  const { teamError, requests, messages } = work.issues
+  const coordination =
+    Number(teamError) + Number(!!props.team.reset?.error) + requests.length + messages.length
+  const flagged = work.failures.length + work.asking.length + coordination
+  const details = [
+    work.failures.length && `${work.failures.length} failed`,
+    work.asking.length && `${work.asking.length} awaiting input`,
+    coordination && `${coordination} coordination ${coordination === 1 ? 'issue' : 'issues'}`,
+  ].filter(Boolean)
+  return (
+    <Popover
+      portal
+      above
+      align="right"
+      caret={false}
+      title="Assignments"
+      triggerLabel={[`Assignments, ${work.jobs.length}`, ...details].join(', ')}
+      listClassName="chat-workers-popover"
+      label={
+        <>
+          Assignments ({work.jobs.length})
+          {flagged > 0 && <span className="chat-workers-flag"> · {flagged} flagged</span>}
+        </>
+      }
+    >
+      <AssignmentsPanel {...props} work={work} />
+    </Popover>
+  )
+}
+
+function AssignmentsPanel({
+  team,
+  openTerminal,
+  work,
+}: Props & { work: ReturnType<typeof useTeamWork> }) {
+  const close = useContext(CloseMenu)
+  const records = useStore((s) => s.sessionRecords)
+  const { act, busy, error } = useTeamAction(team)
+  const { sessions, jobs, dismissed } = work
+  // The last dismissal, offered for undo; its button takes focus from the row that went away.
+  const [undo, setUndo] = useState<ProviderJob>()
+  const undoButton = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (undo) undoButton.current?.focus()
+  }, [undo])
+  // Close first so focus returns to the trigger, then let the surface that opens take it.
+  const leave = (open: () => void) => () => {
+    close()
+    open()
+  }
+  const dismiss = (job: ProviderJob) => {
+    work.setDismissed(job, true)
+    setUndo(job)
+  }
+  const restore = (job: ProviderJob) => {
+    work.setDismissed(job, false)
+    setUndo(undefined)
+  }
+  const active = jobs.filter((job) => workerStatus(job, sessions) !== 'complete')
+  const counts = workerCounts(jobs, sessions)
+  const rank = (job: ProviderJob) =>
+    workerStatus(job, sessions) === 'complete' ? 2 : failed(job) ? 1 : 0
+  const step = (job: ProviderJob) => {
+    const last = job.sessionId ? turnSteps(sessions[job.sessionId]).at(-1) : undefined
+    return last && activityLabel(last, workerSession(job, records, team.projectId)?.spec.cwd)
+  }
+  return (
+    <div className="chat-workers">
       <p role="status">
         {team.state === 'running'
           ? active.length
             ? Object.entries(counts)
+                .filter(([, count]) => count > 0)
                 .map(([status, count]) => `${count} ${status}`)
                 .join(' · ')
             : 'Ready'
           : team.state === 'paused'
-            ? restartNotice
+            ? work.restartNotice
               ? RESTART_NOTICE
               : 'Paused'
             : team.state === 'stopped'
               ? 'Stopped'
               : 'Complete'}
+        {team.reset && !team.reset.error && ' · Restoring context…'}
       </p>
-      {active.length > 0 && (
-        <details className="chat-workers">
-          <summary>Workers ({active.length})</summary>
+      {undo && dismissed.some((job) => job.id === undo.id) && (
+        <p role="status" className="chat-workers-undo">
+          Dismissed {undo.terminal.name}.{' '}
+          <button ref={undoButton} onClick={() => restore(undo)}>
+            Undo
+          </button>
+        </p>
+      )}
+      {jobs.length === 0 ? (
+        <p>{work.allJobs.length ? 'All assignments dismissed.' : 'No assignments yet.'}</p>
+      ) : (
+        <ul>
+          {jobs
+            .sort((a, b) => rank(a) - rank(b))
+            .map((job) => {
+              const status = workerStatus(job, sessions)
+              const label = step(job)
+              const done = status === 'complete'
+              const record = workerSession(job, records, team.projectId)
+              return (
+                <li key={job.id} data-status={failed(job) ? 'failed' : status}>
+                  <strong>{job.terminal.name}</strong> · {status}
+                  {label && <> · {label}</>}
+                  {job.summary && <p>{job.summary}</p>}
+                  {!(done && job.summary) && <Instructions text={job.instructions} />}
+                  {job.report && <AssignmentReport report={job.report} />}
+                  {job.error && <p>{job.error}</p>}
+                  <div className="chat-workers-actions">
+                    <button
+                      disabled={!record}
+                      onClick={leave(() => record && openTerminal(record))}
+                    >
+                      View worker terminal
+                    </button>
+                    {failed(job) && (
+                      <>
+                        <button
+                          disabled={busy}
+                          onClick={() => void act({ kind: 'retry', assignment: job.id })}
+                        >
+                          Retry work
+                        </button>
+                        <button onClick={leave(showSettings)}>Agent settings</button>
+                      </>
+                    )}
+                    {(done || failed(job)) && <button onClick={() => dismiss(job)}>Dismiss</button>}
+                  </div>
+                </li>
+              )
+            })}
+        </ul>
+      )}
+      {dismissed.length > 0 && (
+        <details className="chat-workers-dismissed">
+          <summary>Dismissed ({dismissed.length})</summary>
           <ul>
-            {active.map((job) => (
+            {dismissed.map((job) => (
               <li key={job.id}>
-                <strong>{job.terminal.name}</strong> · {workerStatus(job, sessions)}
-                {workerStatus(job, sessions) === 'working' && workerStep(job) && (
-                  <> · {workerStep(job)}</>
-                )}
-                <p>{job.instructions}</p>
-                {terminalAction(job)}
+                {job.terminal.name} · {failed(job) ? 'failed' : workerStatus(job, sessions)}{' '}
+                <button onClick={() => restore(job)}>Restore</button>
               </li>
             ))}
           </ul>
-          <button onClick={() => selectPanel('sessions')}>Open Sessions</button>
         </details>
       )}
-      {team.reset && <p role="status">{team.reset.error ?? 'Restoring context…'}</p>}
-      {team.error && !restartNotice && <p role="alert">{team.error}</p>}
-      {failures.map((job) => (
-        <p role="alert" key={job.id}>
-          {job.terminal.name}: {job.error ?? 'Work failed'} {terminalAction(job)}
-          <button disabled={busy} onClick={() => void act({ kind: 'retry', assignment: job.id })}>
-            Retry work
-          </button>
-          <button onClick={() => useRail.setState({ settings: 'roles' })}>Agent settings</button>
-        </p>
-      ))}
-      {asking.map((job) => (
-        <p role="alert" key={job.id}>
-          {job.terminal.name} needs permission or input. {terminalAction(job)}{' '}
-          <button onClick={() => selectPanel('sessions')}>Open Sessions</button>
-        </p>
-      ))}
-      {(team.requests ?? [])
-        .filter((r) => ['failed', 'uncertain'].includes(r.state))
-        .map((r) => (
-          <p role="alert" key={r.id}>
-            {r.result ?? `${r.action} ${r.state}`}{' '}
-            <button onClick={() => selectPanel('sessions')}>Inspect Sessions</button>
-            <button onClick={() => useRail.setState({ settings: 'roles' })}>Agent settings</button>
-          </p>
-        ))}
-      {team.messages
-        .filter((m) => m.state === 'uncertain')
-        .map((m) => (
-          <div role="alert" key={m.id}>
-            Message delivery was not confirmed. Inspect the recipient’s terminal before retrying.{' '}
-            <button onClick={() => selectPanel('sessions')}>Open Sessions</button>
-            <button
-              disabled={busy}
-              onClick={() => void act({ kind: 'resolveDelivery', id: m.id, delivered: true })}
-            >
-              Mark delivered
-            </button>
-            <button
-              disabled={busy}
-              onClick={() => void act({ kind: 'resolveDelivery', id: m.id, delivered: false })}
-            >
-              Retry delivery
-            </button>
-          </div>
-        ))}
+      <button onClick={leave(showSessions)}>Open Sessions</button>
       {error && <p role="alert">{error}</p>}
     </div>
+  )
+}
+
+/** Short instructions read in full; long ones show their first line until expanded. */
+function Instructions({ text }: { text: string }) {
+  const first = text.split('\n', 1)[0]
+  if (first === text && text.length <= 160) return <p>{text}</p>
+  return (
+    <details className="assignment-instructions">
+      <summary>{first}</summary>
+      <p>{text}</p>
+    </details>
+  )
+}
+
+const REPORT_FIELDS: [keyof Omit<ScanReport, 'references'>, string][] = [
+  ['findings', 'Findings'],
+  ['uncertainties', 'Uncertainties'],
+  ['suggestedWork', 'Suggested work'],
+]
+
+/** A finished assignment's report, read as labelled sections rather than raw data. */
+function AssignmentReport({ report }: { report: ScanReport }) {
+  return (
+    <details className="assignment-report">
+      <summary>Report</summary>
+      <dl>
+        {REPORT_FIELDS.filter(([field]) => report[field].trim()).map(([field, label]) => (
+          <div key={field}>
+            <dt>{label}</dt>
+            <dd>{report[field]}</dd>
+          </div>
+        ))}
+        {report.references.length > 0 && (
+          <div>
+            <dt>References</dt>
+            <dd>{report.references.join('\n')}</dd>
+          </div>
+        )}
+      </dl>
+    </details>
   )
 }
