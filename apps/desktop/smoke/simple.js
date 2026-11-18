@@ -280,7 +280,7 @@
       ),
     )
     const reviewOptions = await until('review base picker', () =>
-      document.querySelector('form[aria-label="Review"]'),
+      document.querySelector('[role="dialog"][aria-label="Review"] form'),
     )
     assert(reviewOptions.querySelector('[aria-label="Base branch"]'), 'missing review base picker')
     assert(reviewOptions.textContent.includes('Agents: Simple agent'), 'default agent is hidden')

@@ -31,7 +31,7 @@
       const box = el.getBoundingClientRect()
       return box.width > 0 && box.height > 0 && getComputedStyle(el).visibility !== 'hidden'
     })
-  const dialog = () => visible('form[aria-label="Start merge agent"]')
+  const dialog = () => visible('[role="dialog"][aria-label="Start merge agent"] form')
   const submit = () =>
     dialog().dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   const text = (sid) => smoke.terminalText(sid).text
@@ -164,7 +164,7 @@
     click([...form.querySelectorAll('button')].find((b) => b.textContent === 'Cancel'))
     click(visible('.review-agent-button'))
     let reviewForm = await until('review dialog', () =>
-      visible('form[aria-label="Start review agent"]'),
+      visible('[role="dialog"][aria-label="Start review agent"] form'),
     )
     assert(
       reviewForm.querySelector('select[aria-label="Base branch"]').value === 'main',
@@ -251,7 +251,7 @@
     )
     click(visible('.review-agent-button'))
     reviewForm = await until('running review guard', () =>
-      visible('form[aria-label="Start review agent"]'),
+      visible('[role="dialog"][aria-label="Start review agent"] form'),
     )
     assert(
       reviewForm.querySelector('button[type="submit"]').disabled,

@@ -154,7 +154,11 @@
       start.click()
     }
     const form = await until('shared branch dialog', () =>
-      visible(chat ? 'form[aria-label="Merge"]' : 'form[aria-label="Start merge agent"]'),
+      visible(
+        chat
+          ? '[role="dialog"][aria-label="Merge"] form'
+          : '[role="dialog"][aria-label="Start merge agent"] form',
+      ),
     )
     assert(
       form.querySelector('[aria-label="Source worktree"]').value === root,
