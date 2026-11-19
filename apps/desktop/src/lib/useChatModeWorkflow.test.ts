@@ -226,9 +226,19 @@ test('completion keeps launch ownership and leaves another scope pending', async
   await vi.waitFor(() => expect(render(other).pending).toBe(''))
 })
 
+const source = { path: '/p/feature', branch: 'feature', head: 'f1' }
+const target = { path: '/p', branch: 'main', head: 'm1' }
 describe('Merge', () => {
-  const source = { path: '/p/feature', branch: 'feature', head: 'f1' }
-  const target = { path: '/p', branch: 'main', head: 'm1' }
+  test('conflicts stay shown when the merge cannot start', async () => {
+    const sides = { source, target } as unknown as Partial<Context>
+    vi.mocked(gitWorktrees).mockResolvedValue([source, target] as never)
+    useSimpleUi.getState().patch(context.key, { mergeCheck: { key: 'k', paths: ['a.ts'] } })
+    vi.mocked(mergeSourceChanges).mockResolvedValue([])
+    vi.mocked(startMergeAgent).mockRejectedValue(new Error('no merge agent'))
+    render(sides).act('merge')
+    await idle()
+    expect(useSimpleUi.getState().worktrees[context.key]?.mergeCheck?.paths).toEqual(['a.ts'])
+  })
   const merge = () => {
     vi.mocked(gitWorktrees).mockResolvedValue([source, target] as never)
     vi.mocked(mergeSourceChanges).mockResolvedValue([])

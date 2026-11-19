@@ -5,7 +5,7 @@ import type { SimpleEntry } from '../lib/simple'
 import { useChatIdentity } from '../lib/chatIdentity'
 import { chatReplyId } from '../lib/chatNavigation'
 import { useStore } from '../store'
-import { activityLabel, replyTurn, turnLength, turnSteps } from '../lib/activity'
+import { activityLabel, replyTurn, turnLength, turnStartMs, turnSteps } from '../lib/activity'
 import { useClockNow } from '../lib/clock'
 import type { Activity, SessionRecord } from '../types'
 import Markdown from './findings/Markdown'
@@ -86,7 +86,13 @@ export default function SimpleAgent({
           <p>
             {current ? activityLabel(current, record?.spec.cwd) : 'Working…'}
             {session?.status?.agent?.state === 'working' && (
-              <TurnTimer sinceMs={session.status.agent.sinceMs} />
+              <TurnTimer
+                sinceMs={turnStartMs(
+                  promptBefore(entries, entries.length),
+                  steps,
+                  session.status.agent.sinceMs,
+                )}
+              />
             )}
           </p>
           {steps.length > 1 && (

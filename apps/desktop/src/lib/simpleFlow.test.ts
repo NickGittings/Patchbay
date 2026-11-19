@@ -713,7 +713,9 @@ describe('lead-started stages', () => {
       },
     ],
   })
-  const team = (overrides: Partial<Parameters<typeof leadDeciding>[0]['team'] & object> = {}) => ({
+  const team = (
+    overrides: Partial<NonNullable<Parameters<typeof leadDeciding>[0]['team']>> = {},
+  ) => ({
     state: 'running' as const,
     messages: [],
     requests: [],
@@ -742,9 +744,15 @@ describe('lead-started stages', () => {
   })
   test('the lead decides while it works, has news coming, or has a stage unsettled', () => {
     const started = true
-    expect(leadDeciding({ started, team: team(), lead: lead('working') })).toBe(true)
-    expect(leadDeciding({ started, team: team(), lead: lead('needsInput') })).toBe(true)
-    expect(leadDeciding({ started, team: team(), lead: lead('idle') })).toBe(false)
+    expect(leadDeciding({ agentId: '@task', started, team: team(), lead: lead('working') })).toBe(
+      true,
+    )
+    expect(
+      leadDeciding({ agentId: '@task', started, team: team(), lead: lead('needsInput') }),
+    ).toBe(true)
+    expect(leadDeciding({ agentId: '@task', started, team: team(), lead: lead('idle') })).toBe(
+      false,
+    )
     const message = (passive: boolean, state: 'pending' | 'delivered') => ({
       id: 'm',
       sequence: 1,
@@ -758,6 +766,7 @@ describe('lead-started stages', () => {
     })
     expect(
       leadDeciding({
+        agentId: '@task',
         started,
         team: team({ messages: [message(false, 'pending')] }),
         lead: lead('idle'),
@@ -765,6 +774,7 @@ describe('lead-started stages', () => {
     ).toBe(true)
     expect(
       leadDeciding({
+        agentId: '@task',
         started,
         team: team({ messages: [message(true, 'pending')] }),
         lead: lead('idle'),
@@ -772,37 +782,133 @@ describe('lead-started stages', () => {
     ).toBe(false)
     expect(
       leadDeciding({
+        agentId: '@task',
         started,
         team: team({ messages: [message(false, 'delivered')] }),
         lead: lead('idle'),
       }),
     ).toBe(false)
-    const request = (state: string) => ({
+    const request = (state: string, sessionId = '@task') => ({
       id: 'r',
       action: 'startBuild',
       settings: {},
       state,
-      result: null,
+      result: JSON.stringify({ sessionId, startedMs: 1 }),
     })
     expect(
-      leadDeciding({ started, team: team({ requests: [request('running')] }), lead: lead('idle') }),
+      leadDeciding({
+        agentId: '@task',
+        started,
+        team: team({ requests: [request('running')] }),
+        lead: lead('idle'),
+      }),
     ).toBe(true)
     expect(
       leadDeciding({
+        agentId: '@task',
         started,
         team: team({ requests: [request('completed')] }),
         lead: lead('idle'),
       }),
     ).toBe(false)
   })
-  test('a paused team, a stopped lead or a button launch leave the card to the user', () => {
-    expect(leadDeciding({ started: false, team: team(), lead: lead('working') })).toBe(false)
+  test('a restart’s uncertain delivery, or another agent’s request, never hides the card', () => {
+    const started = true
+    const uncertain = {
+      id: 'm',
+      sequence: 1,
+      sender: 'patchbay',
+      recipient: 'lead',
+      assignment: null,
+      text: 'Result',
+      state: 'uncertain' as const,
+      generation: 1,
+    }
     expect(
-      leadDeciding({ started: true, team: team({ state: 'paused' }), lead: lead('working') }),
+      leadDeciding({
+        agentId: '@task',
+        started,
+        team: team({ messages: [uncertain] }),
+        lead: lead('idle'),
+      }),
     ).toBe(false)
-    expect(leadDeciding({ started: true, team: undefined, lead: lead('working') })).toBe(false)
+    const other = {
+      id: 'r',
+      action: 'startBuild',
+      settings: {},
+      state: 'running',
+      result: JSON.stringify({ sessionId: '@other', startedMs: 1 }),
+    }
     expect(
-      leadDeciding({ started: true, team: team(), lead: { ...lead('working'), running: false } }),
+      leadDeciding({
+        agentId: '@task',
+        started,
+        team: team({ requests: [other] }),
+        lead: lead('idle'),
+      }),
+    ).toBe(false)
+    expect(
+      leadDeciding({
+        agentId: '@task',
+        started,
+        team: team({
+          requests: [
+            {
+              ...other,
+              state: 'uncertain',
+              result: JSON.stringify({ sessionId: '@task', startedMs: 1 }),
+            },
+          ],
+        }),
+        lead: lead('idle'),
+      }),
+    ).toBe(false)
+    const council = {
+      id: 'c',
+      action: 'startReview',
+      settings: {},
+      state: 'waiting',
+      result: null,
+      councilRun: {
+        round: 'r',
+        branch: 'feature',
+        base: 'main',
+        members: [
+          { preset: {} as never, requestId: 'q', sessionId: '@task', state: 'running' as const },
+        ],
+      },
+    }
+    expect(
+      leadDeciding({
+        agentId: '@task',
+        started,
+        team: team({ requests: [council] }),
+        lead: lead('idle'),
+      }),
+    ).toBe(true)
+  })
+  test('a paused team, a stopped lead or a button launch leave the card to the user', () => {
+    expect(
+      leadDeciding({ agentId: '@task', started: false, team: team(), lead: lead('working') }),
+    ).toBe(false)
+    expect(
+      leadDeciding({
+        agentId: '@task',
+        started: true,
+        team: team({ state: 'paused' }),
+        lead: lead('working'),
+      }),
+    ).toBe(false)
+    expect(
+      leadDeciding({ agentId: '@task', started: true, team: undefined, lead: lead('working') }),
+    ).toBe(false)
+    expect(
+      leadDeciding({
+        agentId: '@task',
+        started: true,
+        team: team(),
+        lead: { ...lead('working'), running: false },
+      }),
     ).toBe(false)
   })
   test('while the lead decides, an ended build offers nothing and says it waits on the lead', () => {

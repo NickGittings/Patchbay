@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 /// Largest image Chat saves.
 pub const ATTACHMENT_LIMIT: usize = 10 * 1024 * 1024;
 
+/// Saved images older than this are removed when the next one is saved; by then
+/// the turn that read them is long finished.
+pub const ATTACHMENT_RETENTION: std::time::Duration =
+    std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
 /// The file extension for an image Chat accepts, read from its leading bytes
 /// rather than trusting a name or a declared type.
 #[must_use]
@@ -54,9 +59,34 @@ pub fn save(root: &Path, bytes: &[u8]) -> Result<PathBuf> {
     let Some(extension) = image_extension(bytes) else {
         bail!("Only PNG, JPEG, GIF and WebP images can be attached");
     };
-    let file = dir(root)?.join(format!("{}.{extension}", uuid::Uuid::new_v4()));
+    let dir = dir(root)?;
+    prune(&dir, ATTACHMENT_RETENTION);
+    let file = dir.join(format!("{}.{extension}", uuid::Uuid::new_v4()));
     crate::workspace::atomic_write(&file, bytes)?;
     Ok(file)
+}
+
+/// Best effort: remove images in `dir` last changed more than `age` ago.
+fn prune(dir: &Path, age: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|elapsed| elapsed > age);
+        let image = entry
+            .path()
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| ["png", "jpg", "gif", "webp"].contains(&e));
+        if old && image {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -106,6 +136,26 @@ mod tests {
         assert_eq!(first.extension().unwrap(), "png");
         assert!(first.starts_with(crate::plans::dir(&root).unwrap()));
         assert_eq!(fs::read(&first).unwrap(), PNG);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saving_removes_images_past_their_retention() {
+        let Some(root) = repo() else { return };
+        let stale = save(&root, PNG).unwrap();
+        let month_ago = std::time::SystemTime::now() - ATTACHMENT_RETENTION * 2;
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(month_ago)
+            .unwrap();
+        let note = dir(&root).unwrap().join("keep.txt");
+        fs::write(&note, "not an image").unwrap();
+        let fresh = save(&root, PNG).unwrap();
+        assert!(!stale.exists());
+        assert!(fresh.exists());
+        assert!(note.exists());
         let _ = fs::remove_dir_all(root);
     }
 

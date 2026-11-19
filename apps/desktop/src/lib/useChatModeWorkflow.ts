@@ -82,6 +82,8 @@ export function useChatModeWorkflow({
     if (reviewers.length) await retire(reviewers.map((r) => r.sessionId))
   }
   const logMerge = async (request: MergeRequest, sid: string, requestId: string) => {
+    // Only a started merge settles the conflicts; a canceled dialog or failed launch keeps them.
+    useSimpleUi.getState().patch(key, { mergeCheck: undefined })
     await logLaunch(
       projectId,
       task,
@@ -192,7 +194,6 @@ export function useChatModeWorkflow({
             return
           }
         }
-        useSimpleUi.getState().patch(key, { mergeCheck: undefined })
         const project = useStore.getState().toProject()
         // The dialog asks whether the merge agent should commit these first.
         if ((await mergeSourceChanges(project, source.path, source.branch)).length) {

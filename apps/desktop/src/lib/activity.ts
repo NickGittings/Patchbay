@@ -297,3 +297,16 @@ export function turnLength(ms: number): string {
   const m = Math.floor(s / 60)
   return `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`
 }
+
+/**
+ * When the running turn began: the earlier of the prompt that started it and its first retained
+ * step. The agent's state time is only a fallback, since answering a permission request resets it.
+ */
+export function turnStartMs(
+  promptAtMs: number | undefined,
+  steps: readonly Activity[],
+  stateSinceMs: number,
+) {
+  const starts = [promptAtMs, steps[0]?.atMs].filter((ms): ms is number => ms !== undefined)
+  return starts.length ? Math.min(...starts) : stateSinceMs
+}

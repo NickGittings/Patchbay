@@ -9,6 +9,7 @@ import {
   liveComponents,
   replyTurn,
   turnLength,
+  turnStartMs,
   writeActivity,
 } from './activity'
 import type { Activity, SessionRecord } from '../types'
@@ -351,4 +352,12 @@ test('turn lengths read as seconds, minutes and hours', () => {
   expect(turnLength(180_000)).toBe('3m')
   expect(turnLength(3_840_000)).toBe('1h 4m')
   expect(turnLength(-5)).toBe('0s')
+})
+
+test('a running turn counts from its prompt or first step, not its last state change', () => {
+  const step = { sequence: 1, atMs: 300, tool: 'Bash', target: 'ls', turn: 't' }
+  expect(turnStartMs(100, [step], 900)).toBe(100)
+  expect(turnStartMs(undefined, [step], 900)).toBe(300)
+  expect(turnStartMs(400, [step], 900)).toBe(300)
+  expect(turnStartMs(undefined, [], 900)).toBe(900)
 })

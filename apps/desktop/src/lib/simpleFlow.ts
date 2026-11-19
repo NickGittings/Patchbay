@@ -1,5 +1,6 @@
 import type { MergeOutcome, ReviewFindings, SessionRecord, SessionState } from '../types'
 import type { ChatTeam } from './chatTeams'
+import { savedStage } from './leadStageRun'
 import { reviewerBusy } from './review'
 import {
   workflowLog,
@@ -401,40 +402,43 @@ export function leadStarted(
   return launch?.kind === 'action' && !!launch.byLead
 }
 
-const SETTLED_REQUESTS = ['completed', 'failed']
-const LEAD_STAGE_REQUESTS = [
-  'startPlan',
-  'startBuild',
-  'startFix',
-  'startReview',
-  'startCouncilReview',
-  'startMerge',
-]
+const ACTIVE_REQUESTS = ['starting', 'running', 'waiting']
+/** Whether a lead workflow request is still running `agentId`: its saved stage run or a council lane. */
+function runsAgent(request: NonNullable<ChatTeam['requests']>[number], agentId: string) {
+  return (
+    ACTIVE_REQUESTS.includes(request.state) &&
+    (savedStage(request.result)?.sessionId === agentId ||
+      !!request.councilRun?.members.some((m) => m.sessionId === agentId))
+  )
+}
 /**
  * Whether the lead still owns what follows a stage it started. That holds while its team is
- * running and the lead is working, has a message on its way, or has a stage request unsettled.
- * Once the lead is back at its prompt with nothing pending, the step card returns.
+ * running and the lead is working, has a message on its way, or still runs this agent's request.
+ * Only messages being sent and requests naming this agent count: an `uncertain` delivery (as a
+ * restart leaves one) has its own recovery alert and never hides the card. Once the lead is back
+ * at its prompt with nothing pending, the step card returns.
  */
 export function leadDeciding({
   started,
+  agentId,
   team,
   lead,
 }: {
   started: boolean
+  agentId: string | undefined
   team: Pick<ChatTeam, 'state' | 'messages' | 'requests'> | undefined
   lead: Pick<SessionState, 'running' | 'status'> | undefined
 }) {
-  if (!started || team?.state !== 'running' || !lead?.running) return false
+  if (!started || !agentId || team?.state !== 'running' || !lead?.running) return false
   const state = lead.status?.agent?.state
   return (
     state === 'working' ||
     state === 'needsInput' ||
     (team.messages ?? []).some(
-      (m) => m.recipient === 'lead' && !m.passive && m.state !== 'delivered',
+      (m) =>
+        m.recipient === 'lead' && !m.passive && (m.state === 'pending' || m.state === 'sending'),
     ) ||
-    (team.requests ?? []).some(
-      (r) => LEAD_STAGE_REQUESTS.includes(r.action) && !SETTLED_REQUESTS.includes(r.state),
-    )
+    (team.requests ?? []).some((r) => runsAgent(r, agentId))
   )
 }
 

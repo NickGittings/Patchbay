@@ -104,10 +104,24 @@ export default function SimpleComposer({
     setErrorResult({ key: scopeKey, text, kind })
   const [caret, setCaret] = useState(0)
   const [attaching, setAttaching] = useState(0)
-  /** Save pasted or dropped images and put their paths in the draft where the caret was. */
-  const attach = async (files: File[], at: number) => {
+  const shownScope = useRef(scopeKey)
+  useEffect(() => {
+    shownScope.current = scopeKey
+  }, [scopeKey])
+  /**
+   * Take over a paste or drop of images: remove any selected text now, as a paste would, then save
+   * the images and put their paths where the caret is once they are saved.
+   */
+  const attach = async (files: File[], field: HTMLTextAreaElement) => {
     const projectId = s.project?.id
     if (!files.length || !projectId) return
+    const key = scopeKey
+    const { selectionStart: from, selectionEnd: to } = field
+    if (to > from) {
+      const draft = ui.draft.slice(0, from) + ui.draft.slice(to)
+      patch({ draft, mentions: editedMentions(ui.draft, draft, ui.mentions) })
+    }
+    let at = from
     setAttaching((n) => n + 1)
     try {
       const paths = await Promise.all(
@@ -115,14 +129,21 @@ export default function SimpleComposer({
           saveChatAttachment(projectId, new Uint8Array(await f.arrayBuffer())),
         ),
       )
-      // Read the draft now: the user may have typed while the images saved.
-      const current = useSimpleUi.getState().worktrees[scopeKey] ?? EMPTY_SIMPLE_UI
-      const next = withImages(current.draft, Math.min(at, current.draft.length), paths)
-      patch({
+      // The user may have typed while the images saved: insert at the live caret while this
+      // chat is still shown, else at the end of its draft.
+      const current = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
+      const live = shownScope.current === key ? input.current : null
+      at = live ? live.selectionStart : current.draft.length
+      const next = withImages(current.draft, at, paths)
+      useSimpleUi.getState().patch(key, {
         draft: next.draft,
         mentions: editedMentions(current.draft, next.draft, current.mentions),
       })
-      setCaret(next.caret)
+      if (live) {
+        setCaret(next.caret)
+        // After React writes the new value, so the textarea's caret and ours agree.
+        requestAnimationFrame(() => live.setSelectionRange(next.caret, next.caret))
+      }
     } catch (e) {
       setError(`Couldn't attach the image: ${String(e)}`)
     } finally {
@@ -208,6 +229,8 @@ export default function SimpleComposer({
   const canForce = !autoActive && running && !ready && s.serviceConnected && forceable(state)
   const asking = running && state?.status?.agent?.state === 'needsInput'
   const send = async (force = false) => {
+    // An image still saving would land in the next draft instead of this message.
+    if (attaching > 0) return
     if (ui.unconfirmed || submitting.current || !(force ? canForce : status.sendable) || !s.project)
       return
     const projectId = s.project.id,
@@ -518,9 +541,10 @@ export default function SimpleComposer({
         }}
         onPaste={(e) => {
           const files = imageFiles(e.clipboardData.files)
-          if (!files.length) return
+          // Apps that copy text with a picture of it (spreadsheets, documents) paste the text.
+          if (!files.length || e.clipboardData.getData('text/plain')) return
           e.preventDefault()
-          void attach(files, e.currentTarget.selectionStart)
+          void attach(files, e.currentTarget)
         }}
         onDragOver={(e) => {
           if (Array.from(e.dataTransfer.items).some((i) => i.type.startsWith('image/')))
@@ -530,7 +554,7 @@ export default function SimpleComposer({
           const files = imageFiles(e.dataTransfer.files)
           if (!files.length) return
           e.preventDefault()
-          void attach(files, e.currentTarget.selectionStart)
+          void attach(files, e.currentTarget)
         }}
         onKeyDown={(e) => {
           if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
@@ -597,7 +621,7 @@ export default function SimpleComposer({
         </button>
         {!asking && canForce && (
           <button
-            disabled={pending || !ui.draft.trim()}
+            disabled={pending || !ui.draft.trim() || attaching > 0}
             title="Types into the agent now, even mid-turn"
             onClick={() => void send(true)}
           >

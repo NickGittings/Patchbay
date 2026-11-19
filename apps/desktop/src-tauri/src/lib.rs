@@ -1139,6 +1139,13 @@ async fn save_chat_attachment(
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("Expected the image's bytes".into());
     };
+    // Refuse an oversized drop before copying it.
+    if bytes.len() > patchbay_core::attachments::ATTACHMENT_LIMIT {
+        return Err(format!(
+            "Images must be {} MB or smaller",
+            patchbay_core::attachments::ATTACHMENT_LIMIT / (1024 * 1024)
+        ));
+    }
     let project_id = request
         .headers()
         .get("patchbay-project")

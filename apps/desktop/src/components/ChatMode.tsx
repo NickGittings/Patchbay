@@ -172,6 +172,7 @@ export default function ChatMode({
   const derived = forLead(
     flowed,
     leadDeciding({
+      agentId: flowed.agent?.id,
       started: leadStarted(
         s.simple,
         flowed.agent?.id,
