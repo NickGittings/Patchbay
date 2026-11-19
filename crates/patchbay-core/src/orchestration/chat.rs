@@ -2634,6 +2634,10 @@ pub fn reconcile(
                 )?;
             }
             for (id, assignment, error) in notices {
+                // Every pass rebuilds these, and a saved one keeps the wording it was sent with.
+                if t.messages.iter().any(|m| m.id == id) {
+                    continue;
+                }
                 append(
                     &mut t,
                     id,
@@ -5681,6 +5685,39 @@ mod tests {
         .unwrap();
         assert_eq!(requests, ["stop", "launch"]);
     }
+    #[test]
+    fn a_saved_worker_failure_notice_survives_a_change_in_its_wording() {
+        let f = Fixture::new();
+        f.cmd(Command::DelegateShared {
+            id: "round1".into(),
+            assignments: vec![assignment("a", ResultKind::Code, &[])],
+        })
+        .unwrap();
+        let (launched, mut worker) = f.launch("a");
+        let launched_ms = launched.jobs[0].launched_ms;
+        stop_at_limit(&mut worker);
+        let records = [f.lead.clone(), worker];
+        super::super::reconcile_at(&f.dir, "p", &records, false, launched_ms + 1).unwrap();
+        reconcile(&f.dir, "p", &records, false).unwrap();
+        modify(&f.dir, |s| {
+            let notice = s.teams[0]
+                .messages
+                .iter_mut()
+                .find(|m| m.id.starts_with("failed-"))
+                .unwrap();
+            notice.text = "Wording from an earlier version".into();
+            Ok(())
+        })
+        .unwrap();
+        let teams = reconcile(&f.dir, "p", &records, false).unwrap();
+        assert!(
+            teams[0]
+                .messages
+                .iter()
+                .any(|m| m.text == "Wording from an earlier version")
+        );
+    }
+
     #[test]
     fn a_limit_stopped_worker_fails_and_retries_on_another_agent() {
         let f = Fixture::new();
