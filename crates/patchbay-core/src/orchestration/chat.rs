@@ -208,7 +208,7 @@ pub struct LeadStatus {
     pub note: Option<String>,
     pub at_ms: u64,
 }
-/// Mirrors `simpleFlow.ts` `SimpleStep`.
+/// Mirrors `simpleFlow.ts` `SimpleStep` (`SIMPLE_STEPS`); paired tests pin both lists.
 const LEAD_STEPS: [&str; 11] = [
     "idle",
     "planning",
@@ -222,6 +222,7 @@ const LEAD_STEPS: [&str; 11] = [
     "merging",
     "merged",
 ];
+/// In characters, not bytes, so every script gets the same room.
 const STATUS_NOTE_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1083,7 +1084,7 @@ pub fn command(
                     .filter(|note| !note.is_empty());
                 ensure!(
                     note.as_ref()
-                        .is_none_or(|note| note.len() <= STATUS_NOTE_LIMIT),
+                        .is_none_or(|note| note.chars().count() <= STATUS_NOTE_LIMIT),
                     "Status note is too long"
                 );
                 t.status = Some(LeadStatus {
@@ -3864,6 +3865,38 @@ mod tests {
         let t = complete_task_reset(&f).unwrap();
         assert_eq!(t.requests[0].state, "completed");
         assert!(t.reset.as_ref().is_some_and(|r| r.complete_task));
+    }
+
+    #[test]
+    fn lead_steps_match_the_frontend_steps() {
+        // Paired with `simpleFlow.test.ts` "chat steps match the backend's lead steps".
+        assert_eq!(
+            LEAD_STEPS,
+            [
+                "idle",
+                "planning",
+                "planReady",
+                "building",
+                "built",
+                "reviewing",
+                "reviewed",
+                "fixing",
+                "fixed",
+                "merging",
+                "merged",
+            ]
+        );
+    }
+
+    #[test]
+    fn status_notes_are_limited_in_characters() {
+        let f = Fixture::new();
+        let status = |note: String| Command::Status {
+            step: "planning".into(),
+            note: Some(note),
+        };
+        f.cmd(status("計".repeat(STATUS_NOTE_LIMIT))).unwrap();
+        assert!(f.cmd(status("計".repeat(STATUS_NOTE_LIMIT + 1))).is_err());
     }
 
     #[test]

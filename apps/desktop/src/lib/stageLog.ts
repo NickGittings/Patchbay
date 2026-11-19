@@ -8,11 +8,12 @@ export const logStageLaunch = (
   action: SimpleAction,
   stage: SimpleStage,
   launched: { sessionId: string; requestId?: string },
+  options?: { lead?: true },
 ) =>
   logLaunch(
     projectId,
     task,
-    { kind: 'action', action, stage, sessionId: launched.sessionId },
+    { kind: 'action', action, stage, sessionId: launched.sessionId, ...options },
     launched.requestId,
     { atRunStart: true },
   )

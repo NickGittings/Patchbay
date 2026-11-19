@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  SIMPLE_STEPS,
   chatStatus,
   chatStepHeading,
   chatStepper,
@@ -662,6 +663,38 @@ describe('chatStatus', () => {
     expect(chatStatus('reviewing', { lead, autoRunning: false, simple: simple(150) }).step).toBe(
       'reviewing',
     )
+  })
+  test('a confirmed merge wins over an older lead status', () => {
+    const merging = { step: 'merging' as const, atMs: 100 }
+    expect(chatStatus('merged', { lead: merging, autoRunning: false, simple: simple(50) })).toEqual(
+      { step: 'merged' },
+    )
+  })
+  test("the lead's own stage launches keep its status and note", () => {
+    const own = {
+      startedMs: 0,
+      log: [{ kind: 'action', action: 'plan', stage: 'plan', atMs: 150, lead: true }],
+    } as unknown as Parameters<typeof chatStatus>[1]['simple']
+    expect(chatStatus('planning', { lead, autoRunning: false, simple: own })).toEqual({
+      step: 'planning',
+      note: 'Drafting',
+    })
+  })
+  test("chat steps match the backend's lead steps", () => {
+    // Paired with chat.rs `lead_steps_match_the_frontend_steps`.
+    expect(SIMPLE_STEPS).toEqual([
+      'idle',
+      'planning',
+      'planReady',
+      'building',
+      'built',
+      'reviewing',
+      'reviewed',
+      'fixing',
+      'fixed',
+      'merging',
+      'merged',
+    ])
   })
   test('a chat without a lead status keeps the derived step', () => {
     expect(chatStatus('built', { autoRunning: false, simple: simple(50) }).step).toBe('built')

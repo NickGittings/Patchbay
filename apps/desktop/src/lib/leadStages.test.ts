@@ -29,6 +29,7 @@ vi.mock('./reviewAgents', () => ({
   ]),
   reviewWorktreeBusy: vi.fn(() => false),
   defaultMergeDestination: vi.fn(() => 'main'),
+  mergeDestinationRunning: vi.fn(() => false),
   startBranchMerge: vi.fn(async () => ({ request: mergeRequest, sid: 'merge' })),
 }))
 vi.mock('./sessionList', () => ({ sessionTimeMs: vi.fn(() => 0) }))
@@ -41,15 +42,16 @@ vi.mock('../types', () => ({
 }))
 vi.mock('../store', () => ({
   useStore: { getState: vi.fn() },
-  projectOf: vi.fn(() => ({ projectId: 'p' })),
+  projectOf: vi.fn(() => ({ projectId: 'p', components: [{ id: 'api' }] })),
 }))
 import { useStore } from '../store'
 import { controlTeam, type ChatTeam } from './chatTeams'
-import { mergeOutcome, mergeSourceChanges, planRead, terminalSnapshot } from './ipc'
+import { roleDevice } from './agentRoles'
+import { gitWorktrees, mergeOutcome, mergeSourceChanges, planRead, terminalSnapshot } from './ipc'
 import { settleLeadStage, startLeadStage } from './leadStages'
 import { implementPlannerPlan } from './planHandoff'
 import { fixReviewFindings } from './reviewHandoff'
-import { reviewWorktreeBusy, startBranchMerge } from './reviewAgents'
+import { mergeDestinationRunning, reviewWorktreeBusy, startBranchMerge } from './reviewAgents'
 import { startTerminal } from './sessions'
 
 const team = { id: 'team', projectId: 'p', task: 't1', target: '/p' } as ChatTeam
@@ -111,6 +113,30 @@ test('a plan starts the plan role with the request in its briefing', async () =>
   expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
 })
 
+test("a plan keeps only the lead's components still on the map", async () => {
+  const components = (named: unknown) =>
+    startLeadStage(
+      team,
+      request('startPlan', 'starting', null, { goal: 'Plan', components: named }),
+    )
+  await components(['api', 'gone'])
+  expect(vi.mocked(startTerminal).mock.lastCall?.[4]?.components).toEqual(['api'])
+  await components([])
+  expect(vi.mocked(startTerminal).mock.lastCall?.[4]?.components).toBeUndefined()
+})
+
+test('a plan or merge without an agent preset says to choose one', async () => {
+  vi.mocked(roleDevice).mockReturnValueOnce(undefined as unknown as ReturnType<typeof roleDevice>)
+  await expect(startLeadStage(team, planning)).rejects.toThrow(
+    'Choose an agent for the plan role first',
+  )
+  vi.mocked(roleDevice).mockReturnValueOnce(undefined as unknown as ReturnType<typeof roleDevice>)
+  await expect(startLeadStage(team, request('startMerge'))).rejects.toThrow(
+    'Choose an agent for the merge role first',
+  )
+  expect(startBranchMerge).not.toHaveBeenCalled()
+})
+
 test('a plan never replaces a planner that is already running', async () => {
   withSessions({ plan: { running: true } })
   await expect(startLeadStage(team, planning)).rejects.toThrow('already running')
@@ -131,6 +157,24 @@ test('a merge goes to the default destination through the merge role', async () 
   expect(vi.mocked(startBranchMerge).mock.calls[0].slice(2, 3)).toEqual(['main'])
   expect(vi.mocked(startBranchMerge).mock.calls[0][5]).toBeUndefined()
   expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
+})
+
+test('a merge never joins one already running in its destination', async () => {
+  vi.mocked(gitWorktrees).mockResolvedValueOnce([
+    { path: '/p', branch: 'feature' },
+    { path: '/main', branch: 'main' },
+  ] as Awaited<ReturnType<typeof gitWorktrees>>)
+  vi.mocked(mergeDestinationRunning).mockReturnValueOnce(true)
+  await expect(startLeadStage(team, request('startMerge'))).rejects.toThrow('already running')
+  expect(vi.mocked(mergeDestinationRunning).mock.calls[0][2]).toBe('/main')
+  expect(startBranchMerge).not.toHaveBeenCalled()
+})
+
+test('a merge that finished the task while launching is not an error', async () => {
+  vi.mocked(controlTeam)
+    .mockResolvedValueOnce(team)
+    .mockRejectedValueOnce(new Error('Request already claimed or finished'))
+  await expect(startLeadStage(team, request('startMerge'))).resolves.toBeUndefined()
 })
 
 test('a merge commits uncommitted changes only when they were approved', async () => {

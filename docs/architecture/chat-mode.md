@@ -290,9 +290,11 @@ recovery. Intentional agent switching and conversation clearing remain separate 
 ### Lead status
 
 `agent team-status --step <step> [--note <text>]` (`Command::Status` ↔ `Team.status`, steps mirroring
-`SimpleStep`) records where the lead says the work stands. `simpleFlow.ts` `chatStatus` shows it in
-the status strip unless Auto is running or a stage was launched after it was set; a team without a
-status uses the step `flow` derives. When the lead's step differs from the derived one, Chat hides the
+`SimpleStep`, pinned by paired `LEAD_STEPS`/`SIMPLE_STEPS` tests; notes up to 200 characters)
+records where the lead says the work stands. `simpleFlow.ts` `chatStatus` shows it in the status
+strip unless Auto is running, a confirmed merge makes the derived step `merged`, or a stage was
+launched from the step card after it was set (the lead's own launches are logged with `lead: true`
+and don't count); a team without a status uses the step `flow` derives. When the lead's step differs from the derived one, Chat hides the
 derived step card. A completed task's replacement lead starts at `idle`.
 
 ### Lead-started stages
@@ -301,11 +303,15 @@ The lead uses the same stage artifacts as Chat's step card and Full view, so eit
 continue the work. Chat leads launch with `PATCHBAY_PLAN_FILE` so they can read their worktree's
 plan. `startPlan` (`{ goal, components? }`) launches the plan role's planner with
 `Kickoff::PlanRequest` and the goal in a `Plan request` briefing section, refuses a planner slot
-already running, and completes only if a plan was saved after it started. `startMerge`
+already running, and completes only if a plan was saved after it started. Named components no
+longer on the map are dropped; none left keeps the worktree's highlighted ones. `startMerge`
 (`{ destination?, commitSource? }`) runs `startBranchMerge` from the team's worktree with the merge
-role, to the named or default destination. Uncommitted changes fail the request with their list until
+role, to the named or default destination, refusing a destination where a merge agent already runs.
+Uncommitted changes fail the request with their list until
 the lead retries with the entries the user approved. A confirmed merge settles passively, and task
-completion settles a merge still marked running, so neither counts as lead work. Any other outcome
+completion settles a merge still starting or running, so neither counts as lead work; the launch
+then treats its rejected `running` update as done. Plan and merge requests without an agent preset
+for their role fail with "Choose an agent for the … role first". Any other outcome
 wakes the lead. Chat also shows questions from the agents of running lead stages.
 `startBuild` and `startFix` (`leadStages.ts`)
 call `implementPlannerPlan` and `fixReviewFindings` for the team's worktree, which may not be the

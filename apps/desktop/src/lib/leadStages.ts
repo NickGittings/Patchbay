@@ -16,6 +16,7 @@ import { agentTurnEnded } from './review'
 import { fixReviewFindings } from './reviewHandoff'
 import {
   defaultMergeDestination,
+  mergeDestinationRunning,
   reviewAgentRecords,
   reviewWorktreeBusy,
   startBranchMerge,
@@ -54,8 +55,8 @@ const strings = (value: unknown) =>
 async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<LaunchedStage> {
   const goal = request.settings.goal
   if (typeof goal !== 'string' || !goal.trim()) throw new Error('Say what to plan')
-  const { devices, agentRoles, sessions } = useStore.getState()
-  const device = roleDevice(devices, agentRoles, 'plan')
+  const { sessions } = useStore.getState()
+  const device = requireRoleDevice('plan')
   const sessionId = plannerSessionId(device.id, team.projectId, team.task)
   // Starting over would replace a conversation someone may still be using.
   if (sessions[sessionId]?.running)
@@ -63,11 +64,21 @@ async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<Launche
   const requestId = await startTerminal(PLAN_SCOPE, device.id, team.task, team.projectId, {
     kickoff: { kind: 'planRequest' },
     planRequest: goal,
-    components: strings(request.settings.components),
+    components: leadComponents(team, request.settings.components),
   })
   const launched = { sessionId, requestId }
-  await logStageLaunch(team.projectId, team.task, 'plan', 'plan', launched)
+  await logStageLaunch(team.projectId, team.task, 'plan', 'plan', launched, { lead: true })
   return launched
+}
+
+/**
+ * The map components a lead named for its planner, without ones no longer on the map. None left
+ * (or none named) keeps the worktree's highlighted components.
+ */
+function leadComponents(team: ChatTeam, named: unknown): string[] | undefined {
+  const project = projectOf(team.projectId)
+  const ids = (strings(named) ?? []).filter((id) => project?.components.some((c) => c.id === id))
+  return ids.length ? ids : undefined
 }
 
 async function startLeadBuild(team: ChatTeam): Promise<LaunchedStage> {
@@ -85,7 +96,7 @@ async function startLeadBuild(team: ChatTeam): Promise<LaunchedStage> {
     roleDevice(devices, agentRoles, 'plan')?.id
   if (!planner) throw new Error('Choose an agent for the plan role first')
   const launched = await implementPlannerPlan(planner, undefined, undefined, 'stay', target(team))
-  await logStageLaunch(team.projectId, team.task, 'implement', 'build', launched)
+  await logStageLaunch(team.projectId, team.task, 'implement', 'build', launched, { lead: true })
   return launched
 }
 
@@ -98,7 +109,7 @@ async function startLeadFix(team: ChatTeam): Promise<LaunchedStage> {
   )
   if (!reviewer) throw new Error('Review this worktree before fixing its findings')
   const launched = await fixReviewFindings(reviewer, undefined, undefined, 'stay', target(team))
-  await logStageLaunch(team.projectId, team.task, 'fix', 'build', launched)
+  await logStageLaunch(team.projectId, team.task, 'fix', 'build', launched, { lead: true })
   return launched
 }
 
@@ -117,29 +128,43 @@ async function startLeadMerge(team: ChatTeam, request: Workflow): Promise<Launch
       ? named.trim()
       : defaultMergeDestination(source, worktrees, branches)
   if (!destination) throw new Error('Ask the user which branch to merge into')
+  const { sessionRecords, sessions } = useStore.getState()
+  const into = worktrees.find((w) => w.branch === destination)?.path
+  if (into && mergeDestinationRunning(sessionRecords, sessions, into))
+    throw new Error(
+      'A merge agent is already running in this destination. Ask the user how to proceed.',
+    )
   const changes = await mergeSourceChanges(project, source.path, source.branch)
   const approved = strings(request.settings.commitSource)
   if (changes.length && !approved)
     throw new Error(
       `${source.branch} has uncommitted changes. Ask the user whether the merge agent should commit them. If they agree, retry with exactly these as commitSource:\n${JSON.stringify(changes)}`,
     )
-  const { devices, agentRoles } = useStore.getState()
+  const device = requireRoleDevice('merge')
   const requestId = crypto.randomUUID()
   const { request: merge, sid } = await startBranchMerge(
     project,
     source,
     destination,
-    roleDevice(devices, agentRoles, 'merge'),
+    device,
     requestId,
     changes.length ? approved : undefined,
   )
   await logLaunch(
     team.projectId,
     team.task,
-    { kind: 'action', action: 'merge', stage: 'merge', request: merge, sessionId: sid },
+    { kind: 'action', action: 'merge', stage: 'merge', request: merge, sessionId: sid, lead: true },
     requestId,
   )
   return { sessionId: sid, requestId, merge }
+}
+
+/** The preset a role launches with; a project without agent presets has none. */
+function requireRoleDevice(role: 'plan' | 'merge') {
+  const { devices, agentRoles } = useStore.getState()
+  const device = roleDevice(devices, agentRoles, role) as ReturnType<typeof roleDevice> | undefined
+  if (!device) throw new Error(`Choose an agent for the ${role} role first`)
+  return device
 }
 
 function launchStage(team: ChatTeam, request: Workflow) {
@@ -169,6 +194,9 @@ export async function startLeadStage(team: ChatTeam, request: Workflow) {
     id: request.id,
     state: 'running',
     result: JSON.stringify(run),
+  }).catch((error) => {
+    // A merge that finished the task while launching completes its request first.
+    if (!String(error).includes('Request already claimed or finished')) throw error
   })
 }
 

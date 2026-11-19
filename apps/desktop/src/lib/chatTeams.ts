@@ -723,6 +723,8 @@ async function driveLeadRequests(team: ChatTeam) {
             : 'Workflow control applied',
       })
     } catch (error) {
+      // A request settled meanwhile (a merge that finished the task) rejects this; the others
+      // still need driving.
       await controlTeam(team, {
         kind: 'requestState',
         id: request.id,
@@ -735,7 +737,7 @@ async function driveLeadRequests(team: ChatTeam) {
             ? 'waiting'
             : 'failed',
         result: String(error),
-      })
+      }).catch(() => {})
     }
   }
 }

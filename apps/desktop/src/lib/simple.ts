@@ -60,6 +60,8 @@ export type SimpleEntry = EntryBase &
         text?: string
         mentions?: string[]
         request?: import('../types').MergeRequest
+        /** The chat lead started it, so it doesn't supersede the status the lead set. */
+        lead?: true
       }
   )
 export interface SimpleState {
