@@ -10,7 +10,9 @@ import { create } from 'zustand'
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
 import type { Project, SessionRecord, TerminalSpec } from '../types'
 import type { ProviderRun } from './orchestration'
+import { LEAD_STAGE_ACTIONS } from './leadStageRun'
 import { clearedSimple } from './simple'
+import type { SimpleStep } from './simpleFlow'
 import { logSimple } from './simpleActions'
 import { claimAgentChat, selectChatAgent } from './agentChats'
 import { simpleKey, useSimpleUi } from './simpleUi'
@@ -65,6 +67,8 @@ export interface ChatTeam {
     remaining: string
     validation: string
   }
+  /** Where the lead says the work stands; Chat shows it as its status. */
+  status?: { step: SimpleStep; note?: string | null; atMs: number } | null
   informationRequests?: {
     id: string
     recipient: string
@@ -105,7 +109,7 @@ export type TeamControl =
       roles: Record<string, string[]>
       council?: CouncilSettings
     }
-  | { kind: 'requestState'; id: string; state: string; result: string | null }
+  | { kind: 'requestState'; id: string; state: string; result: string | null; passive?: boolean }
   | { kind: 'pause' | 'resume' | 'stop' | 'historyBoundary' }
   | { kind: 'block'; reason: string }
   | { kind: 'retry'; assignment: string; terminal?: TerminalSpec }
@@ -199,7 +203,7 @@ export async function requireTeamPreset(
     profileHookProvider(terminal.command) ?? terminal.adapter ?? (await agentProvider(terminal))
   if (!provider || !hooksUsable(await checkHooks(provider)))
     throw new Error(
-      `Set up Agent status integration for ${terminal.name} in Settings → Integrations. The lead can continue locally.`,
+      `Set up Agent status integration for ${terminal.name} in Settings → Integrations. The lead can't start this agent until then.`,
     )
 }
 /** Retry a failed assignment on a different agent. */
@@ -614,7 +618,7 @@ async function driveLeadRequests(team: ChatTeam) {
   if (team.state !== 'running' || team.reset) return
   for (const request of team.requests ?? []) {
     const reviewRound = ['startCouncilReview', 'startReview'].includes(request.action)
-    const leadStage = ['startBuild', 'startFix'].includes(request.action)
+    const leadStage = LEAD_STAGE_ACTIONS.includes(request.action)
     if (leadStage && request.state === 'running') {
       const { settleLeadStage } = await import('./leadStages')
       // A concurrent refresh may settle it first; the next one sees the saved outcome.

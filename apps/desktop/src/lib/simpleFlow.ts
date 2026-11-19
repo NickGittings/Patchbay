@@ -364,6 +364,49 @@ export function workflowPromptKey(
   ])
 }
 
+const STEP_HEADINGS: Record<SimpleStep, string> = {
+  idle: 'Next step',
+  planning: 'Planning',
+  planReady: 'Planning',
+  building: 'Build',
+  built: 'Build',
+  reviewing: 'Review',
+  reviewed: 'Review',
+  fixing: 'Fix',
+  fixed: 'Fix',
+  merging: 'Merge',
+  merged: 'Merge complete',
+}
+/** The step card's heading when its actions don't name a more specific one. */
+export const chatStepHeading = (step: SimpleStep) => STEP_HEADINGS[step]
+
+const STAGE_LAUNCHES = ['plan', 'implement', 'review', 'fix', 'merge']
+/**
+ * The step Chat shows. The lead decides it, except that Auto runs its own stages, and a stage
+ * launched after the lead last spoke (a step-card button while it was idle) is newer news. Chats
+ * whose lead hasn't set a status keep the step derived from their agents.
+ */
+export function chatStatus(
+  derived: SimpleStep,
+  {
+    lead,
+    autoRunning,
+    simple,
+  }: {
+    lead?: { step: SimpleStep; note?: string | null; atMs: number } | null
+    autoRunning: boolean
+    simple: FlowSnapshot['simple']
+  },
+): { step: SimpleStep; note?: string } {
+  const superseded =
+    !lead ||
+    autoRunning ||
+    workflowLog(simple).some(
+      (e) => e.kind === 'action' && STAGE_LAUNCHES.includes(e.action) && e.atMs > lead.atMs,
+    )
+  return superseded ? { step: derived } : { step: lead.step, note: lead.note ?? undefined }
+}
+
 export type ChatStepperStage = 'plan' | 'build' | 'review' | 'merge'
 /**
  * `ready`: the stage waits for your go and nothing is wrong. `attention`: it needs you because of

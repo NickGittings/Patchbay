@@ -107,11 +107,18 @@ impl AutoBrief {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Kickoff {
-    ImplementPlan { subagents: Option<u8> },
+    ImplementPlan {
+        subagents: Option<u8>,
+    },
     FixFindings,
     Plan,
     PlanStory,
+    /// A planner the chat lead started for the user's request.
+    PlanRequest,
 }
+
+/// Title of the briefing section holding the request a chat lead's planner plans.
+pub const PLAN_REQUEST_TITLE: &str = "Plan request";
 
 pub const CONTEXT_ENV: &str = "PATCHBAY_CONTEXT_FILE";
 pub const COMPONENT_ENV: &str = "PATCHBAY_COMPONENT";
@@ -1809,7 +1816,7 @@ pub fn plan_session_spec(
     kickoff: Option<Kickoff>,
 ) -> Result<SessionSpec> {
     match kickoff {
-        Some(Kickoff::Plan | Kickoff::PlanStory) => {
+        Some(Kickoff::Plan | Kickoff::PlanStory | Kickoff::PlanRequest) => {
             anyhow::ensure!(
                 terminal.kind == TerminalKind::Agent,
                 "Choose an agent preset"
@@ -1845,7 +1852,11 @@ pub fn scoped_plan_session_spec(
     kickoff: Option<Kickoff>,
 ) -> Result<SessionSpec> {
     anyhow::ensure!(
-        kickoff.is_none() || matches!(kickoff, Some(Kickoff::Plan | Kickoff::PlanStory)),
+        kickoff.is_none()
+            || matches!(
+                kickoff,
+                Some(Kickoff::Plan | Kickoff::PlanStory | Kickoff::PlanRequest)
+            ),
         "Start implementation agents in Implementation"
     );
     let root = Path::new(&project.root);
@@ -1935,7 +1946,10 @@ pub fn task_root_session_spec(
         "Choose an agent for implementation"
     );
     anyhow::ensure!(
-        !matches!(kickoff, Some(Kickoff::Plan | Kickoff::PlanStory)),
+        !matches!(
+            kickoff,
+            Some(Kickoff::Plan | Kickoff::PlanStory | Kickoff::PlanRequest)
+        ),
         "Start planners in Plan"
     );
     root_session_spec(
@@ -2061,6 +2075,9 @@ const STORY_PROMPT: &str = "Plan the story in the Story section of your briefing
 /// The first prompt of an Auto planner.
 const PLAN_PROMPT: &str = "Plan the goal in the Auto mode section of your briefing. Write a nonempty plan to PATCHBAY_PLAN_FILE and propose component assignments using Patchbay. Finish the plan without implementing it.";
 
+/// The first prompt of a planner the chat lead started.
+const PLAN_REQUEST_PROMPT: &str = "Plan the request in the Plan request section of your briefing. Write a nonempty plan to PATCHBAY_PLAN_FILE and propose component assignments using Patchbay. Finish the plan without implementing it.";
+
 /// The first prompt of an agent started by Implement.
 const IMPLEMENT_PROMPT: &str = "Implement the shared plan in your Patchbay briefing. Follow its requirements and applied assignments, run the relevant checks, and report the results.";
 /// Maximum parallel subagents requested by an implementation kickoff.
@@ -2169,6 +2186,7 @@ fn root_session_spec(
             Kickoff::FixFindings => Cow::Borrowed(FIX_FINDINGS_PROMPT),
             Kickoff::Plan => Cow::Borrowed(PLAN_PROMPT),
             Kickoff::PlanStory => Cow::Borrowed(STORY_PROMPT),
+            Kickoff::PlanRequest => Cow::Borrowed(PLAN_REQUEST_PROMPT),
         });
         // Implement's Restart has no kickoff, so a root start budgets for the longest one.
         let reserve = if purpose == crate::pty::LaunchPurpose::Chat {
@@ -3093,7 +3111,7 @@ mod tests {
             assert!(text.contains("persistent Lead"));
             assert!(text.contains("Await the user's next message"));
             assert!(text.contains("## Lead role"));
-            assert!(text.contains("Delegate by default"));
+            assert!(text.contains("Agents do the work"));
             assert!(text.contains("`\"$PATCHBAY_CLI\" agent <command>`") || cfg!(windows));
             assert!(!text.contains("After changing a component"));
             assert!(text.contains("**API**"));
@@ -3379,6 +3397,7 @@ mod tests {
             FIX_FINDINGS_PROMPT,
             PLAN_PROMPT,
             STORY_PROMPT,
+            PLAN_REQUEST_PROMPT,
             MERGE_PROMPT,
             REVIEW_PROMPT,
         ] {
@@ -3432,6 +3451,10 @@ mod tests {
             ),
             (serde_json::json!({"kind": "plan"}), Kickoff::Plan),
             (serde_json::json!({"kind": "planStory"}), Kickoff::PlanStory),
+            (
+                serde_json::json!({"kind": "planRequest"}),
+                Kickoff::PlanRequest,
+            ),
         ] {
             assert_eq!(serde_json::from_value::<Kickoff>(json).unwrap(), kickoff);
         }
@@ -3496,6 +3519,7 @@ mod tests {
         for (kickoff, prompt) in [
             (Kickoff::Plan, PLAN_PROMPT),
             (Kickoff::PlanStory, STORY_PROMPT),
+            (Kickoff::PlanRequest, PLAN_REQUEST_PROMPT),
         ] {
             for command in ["claude", "codex"] {
                 let mut terminal = planner();

@@ -44,6 +44,7 @@ export type Kickoff =
   | { kind: 'fixFindings'; reviewSession?: string }
   | { kind: 'plan' }
   | { kind: 'planStory' }
+  | { kind: 'planRequest' }
 
 export const isReviewAgentScope = (scope: string) => scope === MERGE_SCOPE || scope === REVIEW_SCOPE
 

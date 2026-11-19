@@ -2,7 +2,7 @@
 
 The rail's **Chat mode** toggle (`simpleMode`) opens one worktree conversation beside Navigation's read-only map or story board. The last Full view stays saved. Rail view buttons and Cmd/Ctrl+1–4 leave Chat for the requested Full view. Story Plan and notification View stay in Chat. `revealTerminal` selects the related worktree/session and scrolls to that agent's latest block without changing views. Chat uses independent `App-simple` / `App-simple-open` panel sizing; old Navigation layouts gain a collapsed chat slot through `simplePanelLayout`.
 
-`lib/simple.ts::thread` projects a chronological timeline, grouping consecutive prompts and replies under plain agent headers. `sections` groups stage attempts, collapsing older steps to role, summary and time while the latest stays expanded; revealing a session opens its section. `lib/simpleFlow.ts::flow` scripts planning, build, review, fix and merge narration and prompts from sessions, actions, artifacts and Auto state. `chatStepper` projects `flow`'s step onto the Plan → Build → Review → Merge strip at the top of Chat's status area, above Work status (fix counts as a pass inside Review; a review verdict's issue count sets its note; an active run in place drops Merge). A stage waiting for your go is `ready` (accent); one waiting because of a problem (issues, no verdict) is `attention` (amber). A paused or failed Auto run, or a paused or stopped team, marks the stage in progress `stopped`/`failed`; Auto's reason is the note and Pause Auto sits beside the strip, replacing a separate Auto line. It reuses the Auto panel's `auto-stepper` state styles and is hidden while the step is `idle` and Auto is not running, paused or failed. Simple calls no model. Agents' final messages come directly from Stop hook `last_assistant_message`, capped at `agent_hooks::REPLY_LIMIT` (16 KiB) on a UTF-8 character boundary. `Tracker` accepts replies under its generation, journal sequence, conversation and turn checks, retaining the newest 20 and emitting `TerminalEvent::Reply` while the process runs; each event names the sequence of the run's previous reply (`previous` ↔ `TerminalEvent` `previous`, null for the first). `Snapshot.replies` restores this window. Session lists carry only `lastReply`; `sessions.ts` remembers per session how far this window's replies are complete (`replySnapshots`), extends that with a live reply whose `previous` is the covered one, and reads a snapshot (`fetchReplies`, through `sessionFromSnapshot`, the one snapshot→`SessionState` conversion, which takes a listing's `interrupted` only for the run it lists) only when `lastReply` is past it. Session protocol 11 added replies, 12 their `previous`, and 13 explicit forced prompts (this checkout already used 10 for activity/prompts); the retirement handshake handles older services.
+`lib/simple.ts::thread` projects a chronological timeline, grouping consecutive prompts and replies under plain agent headers. `sections` groups stage attempts, collapsing older steps to role, summary and time while the latest stays expanded; revealing a session opens its section. `lib/simpleFlow.ts::flow` scripts planning, build, review, fix and merge narration and prompts from sessions, actions, artifacts and Auto state. `chatStepper` projects the step `chatStatus` picks onto the Plan → Build → Review → Merge strip at the top of Chat's status area, above Work status (fix counts as a pass inside Review; a review verdict's issue count sets its note; an active run in place drops Merge). A stage waiting for your go is `ready` (accent); one waiting because of a problem (issues, no verdict) is `attention` (amber). A paused or failed Auto run, or a paused or stopped team, marks the stage in progress `stopped`/`failed`; Auto's reason is the note and Pause Auto sits beside the strip, replacing a separate Auto line. It reuses the Auto panel's `auto-stepper` state styles and is hidden while the step is `idle` and Auto is not running, paused or failed. Simple calls no model. Agents' final messages come directly from Stop hook `last_assistant_message`, capped at `agent_hooks::REPLY_LIMIT` (16 KiB) on a UTF-8 character boundary. `Tracker` accepts replies under its generation, journal sequence, conversation and turn checks, retaining the newest 20 and emitting `TerminalEvent::Reply` while the process runs; each event names the sequence of the run's previous reply (`previous` ↔ `TerminalEvent` `previous`, null for the first). `Snapshot.replies` restores this window. Session lists carry only `lastReply`; `sessions.ts` remembers per session how far this window's replies are complete (`replySnapshots`), extends that with a live reply whose `previous` is the covered one, and reads a snapshot (`fetchReplies`, through `sessionFromSnapshot`, the one snapshot→`SessionState` conversion, which takes a listing's `interrupted` only for the run it lists) only when `lastReply` is past it. Session protocol 11 added replies, 12 their `previous`, and 13 explicit forced prompts (this checkout already used 10 for activity/prompts); the retirement handshake handles older services.
 
 `TaskWorkspace.simple` holds `{ startedMs, log }`, including the project-folder workspace keyed by `''`. Prompt entries retain exact transmitted text, mentions, session and generation; only prompts and entries that start or resume a run (plan, implement, review, fix, merge, resume) may claim it, never Auto controls. A launch's entry goes through `simpleActions.ts` `logLaunch` with its launch request id (`startTerminal` resolves to it once the session started, the handoffs return it beside the session id, reviewers carry theirs, and resume and merge pass their own): `launchedRun` claims the run of the record whose latest `requestIds` entry is that request, from the store's records, else the service's list (applied to the store when newer), and otherwise no run; no clock is compared, so a stopped, pre-launch or later run is never claimed. Chat resumes log their claim before reconciling and then persist the replies already held. `SimpleState.version` (`SIMPLE_VERSION`) marks logs saved by this scheme; restoring an older one gives each run-less claiming entry the run of its session's next entry naming one, in `boundedSimpleLog`'s order, else none (`restoredSimple`). Prompts and successful actions are retained in the conversation log. Reply text is capped at 16 KiB per reply and 128 KiB per chat, retaining the newest replies (`boundedSimpleLog`, which orders the log by time and journal identity first). For chats that have never been cleared, no cursors are persisted: a reply evicted by the budget is older than every retained one, so re-adding it after a restart (from a snapshot's last 20) trims it again and `logSimple` leaves the log unchanged; `thread` applies the same bound to the replies it merges. `simpleReplies.ts` persists replies during ingestion even while Chat is unmounted, deduplicating by session/generation/sequence; reconciliation repeats it for a shown session only when its key (run, reply sequences and receiving chats, `persistChangedReplies`) changed since the last pass. Scoped planner replies enter only their worktree. Historical shared planner replies enter only conversations that used that run (`ownsPlanner`: a claiming entry with that exact generation; an entry without one claims no run), and only such a run shows in a chat's thread or takes over its recipient with an input wait (`thread`'s `foreign`, passed to `selectRecipient`); another chat's run is no agent of this one in `flow`. `flow` takes the thread and recipient its caller already computed. A provider-confirmed `idle` without a turn ends an agent's work unless this chat launched or prompted that run and its turn hasn't begun; reviewers follow `review.ts` `reviewerBusy`, the rule `reviewWorktreeBusy` uses. `restoredSimple` validates reply identities. Build accepts the current worktree’s plan, including in the main checkout. Project drafts transfer into a new worktree through Plan. Story linkage happens before Build; `implementPlannerPlan` and `fixReviewFindings` use `presentation: 'stay'`.
 
@@ -120,10 +120,11 @@ Ordinary implementation/planning launches keep their existing handoff behavior. 
 resumes and conversation resets retain the launch purpose.
 
 The briefing ends with `## Lead role` (`chat::LEAD_ROLE_HEADING`): `chat::lead_instructions`, the
-same structured coordination instructions every handoff repeats. They make delegation the default
-(report workers investigate and review, code workers implement, `startAuto` runs a whole pipeline)
-and let the lead edit files itself only for a trivial single-file fix, integration conflicts, or a
-named delegation failure it explains first. A new lead launched with that section, without an
+same structured coordination instructions every handoff repeats. The lead coordinates agents and
+talks to the user; agents do every task (`startPlan`, `startBuild`, `startReview`, `startFix`,
+`startMerge`, report and code workers, `startAuto` for a whole pipeline). It never edits project
+files, and when delegation is impossible or an integration conflicts it explains the blocker to the
+user rather than doing the work. This is an instruction, not an enforced restriction. A new lead launched with that section, without an
 earlier goal and not adopted paused, starts with `recovery: false`, so the user's first message is
 its first turn; adopted conversations, older briefings and every restart, resume, compaction or
 replacement still receive the handoff. The team's retained `originalBriefing` ends before the role.
@@ -227,8 +228,8 @@ Chat-owned rounds appear here only;
 other provider runs remain in Plan or Build. **View worker terminal** opens the exact project session
 without changing the composer recipient. Messages and queued prompts take their recipient's workflow
 stage, so messaging a build agent after a merge resumes the build flow. A team's lead has no stage:
-`thread` leaves its session and prompts out of stage selection (`SimpleSnapshot.lead`), so its turns
-never move the status strip, unless that run was launched for a stage and then adopted as lead.
+`thread` leaves its session and prompts out of stage selection (`SimpleSnapshot.lead`), unless that
+run was launched for a stage and then adopted as lead. The lead sets the status itself instead.
 Continue work resumes previously launched rounds and rounds paused by restart. Unlaunched queued
 rounds otherwise stay paused and are included in the lead's recovery handoff.
 Worker presets and concurrency
@@ -286,12 +287,27 @@ recovery/inbox delivery and a later ready prompt. Service-level submission reser
 and prevent two clients from consuming the same ready prompt. Explicit pause/stop decisions survive
 recovery. Intentional agent switching and conversation clearing remain separate actions.
 
+### Lead status
+
+`agent team-status --step <step> [--note <text>]` (`Command::Status` ↔ `Team.status`, steps mirroring
+`SimpleStep`) records where the lead says the work stands. `simpleFlow.ts` `chatStatus` shows it in
+the status strip unless Auto is running or a stage was launched after it was set; a team without a
+status uses the step `flow` derives. When the lead's step differs from the derived one, Chat hides the
+derived step card. A completed task's replacement lead starts at `idle`.
+
 ### Lead-started stages
 
 The lead uses the same stage artifacts as Chat's step card and Full view, so either surface can
-continue the work. Chat leads launch with `PATCHBAY_PLAN_FILE` for their worktree's plan; a lead
-launched before this variable existed keeps its launch environment until it is replaced, and says
-its plan was not saved. `team-request` adds three actions. `startBuild` and `startFix` (`leadStages.ts`)
+continue the work. Chat leads launch with `PATCHBAY_PLAN_FILE` so they can read their worktree's
+plan. `startPlan` (`{ goal, components? }`) launches the plan role's planner with
+`Kickoff::PlanRequest` and the goal in a `Plan request` briefing section, refuses a planner slot
+already running, and completes only if a plan was saved after it started. `startMerge`
+(`{ destination?, commitSource? }`) runs `startBranchMerge` from the team's worktree with the merge
+role, to the named or default destination. Uncommitted changes fail the request with their list until
+the lead retries with the entries the user approved. A confirmed merge settles passively, and task
+completion settles a merge still marked running, so neither counts as lead work. Any other outcome
+wakes the lead. Chat also shows questions from the agents of running lead stages.
+`startBuild` and `startFix` (`leadStages.ts`)
 call `implementPlannerPlan` and `fixReviewFindings` for the team's worktree, which may not be the
 one on screen. They and Chat's Build and Fix buttons pass the team id, which admits the launch past
 the team's own worktree ownership and starts one agent rather than a provider run. Their requests
@@ -303,8 +319,9 @@ Review. One reviewer has no lane; several get one each, as `startReviewAgents` d
 the regular review files, each launch is logged with `logStageLaunch`, and the reviewer's finish is
 a passive note because the workflow result carries the verdict and an excerpt to the lead. A
 reviewer that ends its turn without findings for the round, exits, or disappears fails its member,
-and Settings can cancel the review. Only one build, fix, review or council can be active per team.
-`report` workers remain for investigation. The lead doesn't start merges.
+and Settings can cancel the review. Only one plan, build, fix, review, council or merge can be active per team.
+`report` workers remain for investigation. These stages don't retire earlier stage agents, unlike
+Chat's buttons.
 
 ### Lead review councils
 

@@ -512,6 +512,13 @@ enum AgentCmd {
         #[arg(long)]
         file: PathBuf,
     },
+    /// Set the status your chat shows, such as planning or reviewed.
+    TeamStatus {
+        #[arg(long)]
+        step: String,
+        #[arg(long)]
+        note: Option<String>,
+    },
     /// Delegate a JSON array of report/code assignments to managed workers.
     TeamDelegate {
         #[arg(long)]
@@ -662,6 +669,9 @@ fn agent(command: AgentCmd) -> Result<bool> {
                 command: TeamCommand::Checkpoint {
                     checkpoint: read_proposal(&file)?,
                 },
+            },
+            AgentCmd::TeamStatus { step, note } => Action::ChatTeam {
+                command: TeamCommand::Status { step, note },
             },
             AgentCmd::TeamDelegate { id, file } => Action::ChatTeam {
                 command: TeamCommand::Delegate {

@@ -459,12 +459,15 @@ test('lead workflow controls claim requests once before applying the existing Au
   expect(pauseAuto).toHaveBeenCalledExactlyOnceWith('p', null)
   expect(saved.requests![0].state).toBe('completed')
 })
-test.each(['startBuild', 'startFix'])('%s runs its stage for the team once', async (action) => {
-  const saved = mockRequestDriver(action)
-  await Promise.all([refreshChatTeams('p'), refreshChatTeams('p')])
-  expect(startLeadStage).toHaveBeenCalledOnce()
-  expect(saved.requests![0].state).toBe('starting')
-})
+test.each(['startPlan', 'startBuild', 'startFix', 'startMerge'])(
+  '%s runs its stage for the team once',
+  async (action) => {
+    const saved = mockRequestDriver(action)
+    await Promise.all([refreshChatTeams('p'), refreshChatTeams('p')])
+    expect(startLeadStage).toHaveBeenCalledOnce()
+    expect(saved.requests![0].state).toBe('starting')
+  },
+)
 test('a running lead stage is checked for its agent finishing', async () => {
   const saved = mockRequestDriver('startBuild')
   saved.requests![0].state = 'running'

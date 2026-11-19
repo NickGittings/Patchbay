@@ -199,6 +199,31 @@ impl CouncilSettings {
     }
 }
 
+/// Where the lead says this chat's work stands, shown as Chat's status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeadStatus {
+    pub step: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    pub at_ms: u64,
+}
+/// Mirrors `simpleFlow.ts` `SimpleStep`.
+const LEAD_STEPS: [&str; 11] = [
+    "idle",
+    "planning",
+    "planReady",
+    "building",
+    "built",
+    "reviewing",
+    "reviewed",
+    "fixing",
+    "fixed",
+    "merging",
+    "merged",
+];
+const STATUS_NOTE_LIMIT: usize = 200;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Team {
@@ -240,6 +265,9 @@ pub struct Team {
     #[serde(default)]
     pub noted_since: BTreeMap<String, u64>,
     pub checkpoint: Checkpoint,
+    /// Set by the lead; `None` until it first reports one.
+    #[serde(default)]
+    pub status: Option<LeadStatus>,
     pub messages: Vec<Message>,
     pub deliveries: Vec<Delivery>,
     pub reset: Option<Reset>,
@@ -297,6 +325,11 @@ pub enum Command {
     Checkpoint {
         checkpoint: Checkpoint,
     },
+    Status {
+        step: String,
+        #[serde(default)]
+        note: Option<String>,
+    },
     Delegate {
         id: String,
         assignments: Vec<AssignmentDraft>,
@@ -337,6 +370,9 @@ pub enum Control {
         id: String,
         state: String,
         result: Option<String>,
+        /// Tell the lead with its next delivery rather than starting a turn.
+        #[serde(default)]
+        passive: bool,
     },
     HistoryBoundary,
     Pause,
@@ -640,6 +676,7 @@ pub fn initialize(
             observed_agents: BTreeMap::new(),
             noted_agents: Default::default(),
             noted_since: BTreeMap::new(),
+            status: None,
             messages: vec![],
             deliveries: vec![],
             reset: None,
@@ -969,9 +1006,11 @@ pub fn command(
                         "resumeAuto",
                         "stopAuto",
                         "startAgent",
+                        "startPlan",
                         "startBuild",
                         "startReview",
                         "startFix",
+                        "startMerge",
                         "startCouncilReview"
                     ]
                     .contains(&action.as_str()),
@@ -994,6 +1033,13 @@ pub fn command(
                     if STAGE_ACTIONS.contains(&action.as_str()) {
                         ensure!(!stage_active(&t), STAGE_ACTIVE);
                         ensure!(settings.is_object(), "Stage settings must be an object");
+                        ensure!(
+                            action != "startPlan"
+                                || settings["goal"]
+                                    .as_str()
+                                    .is_some_and(|goal| !goal.trim().is_empty()),
+                            "startPlan needs the user's request as goal"
+                        );
                         // Store immutable launch inputs separately from the caller's settings.
                     }
                     t.requests.push(WorkflowRequest {
@@ -1025,6 +1071,27 @@ pub fn command(
                 t.checkpoint = checkpoint;
                 t.checkpoint_required = false;
             }
+            Command::Status { step, note } => {
+                ensure!(lead, "Only the lead sets the chat status");
+                ensure!(
+                    LEAD_STEPS.contains(&step.as_str()),
+                    "Unknown status step; use one of {}",
+                    LEAD_STEPS.join(", ")
+                );
+                let note = note
+                    .map(|note| note.trim().to_string())
+                    .filter(|note| !note.is_empty());
+                ensure!(
+                    note.as_ref()
+                        .is_none_or(|note| note.len() <= STATUS_NOTE_LIMIT),
+                    "Status note is too long"
+                );
+                t.status = Some(LeadStatus {
+                    step,
+                    note,
+                    at_ms: crate::pty::now_ms(),
+                });
+            }
             Command::Delegate { .. } | Command::DelegateShared { .. } => {
                 let shared = matches!(&command, Command::DelegateShared { .. });
                 let (id, assignments) = match command {
@@ -1034,7 +1101,7 @@ pub fn command(
                 };
                 ensure!(
                     lead && t.state == State::Running && t.reset.is_none(),
-                    "Delegation is paused; continue locally or Resume"
+                    "Delegation is paused; ask the user to choose Continue work"
                 );
                 ensure!(
                     !t.checkpoint.goal.trim().is_empty(),
@@ -1120,7 +1187,7 @@ pub fn command(
                             ensure!(
                                 crate::git::repo_root(&mapped.component_dir(c)).as_deref()
                                     == Some(tree),
-                                "Code delegation requires components in the target repository; continue locally for this repository layout"
+                                "Code delegation requires components in the target repository; tell the user this layout cannot be delegated"
                             );
                         }
                     }
@@ -1509,13 +1576,15 @@ pub(super) fn reserve_check(s: &Store, project: &str, run: &str, job: &str) -> R
 
 /// Workflow requests whose agents change this worktree's checkout or review it. Each stays active
 /// until its agents finish, so they never overlap.
-const STAGE_ACTIONS: [&str; 4] = [
+const STAGE_ACTIONS: [&str; 6] = [
+    "startPlan",
     "startBuild",
     "startFix",
     "startReview",
     "startCouncilReview",
+    "startMerge",
 ];
-const STAGE_ACTIVE: &str = "A build, fix or review is already active in this worktree";
+const STAGE_ACTIVE: &str = "A plan, build, fix, review or merge is already active in this worktree";
 
 fn stage_active(team: &Team) -> bool {
     team.requests.iter().any(|r| {
@@ -1618,6 +1687,7 @@ pub fn control(
                 id,
                 state,
                 mut result,
+                passive,
             } => {
                 ensure!(
                     ["starting", "running", "waiting", "completed", "failed"]
@@ -1670,14 +1740,13 @@ pub fn control(
                 request.state = state.clone();
                 request.result = result.clone();
                 if state != "starting" && state != "waiting" && state != "running" {
-                    append(
-                        &mut t,
-                        format!("workflow-{id}"),
-                        "patchbay",
-                        "lead",
-                        None,
-                        format!("Workflow {id}: {state}. {}", result.unwrap_or_default()),
-                    )?;
+                    let message = format!("workflow-{id}");
+                    let text = format!("Workflow {id}: {state}. {}", result.unwrap_or_default());
+                    if passive {
+                        append_passive(&mut t, message, text)?;
+                    } else {
+                        append(&mut t, message, "patchbay", "lead", None, text)?;
+                    }
                 }
             }
             Control::HistoryBoundary => t.saved_context.clear(),
@@ -1973,12 +2042,18 @@ const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. 
 
 ### How you work
 
-- You plan, delegate, integrate and report. The user talks only to you: present coherent updates and final answers in this conversation, and never ask the user to relay worker messages.
-- Delegate by default. Investigation goes to `report` workers; implementation goes to `code` workers; a complete plan → build → review → merge pipeline goes to `startAuto`; several independent reviewers go to `startCouncilReview`. Start work without asking permission to delegate.
-- Use Patchbay's stages so the work also appears in Plan and Review. When the user asks for a plan to build later, write it to `$PATCHBAY_PLAN_FILE`; if that variable is unset, give the plan in your reply and say it was not saved to Plan. Build a saved plan with `startBuild`. Review this branch's changes with `startReview`, never with a `report` worker or by yourself. Fix review findings with `startFix`, only when the user asks. Do not start merges: point the user to Merge in Chat or Review.
-- Do not edit project files yourself. The only exceptions are a trivial fix to a single file, resolving conflicts while integrating, and the failures named under "When delegation is unavailable". Say which exception applies when you use one.
+- You coordinate agents and talk to the user. The user talks only to you: present coherent updates and final answers in this conversation, and never ask the user to relay worker messages.
+- Agents do the work. You do not plan, implement, review, fix, merge, investigate or edit project files yourself, however small the task. Read team state, results and the saved plan only as far as coordinating and reporting need.
+- Start the matching agent without asking permission to delegate:
+  - Plan: when the user asks for a plan, request `startPlan` with their request as `goal`. When it completes, read `$PATCHBAY_PLAN_FILE` and summarize the plan. Do not build it unless asked.
+  - Build: build a saved plan with `startBuild`. Other implementation goes to `code` workers.
+  - Review: review this branch's changes with `startReview`, or `startCouncilReview` for several independent reviewers, never with a `report` worker.
+  - Fix: fix review findings with `startFix`, only when the user asks.
+  - Merge: merge with `startMerge`, only when the user asks for it. A clean review is not permission to merge.
+  - Investigation, and checks of the combined result, go to `report` workers. A complete plan → build → review → merge pipeline goes to `startAuto`.
+- Keep the chat status current with `agent team-status`: set it when you take on a request, when you start a stage and after each stage result. It is what the user sees as the state of the work.
 - Do not use provider-native subagents. Use only Patchbay-managed workers and configured presets.
-- Workers run validation for their scope; you verify the combined result. Distinguish reported from verified results.
+- Distinguish reported from verified results.
 
 ### Commands
 
@@ -1986,20 +2061,23 @@ Run each command below as {cli}.
 
 - `agent team`: inspect authoritative state (team, inbox, rounds, presets, roles). Inspect it before delegating, and after native compaction or a new conversation; checkpoint, assignments, messages, commits and integration facts there are authoritative.
 - `agent team-checkpoint --file <json>`: save a durable checkpoint `{goal, constraints, decisions, remaining, validation}` before delegating and after integration.
+- `agent team-status --step <idle|planning|planReady|building|built|reviewing|reviewed|fixing|fixed|merging|merged> [--note <short-text>]`: set the status Chat shows. Use `idle` when a new topic has no work under way yet.
 - `agent team-delegate-shared --id <id> --file <assignments-json>`: start configured agents in this existing worktree, without new worktrees. This is the usual way to delegate code. Shared workers finish with `team-report`, without commits or integration.
 - `agent team-delegate --id <unique-round-id> --file <json-array>`: create a round of isolated workers. Each assignment has a globally unique `id`, `instructions`, `components`, `dependencies`, `preset` and `resultKind` (`report` or `code`). Report workers inspect the committed baseline; compare their findings with local edits. Isolated code delegation needs a clean Git checkpoint.
-- `agent team-request --id <id> --action <startAgent|startBuild|startReview|startFix|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json>`: control existing workflows.
+- `agent team-request --id <id> --action <startAgent|startPlan|startBuild|startReview|startFix|startMerge|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json>`: control existing workflows.
   - `startAgent` settings: `{preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}`. Role-to-preset mappings are in `team.agentRoles`; presets are in `team.presets` (or `team.workers` until the catalog loads).
+  - `startPlan` settings: `{goal: the-user's-request, components: optional-component-ids}`. Starts a planner under the plan role, which saves its plan for Plan and Build. Wait for its durable result. A failed result may mean the planner is waiting on a question.
   - `startBuild` settings: `{}`. Starts one implementation agent for this worktree's saved plan. Wait for its durable result, then inspect the work.
   - `startReview` settings: `{base: optional-branch-name, focus: optional-review-focus}`. Starts the configured reviewers against `base`, else the branch's last review base, else its merge destination. The result names the base used. Wait for it, then report the verdict and findings. The full report is in Review. It does not authorize fixes or merges.
   - `startFix` settings: `{}`. Starts a fix agent on this worktree's latest finished review. Wait for its durable result, then inspect the work.
-  - Only one `startBuild`, `startFix`, `startReview` or `startCouncilReview` can be active at a time.
+  - `startMerge` settings: `{destination: optional-branch-name, commitSource: optional-change-list}`. Starts a merge agent for this worktree's branch into `destination`, else the default merge destination. With uncommitted changes it fails and lists them: ask the user, and only if they agree retry under a new id with exactly those entries as `commitSource`. A confirmed merge needs no report from you, because Chat shows it.
+  - Only one `startPlan`, `startBuild`, `startFix`, `startReview`, `startCouncilReview` or `startMerge` can be active at a time.
   - `startAuto` accepts `goal`, `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`) and `stage`; omit fields to use app defaults. Never automatically enable merge approval bypass.
   - `startCouncilReview` settings: `{base: branch-name, focus: optional-review-focus}`, only when `team.council.enabled`. Use only this workflow for a council and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges.
 - `agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...]`: record an existing agent's agreed components.
 - `agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>`: gather progress, blockers, findings and validation from EXISTING agents before launching more work. Requests and responses are durable in `team.informationRequests`. Busy agents receive questions at their next ready prompt and respond with `agent team-reply --id <request-id> --text <response>`.
 - `agent team-send --id <unique-id> --to <assignment-id> --text <message>`: route dependencies and messages. Workers contact only you.
-- `agent team-integrate <assignment-id>`, then `agent team-finish --validation <checks-and-results>`: integrate code SERIALly, verify the result, checkpoint, then finish.
+- `agent team-integrate <assignment-id>`, then `agent team-finish --validation <checks-and-results>`: integrate code SERIALly, have a worker verify the result, checkpoint, then finish. If integration conflicts, stop and tell the user which assignment conflicted.
 
 ### Rules
 
@@ -2010,7 +2088,7 @@ Run each command below as {cli}.
 
 ### When delegation is unavailable
 
-Continue locally only when authentication, status hooks or the repository layout prevent delegation, or when isolated code delegation is refused because local changes exist and shared delegation does not fit. Explain the constraint to the user first."#;
+If authentication, status hooks, the repository layout or local changes prevent delegation, or a stage cannot start, do not do the work yourself. Stop, explain the blocker and ask the user how to proceed."#;
 
 /// The lead's coordination instructions, with commands spelled for this platform's shells.
 pub(crate) fn lead_instructions() -> String {
@@ -2162,6 +2240,16 @@ fn complete_task(
     since_ms: Option<u64>,
     records: &[Record],
 ) -> Result<()> {
+    // The merge that finished this task may be the lead's own stage. It is done, so it neither
+    // counts as open work nor needs reporting.
+    for r in t
+        .requests
+        .iter_mut()
+        .filter(|r| r.action == "startMerge" && ["starting", "running"].contains(&r.state.as_str()))
+    {
+        r.state = "completed".into();
+        r.result = Some("Merge confirmed.".into());
+    }
     let lead = record(records, project, &t.lead.session_id).ok();
     if !lead.is_some_and(|r| lead_moved_on(s, t, r, since_ms)) {
         if let Some(reset) = &mut t.reset {
@@ -2196,6 +2284,11 @@ fn complete_task(
 /// A confirmed replacement after finished work: nothing tells the new lead to continue it.
 fn finish_task(t: &mut Team, runs: &[Run], records: &[Record]) {
     let id = t.id.clone();
+    t.status = Some(LeadStatus {
+        step: "idle".into(),
+        note: None,
+        at_ms: crate::pty::now_ms(),
+    });
     let rounds: Vec<_> = runs
         .iter()
         .filter(|r| r.chat_team.as_deref() == Some(&id))
@@ -2548,7 +2641,7 @@ pub fn reconcile(
                     "lead",
                     Some(assignment.clone()),
                     format!(
-                        "Worker {assignment} failed: {error}. Inspect and Retry or continue locally."
+                        "Worker {assignment} failed: {error}. Inspect it, then Retry or tell the user."
                     ),
                 )?;
             }
@@ -3634,6 +3727,7 @@ mod tests {
             id: "one".into(),
             state: state.into(),
             result: Some(result.into()),
+            passive: false,
         };
         let apply = |change| {
             control(
@@ -3676,6 +3770,7 @@ mod tests {
                 id: "build".into(),
                 state: "completed".into(),
                 result: Some("Finished".into()),
+                passive: false,
             },
             std::slice::from_ref(&f.lead),
         )
@@ -3683,9 +3778,126 @@ mod tests {
         f.cmd(request("fix", "startFix")).unwrap();
         assert_eq!(f.state().requests.len(), 2);
         let instructions = lead_instructions();
-        assert!(instructions.contains("Review this branch's changes with `startReview`"));
+        assert!(instructions.contains("review this branch's changes with `startReview`"));
         assert!(instructions.contains("`$PATCHBAY_PLAN_FILE`"));
         assert!(!instructions.contains("review go to `report` workers"));
+        assert!(instructions.contains("request `startPlan`"));
+        assert!(instructions.contains("merge with `startMerge`"));
+        assert!(instructions.contains("agent team-status"));
+        assert!(!instructions.to_lowercase().contains("continue locally"));
+        assert!(!instructions.contains("trivial"));
+    }
+
+    #[test]
+    fn plan_and_merge_are_stages_and_a_plan_needs_its_request() {
+        let f = Fixture::new();
+        let request = |id: &str, action: &str, settings| Command::Request {
+            id: id.into(),
+            action: action.into(),
+            settings,
+        };
+        for settings in [serde_json::json!({}), serde_json::json!({"goal": "  "})] {
+            assert!(f.cmd(request("plan", "startPlan", settings)).is_err());
+        }
+        let goal = serde_json::json!({"goal": "Plan the importer"});
+        f.cmd(request("plan", "startPlan", goal)).unwrap();
+        for action in ["startBuild", "startMerge"] {
+            assert!(
+                f.cmd(request("next", action, serde_json::json!({})))
+                    .is_err()
+            );
+        }
+        let settle = |id: &str, passive| Control::RequestState {
+            id: id.into(),
+            state: "completed".into(),
+            result: Some("Done".into()),
+            passive,
+        };
+        let apply = |change| {
+            control(
+                &f.dir,
+                "p",
+                &f.team.id,
+                change,
+                std::slice::from_ref(&f.lead),
+            )
+        };
+        apply(settle("plan", false)).unwrap();
+        f.cmd(request("merge", "startMerge", serde_json::json!({})))
+            .unwrap();
+        apply(settle("merge", true)).unwrap();
+        let t = f.state();
+        let passive = |id: &str| t.messages.iter().find(|m| m.id == id).unwrap().passive;
+        assert!(!passive("workflow-plan"));
+        assert!(
+            passive("workflow-merge"),
+            "a confirmed merge starts no turn"
+        );
+    }
+
+    #[test]
+    fn a_merge_the_lead_started_does_not_hold_back_its_task_completion() {
+        let f = Fixture::new();
+        f.cmd(Command::Request {
+            id: "merge".into(),
+            action: "startMerge".into(),
+            settings: serde_json::json!({}),
+        })
+        .unwrap();
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::RequestState {
+                id: "merge".into(),
+                state: "running".into(),
+                result: None,
+                passive: false,
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        let t = complete_task_reset(&f).unwrap();
+        assert_eq!(t.requests[0].state, "completed");
+        assert!(t.reset.as_ref().is_some_and(|r| r.complete_task));
+    }
+
+    #[test]
+    fn only_the_lead_sets_a_known_chat_status() {
+        let mut f = Fixture::new();
+        let status = |step: &str| Command::Status {
+            step: step.into(),
+            note: Some(" Drafting ".into()),
+        };
+        assert!(f.cmd(status("thinking")).is_err());
+        assert!(f.state().status.is_none());
+        f.cmd(status("planning")).unwrap();
+        let saved = f.state().status.unwrap();
+        assert_eq!(saved.step, "planning");
+        assert_eq!(saved.note.as_deref(), Some("Drafting"));
+        f.cmd(Command::Checkpoint {
+            checkpoint: Checkpoint {
+                goal: "Goal".into(),
+                ..Checkpoint::default()
+            },
+        })
+        .unwrap();
+        f.delegate(vec![assignment("a", ResultKind::Report, &[])]);
+        let (_, worker) = f.launch("a");
+        assert!(f.worker_cmd(&worker, status("built")).is_err());
+
+        f.worker_cmd(
+            &worker,
+            Command::Report {
+                summary: "Done".into(),
+            },
+        )
+        .unwrap();
+        complete_task_reset(&f).unwrap();
+        f.lead.request_ids.push("task-done-1".into());
+        f.lead.snapshot.as_mut().unwrap().generation = 2;
+        reconcile(&f.dir, "p", &[f.lead.clone(), worker], false).unwrap();
+        assert_eq!(f.state().status.unwrap().step, "idle");
     }
 
     #[test]
@@ -3735,6 +3947,7 @@ mod tests {
             id: "start".into(),
             state: "starting".into(),
             result: None,
+            passive: false,
         };
         control(
             &f.dir,
@@ -5062,7 +5275,7 @@ mod tests {
         assert!(start("goal", Some(&briefing), false, "Build feature").recovery);
         assert!(start("older", Some("# Context"), false, "").recovery);
         let text = recovery_text(&load(&f.dir).unwrap(), &fresh).unwrap();
-        assert!(text.contains("Delegate by default"));
+        assert!(text.contains("Agents do the work"));
         assert!(!text.contains("{cli}"));
     }
 

@@ -1,5 +1,12 @@
-import { expect, test } from 'vitest'
-import { chatStepper, flow, workflowPromptKey, type FlowSnapshot } from './simpleFlow'
+import { describe, expect, test } from 'vitest'
+import {
+  chatStatus,
+  chatStepHeading,
+  chatStepper,
+  flow,
+  workflowPromptKey,
+  type FlowSnapshot,
+} from './simpleFlow'
 import {
   LAUNCH_RECORD_GRACE_MS,
   pendingLaunch,
@@ -632,4 +639,35 @@ test('the chat stepper halts the stage in progress and falls back to a given not
   expect(states(chatStepper('fixing', { note: 'Auto reason' }))).toBe(
     'plan:done build:done review:current(Fixing) merge:upcoming',
   )
+})
+
+describe('chatStatus', () => {
+  const lead = { step: 'planning' as const, note: 'Drafting', atMs: 100 }
+  const simple = (atMs: number) =>
+    ({
+      startedMs: 0,
+      log: [{ kind: 'action', action: 'review', stage: 'review', atMs }],
+    }) as unknown as Parameters<typeof chatStatus>[1]['simple']
+
+  test('the lead decides over a leftover reviewer', () => {
+    expect(chatStatus('reviewed', { lead, autoRunning: false, simple: simple(50) })).toEqual({
+      step: 'planning',
+      note: 'Drafting',
+    })
+  })
+  test('Auto and a newer stage launch keep the derived step', () => {
+    expect(chatStatus('building', { lead, autoRunning: true, simple: simple(50) }).step).toBe(
+      'building',
+    )
+    expect(chatStatus('reviewing', { lead, autoRunning: false, simple: simple(150) }).step).toBe(
+      'reviewing',
+    )
+  })
+  test('a chat without a lead status keeps the derived step', () => {
+    expect(chatStatus('built', { autoRunning: false, simple: simple(50) }).step).toBe('built')
+  })
+  test('every step has its own heading', () => {
+    expect(chatStepHeading('built')).toBe('Build')
+    expect(chatStepHeading('idle')).not.toBe('Review')
+  })
 })

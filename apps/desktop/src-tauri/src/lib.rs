@@ -902,6 +902,7 @@ async fn plan_start(
     kickoff: Option<context::Kickoff>,
     story: Option<String>,
     scan_round: Option<String>,
+    plan_request: Option<String>,
     planning_scope: patchbay_core::planning::PlanningScope,
 ) -> CmdResult<String> {
     let (story_root, scoped) = task_repo(&state, &project_id)?;
@@ -963,6 +964,13 @@ async fn plan_start(
         {
             return Err("Choose a story to plan".into());
         }
+        let plan_request = plan_request.filter(|request| !request.trim().is_empty());
+        if kickoff == Some(context::Kickoff::PlanRequest)
+            && plan_request.is_none()
+            && !resume.unwrap_or(false)
+        {
+            return Err("Say what to plan".into());
+        }
         let kickoff = if fresh_conversation.unwrap_or(false) {
             None
         } else if story_section.is_some() {
@@ -994,6 +1002,10 @@ async fn plan_start(
                 .into_iter()
                 .chain(scan_section)
                 .chain(story_section)
+                .chain(plan_request.map(|body| ContextSection {
+                    title: context::PLAN_REQUEST_TITLE.into(),
+                    body,
+                }))
                 .chain(auto.as_ref().map(context::AutoBrief::plan_section)),
             extra_context,
         );

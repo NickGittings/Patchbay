@@ -217,6 +217,8 @@ interface Launch {
   story?: string
   scanRound?: string
   kickoff?: Kickoff
+  /** What a planner the chat lead started should plan. */
+  planRequest?: string
   /** Auto launches report every failure, like a kickoff. */
   auto?: AutoBrief
   /** The chat team that owns this worktree and asked for this stage. */
@@ -289,6 +291,10 @@ export interface StartTerminalOptions {
   story?: string
   scanRound?: string
   kickoff?: Kickoff
+  /** What a planner the chat lead started should plan. */
+  planRequest?: string
+  /** The components this launch covers, instead of the worktree's highlighted ones. */
+  components?: string[]
   /** Auto's instructions for this launch, in the backend-owned briefing. */
   auto?: AutoBrief
   /** The chat team that owns this worktree, when the stage is launched on its behalf. */
@@ -313,6 +319,8 @@ export function startTerminal(
     launch.purpose = options.purpose
     launch.scanRound = options.scanRound
     launch.kickoff = options.kickoff
+    launch.planRequest = options.planRequest
+    if (options.components) launch.highlighted = options.components
     launch.story = options.story
     launch.auto = options.auto
     launch.chatTeam = options.chatTeam
@@ -614,7 +622,9 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           launch.story,
           launch.scanRound,
           launch.task,
-          ...(launch.freshConversation ? ([true] as const) : []),
+          ...((launch.freshConversation || launch.planRequest
+            ? [!!launch.freshConversation, launch.planRequest]
+            : []) as [boolean?, string?]),
         )
       } else {
         await terminalStart(

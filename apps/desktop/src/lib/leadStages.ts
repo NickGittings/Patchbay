@@ -1,20 +1,35 @@
-import { useStore } from '../store'
-import { PLAN_SCOPE, REVIEW_SCOPE, plannerChatTask } from '../types'
+import { projectOf, useStore } from '../store'
+import { PLAN_SCOPE, REVIEW_SCOPE, plannerChatTask, plannerSessionId } from '../types'
 import { roleDevice } from './agentRoles'
 import { controlTeam, type ChatTeam } from './chatTeams'
-import { terminalSnapshot } from './ipc'
+import {
+  gitBranches,
+  gitWorktrees,
+  mergeOutcome,
+  mergeSourceChanges,
+  planRead,
+  terminalSnapshot,
+} from './ipc'
+import { savedStage, type StageRun } from './leadStageRun'
 import { implementPlannerPlan, type HandoffTarget } from './planHandoff'
 import { agentTurnEnded } from './review'
 import { fixReviewFindings } from './reviewHandoff'
-import { reviewAgentRecords, reviewWorktreeBusy } from './reviewAgents'
+import {
+  defaultMergeDestination,
+  reviewAgentRecords,
+  reviewWorktreeBusy,
+  startBranchMerge,
+} from './reviewAgents'
 import { sessionTimeMs } from './sessionList'
+import { startTerminal } from './sessions'
+import { logLaunch } from './simpleActions'
 import { logStageLaunch } from './stageLog'
 
 type Workflow = NonNullable<ChatTeam['requests']>[number]
-/** A running stage request's saved result: the agent whose finish settles it. */
-interface StageRun {
+interface LaunchedStage {
   sessionId: string
-  startedMs: number
+  requestId?: string
+  merge?: StageRun['merge']
 }
 
 // The lead's requests run in the background, so each stage names the team's worktree rather than
@@ -24,9 +39,38 @@ const target = (team: ChatTeam): HandoffTarget => ({
   task: team.task,
   chatTeam: team.id,
 })
-const stageName = (request: Workflow) => (request.action === 'startBuild' ? 'Build' : 'Fix')
+const STAGE_NAMES: Record<string, string> = {
+  startPlan: 'Plan',
+  startBuild: 'Build',
+  startFix: 'Fix',
+  startMerge: 'Merge',
+}
+const stageName = (request: Workflow) => STAGE_NAMES[request.action]
+const strings = (value: unknown) =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string')
+    ? (value as string[])
+    : undefined
 
-async function startLeadBuild(team: ChatTeam) {
+async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<LaunchedStage> {
+  const goal = request.settings.goal
+  if (typeof goal !== 'string' || !goal.trim()) throw new Error('Say what to plan')
+  const { devices, agentRoles, sessions } = useStore.getState()
+  const device = roleDevice(devices, agentRoles, 'plan')
+  const sessionId = plannerSessionId(device.id, team.projectId, team.task)
+  // Starting over would replace a conversation someone may still be using.
+  if (sessions[sessionId]?.running)
+    throw new Error('A planner is already running in this worktree. Ask the user how to proceed.')
+  const requestId = await startTerminal(PLAN_SCOPE, device.id, team.task, team.projectId, {
+    kickoff: { kind: 'planRequest' },
+    planRequest: goal,
+    components: strings(request.settings.components),
+  })
+  const launched = { sessionId, requestId }
+  await logStageLaunch(team.projectId, team.task, 'plan', 'plan', launched)
+  return launched
+}
+
+async function startLeadBuild(team: ChatTeam): Promise<LaunchedStage> {
   const { sessionRecords, devices, agentRoles } = useStore.getState()
   const planner =
     sessionRecords
@@ -45,7 +89,7 @@ async function startLeadBuild(team: ChatTeam) {
   return launched
 }
 
-async function startLeadFix(team: ChatTeam) {
+async function startLeadFix(team: ChatTeam): Promise<LaunchedStage> {
   const { sessionRecords, sessions } = useStore.getState()
   if (reviewWorktreeBusy(sessionRecords, sessions, team.target))
     throw new Error('Wait for the current review to finish before fixing its findings')
@@ -58,10 +102,56 @@ async function startLeadFix(team: ChatTeam) {
   return launched
 }
 
+async function startLeadMerge(team: ChatTeam, request: Workflow): Promise<LaunchedStage> {
+  const project = projectOf(team.projectId)
+  if (!project) throw new Error('Project is unavailable')
+  const [worktrees, branches] = await Promise.all([
+    gitWorktrees(team.projectId),
+    gitBranches(team.projectId),
+  ])
+  const source = worktrees.find((w) => w.path === team.target)
+  if (!source?.branch) throw new Error('This worktree has no branch to merge')
+  const named = request.settings.destination
+  const destination =
+    typeof named === 'string' && named.trim()
+      ? named.trim()
+      : defaultMergeDestination(source, worktrees, branches)
+  if (!destination) throw new Error('Ask the user which branch to merge into')
+  const changes = await mergeSourceChanges(project, source.path, source.branch)
+  const approved = strings(request.settings.commitSource)
+  if (changes.length && !approved)
+    throw new Error(
+      `${source.branch} has uncommitted changes. Ask the user whether the merge agent should commit them. If they agree, retry with exactly these as commitSource:\n${JSON.stringify(changes)}`,
+    )
+  const { devices, agentRoles } = useStore.getState()
+  const requestId = crypto.randomUUID()
+  const { request: merge, sid } = await startBranchMerge(
+    project,
+    source,
+    destination,
+    roleDevice(devices, agentRoles, 'merge'),
+    requestId,
+    changes.length ? approved : undefined,
+  )
+  await logLaunch(
+    team.projectId,
+    team.task,
+    { kind: 'action', action: 'merge', stage: 'merge', request: merge, sessionId: sid },
+    requestId,
+  )
+  return { sessionId: sid, requestId, merge }
+}
+
+function launchStage(team: ChatTeam, request: Workflow) {
+  if (request.action === 'startPlan') return startLeadPlan(team, request)
+  if (request.action === 'startMerge') return startLeadMerge(team, request)
+  return request.action === 'startBuild' ? startLeadBuild(team) : startLeadFix(team)
+}
+
 /** Launch a claimed stage. It stays active until `settleLeadStage` sees its agent finish. */
 export async function startLeadStage(team: ChatTeam, request: Workflow) {
   const startedMs = Date.now()
-  const launched = await (request.action === 'startBuild' ? startLeadBuild : startLeadFix)(team)
+  const launched = await launchStage(team, request)
   // The workflow result wakes the lead, so the agent's own finish stays passive.
   await controlTeam(team, {
     kind: 'note',
@@ -69,7 +159,11 @@ export async function startLeadStage(team: ChatTeam, request: Workflow) {
     text: `${stageName(request)} agent for workflow ${request.id} started. Its result arrives with that workflow.`,
     sessions: [launched.sessionId],
   }).catch(() => {})
-  const run: StageRun = { sessionId: launched.sessionId, startedMs }
+  const run: StageRun = {
+    sessionId: launched.sessionId,
+    startedMs,
+    ...(launched.merge ? { merge: launched.merge } : {}),
+  }
   await controlTeam(team, {
     kind: 'requestState',
     id: request.id,
@@ -78,31 +172,65 @@ export async function startLeadStage(team: ChatTeam, request: Workflow) {
   })
 }
 
-function savedStage(request: Workflow): StageRun | null {
-  try {
-    const run = JSON.parse(request.result ?? '') as Partial<StageRun>
-    return typeof run.sessionId === 'string' && typeof run.startedMs === 'number'
-      ? (run as StageRun)
-      : null
-  } catch {
-    return null
-  }
+type Finish = (state: 'completed' | 'failed', result: string, passive?: boolean) => Promise<unknown>
+
+async function settlePlan(team: ChatTeam, run: StageRun, finish: Finish) {
+  const plan = await planRead(team.projectId, team.task ?? undefined).catch(() => null)
+  return plan?.text.trim() && (plan.savedMs ?? 0) >= run.startedMs
+    ? finish(
+        'completed',
+        'Plan saved. Read it from $PATCHBAY_PLAN_FILE and summarize it for the user. Do not build it unless asked.',
+      )
+    : finish(
+        'failed',
+        'Plan agent stopped without saving a plan. It may be waiting on a question in its terminal.',
+      )
+}
+
+async function settleMerge(team: ChatTeam, run: StageRun, finish: Finish) {
+  const project = projectOf(team.projectId)
+  if (!project || !run.merge)
+    return finish('failed', 'Merge agent stopped, but its merge can no longer be checked.')
+  const outcome = await mergeOutcome(project, run.merge).catch(() => null)
+  const into = run.merge.destinationBranch
+  // Chat already shows a finished merge, and a lead turn would count as new work after it.
+  if (outcome === 'merged' || outcome === 'alreadyIntegrated')
+    return finish('completed', `${run.merge.sourceBranch} is merged into ${into}.`, true)
+  return finish(
+    'failed',
+    outcome
+      ? `Merge into ${into} did not complete (${outcome}). Tell the user.`
+      : `Merge agent stopped, but the merge into ${into} could not be confirmed. Tell the user.`,
+  )
 }
 
 /** Report a running stage once its agent ended a turn, exited or no longer exists. */
 export async function settleLeadStage(team: ChatTeam, request: Workflow) {
-  const run = savedStage(request)
+  const run = savedStage(request.result)
   const name = stageName(request)
-  const finish = (state: 'completed' | 'failed', result: string) =>
-    controlTeam(team, { kind: 'requestState', id: request.id, state, result })
+  const finish: Finish = (state, result, passive) =>
+    controlTeam(team, {
+      kind: 'requestState',
+      id: request.id,
+      state,
+      result,
+      ...(passive ? { passive } : {}),
+    })
   if (!run) return finish('failed', `${name} agent can no longer be tracked. Inspect the worktree.`)
   const { sessions, sessionRecords } = useStore.getState()
   const live =
     sessions[run.sessionId] ?? sessionRecords.find((r) => r.id === run.sessionId)?.snapshot
+  const ended = agentTurnEnded(live, run.startedMs)
+  if (!ended && live?.running !== false) {
+    if (!live && !(await terminalSnapshot(run.sessionId, 0).catch(() => true)))
+      return finish('failed', `${name} agent's session no longer exists. Inspect the worktree.`)
+    return
+  }
+  if (request.action === 'startPlan') return settlePlan(team, run, finish)
+  if (request.action === 'startMerge') return settleMerge(team, run, finish)
   const inspect = 'Inspect its results and validation before treating the work as complete.'
-  if (agentTurnEnded(live, run.startedMs))
-    return finish('completed', `${name} agent reached a ready prompt. ${inspect}`)
-  if (live?.running === false) return finish('completed', `${name} agent exited. ${inspect}`)
-  if (!live && !(await terminalSnapshot(run.sessionId, 0).catch(() => true)))
-    return finish('failed', `${name} agent's session no longer exists. Inspect the worktree.`)
+  return finish(
+    'completed',
+    ended ? `${name} agent reached a ready prompt. ${inspect}` : `${name} agent exited. ${inspect}`,
+  )
 }

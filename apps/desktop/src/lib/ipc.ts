@@ -271,6 +271,7 @@ export const planStart = async (
   scanRound?: string,
   task: string | null = null,
   freshConversation = false,
+  planRequest?: string,
 ) =>
   invoke<string>('plan_start', {
     project,
@@ -281,6 +282,7 @@ export const planStart = async (
     auto,
     story,
     scanRound,
+    planRequest,
     planningScope: planningScope(task),
     kickoff,
     resume,

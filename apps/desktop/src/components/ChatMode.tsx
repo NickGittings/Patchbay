@@ -12,7 +12,14 @@ import {
   retryMergeBranch,
   thread,
 } from '../lib/simple'
-import { chatStepper, flow, workflowPromptKey } from '../lib/simpleFlow'
+import { leadStageSessions } from '../lib/leadStageRun'
+import {
+  chatStatus,
+  chatStepHeading,
+  chatStepper,
+  flow,
+  workflowPromptKey,
+} from '../lib/simpleFlow'
 import { inPlace } from '../lib/auto'
 import type { useSimpleData } from '../lib/useSimpleData'
 import { useExpiredDeadline } from '../lib/clock'
@@ -156,7 +163,15 @@ export default function ChatMode({
     conflicts: check?.key === checkKey ? check.paths : undefined,
     now,
   }
-  const state = flow(flowSnapshot, model)
+  const derived = flow(flowSnapshot, model)
+  const status = chatStatus(derived.step, {
+    lead: team?.status,
+    autoRunning: !!s.auto && !['stopped', 'failed', 'done'].includes(s.auto.status),
+    simple: s.simple,
+  })
+  // The derived prompt belongs to the derived step, so it goes when the lead says otherwise.
+  const state =
+    status.step === derived.step ? derived : { ...derived, step: status.step, prompt: undefined }
   const verdict = findings?.findings?.verdict
   const autoActive = chatAutoActive(s.auto?.status)
   const autoStatus = s.auto?.status
@@ -167,7 +182,7 @@ export default function ChatMode({
     // A stopped Auto run hands the worktree back to you, so only a paused or failed one halts it.
     halt:
       autoHalt ?? (team?.state === 'paused' || team?.state === 'stopped' ? team.state : undefined),
-    note: autoActive || autoHalt ? s.auto?.reason || undefined : undefined,
+    note: autoActive || autoHalt ? s.auto?.reason || undefined : status.note,
   })
   const runs = useChatTeams((state) => (team ? state.runs[team.projectId] : undefined))
   const offered = useAgentQuestions((q) => q.pending)
@@ -184,7 +199,12 @@ export default function ChatMode({
         return record && !conversation.includes(record) ? [record] : []
       })
     : []
-  const askers = [...conversation, ...workers]
+  // Agents of the lead's stages ask here too: the user only talks to Chat.
+  const stageAgents = leadStageSessions(team).flatMap((id) => {
+    const record = s.sessionRecords.find((r) => r.id === id)
+    return record && !conversation.includes(record) && !workers.includes(record) ? [record] : []
+  })
+  const askers = [...conversation, ...workers, ...stageAgents]
   const waits = chatInputRequests(askers, s.sessions, ui.inputRequests)
   const inputKey = JSON.stringify(waits)
   const questions = withOfferedQuestions(waits, offered, askers, s.sessions)
@@ -248,11 +268,7 @@ export default function ChatMode({
         ? state.prompt.actions.some((a) => ['review', 'fix'].includes(a.action))
           ? 'Review and merge'
           : 'Merge'
-        : state.step === 'planReady'
-          ? 'Planning'
-          : state.step === 'merged'
-            ? 'Merge complete'
-            : 'Review'
+        : chatStepHeading(state.step)
   const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
   const openWorkerTerminal = (record: SessionRecord) =>
     pinChatTerminal(key, record.id, s.sessions[record.id]?.generation)
