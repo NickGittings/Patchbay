@@ -39,6 +39,8 @@
     [...document.querySelectorAll('.view-tabs button')].find((b) =>
       b.textContent.startsWith('Agents '),
     )
+  // The tab is always present in Chat; its count shows whether this worktree has agents.
+  const agentCount = () => Number(agentsTab()?.textContent.match(/^Agents (\d+)/)?.[1] ?? 0)
   const openAgents = async () => {
     ;(await until('Agents tab', agentsTab)).click()
     return until('Agents canvas', () => document.querySelector('.agent-canvas'))
@@ -170,7 +172,7 @@
     )
     assert(!confirmDialog('Clear lead context'), 'worktree inherited fresh confirmation')
     state().setActiveTask(null)
-    await until('return from fresh scope', () => !state().activeTask && assignmentsButton())
+    await until('return from fresh scope', () => !state().activeTask && agentCount() > 0)
     assert(!confirmDialog('Clear lead context'), 'return reopened fresh confirmation')
     const originalGeneration = team().lead.generation
     await chatMenu('Clear lead context')
@@ -288,10 +290,10 @@
     )
     await smoke.createTask({ title: 'Other chat', branch: 'other-chat', components: ['app'] })
     await until('other worktree', () => state().activeTask !== null)
-    assert(!assignmentsButton(), 'another worktree showed the first team')
+    await until('another worktree without the first team', () => agentsTab() && !agentCount())
     assert(!state().simple?.selectedAgent, 'another worktree inherited the lead')
     state().setActiveTask(null)
-    await until('original worktree team', () => assignmentsButton())
+    await until('original worktree team', () => agentCount() > 0)
     ;(await chatMenu('Stop work')).click()
     button('Stop work', await until('stop confirmation', () => confirmDialog('Stop work'))).click()
     await until('stopped team', () => team().state === 'stopped')
