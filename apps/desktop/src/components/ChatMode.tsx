@@ -46,12 +46,14 @@ import { teamJobs, workerSession, workerStatus } from '../lib/chatProgress'
 import { useChatModeWorkflow } from '../lib/useChatModeWorkflow'
 import { useChatIdentity } from '../lib/chatIdentity'
 import { stopTerminal } from '../lib/sessions'
+import { focusTerminal } from '../lib/terminals'
 import { useRail } from '../lib/rail'
 import ChatModeTimeline from './ChatModeTimeline'
 import { ChatCoordinationAlerts } from './ChatCoordination'
 import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
+import ChatTerminalPanel from './ChatTerminalPanel'
 import ChatAgentPicker from './ChatAgentPicker'
 import ChatLimitNotice from './ChatLimitNotice'
 import Dialog from './Dialog'
@@ -147,7 +149,8 @@ export default function ChatMode({
     simple: s.simple,
     changed,
     team,
-    focusComposer: () => chatRef.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus(),
+    focusComposer: () =>
+      chatRef.current?.querySelector<HTMLTextAreaElement>('.simple-composer textarea')?.focus(),
   })
   const { pending, failure, dialog, setDialog, check, act, logReviewers, logMerge } = workflow
   const checkKey = JSON.stringify([key, source?.head, target?.head])
@@ -270,10 +273,24 @@ export default function ChatMode({
           : 'Merge'
         : chatStepHeading(state.step)
   const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
-  const openWorkerTerminal = (record: SessionRecord) =>
+  const openWorkerTerminal = (record: SessionRecord) => {
     pinChatTerminal(key, record.id, s.sessions[record.id]?.generation)
+    focusTerminal(record.id)
+  }
+  const closeTerminal = () => {
+    useSimpleUi
+      .getState()
+      .patch(key, { terminal: 'closed', terminalSession: undefined, terminalMaximized: false })
+    requestAnimationFrame(() =>
+      chatRef.current?.querySelector<HTMLTextAreaElement>('.simple-composer textarea')?.focus(),
+    )
+  }
   return (
-    <div className="simple-chat" ref={chatRef}>
+    <div
+      className="simple-chat"
+      data-terminal-maximized={(drawerShown && ui.terminalMaximized) || undefined}
+      ref={chatRef}
+    >
       <header>
         <strong>Chat</strong>
         <ChatAgentPicker key={key} records={model.records} />
@@ -506,8 +523,6 @@ export default function ChatMode({
         findings={findings}
         pending={pending}
         failure={failure}
-        drawerRecord={drawerRecord}
-        drawerShown={drawerShown}
         openFile={openFile}
         openDiff={(file) => useSimpleUi.getState().patch(key, { changes: true, diff: file })}
       />
@@ -560,22 +575,36 @@ export default function ChatMode({
           </div>
         </section>
       )}
+      {drawerShown && drawerRecord && (
+        <ChatTerminalPanel
+          record={drawerRecord}
+          maximized={!!ui.terminalMaximized}
+          toggleMaximized={() =>
+            useSimpleUi.getState().patch(key, { terminalMaximized: !ui.terminalMaximized })
+          }
+          close={closeTerminal}
+        />
+      )}
       <SimpleComposer
         scopeKey={key}
         stage={model.stage}
         records={model.records}
         terminalRecord={drawerRecord}
-        openTerminal={(record: SessionRecord) =>
+        hidden={drawerShown}
+        openTerminal={(record: SessionRecord) => {
           // A drawer whose session is gone shows nothing, so the toggle opens it in one click.
+          const closing = drawerShown && drawerRecord?.id === record.id
+          if (closing) return closeTerminal()
           useSimpleUi.getState().patch(key, {
-            terminal: drawerShown && drawerRecord?.id === record.id ? 'closed' : 'user',
+            terminal: 'user',
             terminalSession: {
               id: record.id,
               generation: s.sessions[record.id]?.generation,
               pinned: true,
             },
           })
-        }
+          focusTerminal(record.id)
+        }}
       />
     </div>
   )

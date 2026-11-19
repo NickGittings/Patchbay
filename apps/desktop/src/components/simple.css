@@ -561,11 +561,42 @@
   height: 320px;
   flex: none;
 }
-.simple-chat > .simple-terminal-drawer > p {
-  margin: 0;
-  padding: 4px 12px;
+/* Chat's terminal takes the composer's place at the bottom, or fills Chat below its header. */
+.chat-terminal-panel > header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 12px;
   color: var(--muted);
   font-size: var(--text-sm);
+}
+.chat-terminal-panel > header > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-terminal-panel > header > button {
+  padding: 0 6px;
+  line-height: 1.4;
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+.chat-terminal-panel > header > button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.simple-chat > .chat-terminal-panel[data-maximized] {
+  flex: 1;
+  height: auto;
+  max-height: none;
+  resize: none;
+}
+.simple-chat[data-terminal-maximized]
+  > :is(.simple-thread, .simple-jump, .simple-step, .chat-coordination) {
+  display: none;
 }
 .chat-terminal-toggle {
   color: var(--muted);

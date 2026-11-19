@@ -45,6 +45,7 @@ vi.mock('./terminals', () => ({
   disposeAll: vi.fn(),
   markOutputGeneration: vi.fn(),
   replayOutput: vi.fn(),
+  requestRedraw: vi.fn(),
   restoreModes: vi.fn(),
   restoreOutput: vi.fn(),
   writeNote: vi.fn(),

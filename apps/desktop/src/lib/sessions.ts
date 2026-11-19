@@ -58,6 +58,7 @@ import {
   disposeAll,
   markOutputGeneration,
   replayOutput,
+  requestRedraw,
   restoreModes,
   restoreOutput,
   writeNote,
@@ -1093,6 +1094,8 @@ async function applySnapshot(sid: string, snapshot: TerminalSnapshot): Promise<b
   // A truncated backlog can begin mid escape sequence or character; start at a line.
   if (start > 0) bytes = bytes.subarray(bytes.indexOf(0x0a) + 1)
   await restoreOutput(sid, bytes, snapshot.generation)
+  // Replaying a running TUI's partial history, or at another width, garbles its frame.
+  if (snapshot.running) requestRedraw(sid)
   lastSeq.set(sid, { generation: snapshot.generation, end: snapshot.end, complete: start === 0 })
   return true
 }

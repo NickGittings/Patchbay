@@ -1,5 +1,6 @@
 import { openTerminalReference, terminalReferences } from './navigation'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal, type IBufferLine, type ILink, type IMarker, type ITheme } from '@xterm/xterm'
 import { terminalResize, terminalWrite } from './ipc'
 import { useStore } from '../store'
@@ -13,10 +14,21 @@ interface Entry {
   hosts: HTMLElement[]
   generations: { generation: number; marker: IMarker }[]
   generation?: number
+  /** The PTY size this window last sent, so unchanged fits don't signal the program again. */
+  sent?: { cols: number; rows: number }
+  /** A replayed backlog may be garbled; ask the program to repaint on the next claim. */
+  redraw?: boolean
+  fitTimer?: ReturnType<typeof setTimeout>
+  webgl?: WebglAddon
+  webglLost?: boolean
 }
 
 /** One long-lived xterm per session so scrollback survives tab switches and restarts. */
 const registry = new Map<string, Entry>()
+/** A drag reflows the terminal and signals its program once it settles, not every frame. */
+const FIT_DEBOUNCE_MS = 80
+/** Programs read the size when SIGWINCH arrives; two quick resizes can coalesce into none. */
+const REDRAW_GAP_MS = 60
 
 /** xterm takes resolved colors rather than CSS variable references. */
 export function terminalTheme(): ITheme {
@@ -63,6 +75,41 @@ function observeTheme() {
     attributes: true,
     attributeFilter: ['class', 'style', 'data-theme'],
   })
+}
+
+/**
+ * WebGL draws on-screen terminals (as VS Code does); the DOM renderer is the fallback. WebKit caps
+ * live WebGL contexts and the registry keeps every session's xterm, so only terminals with a
+ * visible host hold one, and a lost context leaves that terminal on the DOM renderer.
+ */
+const WEBGL_LIMIT = 8
+let webglCount = 0
+function enableWebgl(e: Entry) {
+  if (e.webgl || e.webglLost || !e.opened || webglCount >= WEBGL_LIMIT) return
+  if (typeof WebGL2RenderingContext === 'undefined') return
+  try {
+    const addon = new WebglAddon()
+    addon.onContextLoss(() => {
+      e.webglLost = true
+      disableWebgl(e)
+    })
+    e.term.loadAddon(addon)
+    e.webgl = addon
+    webglCount++
+  } catch {
+    e.webglLost = true
+  }
+}
+function disableWebgl(e: Entry) {
+  const addon = e.webgl
+  if (!addon) return
+  e.webgl = undefined
+  webglCount--
+  try {
+    addon.dispose()
+  } catch {
+    // already torn down with its context
+  }
 }
 
 /** Map UTF-16 string offsets onto xterm cell columns (wide and combining characters). */
@@ -276,13 +323,18 @@ export const ownsTerminalHost = (sid: string, host: HTMLElement) =>
   registry.get(sid)?.el.parentElement === host && hostVisible(host)
 
 /** Move the session's terminal into `container` and size it to fit. */
-export function attach(sessionId: string, container: HTMLElement, options?: { focus?: boolean }) {
+export function attach(
+  sessionId: string,
+  container: HTMLElement,
+  options?: { focus?: boolean; repaint?: boolean },
+) {
   if (!hostVisible(container)) return
   const e = entry(sessionId)
   e.hosts = e.hosts.filter((host) => host.isConnected)
   if (!e.hosts.includes(container)) e.hosts.push(container)
   if (e.hosts.filter(hostVisible).at(-1) !== container) return
-  if (e.el.parentElement !== container) container.replaceChildren(e.el)
+  const moved = e.el.parentElement !== container
+  if (moved) container.replaceChildren(e.el)
   refreshTheme()
   if (!e.opened) {
     e.term.open(e.el)
@@ -291,8 +343,54 @@ export function attach(sessionId: string, container: HTMLElement, options?: { fo
     e.term.textarea?.setAttribute('autocomplete', 'off')
     e.opened = true
   }
+  enableWebgl(e)
   fit(sessionId)
+  // A re-parented or re-shown terminal may hold rows drawn for its old size or host.
+  if (moved || options?.repaint) repaint(e)
   if (options?.focus !== false) e.term.focus()
+}
+
+function repaint(e: Entry) {
+  try {
+    e.term.refresh(0, e.term.rows - 1)
+  } catch {
+    // not rendered yet
+  }
+}
+
+/** Debounced `attach` for continuous resizes, so a drag reflows and signals the program once. */
+export function scheduleFit(sessionId: string, container: HTMLElement, delayMs = FIT_DEBOUNCE_MS) {
+  const e = registry.get(sessionId)
+  if (!e) return
+  clearTimeout(e.fitTimer)
+  e.fitTimer = setTimeout(() => {
+    e.fitTimer = undefined
+    attach(sessionId, container, { focus: false })
+  }, delayMs)
+}
+
+/** Ask the running program to repaint once this window next claims the PTY (after a replay). */
+export function requestRedraw(sessionId: string) {
+  entry(sessionId).redraw = true
+}
+
+/**
+ * Which PTY sizes to send for a fit: none when unchanged, unless a claim forces it. A redraw
+ * first sends one column fewer, since programs repaint only when the size really changes.
+ */
+export function resizesToSend(
+  sent: { cols: number; rows: number } | undefined,
+  cols: number,
+  rows: number,
+  options: { force?: boolean; redraw?: boolean } = {},
+): { cols: number; rows: number }[] {
+  if (options.force && options.redraw && cols > 1)
+    return [
+      { cols: cols - 1, rows },
+      { cols, rows },
+    ]
+  if (!options.force && sent?.cols === cols && sent.rows === rows) return []
+  return [{ cols, rows }]
 }
 
 /**
@@ -313,16 +411,28 @@ export function focusTerminal(sessionId: string) {
   requestAnimationFrame(attempt)
 }
 
-/** Fit locally; the service accepts PTY sizes only from its authoritative viewer. */
-export function fit(sessionId: string) {
+/**
+ * Fit locally; the service accepts PTY sizes only from its authoritative viewer, so a claim
+ * (`force`) resends the size even when this window's fit didn't change it.
+ */
+export function fit(sessionId: string, options?: { force?: boolean }) {
   const e = registry.get(sessionId)
   if (!e?.opened || !e.hosts.some(hostVisible)) return
   try {
     e.fit.fit()
-    void terminalResize(sessionId, e.term.cols, e.term.rows).catch(() => {})
   } catch {
-    // container not laid out yet
+    return // container not laid out yet
   }
+  const { cols, rows } = e.term
+  const sizes = resizesToSend(e.sent, cols, rows, { force: options?.force, redraw: e.redraw })
+  if (!sizes.length) return
+  if (options?.force) e.redraw = false
+  e.sent = { cols, rows }
+  const send = ({ cols, rows }: { cols: number; rows: number }) =>
+    void terminalResize(sessionId, cols, rows).catch(() => {})
+  send(sizes[0])
+  // A fit during the gap already sent a newer size; resending the latest is harmless.
+  if (sizes[1]) setTimeout(() => send(e.sent ?? sizes[1]), REDRAW_GAP_MS)
 }
 
 /** Return the shared terminal to its previous pane when a Sessions preview closes. */
@@ -334,15 +444,25 @@ export function detachHost(sessionId: string, host: HTMLElement): boolean {
   if (previous && e.el.parentElement === host) {
     previous.replaceChildren(e.el)
     fit(sessionId)
+    repaint(e)
   }
-  return e.hosts.some(hostVisible)
+  const visible = e.hosts.some(hostVisible)
+  if (!visible) {
+    clearTimeout(e.fitTimer)
+    disableWebgl(e)
+  }
+  return visible
 }
 
 export function disposeAll() {
   themeObserver?.disconnect()
   themeObserver = undefined
   themeSignature = ''
-  for (const e of registry.values()) e.term.dispose()
+  for (const e of registry.values()) {
+    clearTimeout(e.fitTimer)
+    disableWebgl(e)
+    e.term.dispose()
+  }
   registry.clear()
 }
 

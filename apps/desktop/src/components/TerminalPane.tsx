@@ -8,7 +8,14 @@ import {
 } from '../lib/display'
 import { terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
 import { hydrateSession, startTerminal } from '../lib/sessions'
-import { attach, detachHost, fit, hostVisible, ownsTerminalHost } from '../lib/terminals'
+import {
+  attach,
+  detachHost,
+  fit,
+  hostVisible,
+  ownsTerminalHost,
+  scheduleFit,
+} from '../lib/terminals'
 import { ACTIVE_CHANGED } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
@@ -53,12 +60,13 @@ export default function TerminalPane({
     if (!host) return
     let disposed = false
     attach(sid, host, { focus })
-    // Becoming visible or active (re)claims the PTY; resizing only refits.
+    // Becoming visible or active (re)claims the PTY and repaints; resizing only refits, once the
+    // size settles, so a drag doesn't signal the program every frame.
     const refit = () => {
-      attach(sid, host, { focus: false })
+      attach(sid, host, { focus: false, repaint: true })
       if (ownsTerminalHost(sid, host) && document.visibilityState === 'visible')
         void terminalAttach(sid, document.hasFocus())
-          .then(() => fit(sid))
+          .then(() => fit(sid, { force: true }))
           .catch(() => {})
       else if (document.visibilityState !== 'visible') void terminalDetach(sid).catch(() => {})
       else if (!hostVisible(host)) detachHost(sid, host)
@@ -72,7 +80,7 @@ export default function TerminalPane({
         if (visible !== wasVisible) {
           wasVisible = visible
           refit()
-        } else attach(sid, host, { focus: false })
+        } else scheduleFit(sid, host)
       })
     })
     const intersection = new IntersectionObserver(refit)
