@@ -5,8 +5,6 @@ import {
   Background,
   BackgroundVariant,
   Controls,
-  ControlButton,
-  MiniMap,
   Panel,
   ReactFlow,
   useReactFlow,
@@ -21,6 +19,7 @@ import type { Position } from '../lib/layout'
 import { KIND_COLOR } from '../lib/display'
 import { showsInspector } from '../lib/panels'
 import { useStore, type FlowNode } from '../store'
+import CanvasMinimap, { MinimapToggle } from './CanvasMinimap'
 import ComponentNode from './nodes/ComponentNode'
 import Welcome from './Welcome'
 import EmptyState from './EmptyState'
@@ -174,22 +173,6 @@ function isValidConnection(c: Connection | Edge) {
 }
 
 export default function Canvas() {
-  const [minimapVisible, setMinimapVisible] = useState(() => {
-    try {
-      return localStorage.getItem('patchbay.canvasMinimapVisible') !== 'false'
-    } catch {
-      return true
-    }
-  })
-  const toggleMinimap = () => {
-    const next = !minimapVisible
-    setMinimapVisible(next)
-    try {
-      localStorage.setItem('patchbay.canvasMinimapVisible', String(next))
-    } catch {
-      /* Keep the toggle usable when storage is unavailable. */
-    }
-  }
   const planningTask = usePlanningTask()
   const {
     project,
@@ -330,26 +313,9 @@ export default function Canvas() {
           </Panel>
         )}
         <Controls showInteractive={!planning} className="canvas-controls">
-          <ControlButton
-            onClick={toggleMinimap}
-            aria-label="Minimap"
-            aria-pressed={minimapVisible}
-            title={minimapVisible ? 'Hide minimap' : 'Show minimap'}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <rect x="3" y="4" width="18" height="16" rx="2" />
-              <path d="m8 4 0 16m8-16v16M3 13l5-3 8 4 5-3" />
-            </svg>
-          </ControlButton>
+          <MinimapToggle />
         </Controls>
-        {minimapVisible && (
-          <MiniMap
-            pannable
-            zoomable
-            nodeColor={(n) => KIND_COLOR[(n as FlowNode).data.kind]}
-            style={{ width: 140, height: 90 }}
-          />
-        )}
+        <CanvasMinimap nodeColor={(n) => KIND_COLOR[(n as FlowNode).data.kind]} />
         {nodes.length === 0 && (
           <Panel position="top-center" className="canvas-empty">
             <EmptyState

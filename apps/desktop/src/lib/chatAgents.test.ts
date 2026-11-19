@@ -1,6 +1,13 @@
 import { expect, test } from 'vitest'
 import { PLAN_SCOPE, type SessionRecord, type SessionState } from '../types'
-import { agentLayout, agentSnippet, chatAgentCards, type AgentCard } from './chatAgents'
+import {
+  agentColumns,
+  agentDismissible,
+  agentLayout,
+  agentSnippet,
+  chatAgentCards,
+  type AgentCard,
+} from './chatAgents'
 import type { ChatTeam } from './chatTeams'
 import type { ProviderJob, ProviderRun } from './orchestration'
 
@@ -78,6 +85,7 @@ test('shows running agents of this chat and every undismissed assignment', () =>
     ['job:done', 'finished'],
   ])
   expect(result[1].role).toBe('Builder')
+  expect(result.map((c) => c.roleKey)).toEqual(['lead', 'builder', 'builder', 'builder'])
   expect(result[2].detail).toBe('Preset queued')
 })
 
@@ -142,4 +150,28 @@ test('layout stacks rows and joins the lead to active workers only', () => {
   expect(y('b')).toBeLessThan(y('done'))
   expect(edges.map((e) => e.target)).toEqual(['a', 'b'])
   expect(agentLayout([row('solo', 'other'), row('two', 'other')]).edges).toEqual([])
+})
+
+const workers = (count: number) =>
+  Array.from({ length: count }, (_, i) => card({ id: `w${i}`, row: 'worker' }))
+
+test('layout wraps long rows and keeps each line centered', () => {
+  const { positions, width, height } = agentLayout(workers(3), 2)
+  expect(new Set(positions.map((p) => p.y)).size).toBe(2)
+  expect(positions[2].x).toBe(-170)
+  expect(width).toBe(704)
+  expect(height).toBe(304)
+})
+
+test('columns follow the canvas so cards stay as large as they can', () => {
+  expect(agentColumns(workers(6), { width: 1200, height: 700 })).toBe(3)
+  expect(agentColumns(workers(6), { width: 400, height: 800 })).toBe(1)
+  expect(agentColumns(workers(2), { width: 0, height: 0 })).toBe(Infinity)
+})
+
+test('only finished or failed assignments can be dismissed', () => {
+  expect(agentDismissible(card({ row: 'finished', job: job('a', 'integrated') }))).toBe(true)
+  expect(agentDismissible(card({ row: 'worker', job: job('a', 'failed') }))).toBe(true)
+  expect(agentDismissible(card({ row: 'worker', job: job('a', 'running') }))).toBe(false)
+  expect(agentDismissible(card({ row: 'other' }))).toBe(false)
 })

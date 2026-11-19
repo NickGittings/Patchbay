@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useStore } from '../store'
 import type { SessionState } from '../types'
 import { controlTeam, RESTART_NOTICE, useChatTeams, type ChatTeam } from './chatTeams'
@@ -31,7 +31,8 @@ export function useTeamWork(team: ChatTeam | undefined) {
   const sessions = useWorkSessions()
   const key = simpleKey(team?.projectId, team?.task ?? null)
   const dismissedKeys = useSimpleUi((s) => s.worktrees[key]?.dismissedAssignments)
-  const allJobs = team ? teamJobs(runs ?? [], team.id) : []
+  const teamId = team?.id
+  const allJobs = useMemo(() => (teamId ? teamJobs(runs ?? [], teamId) : []), [runs, teamId])
   const isDismissed = (job: ProviderJob) => !!dismissedKeys?.includes(dismissalKey(job))
   const jobs = allJobs.filter((job) => !isDismissed(job))
   const restartNotice = team?.error === RESTART_NOTICE
@@ -42,15 +43,18 @@ export function useTeamWork(team: ChatTeam | undefined) {
   }
   // Reads the store at click time, so quick successive dismissals never overwrite each other,
   // and keeps only keys for current results, so the persisted list cannot grow without bound.
-  const setDismissed = (job: ProviderJob, dismissed: boolean) => {
-    const ui = useSimpleUi.getState()
-    const live = new Set(allJobs.map(dismissalKey))
-    const id = dismissalKey(job)
-    const kept = (ui.worktrees[key]?.dismissedAssignments ?? []).filter(
-      (k) => live.has(k) && k !== id,
-    )
-    ui.patch(key, { dismissedAssignments: dismissed ? [...kept, id] : kept })
-  }
+  const setDismissed = useCallback(
+    (job: ProviderJob, dismissed: boolean) => {
+      const ui = useSimpleUi.getState()
+      const live = new Set(allJobs.map(dismissalKey))
+      const id = dismissalKey(job)
+      const kept = (ui.worktrees[key]?.dismissedAssignments ?? []).filter(
+        (k) => live.has(k) && k !== id,
+      )
+      ui.patch(key, { dismissedAssignments: dismissed ? [...kept, id] : kept })
+    },
+    [allJobs, key],
+  )
   return {
     sessions,
     allJobs,

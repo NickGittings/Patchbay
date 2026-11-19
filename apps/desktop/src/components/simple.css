@@ -46,26 +46,28 @@
   min-height: 0;
   overflow-anchor: none;
 }
-.simple-agent {
+:is(.simple-agent, .agent-card, .agent-role) {
   --role: var(--role-agent);
+}
+.simple-agent {
   margin: 16px 0;
   padding-left: 12px;
   border-left: 2px solid color-mix(in srgb, var(--role) 60%, transparent);
   overflow-wrap: anywhere;
 }
-.simple-agent[data-role='lead'] {
+:is(.simple-agent, .agent-card, .agent-role)[data-role='lead'] {
   --role: var(--role-lead);
 }
-.simple-agent[data-role='builder'] {
+:is(.simple-agent, .agent-card, .agent-role)[data-role='builder'] {
   --role: var(--role-builder);
 }
-.simple-agent[data-role='planner'] {
+:is(.simple-agent, .agent-card, .agent-role)[data-role='planner'] {
   --role: var(--role-planner);
 }
-.simple-agent[data-role='reviewer'] {
+:is(.simple-agent, .agent-card, .agent-role)[data-role='reviewer'] {
   --role: var(--role-reviewer);
 }
-.simple-agent[data-role='merge'] {
+:is(.simple-agent, .agent-card, .agent-role)[data-role='merge'] {
   --role: var(--role-merge);
 }
 .simple-agent > header {
@@ -751,8 +753,16 @@
   color: var(--muted);
   background: var(--bg);
 }
+/* After the hover rule, so the role stays on the edge; a selected card's accent still wins. */
+.agent-card[data-role] {
+  border-left: 2px solid color-mix(in srgb, var(--role) 60%, transparent);
+}
+.agent-card-name,
+.agent-role {
+  color: color-mix(in srgb, var(--role) 70%, var(--text));
+}
 .agent-card[data-row='finished'] .agent-card-name {
-  color: inherit;
+  color: color-mix(in srgb, var(--role) 45%, var(--muted));
 }
 .agent-card header {
   display: flex;
@@ -764,7 +774,6 @@
   flex: none;
   padding: 0;
   font-weight: 600;
-  color: var(--text);
   background: none;
   border: none;
 }
@@ -788,6 +797,13 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* A lone summary or reply uses the card's height; step lists stay one line each. */
+.agent-card-snippet p:only-child {
+  display: -webkit-box;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
 .agent-card-snippet p + p {
   color: var(--muted);
 }
@@ -796,6 +812,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+}
+.agent-card-actions {
+  display: flex;
+  gap: 4px;
 }
 .agent-card-handle.react-flow__handle {
   visibility: hidden;

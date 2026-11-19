@@ -211,13 +211,16 @@ terminal, Mark delivered or Retry delivery).
 the map's viewport is untouched). `chatAgents.ts` `chatAgentCards` lists the team's undismissed
 assignments and every other running agent of this chat, `agentSnippet` picks each card's line (input
 wait, failure, recent steps, summary, instructions, last reply) and `agentLayout` places the lead,
-workers, other agents and finished work in rows. Cards subscribe to their own sessions; the graph
-rebuilds only when membership or job state changes and refits when membership does. The tab's label
+workers, other agents and finished work in rows, wrapped at the column count `agentColumns` finds
+shows cards largest in the canvas. Cards subscribe to their own sessions; the graph rebuilds only
+when membership or job state changes and refits when the layout or canvas size does. The minimap and
+its toggle are `CanvasMinimap`, sharing the Map's saved preference. Cards and minimap nodes use the
+role colors of Chat's agent headers. The tab's label
 counts unfinished agents and flagged items, with the breakdown in its accessible name. Terminal
 opens the session in Chat's drawer, expanding a hidden chat. Selecting a card opens details: steps or
 the last reply, and for assignments the instructions, summary, report, retry and settings actions.
 Under the tabs, the team's status line offers Open Sessions. Dismissing a failed or completed
-assignment hides its current result from the canvas, count and alerts, offers Undo (which takes
+assignment, from its card or details, hides its current result from the canvas, count and alerts, offers Undo (which takes
 focus), and lists it under Dismissed with Restore. The worktree's chat UI persists dismissals locally,
 pruned to the team's current results. Retried work appears again, and coordination retains its results.
 Chat-owned rounds appear here only;

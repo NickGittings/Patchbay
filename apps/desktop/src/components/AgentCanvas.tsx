@@ -12,13 +12,25 @@ import {
   type Node,
   type NodeProps,
 } from '@xyflow/react'
-import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useStore } from '../store'
 import type { SessionState } from '../types'
 import { activityLabel, turnSteps } from '../lib/activity'
 import {
+  AGENT_CANVAS_INSET,
   AGENT_CARD_HEIGHT,
   AGENT_CARD_WIDTH,
+  agentColumns,
+  agentDismissible,
   agentLayout,
   agentSnippet,
   type AgentCard,
@@ -38,6 +50,7 @@ import {
   showSessions,
   showSettings,
 } from './ChatCoordination'
+import CanvasMinimap, { MinimapToggle } from './CanvasMinimap'
 import EmptyState from './EmptyState'
 import Markdown from './findings/Markdown'
 import SimpleStatus from './SimpleStatus'
@@ -50,13 +63,19 @@ type AgentFlowNode = Node<AgentNodeData, 'agent'>
 const AgentActions = createContext<{
   select: (id: string) => void
   openTerminal: (card: AgentCard) => void
-}>({ select: () => {}, openTerminal: () => {} })
+  dismiss: (job: ProviderJob) => void
+}>({ select: () => {}, openTerminal: () => {}, dismiss: () => {} })
 
 const nameOf = ({ role, detail }: AgentCard) => (detail ? `${role} ${detail}` : role)
 
 /** Keeps cards clear of the tabs and team status that float over the canvas's top edge. */
 const FIT_VIEW: FitViewOptions = {
-  padding: { top: '96px', right: 0.2, bottom: 0.2, left: 0.2 },
+  padding: {
+    top: `${AGENT_CANVAS_INSET.top}px`,
+    right: `${AGENT_CANVAS_INSET.side}px`,
+    bottom: `${AGENT_CANVAS_INSET.bottom}px`,
+    left: `${AGENT_CANVAS_INSET.side}px`,
+  },
   maxZoom: 1,
 }
 /** Matches `.agent-details`: its width and its inset from the canvas edge. */
@@ -68,6 +87,12 @@ const JOB_HEALTH: Record<string, Health> = {
   failed: 'fail',
   complete: 'ok',
   working: 'working',
+}
+
+function minimapColor(node: Node) {
+  const { roleKey, row } = (node as AgentFlowNode).data.card
+  const color = `var(--role-${roleKey})`
+  return row === 'finished' ? `color-mix(in srgb, ${color} 45%, transparent)` : color
 }
 
 function AgentStatus({ card, session }: { card: AgentCard; session: SessionState | undefined }) {
@@ -83,13 +108,14 @@ function AgentStatus({ card, session }: { card: AgentCard; session: SessionState
 
 const AgentNode = memo(function AgentNode({ data: { card }, selected }: NodeProps<AgentFlowNode>) {
   const session = useStore((s) => (card.sessionId ? s.sessions[card.sessionId] : undefined))
-  const { select, openTerminal } = useContext(AgentActions)
+  const { select, openTerminal, dismiss } = useContext(AgentActions)
   const name = nameOf(card)
   return (
     <article
       className="agent-card"
       data-card={card.id}
       data-row={card.row}
+      data-role={card.roleKey}
       data-session={card.sessionId}
     >
       <Handle
@@ -121,16 +147,29 @@ const AgentNode = memo(function AgentNode({ data: { card }, selected }: NodeProp
       </div>
       <footer>
         <AgentStatus card={card} session={session} />
-        <button
-          disabled={!card.record}
-          aria-label={`View ${name} terminal`}
-          onClick={(e) => {
-            e.stopPropagation()
-            openTerminal(card)
-          }}
-        >
-          Terminal
-        </button>
+        <div className="agent-card-actions">
+          <button
+            disabled={!card.record}
+            aria-label={`View ${name} terminal`}
+            onClick={(e) => {
+              e.stopPropagation()
+              openTerminal(card)
+            }}
+          >
+            Terminal
+          </button>
+          {card.job && agentDismissible(card) && (
+            <button
+              aria-label={`Dismiss ${name}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                dismiss(card.job!)
+              }}
+            >
+              Dismiss
+            </button>
+          )}
+        </div>
       </footer>
       <Handle
         className="agent-card-handle"
@@ -212,11 +251,13 @@ function JobDetails({
   team,
   job,
   done,
+  dismissible,
   dismiss,
 }: {
   team: ChatTeam
   job: ProviderJob
   done: boolean
+  dismissible: boolean
   dismiss: (job: ProviderJob) => void
 }) {
   const { act, run, busy, error } = useTeamAction(team)
@@ -236,7 +277,7 @@ function JobDetails({
             <button onClick={showSettings}>Agent settings</button>
           </>
         )}
-        {(done || failedJob(job)) && <button onClick={() => dismiss(job)}>Dismiss</button>}
+        {dismissible && <button onClick={() => dismiss(job)}>Dismiss</button>}
       </div>
       {error && <p role="alert">{error}</p>}
     </>
@@ -273,7 +314,9 @@ function AgentDetails({
       }}
     >
       <header>
-        <strong>{card.role}</strong>
+        <strong className="agent-role" data-role={card.roleKey}>
+          {card.role}
+        </strong>
         <AgentStatus card={card} session={session} />
         <button aria-label="Close details" onClick={close}>
           ×
@@ -288,7 +331,13 @@ function AgentDetails({
         </ol>
       )}
       {card.job && team ? (
-        <JobDetails team={team} job={card.job} done={card.row === 'finished'} dismiss={dismiss} />
+        <JobDetails
+          team={team}
+          job={card.job}
+          done={card.row === 'finished'}
+          dismissible={agentDismissible(card)}
+          dismiss={dismiss}
+        />
       ) : (
         reply && <Markdown text={reply} />
       )}
@@ -299,12 +348,14 @@ function AgentDetails({
 /** What the graph draws from; session activity reaches the cards through their own subscriptions. */
 const graphKey = (cards: AgentCard[]) =>
   JSON.stringify(
-    cards.map(({ id, row, role, detail, sessionId, job }) => [
+    cards.map(({ id, row, role, roleKey, detail, sessionId, job }) => [
       id,
       row,
       role,
+      roleKey,
       detail,
       sessionId,
+      job?.requestId,
       job?.state,
       job?.error,
       job?.summary,
@@ -320,7 +371,25 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
   const key = graphKey(cards)
   const [shown, setShown] = useState({ key, cards })
   if (shown.key !== key) setShown({ key, cards })
-  const { positions, edges } = useMemo(() => agentLayout(shown.cards), [shown.cards])
+  const canvas = useRef<HTMLDivElement>(null)
+  const [size, setSize] = useState({ width: 0, height: 0 })
+  useEffect(() => {
+    const element = canvas.current
+    if (!element) return
+    const measure = () => {
+      const { clientWidth: width, clientHeight: height } = element
+      setSize((old) => (old.width === width && old.height === height ? old : { width, height }))
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+  const columns = agentColumns(shown.cards, size)
+  const { positions, edges } = useMemo(
+    () => agentLayout(shown.cards, columns),
+    [shown.cards, columns],
+  )
   const nodes = useMemo(
     () =>
       positions.map(({ card, x, y }): AgentFlowNode => ({
@@ -335,15 +404,23 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
     [positions, selected],
   )
   const { fitView, getViewport, setViewport } = useReactFlow()
-  const canvas = useRef<HTMLDivElement>(null)
   const reducedMotion = useReducedMotion()
-  const topology = positions.map(({ card }) => `${card.id}:${card.row}`).join('|')
+  const topology = positions.map(({ card, x, y }) => `${card.id}:${x}:${y}`).join('|')
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       void fitView(FIT_VIEW)
     })
     return () => cancelAnimationFrame(frame)
-  }, [fitView, topology])
+  }, [fitView, topology, size])
+  const { setDismissed } = work
+  const dismiss = useCallback(
+    (job: ProviderJob) => {
+      setDismissed(job, true)
+      setUndo(job)
+      setSelected((id) => (id === `job:${job.id}` ? undefined : id))
+    },
+    [setDismissed],
+  )
   const actions = useMemo(
     () => ({
       select: (id: string) => {
@@ -365,8 +442,9 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
         pinChatTerminal(scopeKey, sessionId, useStore.getState().sessions[sessionId]?.generation)
         onShowChat?.()
       },
+      dismiss,
     }),
-    [scopeKey, onShowChat, positions, getViewport, setViewport, reducedMotion],
+    [scopeKey, onShowChat, positions, getViewport, setViewport, reducedMotion, dismiss],
   )
   const details = cards.find((card) => card.id === selected)
   const closeDetails = () => {
@@ -404,7 +482,10 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
             size={1}
             color="color-mix(in srgb, var(--border) 55%, transparent)"
           />
-          <Controls showInteractive={false} className="canvas-controls" />
+          <Controls showInteractive={false} className="canvas-controls">
+            <MinimapToggle />
+          </Controls>
+          <CanvasMinimap nodeColor={minimapColor} />
           {cards.length === 0 && (
             <Panel position="top-center" className="canvas-empty">
               <EmptyState icon="◇" title="No active agents">
@@ -433,11 +514,7 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
             card={details}
             team={team}
             close={closeDetails}
-            dismiss={(job) => {
-              work.setDismissed(job, true)
-              setUndo(job)
-              setSelected(undefined)
-            }}
+            dismiss={dismiss}
           />
         )}
       </div>

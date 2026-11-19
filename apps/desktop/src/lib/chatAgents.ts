@@ -1,7 +1,7 @@
 import type { SessionRecord, SessionState } from '../types'
 import { activityLabel, turnSteps } from './activity'
 import { failedJob, workerSession, workerStatus } from './chatProgress'
-import { chatIdentity } from './chatIdentity'
+import { chatIdentity, type ChatRoleKey } from './chatIdentity'
 import type { ChatTeam } from './chatTeams'
 import type { ProviderJob, ProviderRun } from './orchestration'
 import { foreignPlanner, relatedSession, type SimpleState, type SimpleWorktree } from './simple'
@@ -16,6 +16,7 @@ export interface AgentCard {
   job?: ProviderJob
   row: AgentRow
   role: string
+  roleKey: ChatRoleKey
   detail: string
 }
 
@@ -53,6 +54,7 @@ export function chatAgentCards({
       record,
       row: roleKey === 'lead' ? 'lead' : roleKey === 'builder' ? 'worker' : 'other',
       role,
+      roleKey,
       detail,
     }
   }
@@ -80,6 +82,7 @@ export function chatAgentCards({
       job,
       row: workerStatus(job, sessions) === 'complete' ? 'finished' : 'worker',
       role: known?.role ?? 'Builder',
+      roleKey: known?.roleKey ?? 'builder',
       detail: known?.detail || job.terminal.name,
     }
   })
@@ -89,6 +92,10 @@ export function chatAgentCards({
     ...running.filter((c) => c.row !== 'lead'),
   ]
 }
+
+/** Finished or failed work the user can clear from the canvas; coordination keeps the record. */
+export const agentDismissible = ({ job, row }: Pick<AgentCard, 'job' | 'row'>) =>
+  !!job && (row === 'finished' || failedJob(job))
 
 const SNIPPET_LENGTH = 180
 
@@ -126,28 +133,40 @@ export function agentSnippet(
   return [reply ?? 'No activity yet']
 }
 
-export const AGENT_CARD_WIDTH = 280
-export const AGENT_CARD_HEIGHT = 120
+export const AGENT_CARD_WIDTH = 340
+export const AGENT_CARD_HEIGHT = 140
+/** Canvas kept clear around the cards; the top holds the floating tabs and team status. */
+export const AGENT_CANVAS_INSET = { top: 96, side: 24, bottom: 32 }
 const GAP_X = 24
 const GAP_Y = 64
+const WRAP_GAP = 24
 const ROWS: AgentRow[] = ['lead', 'worker', 'other', 'finished']
 
-/** Cards in centered rows, top to bottom, with the lead joined to its active workers. */
-export function agentLayout(cards: readonly AgentCard[]) {
+/**
+ * Cards in centered rows, top to bottom, each wrapping at `columns`, with the lead joined to its
+ * active workers.
+ */
+export function agentLayout(cards: readonly AgentCard[], columns = Infinity) {
   const positions: { card: AgentCard; x: number; y: number }[] = []
   let y = 0
+  let width = 0
   for (const row of ROWS) {
     const members = cards.filter((card) => card.row === row)
     if (!members.length) continue
-    const width = members.length * AGENT_CARD_WIDTH + (members.length - 1) * GAP_X
-    members.forEach((card, index) =>
-      positions.push({
-        card,
-        x: index * (AGENT_CARD_WIDTH + GAP_X) - width / 2,
-        y,
-      }),
-    )
-    y += AGENT_CARD_HEIGHT + GAP_Y
+    for (let start = 0; start < members.length; start += columns) {
+      const line = members.slice(start, start + columns)
+      const lineWidth = line.length * AGENT_CARD_WIDTH + (line.length - 1) * GAP_X
+      width = Math.max(width, lineWidth)
+      line.forEach((card, index) =>
+        positions.push({
+          card,
+          x: index * (AGENT_CARD_WIDTH + GAP_X) - lineWidth / 2,
+          y,
+        }),
+      )
+      y += AGENT_CARD_HEIGHT + WRAP_GAP
+    }
+    y += GAP_Y - WRAP_GAP
   }
   const lead = cards.find((card) => card.row === 'lead')
   const edges = lead
@@ -155,5 +174,27 @@ export function agentLayout(cards: readonly AgentCard[]) {
         .filter((card) => card.row === 'worker')
         .map((card) => ({ id: `${lead.id}>${card.id}`, source: lead.id, target: card.id }))
     : []
-  return { positions, edges }
+  return { positions, edges, width, height: positions.length ? y - GAP_Y : 0 }
+}
+
+/** The wrap that shows cards largest in a canvas of this size, preferring fewer lines on a tie. */
+export function agentColumns(
+  cards: readonly AgentCard[],
+  { width, height }: { width: number; height: number },
+) {
+  if (!width || !height) return Infinity
+  const widest = Math.max(1, ...ROWS.map((row) => cards.filter((c) => c.row === row).length))
+  const availableWidth = width - 2 * AGENT_CANVAS_INSET.side
+  const availableHeight = height - AGENT_CANVAS_INSET.top - AGENT_CANVAS_INSET.bottom
+  let best = 1
+  let bestZoom = 0
+  for (let columns = 1; columns <= widest; columns++) {
+    const size = agentLayout(cards, columns)
+    const zoom = Math.min(1, availableWidth / size.width, availableHeight / size.height)
+    if (zoom >= bestZoom) {
+      best = columns
+      bestZoom = zoom
+    }
+  }
+  return best
 }

@@ -4622,7 +4622,7 @@ kbd {
 .canvas-controls .react-flow__controls-button[aria-label='Minimap'] svg {
   fill: none;
 }
-.canvas .react-flow__minimap {
+:is(.canvas, .agent-canvas) .react-flow__minimap {
   margin: 12px 12px 28px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);

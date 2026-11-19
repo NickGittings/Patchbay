@@ -201,11 +201,18 @@
       'worker reply entered main transcript',
     )
     const results = await openAgents()
+    await until('Agents minimap', () => results.querySelector('.react-flow__minimap'))
     await until('completed assignment in Agents', () =>
       agentCard(results, 'Inspected the committed baseline'),
     )
     assert(agentCard(results, 'Implemented worker file'), 'Code awaiting integration disappeared')
-    await dismissCard(results, 'Inspected the committed baseline')
+    agentCard(results, 'Inspected the committed baseline')
+      .querySelector('[aria-label^="Dismiss "]')
+      .click()
+    await until(
+      'dismissed from card',
+      () => !agentCard(results, 'Inspected the committed baseline'),
+    )
     assert(jobs().length === 2, 'Dismissal removed a coordination record')
     button('Undo', results).click()
     await until('undone dismissal', () => agentCard(results, 'Inspected the committed baseline'))
