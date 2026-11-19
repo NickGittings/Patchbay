@@ -23,7 +23,7 @@ import {
 } from '../lib/chatTeams'
 import { selectPanel, useRail } from '../lib/rail'
 import { persistReplies } from '../lib/simpleReplies'
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import type { SessionRecord } from '../types'
@@ -51,14 +51,12 @@ import { refreshSession, reconcileFreshSessions, restartTerminal } from '../lib/
 import { openIntegrations, useAgentHooksInstalled } from '../lib/agentHooks'
 
 export default function SimpleComposer({
-  children,
   scopeKey,
   stage,
   records,
   terminalRecord,
   openTerminal,
 }: {
-  children?: ReactNode
   scopeKey: string
   stage: SimpleStage
   records: SessionRecord[]
@@ -530,7 +528,6 @@ export default function SimpleComposer({
             ? `${identity.title} · ${ui.connection ?? status.label}`
             : (ui.connection ?? status.label)}
         </span>
-        {children}
         {canInterrupt && (
           <button
             disabled={pending}

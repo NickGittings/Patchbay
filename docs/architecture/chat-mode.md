@@ -58,7 +58,9 @@ feature branch**, or the worktree picker's **Remove worktree** and **Forget only
 and stops its unfinished rounds. The desktop closes and forgets the team's agent terminals, including
 isolated workers, whose worktrees stay because they can hold unintegrated commits. `forgetTeamChat`
 resets the worktree's Chat log, workflow facts, draft and queued message. No replacement lead starts;
-the next message launches one. A failed cleanup changes none of this, so it can be retried.
+the next message launches one. A cleanup that fails with the worktree still in place changes none of
+this, so it can be retried. Returning to `main` closes only the chat's stage agents; shared planners
+and Map agents in that folder stay.
 
 Chat's Merge button checks the source first. With uncommitted changes it opens the shared merge dialog on the chosen destination, which asks whether the merge agent should commit them; see [Worktrees](worktrees.md). A merge that ends with a dirty worktree offers **Merge again** through the same path.
 

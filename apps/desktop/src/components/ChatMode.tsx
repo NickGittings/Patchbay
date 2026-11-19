@@ -5,7 +5,13 @@ import type { SessionRecord } from '../types'
 import { useChatTeams } from '../lib/chatTeams'
 import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
-import { recordStage, pendingLaunch, LAUNCH_RECORD_GRACE_MS, thread } from '../lib/simple'
+import {
+  recordStage,
+  pendingLaunch,
+  LAUNCH_RECORD_GRACE_MS,
+  retryMergeBranch,
+  thread,
+} from '../lib/simple'
 import { chatStepper, flow, workflowPromptKey } from '../lib/simpleFlow'
 import { inPlace } from '../lib/auto'
 import type { useSimpleData } from '../lib/useSimpleData'
@@ -100,8 +106,11 @@ export default function ChatMode({
   const model = thread(snapshot, worktree)
   const launch = pendingLaunch(snapshot, model.records)
   const now = useExpiredDeadline(launch ? launch.atMs + LAUNCH_RECORD_GRACE_MS : undefined)
+  const retryBranch = retryMergeBranch(s.simple, data?.outcome)
   const target = worktrees.find(
-    (w) => w.branch === (source && defaultMergeDestination(source, worktrees, branches)),
+    (w) =>
+      w.branch ===
+      (retryBranch ?? (source && defaultMergeDestination(source, worktrees, branches))),
   )
   const merging = model.records.filter((r) => recordStage(r) === 'merge').at(-1)
   const mergeBase =
@@ -460,7 +469,7 @@ export default function ChatMode({
           source={source}
           worktrees={worktrees}
           branches={branches}
-          initialDestination={target?.branch ?? undefined}
+          initialDestination={retryBranch ?? target?.branch ?? undefined}
           close={() => setDialog(undefined)}
           onRequest={(request, sid, requestId) => void logMerge(request, sid, requestId)}
           launched={() => setDialog(undefined)}

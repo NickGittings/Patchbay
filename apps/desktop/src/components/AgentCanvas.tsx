@@ -8,6 +8,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  type FitViewOptions,
   type Node,
   type NodeProps,
 } from '@xyflow/react'
@@ -28,6 +29,7 @@ import type { Health } from '../lib/display'
 import type { ProviderJob } from '../lib/orchestration'
 import { pinChatTerminal, simpleKey } from '../lib/simpleUi'
 import { useChatAgents } from '../lib/useChatAgents'
+import { useReducedMotion } from '../lib/useReducedMotion'
 import { useTeamAction, type TeamWork } from '../lib/useTeamWork'
 import {
   AssignmentReport,
@@ -52,6 +54,15 @@ const AgentActions = createContext<{
 
 const nameOf = ({ role, detail }: AgentCard) => (detail ? `${role} ${detail}` : role)
 
+/** Keeps cards clear of the tabs and team status that float over the canvas's top edge. */
+const FIT_VIEW: FitViewOptions = {
+  padding: { top: '96px', right: 0.2, bottom: 0.2, left: 0.2 },
+  maxZoom: 1,
+}
+/** Matches `.agent-details`: its width and its inset from the canvas edge. */
+const DETAILS_WIDTH = 360
+const DETAILS_INSET = 12
+
 const JOB_HEALTH: Record<string, Health> = {
   'awaiting input': 'input',
   failed: 'fail',
@@ -65,17 +76,22 @@ function AgentStatus({ card, session }: { card: AgentCard; session: SessionState
   const status = failedJob(card.job) ? 'failed' : workerStatus(card.job, sessions)
   return (
     <span className={`status-label health-${(status && JOB_HEALTH[status]) ?? 'waiting'}`}>
-      {status}
+      {status && status[0].toUpperCase() + status.slice(1)}
     </span>
   )
 }
 
-const AgentNode = memo(function AgentNode({ data: { card } }: NodeProps<AgentFlowNode>) {
+const AgentNode = memo(function AgentNode({ data: { card }, selected }: NodeProps<AgentFlowNode>) {
   const session = useStore((s) => (card.sessionId ? s.sessions[card.sessionId] : undefined))
   const { select, openTerminal } = useContext(AgentActions)
   const name = nameOf(card)
   return (
-    <article className="agent-card" data-row={card.row} data-session={card.sessionId}>
+    <article
+      className="agent-card"
+      data-card={card.id}
+      data-row={card.row}
+      data-session={card.sessionId}
+    >
       <Handle
         className="agent-card-handle"
         type="target"
@@ -86,6 +102,7 @@ const AgentNode = memo(function AgentNode({ data: { card } }: NodeProps<AgentFlo
         <button
           className="agent-card-name"
           aria-label={`Show details for ${name}`}
+          aria-expanded={selected}
           onClick={(e) => {
             e.stopPropagation()
             select(card.id)
@@ -240,8 +257,21 @@ function AgentDetails({
   const session = useStore((s) => (card.sessionId ? s.sessions[card.sessionId] : undefined))
   const steps = session?.status?.agent?.state === 'working' ? turnSteps(session) : []
   const reply = session?.replies?.at(-1)?.text
+  // Focus follows the panel, so Escape and the keyboard work from the moment it opens.
+  const panel = useRef<HTMLElement>(null)
+  useEffect(() => panel.current?.focus({ preventScroll: true }), [])
   return (
-    <aside className="agent-details" aria-label={`${nameOf(card)} details`}>
+    <aside
+      ref={panel}
+      className="agent-details"
+      aria-label={`${nameOf(card)} details`}
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return
+        e.stopPropagation()
+        close()
+      }}
+    >
       <header>
         <strong>{card.role}</strong>
         <AgentStatus card={card} session={session} />
@@ -304,29 +334,51 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
       })),
     [positions, selected],
   )
-  const { fitView } = useReactFlow()
+  const { fitView, getViewport, setViewport } = useReactFlow()
+  const canvas = useRef<HTMLDivElement>(null)
+  const reducedMotion = useReducedMotion()
   const topology = positions.map(({ card }) => `${card.id}:${card.row}`).join('|')
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
-      void fitView({ padding: 0.2, maxZoom: 1 })
+      void fitView(FIT_VIEW)
     })
     return () => cancelAnimationFrame(frame)
   }, [fitView, topology])
   const actions = useMemo(
     () => ({
-      select: setSelected,
+      select: (id: string) => {
+        setSelected(id)
+        // Slide the chosen card out from under the details panel, keeping its left edge in view.
+        const position = positions.find(({ card }) => card.id === id)
+        const width = canvas.current?.clientWidth
+        if (!position || !width) return
+        const { x, y, zoom } = getViewport()
+        const panelLeft = width - Math.min(DETAILS_WIDTH, width - 2 * DETAILS_INSET) - DETAILS_INSET
+        const left = x + position.x * zoom
+        const overlap = left + AGENT_CARD_WIDTH * zoom + DETAILS_INSET - panelLeft
+        const shift = Math.min(overlap, left - DETAILS_INSET)
+        if (shift > 0)
+          void setViewport({ x: x - shift, y, zoom }, { duration: reducedMotion ? 0 : 200 })
+      },
       openTerminal: ({ sessionId }: AgentCard) => {
         if (!sessionId) return
         pinChatTerminal(scopeKey, sessionId, useStore.getState().sessions[sessionId]?.generation)
         onShowChat?.()
       },
     }),
-    [scopeKey, onShowChat],
+    [scopeKey, onShowChat, positions, getViewport, setViewport, reducedMotion],
   )
   const details = cards.find((card) => card.id === selected)
+  const closeDetails = () => {
+    if (details)
+      canvas.current
+        ?.querySelector<HTMLElement>(`[data-card="${CSS.escape(details.id)}"] .agent-card-name`)
+        ?.focus({ preventScroll: true })
+    setSelected(undefined)
+  }
   return (
     <AgentActions value={actions}>
-      <div className="agent-canvas">
+      <div className="agent-canvas" ref={canvas}>
         <ReactFlow
           proOptions={{ hideAttribution: true }}
           nodes={nodes}
@@ -334,14 +386,16 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
           nodeTypes={nodeTypes}
           colorMode="dark"
           fitView
-          fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
+          fitViewOptions={FIT_VIEW}
           minZoom={0.3}
           nodesDraggable={false}
           nodesConnectable={false}
           elementsSelectable={false}
+          nodesFocusable={false}
+          edgesFocusable={false}
           deleteKeyCode={null}
           defaultEdgeOptions={{ type: 'smoothstep', style: { strokeWidth: 2 } }}
-          onNodeClick={(_, node) => setSelected(node.id)}
+          onNodeClick={(_, node) => actions.select(node.id)}
           onPaneClick={() => setSelected(undefined)}
         >
           <Background
@@ -378,7 +432,7 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
             key={details.id}
             card={details}
             team={team}
-            close={() => setSelected(undefined)}
+            close={closeDetails}
             dismiss={(job) => {
               work.setDismissed(job, true)
               setUndo(job)

@@ -2269,10 +2269,17 @@ async fn merge_cleanup(
         stories::complete_merge(&root, Path::new(&request.source)).map_err(err)?;
         let known = tasks::list(&root).map_err(err)?;
         // Restoring keeps the source folder, but its feature branch and that work are finished.
-        let restored_task = known
+        // Its chat is its task's, or the project's own; any other checkout has none.
+        let source_is_root = root.canonicalize().is_ok_and(|root| {
+            Path::new(&request.source)
+                .canonicalize()
+                .is_ok_and(|source| source == root)
+        });
+        let source_chat = known
             .iter()
             .find(|t| t.worktree == request.source)
-            .map(|t| t.id.clone());
+            .map(|t| Some(t.id.clone()))
+            .or(source_is_root.then_some(None));
         let task = known
             .into_iter()
             .find(|t| t.worktree == preview.removed_worktree);
@@ -2302,10 +2309,20 @@ async fn merge_cleanup(
         if removed.exists() {
             return cleanup;
         }
-        let restored = preview.restore && cleanup.is_ok();
+        let finished_chat = source_chat
+            .as_ref()
+            .filter(|_| preview.restore && cleanup.is_ok());
         for record in owned.into_iter().filter(|r| {
             r.spec.cwd.starts_with(&removed)
-                || (restored && r.metadata.kind == patchbay_core::TerminalKind::Agent)
+                || finished_chat.is_some_and(|chat| {
+                    r.metadata.kind == patchbay_core::TerminalKind::Agent
+                        && r.metadata.project_id == project_id
+                        && r.metadata.task == *chat
+                        && patchbay_core::merges::chat_stage_scope(
+                            &r.metadata.component_id,
+                            r.metadata.task.as_deref(),
+                        )
+                })
         }) {
             let _ = bridge.call::<serde_json::Value>(patchbay_core::session::Request::Forget {
                 id: record.id,
@@ -2315,8 +2332,8 @@ async fn merge_cleanup(
             tasks::remove_with_sessions(&root, &task.id, true, &*bridge).map_err(err)?;
             retire_chat_team(&root, &project_id, Some(&task.id), &bridge)?;
         }
-        if restored {
-            retire_chat_team(&root, &project_id, restored_task.as_deref(), &bridge)?;
+        if let Some(chat) = finished_chat {
+            retire_chat_team(&root, &project_id, chat.as_deref(), &bridge)?;
         }
         cleanup
     })

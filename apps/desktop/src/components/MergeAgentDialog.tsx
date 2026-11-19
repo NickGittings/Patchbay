@@ -13,8 +13,6 @@ import { useStore } from '../store'
 import type { Worktree } from '../types'
 import AgentJobDialog from './AgentJobDialog'
 
-const SHOWN_CHANGES = 8
-
 export default function MergeAgentDialog({
   source: active,
   worktrees,
@@ -137,18 +135,18 @@ export default function MergeAgentDialog({
             </p>
           )}
           {commitFirst && (
-            <div className="merge-commit-changes" aria-label="Uncommitted source changes">
+            <div
+              className="merge-commit-changes"
+              role="group"
+              aria-label="Uncommitted source changes"
+            >
               <p>
                 {changes.length} uncommitted {changes.length === 1 ? 'change' : 'changes'} in{' '}
                 <strong>{source?.branch}</strong>. Commit {changes.length === 1 ? 'it' : 'them'}{' '}
                 with the merge agent before merging?
               </p>
-              <pre>
-                {changes.slice(0, SHOWN_CHANGES).join('\n')}
-                {changes.length > SHOWN_CHANGES
-                  ? `\n…and ${changes.length - SHOWN_CHANGES} more`
-                  : ''}
-              </pre>
+              {/* Every entry stays reachable: confirming commits all of them. */}
+              <pre tabIndex={0}>{changes.join('\n')}</pre>
             </div>
           )}
           <label>

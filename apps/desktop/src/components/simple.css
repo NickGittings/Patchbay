@@ -668,7 +668,9 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
+/* Both float over the canvas, so cards panning underneath stay visibly behind them. */
 .agent-team-status {
+  box-shadow: var(--shadow-1);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -690,6 +692,12 @@
   width: min(360px, calc(100% - 24px));
   overflow: auto;
   padding: 10px 12px;
+  box-shadow: var(--shadow-2);
+  /* Opacity only: a transform would capture fixed popups opened from the panel. */
+  animation: scrim-in var(--dur-fast) var(--ease-out);
+}
+.agent-details:focus {
+  outline: none;
 }
 .agent-details > header {
   display: flex;
@@ -722,12 +730,29 @@
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.agent-card:hover {
+  border-color: var(--border-hover);
+}
+/* The whole card is a target, so it answers on press unless a button inside took the press. */
+.agent-card:active:not(:has(button:active)) {
+  background: var(--active);
+  transition-duration: 0s;
 }
 .react-flow__node.selected .agent-card {
   border-color: var(--accent);
 }
+/* Recedes through color rather than opacity, so its text and buttons stay legible. */
 .agent-card[data-row='finished'] {
-  opacity: 0.65;
+  color: var(--muted);
+  background: var(--bg);
+}
+.agent-card[data-row='finished'] .agent-card-name {
+  color: inherit;
 }
 .agent-card header {
   display: flex;
@@ -742,6 +767,9 @@
   color: var(--text);
   background: none;
   border: none;
+}
+.agent-card-name:is(:hover, :active):not(:disabled) {
+  background: none;
 }
 .agent-card-detail {
   overflow: hidden;

@@ -13,7 +13,8 @@ import {
 import { gitWorktrees, mergeCleanup, mergeCleanupPreview, mergeOutcome, terminalStop } from './ipc'
 import { completeTeamTask, forgetTeamChat } from './chatTeams'
 import { forgetMainWorktree, refreshMainWorktree, useMainWorktree } from './mainWorktree'
-import type { Project, SessionRecord, SessionState } from '../types'
+import { refreshTasks } from './tasks'
+import type { Project, SessionRecord, SessionState, Task } from '../types'
 import { restoredSimple, visibleReply, type SimpleState } from './simple'
 import { simpleKey, useSimpleUi } from './simpleUi'
 
@@ -168,6 +169,27 @@ test('deleting merged work starts its Chat over only once cleanup succeeds', asy
   vi.mocked(mergeCleanup).mockResolvedValueOnce(undefined)
   await deleteMergedWork(job)
   expect(forgetTeamChat).toHaveBeenCalledWith('p', null)
+})
+
+test('a cleanup that fails after removing the task still starts its Chat over', async () => {
+  vi.mocked(forgetTeamChat).mockClear()
+  vi.mocked(gitWorktrees).mockResolvedValue([])
+  useStore.setState({ tasks: [{ id: 'task', worktree: request.source } as Task] })
+  trackMergeCleanup(project, request, 'session', 'merge', 'delete', false)
+  vi.mocked(mergeCleanup).mockRejectedValueOnce(new Error('branch not deleted'))
+  vi.mocked(refreshTasks).mockImplementationOnce(async () => useStore.setState({ tasks: [] }))
+  await expect(deleteMergedWork(cleanupJobs()[0])).rejects.toThrow('branch not deleted')
+  expect(forgetTeamChat).toHaveBeenCalledWith('p', 'task')
+})
+
+test('a cleanup that fails with the task intact keeps its Chat', async () => {
+  vi.mocked(forgetTeamChat).mockClear()
+  vi.mocked(gitWorktrees).mockResolvedValue([])
+  useStore.setState({ tasks: [{ id: 'task', worktree: request.source } as Task] })
+  trackMergeCleanup(project, request, 'session', 'merge', 'delete', false)
+  vi.mocked(mergeCleanup).mockRejectedValueOnce(new Error('dirty'))
+  await expect(deleteMergedWork(cleanupJobs()[0])).rejects.toThrow('dirty')
+  expect(forgetTeamChat).not.toHaveBeenCalled()
 })
 
 test('deleting an unattached worktree has no Chat to start over', async () => {

@@ -1,6 +1,7 @@
 import type {
   AutoRun,
   AutoStage,
+  MergeOutcome,
   PlanText,
   Review,
   SessionRecord,
@@ -538,6 +539,18 @@ export function foreignPlanner(
   )
 }
 
+/** The branch "Merge again" retries: the one the merge that ended dirty was launched for. */
+export function retryMergeBranch(
+  simple: SimpleState | null | undefined,
+  outcome: MergeOutcome | undefined,
+) {
+  if (outcome !== 'dirty') return undefined
+  const merge = workflowLog(simple).findLast(
+    (e) => e.kind === 'action' && e.action === 'merge' && !!e.request,
+  )
+  return merge?.kind === 'action' ? merge.request?.destinationBranch : undefined
+}
+
 /** One chronological conversation. Replies use journal identity, never terminal text. */
 export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   const records = snapshot.records
@@ -601,15 +614,17 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
       ? undefined
       : (snapshot.sessions[snapshot.lead] ?? records.find((r) => r.id === snapshot.lead)?.snapshot)
           ?.generation
-  const lead = workflowLog(snapshot.simple).some(
-    (e) =>
+  const leadStageRuns = new Set(
+    workflowLog(snapshot.simple).flatMap((e) =>
+      snapshot.lead !== undefined &&
       e.kind === 'action' &&
       stageActions.includes(e.action) &&
-      e.sessionId === snapshot.lead &&
-      e.generation === leadGeneration,
+      e.sessionId === snapshot.lead
+        ? [e.generation]
+        : [],
+    ),
   )
-    ? undefined
-    : snapshot.lead
+  const lead = leadStageRuns.has(leadGeneration) ? undefined : snapshot.lead
   const workflow = records.filter((r) => r.metadata.componentId !== '@map' && r.id !== lead)
   const latest =
     workflow.filter((r) => recordStage(r) !== 'plan' || !!r.metadata.task).at(-1) ?? workflow.at(-1)
@@ -617,7 +632,9 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   const action = workflowLog(snapshot.simple)
     .filter(
       (e) =>
-        e.sessionId !== lead &&
+        (snapshot.lead === undefined ||
+          e.sessionId !== snapshot.lead ||
+          leadStageRuns.has(e.generation)) &&
         ((e.kind === 'action' && stageActions.includes(e.action)) || e.kind === 'prompt'),
     )
     .at(-1)

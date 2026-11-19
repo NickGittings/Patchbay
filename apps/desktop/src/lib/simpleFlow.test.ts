@@ -1,6 +1,12 @@
 import { expect, test } from 'vitest'
 import { chatStepper, flow, workflowPromptKey, type FlowSnapshot } from './simpleFlow'
-import { LAUNCH_RECORD_GRACE_MS, pendingLaunch, thread } from './simple'
+import {
+  LAUNCH_RECORD_GRACE_MS,
+  pendingLaunch,
+  retryMergeBranch,
+  thread,
+  type SimpleState,
+} from './simple'
 import type { AutoRun, ReviewFindings, SessionRecord, SessionState } from '../types'
 const worktree = { projectId: 'p', task: 't', path: '/t', branch: 'feature' }
 const record = (scope: string): SessionRecord =>
@@ -510,6 +516,50 @@ test('a stage agent adopted as the lead still reports its stage', () => {
     generation: 1,
   })
   expect(flow(s).step).toBe('built')
+})
+
+test('an adopted lead keeps its stage after its process restarts', () => {
+  const s = snapshot('@task')
+  s.lead = '@task'
+  s.sessions['@task'] = { ...s.sessions['@task'], generation: 2 }
+  s.simple!.log.push({
+    id: 'build',
+    kind: 'action',
+    action: 'implement',
+    stage: 'build',
+    atMs: 500,
+    sessionId: '@task',
+    generation: 1,
+  })
+  expect(thread(s, worktree).stage).toBe('build')
+})
+
+test('a saved prompt without a session still sets the stage', () => {
+  const s = snapshot('@review')
+  s.simple!.log.push({
+    id: 'saved',
+    kind: 'prompt',
+    stage: 'build',
+    atMs: 500,
+    text: 'Keep going',
+    mentions: [],
+  })
+  expect(thread(s, worktree).stage).toBe('build')
+})
+
+test('merging again targets the branch the dirty merge was launched for', () => {
+  const request = {
+    source: '/feature',
+    sourceBranch: 'feature',
+    destination: '/develop',
+    destinationBranch: 'develop',
+  }
+  const simple: SimpleState = {
+    startedMs: 0,
+    log: [{ id: 'merge', kind: 'action', action: 'merge', stage: 'merge', atMs: 1, request }],
+  }
+  expect(retryMergeBranch(simple, 'dirty')).toBe('develop')
+  expect(retryMergeBranch(simple, 'merged')).toBeUndefined()
 })
 
 const states = (items: ReturnType<typeof chatStepper>) =>

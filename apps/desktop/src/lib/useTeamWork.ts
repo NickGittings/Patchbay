@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useStore } from '../store'
+import type { SessionState } from '../types'
 import { controlTeam, RESTART_NOTICE, useChatTeams, type ChatTeam } from './chatTeams'
 import { failedJob, teamJobs, workerStatus } from './chatProgress'
 import type { ProviderJob } from './orchestration'
@@ -8,10 +9,26 @@ import { simpleKey, useSimpleUi } from './simpleUi'
 /** A job's current result: a retry or a new failure is a new result, so it shows again. */
 const dismissalKey = (job: ProviderJob) => JSON.stringify([job.requestId, job.state, job.error])
 
+/** The parts of each session that decide who is listed and what state their work is in. */
+const workKey = (sessions: Record<string, SessionState>) =>
+  Object.entries(sessions)
+    .map(([id, s]) => [id, s.running, s.generation, s.startedMs, s.status?.agent?.state].join(':'))
+    .join('|')
+
+/**
+ * The session map, replaced only when `workKey` changes. Agent lists and counts stay mounted
+ * through Chat, and terminal output and activity updates must not rebuild them.
+ */
+export function useWorkSessions() {
+  const key = useStore((s) => workKey(s.sessions))
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` is what invalidates this read.
+  return useMemo(() => useStore.getState().sessions, [key])
+}
+
 /** The team's assignments, split by whether the user dismissed their current result. */
 export function useTeamWork(team: ChatTeam | undefined) {
   const runs = useChatTeams((s) => (team ? s.runs[team.projectId] : undefined))
-  const sessions = useStore((s) => s.sessions)
+  const sessions = useWorkSessions()
   const key = simpleKey(team?.projectId, team?.task ?? null)
   const dismissedKeys = useSimpleUi((s) => s.worktrees[key]?.dismissedAssignments)
   const allJobs = team ? teamJobs(runs ?? [], team.id) : []

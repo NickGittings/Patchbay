@@ -8,10 +8,14 @@ import { teamFlags, useTeamWork } from '../lib/useTeamWork'
 import { ChatCoordinationAlerts } from './ChatCoordination'
 
 const state = vi.hoisted(() => ({ jobs: [] as ProviderJob[], dismissed: [] as string[] }))
-vi.mock('../store', () => ({
-  useStore: (select: (s: unknown) => unknown) =>
-    select({ sessions: {}, sessionRecords: [], devices: [] }),
-}))
+vi.mock('../store', () => {
+  const store = { sessions: {}, sessionRecords: [], devices: [] }
+  return {
+    useStore: Object.assign((select: (s: unknown) => unknown) => select(store), {
+      getState: () => store,
+    }),
+  }
+})
 vi.mock('../lib/chatTeams', () => ({
   RESTART_NOTICE: 'Paused after restart',
   controlTeam: vi.fn(),

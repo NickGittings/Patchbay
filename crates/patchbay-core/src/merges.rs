@@ -3,7 +3,7 @@
 //! agent commits source changes only when the user confirmed that exact list.
 use crate::context;
 use crate::git::{self, Worktree};
-use crate::model::{MERGE_SCOPE, Project, TerminalSpec};
+use crate::model::{MERGE_SCOPE, PLAN_SCOPE, Project, REVIEW_SCOPE, TASK_ROOT_SCOPE, TerminalSpec};
 use crate::policy::Policy;
 use crate::pty::SessionSpec;
 use anyhow::{Context, Result, ensure};
@@ -97,6 +97,14 @@ pub fn resolve_destination(
 }
 
 /// Backend-derived cleanup operation; never accepted as execution authority.
+/// Whether an agent in `component` worked a chat's stages, so it ends with that chat's merged
+/// work. Shared planners and agents on the map outlive the chat.
+#[must_use]
+pub fn chat_stage_scope(component: &str, task: Option<&str>) -> bool {
+    matches!(component, TASK_ROOT_SCOPE | REVIEW_SCOPE | MERGE_SCOPE)
+        || (component == PLAN_SCOPE && task.is_some())
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupPreview {
@@ -828,6 +836,17 @@ pub fn resume_roots(root: &Path, spec: &SessionSpec) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_stage_scope_leaves_shared_planners_and_map_agents() {
+        for scope in [TASK_ROOT_SCOPE, REVIEW_SCOPE, MERGE_SCOPE] {
+            assert!(chat_stage_scope(scope, None));
+        }
+        assert!(chat_stage_scope(PLAN_SCOPE, Some("task")));
+        assert!(!chat_stage_scope(PLAN_SCOPE, None));
+        assert!(!chat_stage_scope(crate::model::MAP_SCOPE, None));
+        assert!(!chat_stage_scope("web", None));
+    }
     use crate::model::TerminalKind;
     use crate::policy::AllowAll;
     use std::fs;

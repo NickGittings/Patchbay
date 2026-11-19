@@ -2962,7 +2962,7 @@ kbd {
   margin: 0;
   max-height: 140px;
   overflow: auto;
-  font-size: 12px;
+  font: var(--text-sm) var(--mono);
 }
 .merge-agent-dialog code {
   overflow-wrap: anywhere;
@@ -4822,7 +4822,9 @@ kbd {
   .toast,
   .extensions-panel,
   .node-extension-menu,
-  .search-results {
+  .search-results,
+  .agent-team-status,
+  .agent-details {
     border: 1px solid var(--border-hover);
   }
   .extension-overlay {
