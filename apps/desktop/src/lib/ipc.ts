@@ -658,6 +658,7 @@ export const mergeDestinationResolve = (
   source: string,
   sourceBranch: string,
   destinationBranch: string,
+  commitSource?: string[],
 ) =>
   invoke<import('../types').MergeRequest>('merge_destination_resolve', {
     projectId: project.projectId,
@@ -665,6 +666,16 @@ export const mergeDestinationResolve = (
     source,
     sourceBranch,
     destinationBranch,
+    commitSource,
+  })
+
+/** The source worktree's uncommitted `git status --porcelain` entries. */
+export const mergeSourceChanges = (project: Project, source: string, sourceBranch: string) =>
+  invoke<string[]>('merge_source_changes', {
+    projectId: project.projectId,
+    project,
+    source,
+    sourceBranch,
   })
 
 /** Launch a dedicated merge session; validates the worktrees immediately before starting. */

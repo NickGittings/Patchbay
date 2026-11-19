@@ -66,6 +66,8 @@ export const sessionView = (scope: string): View | null =>
 export interface MergeRequest {
   /** Automatic merge is pinned to the commit that passed review. */
   expectedSourceHead?: string
+  /** Uncommitted source changes the user agreed the merge agent should commit first. */
+  commitSource?: string[]
   source: string
   sourceBranch: string
   destination: string

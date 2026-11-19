@@ -5,6 +5,7 @@ import { watchProviderRuns } from './lib/orchestration'
 import StoryBoard from './components/stories/StoryBoard'
 import {
   SimpleChangesContext,
+  SimpleWorktreeContext,
   type SimpleChanges as Changes,
 } from './components/stories/simpleChanges'
 import { newestWrite } from './lib/activity'
@@ -14,6 +15,7 @@ import WorkspaceRail from './components/WorkspaceRail'
 import RecoveryBanners from './components/RecoveryBanners'
 import { useMapActivityFeedback } from './lib/mapActivity'
 import SimpleDiff from './components/SimpleDiff'
+import AgentCanvas from './components/AgentCanvas'
 import { useSimpleData } from './lib/useSimpleData'
 import { simpleKey, useSimpleUi } from './lib/simpleUi'
 import ChatMode from './components/ChatMode'
@@ -178,10 +180,13 @@ function NavigationView() {
   const scopeKey = useStore((s) => simpleKey(s.project?.id, s.activeTask))
   const diff = useSimpleUi((s) => s.worktrees[scopeKey]?.diff)
   const changes = useSimpleUi((s) => s.worktrees[scopeKey]?.changes)
+  const agents = useSimpleUi((s) => s.worktrees[scopeKey]?.agents)
+  // Either covers the map and story board, which stay mounted beneath.
+  const chatPane = simple && (changes || agents)
   useMapActivityFeedback()
   useEffect(
     () => () => {
-      useSimpleUi.getState().patch(scopeKey, { diff: null, changes: false })
+      useSimpleUi.getState().patch(scopeKey, { diff: null, changes: false, agents: false })
     },
     [scopeKey],
   )
@@ -211,8 +216,8 @@ function NavigationView() {
     if (chatPanel.collapsed && focusShowChat.current) showChatRef.current?.focus()
     focusShowChat.current = false
   }, [chatPanel.collapsed])
-  // Read artifacts only while Chat or Changes is visible.
-  const reading = simple && (!chatPanel.collapsed || !!changes)
+  // Read artifacts only while Chat, Changes or Agents is visible.
+  const reading = simple && (!chatPanel.collapsed || !!chatPane)
   const reader = useSimpleData(reading)
   const storyBoard = useStore((s) => s.storyBoard)
   const dockViews = useExtensionViews('dock').views.length > 0
@@ -233,55 +238,64 @@ function NavigationView() {
   const dockPanel = useCollapsed('App-pane-4', dock, dockReveal)
   return (
     <SimpleChanges simple={reading} reader={reader}>
-      <PersistedGroup
-        layoutId={simple ? CHAT_LAYOUT : NAVIGATION_LAYOUT}
-        group={group}
-        orientation="horizontal"
-        className="workspace"
-      >
-        <Panel id={CANVAS_PANEL} defaultSize={simple ? '65%' : '100%'}>
-          <PersistedGroup layoutId="App-2" orientation="vertical">
-            <Panel id="App-pane-3" defaultSize="58" minSize="20">
-              <div className="simple-canvas">
-                <div
-                  className={`navigation-map ${storyBoard || (simple && changes) ? 'story-map-hidden' : ''}`}
-                  aria-hidden={storyBoard || !!(simple && changes)}
-                  inert={storyBoard || !!(simple && changes)}
-                >
-                  <Canvas />
-                </div>
-                {storyBoard && !(simple && changes) && <StoryBoard />}
-                {simple && chatPanel.collapsed && (
-                  <button ref={showChatRef} className="simple-show-chat" onClick={chatPanel.expand}>
-                    Show chat
-                  </button>
-                )}
-                {simple && changes && (
-                  <SimpleDiff scopeKey={scopeKey} selection={diff} reader={reader} />
-                )}
-              </div>
-            </Panel>
-            <Separator
-              className={`separator horizontal ${dock ? '' : 'hidden'}`}
-              disabled={!dock}
-            />
-            <Panel id="App-pane-4" defaultSize="42" minSize="10" {...dockPanel.props}>
-              <TerminalDock collapsed={dockPanel.collapsed} />
-            </Panel>
-          </PersistedGroup>
-        </Panel>
-        <Separator className={`separator ${simple ? '' : 'hidden'}`} disabled={!simple} />
-        <Panel
-          id={CHAT_PANEL}
-          defaultSize={`${CHAT_DEFAULT_SIZE}%`}
-          minSize={`${CHAT_MIN_SIZE}%`}
-          {...chatPanel.props}
+      <SimpleWorktreeContext value={reader.scope}>
+        <PersistedGroup
+          layoutId={simple ? CHAT_LAYOUT : NAVIGATION_LAYOUT}
+          group={group}
+          orientation="horizontal"
+          className="workspace"
         >
-          {simple && !chatPanel.collapsed && (
-            <ChatMode key={scopeKey} reader={reader} onHide={hideChat} />
-          )}
-        </Panel>
-      </PersistedGroup>
+          <Panel id={CANVAS_PANEL} defaultSize={simple ? '65%' : '100%'}>
+            <PersistedGroup layoutId="App-2" orientation="vertical">
+              <Panel id="App-pane-3" defaultSize="58" minSize="20">
+                <div className="simple-canvas">
+                  <div
+                    className={`navigation-map ${storyBoard || chatPane ? 'story-map-hidden' : ''}`}
+                    aria-hidden={storyBoard || !!chatPane}
+                    inert={storyBoard || !!chatPane}
+                  >
+                    <Canvas />
+                  </div>
+                  {storyBoard && !chatPane && <StoryBoard />}
+                  {simple && agents && !changes && (
+                    <AgentCanvas onShowChat={chatPanel.collapsed ? chatPanel.expand : undefined} />
+                  )}
+                  {simple && chatPanel.collapsed && (
+                    <button
+                      ref={showChatRef}
+                      className="simple-show-chat"
+                      onClick={chatPanel.expand}
+                    >
+                      Show chat
+                    </button>
+                  )}
+                  {simple && changes && (
+                    <SimpleDiff scopeKey={scopeKey} selection={diff} reader={reader} />
+                  )}
+                </div>
+              </Panel>
+              <Separator
+                className={`separator horizontal ${dock ? '' : 'hidden'}`}
+                disabled={!dock}
+              />
+              <Panel id="App-pane-4" defaultSize="42" minSize="10" {...dockPanel.props}>
+                <TerminalDock collapsed={dockPanel.collapsed} />
+              </Panel>
+            </PersistedGroup>
+          </Panel>
+          <Separator className={`separator ${simple ? '' : 'hidden'}`} disabled={!simple} />
+          <Panel
+            id={CHAT_PANEL}
+            defaultSize={`${CHAT_DEFAULT_SIZE}%`}
+            minSize={`${CHAT_MIN_SIZE}%`}
+            {...chatPanel.props}
+          >
+            {simple && !chatPanel.collapsed && (
+              <ChatMode key={scopeKey} reader={reader} onHide={hideChat} />
+            )}
+          </Panel>
+        </PersistedGroup>
+      </SimpleWorktreeContext>
     </SimpleChanges>
   )
 }

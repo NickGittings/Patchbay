@@ -4,13 +4,18 @@ import { expect, test, vi } from 'vitest'
 import type { ChatTeam } from '../lib/chatTeams'
 import type { ProviderJob } from '../lib/orchestration'
 import { simpleKey } from '../lib/simpleUi'
-import ChatCoordination, { ChatCoordinationAlerts } from './ChatCoordination'
+import { teamFlags, useTeamWork } from '../lib/useTeamWork'
+import { ChatCoordinationAlerts } from './ChatCoordination'
 
 const state = vi.hoisted(() => ({ jobs: [] as ProviderJob[], dismissed: [] as string[] }))
-vi.mock('../store', () => ({
-  useStore: (select: (s: unknown) => unknown) =>
-    select({ sessions: {}, sessionRecords: [], devices: [] }),
-}))
+vi.mock('../store', () => {
+  const store = { sessions: {}, sessionRecords: [], devices: [] }
+  return {
+    useStore: Object.assign((select: (s: unknown) => unknown) => select(store), {
+      getState: () => store,
+    }),
+  }
+})
 vi.mock('../lib/chatTeams', () => ({
   RESTART_NOTICE: 'Paused after restart',
   controlTeam: vi.fn(),
@@ -20,55 +25,54 @@ vi.mock('../lib/chatTeams', () => ({
 vi.mock('../lib/rail', () => ({ selectPanel: vi.fn(), useRail: { setState: vi.fn() } }))
 vi.mock('../lib/clock', () => ({ useClockNow: () => 0 }))
 
+/** What the Agents tab's label reports for a team. */
+function Flags({ team }: { team: ChatTeam; openTerminal?: unknown }) {
+  const work = useTeamWork(team)
+  const { flagged, details } = teamFlags(work, team)
+  return createElement('span', null, [work.jobs.length, flagged, ...details].join(', '))
+}
+
 test.each([
   ['failed', 'Worker exited', true],
   ['launching', 'Launch unconfirmed; retry required', true],
   ['launching', null, false],
   ['running', null, false],
-] as const)(
-  'worker %s with error %s flags the closed assignments button: %s',
-  (jobState, error, retryable) => {
-    state.jobs = [
-      {
-        id: 'assignment',
-        terminal: { name: 'Codex' },
-        state: jobState,
-        error,
-      } as ProviderJob,
-      {
-        id: 'done',
-        terminal: { name: 'Finished worker' },
-        state: 'integrated',
-        summary: 'Completed task',
-      } as ProviderJob,
-    ]
-    const props = {
-      openTerminal: vi.fn(),
-      team: { id: 'team', projectId: 'p', state: 'running', messages: [] } as unknown as ChatTeam,
-    }
-    const html = renderToStaticMarkup(createElement(ChatCoordination, props))
-    expect(html).toContain('Assignments (2)')
-    expect(html).toContain('aria-haspopup="dialog"')
-    expect(html).toContain('aria-expanded="false"')
-    expect(html).not.toContain('Finished worker')
-    // The button stays compact; its accessible name carries the breakdown.
-    expect(html.includes('· 1 flagged')).toBe(retryable)
-    expect(html.includes('1 failed')).toBe(retryable)
-    // A failure is raised in the chat itself, with its recovery actions, while the popover is shut.
-    const alerts = renderToStaticMarkup(createElement(ChatCoordinationAlerts, props))
-    if (retryable) {
-      expect(alerts).toContain(`<p role="alert">Codex · failed · ${error}`)
-      expect(alerts).toContain('Retry work')
-      expect(alerts).toContain('Agent settings')
-    } else {
-      expect(alerts).toBe('')
-    }
-  },
-)
+] as const)('worker %s with error %s flags the Agents tab: %s', (jobState, error, retryable) => {
+  state.jobs = [
+    {
+      id: 'assignment',
+      terminal: { name: 'Codex' },
+      state: jobState,
+      error,
+    } as ProviderJob,
+    {
+      id: 'done',
+      terminal: { name: 'Finished worker' },
+      state: 'integrated',
+      summary: 'Completed task',
+    } as ProviderJob,
+  ]
+  const props = {
+    openTerminal: vi.fn(),
+    team: { id: 'team', projectId: 'p', state: 'running', messages: [] } as unknown as ChatTeam,
+  }
+  const html = renderToStaticMarkup(createElement(Flags, props))
+  expect(html).toContain(retryable ? '2, 1, 1 failed' : '2, 0')
+  expect(html.includes('1 failed')).toBe(retryable)
+  // A failure is raised in the chat itself, with its recovery actions, wherever the user is.
+  const alerts = renderToStaticMarkup(createElement(ChatCoordinationAlerts, props))
+  if (retryable) {
+    expect(alerts).toContain(`<p role="alert">Codex · failed · ${error}`)
+    expect(alerts).toContain('Retry work')
+    expect(alerts).toContain('Agent settings')
+  } else {
+    expect(alerts).toBe('')
+  }
+})
 
-test('the button flags team errors and treats the restart notice as informational', () => {
+test('the tab flags team errors and treats the restart notice as informational', () => {
   state.jobs = []
-  const render = (error: string, component: typeof ChatCoordinationAlerts = ChatCoordination) =>
+  const render = (error: string, component: typeof ChatCoordinationAlerts = Flags) =>
     renderToStaticMarkup(
       createElement(component, {
         openTerminal: vi.fn(),
@@ -81,7 +85,7 @@ test('the button flags team errors and treats the restart notice as informationa
         } as unknown as ChatTeam,
       }),
     )
-  expect(render('Paused after restart')).not.toContain('flagged')
+  expect(render('Paused after restart')).toContain('0, 0')
   expect(render('Paused after restart', ChatCoordinationAlerts)).toBe('')
   expect(render('launch failed')).toContain('1 coordination issue')
   expect(render('launch failed', ChatCoordinationAlerts)).toContain(
@@ -111,11 +115,10 @@ test('a dismissed failure clears the badge while a fresh attempt still flags it'
     messages: [],
   } as unknown as ChatTeam
   state.dismissed = [JSON.stringify(['attempt-1', 'failed', 'Worker exited'])]
-  const render = () =>
-    renderToStaticMarkup(createElement(ChatCoordination, { team, openTerminal: vi.fn() }))
+  const render = () => renderToStaticMarkup(createElement(Flags, { team }))
   state.jobs = [failed]
   const html = render()
-  expect(html).toContain('Assignments (0)')
+  expect(html).toContain('0, 0')
   expect(html).not.toContain('1 failed')
   expect(
     renderToStaticMarkup(createElement(ChatCoordinationAlerts, { team, openTerminal: vi.fn() })),

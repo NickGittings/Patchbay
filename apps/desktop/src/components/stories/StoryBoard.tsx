@@ -1,6 +1,8 @@
 import { useContext, useMemo, useState } from 'react'
 import { simpleKey, useSimpleUi } from '../../lib/simpleUi'
-import { SimpleChangesContext } from './simpleChanges'
+import { SimpleChangesContext, SimpleWorktreeContext } from './simpleChanges'
+import { useChatAgents } from '../../lib/useChatAgents'
+import { teamFlags } from '../../lib/useTeamWork'
 import type { ChangeRef } from '../../lib/changeNav'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../../store'
@@ -18,6 +20,24 @@ import { shortTitle } from '../../lib/shortTitle'
 import StoryEditor from './StoryEditor'
 import './stories.css'
 
+/** Chat's Agents tab; a component of its own so Full view never follows sessions for it. */
+function AgentsTab({ scopeKey, active }: { scopeKey: string; active: boolean }) {
+  const { cards, team, work } = useChatAgents(useContext(SimpleWorktreeContext))
+  const count = cards.filter((card) => card.row !== 'finished').length
+  const { flagged, details } = teamFlags(work, team)
+  return (
+    <button
+      className={active ? 'active' : ''}
+      aria-pressed={active}
+      aria-label={[`Agents, ${count}`, ...details].join(', ')}
+      onClick={() => useSimpleUi.getState().patch(scopeKey, { agents: true, changes: false })}
+    >
+      Agents {count}
+      {flagged > 0 && <span className="chat-workers-flag"> · {flagged} flagged</span>}
+    </button>
+  )
+}
+
 export function StoryViewTabs() {
   const shown = useStore((s) => s.storyBoard)
   const setShown = useStore((s) => s.setStoryBoard)
@@ -25,25 +45,27 @@ export function StoryViewTabs() {
   const key = useStore((s) => simpleKey(s.project?.id, s.activeTask))
   const ui = useSimpleUi((s) => s.worktrees[key])
   const changes = simple && !!ui?.changes
+  const agents = simple && !!ui?.agents && !changes
+  const covered = changes || agents
   const { files, newest } = useContext(SimpleChangesContext)
   const listed = (diff: ChangeRef | null | undefined) =>
     !!diff && files.some((f) => f.componentId === diff.componentId && f.path === diff.path)
   const show = (stories: boolean) => {
-    useSimpleUi.getState().patch(key, { changes: false })
+    useSimpleUi.getState().patch(key, { changes: false, agents: false })
     setShown(stories)
   }
   return (
     <div className="view-tabs" role="group" aria-label="Navigation canvas">
       <button
-        className={!shown && !changes ? 'active' : ''}
-        aria-pressed={!shown && !changes}
+        className={!shown && !covered ? 'active' : ''}
+        aria-pressed={!shown && !covered}
         onClick={() => show(false)}
       >
         Map
       </button>
       <button
-        className={shown && !changes ? 'active' : ''}
-        aria-pressed={shown && !changes}
+        className={shown && !covered ? 'active' : ''}
+        aria-pressed={shown && !covered}
         onClick={() => show(true)}
       >
         Stories
@@ -55,6 +77,7 @@ export function StoryViewTabs() {
           onClick={() =>
             useSimpleUi.getState().patch(key, {
               changes: true,
+              agents: false,
               // A selection the list no longer shows gives way to the newest listed write.
               diff: (listed(ui?.diff) ? ui?.diff : undefined) ?? newest ?? files[0] ?? null,
             })
@@ -63,6 +86,7 @@ export function StoryViewTabs() {
           Changes {files.length}
         </button>
       )}
+      {simple && <AgentsTab scopeKey={key} active={agents} />}
     </div>
   )
 }

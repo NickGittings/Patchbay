@@ -246,6 +246,10 @@ pub struct Team {
     pub handoff: Option<Handoff>,
     pub last_compaction_ms: Option<u64>,
     pub recovery: bool,
+    /// The pending recovery follows a cleared conversation: unless work is active, it waits for
+    /// the user's next message rather than starting a lead turn.
+    #[serde(default)]
+    pub quiet_recovery: bool,
     #[serde(default)]
     pub checkpoint_required: bool,
     #[serde(default)]
@@ -646,6 +650,7 @@ pub fn initialize(
             recovery: paused
                 || !checkpoint.goal.trim().is_empty()
                 || !briefing.contains(LEAD_ROLE_HEADING),
+            quiet_recovery: false,
             checkpoint,
             checkpoint_required: false,
             last_reset_id: None,
@@ -660,6 +665,44 @@ pub fn initialize(
         });
         s.teams.push(t.clone());
         Ok(t)
+    })
+}
+/// End the team of a task whose worktree or branch was deleted: its context and worktree lease go
+/// with it. Returns the team's agent sessions, wherever they run, for the caller to close.
+/// Isolated worker worktrees stay, since they can hold unintegrated commits.
+///
+/// # Errors
+/// Fails when the orchestration store can't be read or saved.
+pub fn retire_task(root: &Path, project: &str, task: Option<&str>) -> Result<Vec<String>> {
+    modify(root, |s| {
+        let Some(index) = s
+            .teams
+            .iter()
+            .position(|t| t.project_id == project && t.task.as_deref() == task)
+        else {
+            return Ok(vec![]);
+        };
+        let t = s.teams.remove(index);
+        let mut sessions = std::collections::BTreeSet::from([t.lead.session_id.clone()]);
+        sessions.extend(t.reset.iter().map(|r| r.next_session.clone()));
+        for r in s
+            .runs
+            .iter_mut()
+            .filter(|r| r.chat_team.as_deref() == Some(&t.id))
+        {
+            sessions.extend(
+                r.jobs
+                    .iter()
+                    .chain(&r.coordinator)
+                    .filter_map(|j| j.session_id.clone()),
+            );
+            if r.state != State::Complete {
+                r.state = State::Stopped;
+                clear_restart_notice(&mut r.error);
+            }
+        }
+        s.owners.retain(|o| !(o.kind == "chat" && o.id == t.id));
+        Ok(sessions.into_iter().collect())
     })
 }
 pub fn list(root: &Path, project: &str) -> Result<Vec<Team>> {
@@ -2087,6 +2130,18 @@ fn round_active(r: &Run) -> bool {
             .iter()
             .any(|j| !job_done(j) && j.state != JobState::Failed)
 }
+/// Rounds, questions or workflow requests the lead still has to follow.
+fn team_active(s: &Store, t: &Team) -> bool {
+    s.runs
+        .iter()
+        .any(|r| r.chat_team.as_deref() == Some(&t.id) && round_active(r))
+        || t.information_requests
+            .iter()
+            .any(|r| r.response.is_none() && r.error.is_none())
+        || t.requests
+            .iter()
+            .any(|r| !SETTLED_WORKFLOWS.contains(&r.state.as_str()))
+}
 /// Work begun after the task finished belongs to the lead's current conversation.
 fn lead_moved_on(s: &Store, t: &Team, lead: &Record, since_ms: Option<u64>) -> bool {
     let snapshot = lead.snapshot.as_ref();
@@ -2096,15 +2151,7 @@ fn lead_moved_on(s: &Store, t: &Team, lead: &Record, since_ms: Option<u64>) -> b
                 .and_then(|s| s.status.agent.as_ref())
                 .is_some_and(|a| a.since_ms >= since)
         })
-        || s.runs
-            .iter()
-            .any(|r| r.chat_team.as_deref() == Some(&t.id) && round_active(r))
-        || t.information_requests
-            .iter()
-            .any(|r| r.response.is_none() && r.error.is_none())
-        || t.requests
-            .iter()
-            .any(|r| !SETTLED_WORKFLOWS.contains(&r.state.as_str()))
+        || team_active(s, t)
 }
 /// Decide a completion once. It joins a pending fresh conversation rather than competing with it.
 fn complete_task(
@@ -2338,9 +2385,11 @@ pub fn reconcile(
                         "Existing agent {} reached a ready prompt or exited. Inspect its results and validation before treating the work as complete.",
                         record.metadata.name
                     );
-                    // The step card already reports work the user started from it.
+                    // The step card already reports work the user started from it, and a merge
+                    // ends the task: neither is a reason for the lead to start a turn.
                     t.noted_since.remove(&record.id);
-                    if t.noted_agents.remove(&record.id) {
+                    let noted = t.noted_agents.remove(&record.id);
+                    if noted || record.metadata.component_id == crate::model::MERGE_SCOPE {
                         append_passive(&mut t, notice_id, notice)?;
                     } else {
                         append(&mut t, notice_id, "patchbay", "lead", None, notice)?;
@@ -2390,6 +2439,7 @@ pub fn reconcile(
                         t.last_reset_id = Some(reset.id.clone());
                         t.reset = None;
                         t.recovery = true;
+                        t.quiet_recovery = reset.clear_history;
                         for run in s
                             .runs
                             .iter_mut()
@@ -2931,7 +2981,12 @@ fn deliver_at(
             })
         {
             let text = recovery_text(s, &t)?;
-            append(&mut t, new_id(), "patchbay", "lead", None, text)?;
+            // A cleared lead with nothing to follow stays quiet until the user speaks.
+            if std::mem::take(&mut t.quiet_recovery) && !team_active(s, &t) {
+                append_passive(&mut t, new_id(), text)?;
+            } else {
+                append(&mut t, new_id(), "patchbay", "lead", None, text)?;
+            }
             t.recovery = false;
         }
         let recipients: HashSet<_> = t
@@ -4644,6 +4699,108 @@ mod tests {
         let f = Fixture::new();
         f.delegate(vec![assignment("a", ResultKind::Report, &[])]);
         assert!(complete_since(&f, None).reset.is_none());
+    }
+
+    /// The lead after its confirmed replacement by the reset `id`.
+    fn cleared_lead(f: &Fixture, id: &str) -> Record {
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            Control::Reset {
+                id: id.into(),
+                session: f.lead.id.clone(),
+                clear_history: true,
+            },
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap();
+        let mut lead = f.lead.clone();
+        lead.request_ids.push(id.into());
+        lead.snapshot.as_mut().unwrap().generation = 2;
+        reconcile(&f.dir, "p", std::slice::from_ref(&lead), false).unwrap();
+        lead
+    }
+
+    #[test]
+    fn a_cleared_lead_waits_for_the_user_with_its_handoff() {
+        let f = Fixture::new();
+        let lead = cleared_lead(&f, "fresh");
+        deliver(&f.dir, "p", &f.team.id, std::slice::from_ref(&lead), |_| {
+            panic!("clearing the lead started a turn")
+        })
+        .unwrap();
+        let t = f.state();
+        assert!(!t.recovery && !t.quiet_recovery);
+        let handoff = t.messages.last().unwrap();
+        assert!(handoff.passive && handoff.state == DeliveryState::Pending);
+        assert!(handoff.text.contains("Build feature"));
+    }
+
+    #[test]
+    fn a_cleared_lead_with_active_work_is_still_woken() {
+        let f = Fixture::new();
+        f.delegate(vec![assignment("a", ResultKind::Report, &[])]);
+        let lead = cleared_lead(&f, "fresh");
+        let mut prompts = 0;
+        deliver(&f.dir, "p", &f.team.id, std::slice::from_ref(&lead), |r| {
+            prompts += usize::from(matches!(r, Request::Prompt { .. }));
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        assert_eq!(prompts, 1);
+        assert!(!f.state().messages.last().unwrap().passive);
+    }
+
+    #[test]
+    fn a_finished_merge_neither_wakes_the_lead_nor_blocks_its_fresh_start() {
+        let f = Fixture::new();
+        let mut records = vec![f.lead.clone()];
+        deliver(&f.dir, "p", &f.team.id, &records, |_| {
+            Ok(serde_json::Value::Null)
+        })
+        .unwrap();
+        let mut merge = session(&f.dir, "merge-agent");
+        merge.metadata.component_id = crate::model::MERGE_SCOPE.into();
+        let report = merge.snapshot.as_mut().unwrap().status.agent.as_mut();
+        report.unwrap().state = AgentState::Working;
+        records.push(merge.clone());
+        reconcile(&f.dir, "p", &records, false).unwrap();
+        let report = merge.snapshot.as_mut().unwrap().status.agent.as_mut();
+        report.unwrap().state = AgentState::Idle;
+        records[1] = merge;
+        reconcile(&f.dir, "p", &records, false).unwrap();
+        assert!(f.state().messages.last().unwrap().passive);
+        deliver(&f.dir, "p", &f.team.id, &records, |_| {
+            panic!("the merge's finish started a lead turn")
+        })
+        .unwrap();
+        assert!(complete_since(&f, Some(20)).reset.is_some());
+    }
+
+    #[test]
+    fn retiring_a_task_ends_its_team_agents_and_worktree_lease() {
+        let f = Fixture::new();
+        let run = f.delegate(vec![assignment("a", ResultKind::Report, &[])]);
+        let (_, worker) = f.launch("a");
+        assert!(implementation_available(&f.dir, "p", &f.dir, false, None).is_err());
+
+        let sessions = retire_task(&f.dir, "p", None).unwrap();
+        assert!(sessions.contains(&f.lead.id) && sessions.contains(&worker.id));
+        assert!(list(&f.dir, "p").unwrap().is_empty());
+        let stopped = super::super::read(&f.dir, "p", &run.id).unwrap();
+        assert_eq!(stopped.state, State::Stopped);
+        assert!(retire_task(&f.dir, "p", None).unwrap().is_empty());
+
+        // A new worktree at the reused path starts clean.
+        implementation_available(&f.dir, "p", &f.dir, false, None).unwrap();
+    }
+
+    #[test]
+    fn retiring_another_task_keeps_this_team() {
+        let f = Fixture::new();
+        assert!(retire_task(&f.dir, "p", Some("other")).unwrap().is_empty());
+        assert_eq!(list(&f.dir, "p").unwrap().len(), 1);
     }
 
     #[test]

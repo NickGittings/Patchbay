@@ -1,7 +1,7 @@
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
 import type { MergeCleanup, MergeRequest, Project } from '../types'
 import { mergeCleanup, mergeCleanupPreview, mergeOutcome, terminalStop } from './ipc'
-import { completeTeamTask } from './chatTeams'
+import { completeTeamTask, forgetTeamChat } from './chatTeams'
 import { autoRuns } from './autoState'
 import { reviewerBusy } from './review'
 import { sessionLive } from './sessionList'
@@ -120,10 +120,9 @@ export async function completeMergeChat(job: CleanupJob) {
   if (current.chatCleared || job.request.destinationBranch !== 'main') return true
   const state = projectStateOf(job.projectId)
   if (!state) return false
-  const source = state.tasks.find((t) => t.worktree === job.request.source)
+  const task = sourceChat(job)
   // Unattached Git worktrees have no Chat workspace, but still support merge cleanup.
-  if (!source && job.request.source !== state.project?.root) return true
-  const task = source?.id ?? null
+  if (task === undefined) return true
   const now = Date.now()
   const simple = workspaceOf(state, task).simple ?? { startedMs: now, log: [] }
   useStore.getState().patchTask(job.projectId, task, {
@@ -136,14 +135,14 @@ export async function completeMergeChat(job: CleanupJob) {
 /**
  * The merge into `main` finished the task and its worktree stays: stop the merge agent and give
  * the worktree's lead a fresh conversation. False or a rejection means it should be retried.
+ * After a deletion the team is already retired, so there is no lead left to replace.
  */
 export async function completeTaskContext(job: CleanupJob) {
   if (job.request.destinationBranch !== 'main') return true
   const state = projectStateOf(job.projectId)
   if (!state) return false
-  const source = state.tasks.find((t) => t.worktree === job.request.source)
-  if (!source && job.request.source !== state.project?.root) return true
-  const task = source?.id ?? null
+  const task = sourceChat(job)
+  if (task === undefined) return true
   if (useStore.getState().sessions[job.sessionId]?.running)
     await terminalStop(job.sessionId).catch(() => {})
   await completeTeamTask(job.projectId, task, `task-done-${job.id}`, job.startedMs)
@@ -162,14 +161,35 @@ export async function finishCleanup(job: CleanupJob) {
   await settleTaskContext(job)
 }
 
+/** The Chat of a job's source: a task, null for the project folder, undefined if it has none. */
+function sourceChat(job: CleanupJob) {
+  const state = projectStateOf(job.projectId)
+  const source = state?.tasks.find((t) => t.worktree === job.request.source)
+  if (source) return source.id
+  return job.request.source === state?.project?.root ? null : undefined
+}
+
 export async function deleteMergedWork(job: CleanupJob) {
+  // Read first: the deleted worktree's task is about to disappear.
+  const chat = sourceChat(job)
+  let cleaned = false
   try {
     const project = projectOf(job.projectId)
     if (!project) throw new Error('Project is no longer open')
     await mergeCleanup(project, job.request)
+    cleaned = true
+    if (chat !== undefined) await forgetTeamChat(job.projectId, chat)
   } finally {
     refreshMainWorktree(job.projectId)
     await refreshTasks(job.projectId).catch(() => {})
+    // A later cleanup step can fail after the worktree went, and its task and team went with it.
+    if (
+      !cleaned &&
+      chat &&
+      projectOf(job.projectId) &&
+      !projectStateOf(job.projectId)?.tasks.some((t) => t.id === chat)
+    )
+      await forgetTeamChat(job.projectId, chat)
     await reconcileFreshSessions().catch(() => {})
     await requestGitRefresh(job.projectId).catch(() => {})
   }

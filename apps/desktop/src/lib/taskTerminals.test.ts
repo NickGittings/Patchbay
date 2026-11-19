@@ -1,6 +1,12 @@
 import { expect, test } from 'vitest'
 import type { FlowNode } from '../store'
-import { MERGE_SCOPE, REVIEW_SCOPE, TASK_ROOT_SCOPE, type TerminalSpec } from '../types'
+import {
+  MERGE_SCOPE,
+  REVIEW_SCOPE,
+  TASK_ROOT_SCOPE,
+  WORKER_SCOPE,
+  type TerminalSpec,
+} from '../types'
 import { retainedTerminal, taskTerminals, tileLabel } from './taskTerminals'
 
 const agent: TerminalSpec = { id: 'agent', name: 'Claude', command: 'claude', kind: 'agent' }
@@ -44,6 +50,19 @@ test.each([
   ['deleted-component', 'Build'],
 ])('a retained %s agent is labeled %s', (scope, role) => {
   expect(tileLabel(retained(scope))).toBe(role)
+})
+
+test('a chat team role replaces the launch scope role', () => {
+  expect(tileLabel(root(agent), metadata(TASK_ROOT_SCOPE), 'Lead')).toBe('Lead')
+  expect(tileLabel(retained(WORKER_SCOPE), metadata(WORKER_SCOPE), 'Builder')).toBe('Builder')
+})
+
+test('a worker outside a chat team keeps its launch scope role', () => {
+  expect(tileLabel(retained(WORKER_SCOPE), metadata(WORKER_SCOPE))).toBe('Worker')
+})
+
+test('a component label still leads over a chat team role', () => {
+  expect(tileLabel(retained('api'), metadata('api'), 'Builder')).toBe('API')
 })
 
 test('terminals that are not agents get no role label', () => {

@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { chatIdentity } from '../lib/chatIdentity'
+import { useChatTeams } from '../lib/chatTeams'
 import { describeTerminal, statusTitle, terminalStatus } from '../lib/display'
 import { openComponentWindow } from '../lib/windows'
 import { removeTaskTerminal } from '../lib/sessions'
@@ -15,6 +17,8 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
   const records = useStore((s) => s.sessionRecords)
   const maximized = useStore((s) => s.maximizedTerminal)
   const focused = useStore((s) => s.activeSession)
+  const teams = useChatTeams((s) => s.teams)
+  const runs = useChatTeams((s) => s.runs)
   const [editing, setEditing] = useState<string | null>(null)
   const tile = (entry: TaskTerminal) => {
     const { terminal, sid, componentId, label } = entry
@@ -22,10 +26,11 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
     const session = sessions[sid]
     const status = terminalStatus(terminal.kind, session)
     const s = useStore.getState()
-    const prefix = tileLabel(
-      entry,
-      records.find((r) => r.id === sid),
-    )
+    const record = records.find((r) => r.id === sid)
+    const owner = record?.metadata.projectId ?? ''
+    const identity = record && chatIdentity(record, teams[owner], runs[owner])
+    const onTeam = identity?.roleKey === 'lead' || identity?.roleKey === 'builder'
+    const prefix = tileLabel(entry, record, onTeam ? identity.role : undefined)
     return (
       <section
         className={`terminal-tile health-${status.health} ${focused === sid ? 'focused' : ''} ${maximized === sid ? 'maximized' : ''}`}

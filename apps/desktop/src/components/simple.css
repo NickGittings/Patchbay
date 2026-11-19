@@ -46,26 +46,28 @@
   min-height: 0;
   overflow-anchor: none;
 }
-.simple-agent {
+:is(.simple-agent, .agent-card, .agent-role) {
   --role: var(--role-agent);
+}
+.simple-agent {
   margin: 16px 0;
   padding-left: 12px;
   border-left: 2px solid color-mix(in srgb, var(--role) 60%, transparent);
   overflow-wrap: anywhere;
 }
-.simple-agent[data-role='lead'] {
+:is(.simple-agent, .agent-card, .agent-role)[data-role='lead'] {
   --role: var(--role-lead);
 }
-.simple-agent[data-role='builder'] {
+:is(.simple-agent, .agent-card, .agent-role)[data-role='builder'] {
   --role: var(--role-builder);
 }
-.simple-agent[data-role='planner'] {
+:is(.simple-agent, .agent-card, .agent-role)[data-role='planner'] {
   --role: var(--role-planner);
 }
-.simple-agent[data-role='reviewer'] {
+:is(.simple-agent, .agent-card, .agent-role)[data-role='reviewer'] {
   --role: var(--role-reviewer);
 }
-.simple-agent[data-role='merge'] {
+:is(.simple-agent, .agent-card, .agent-role)[data-role='merge'] {
   --role: var(--role-merge);
 }
 .simple-agent > header {
@@ -599,7 +601,7 @@
   padding: 6px;
   border-top: 1px solid var(--border);
 }
-/* Problems that need the user sit above the composer; routine status stays in the popover. */
+/* Problems that need the user sit above the composer; routine status stays in the Agents tab. */
 .chat-coordination {
   flex-shrink: 0;
   max-height: 30%;
@@ -612,33 +614,13 @@
   color: var(--bad);
   font-weight: 600;
 }
-/* A non-blocking status panel anchored above its composer button. */
-.chat-workers-popover {
-  width: min(440px, calc(100vw - 16px));
-  max-height: min(60vh, 520px);
-  padding: 8px 12px;
-  font-size: var(--text-xs);
-  transform-origin: bottom right;
-}
-.chat-workers-popover .chat-workers {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-}
-.chat-workers-popover .chat-workers > ul,
-.chat-workers-popover .chat-workers > details,
-.chat-workers-popover .chat-workers > p {
-  align-self: stretch;
-  margin: 0;
-}
 .chat-workers-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 4px;
 }
-.chat-workers .assignment-instructions summary {
+.assignment-instructions summary {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -648,20 +630,9 @@
   color: var(--muted);
   cursor: pointer;
 }
-.chat-workers ul {
+.chat-workers-dismissed ul {
+  margin: 4px 0 0;
   padding-left: 16px;
-}
-.chat-workers li {
-  margin: 6px 0;
-}
-.chat-workers li[data-status='complete'] {
-  color: var(--muted);
-}
-.chat-workers li[data-status='failed'] > strong {
-  color: var(--bad);
-}
-.chat-workers li[data-status='awaiting input'] > strong {
-  color: var(--input);
 }
 .assignment-report dl {
   margin: 4px 0;
@@ -674,9 +645,180 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.chat-workers li p {
+/* Chat's Agents tab: below Show chat, so a hidden chat can still be brought back. */
+.simple-canvas > .agent-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: var(--bg);
+}
+.agent-canvas-top {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+}
+.agent-team-status,
+.agent-details {
+  font-size: var(--text-xs);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+/* Both float over the canvas, so cards panning underneath stay visibly behind them. */
+.agent-team-status {
+  box-shadow: var(--shadow-1);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+  padding: 6px 10px;
+  color: var(--muted);
+}
+.agent-team-status p {
+  margin: 0;
+}
+.agent-details {
+  position: absolute;
+  top: 52px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 5;
+  width: min(360px, calc(100% - 24px));
+  overflow: auto;
+  padding: 10px 12px;
+  box-shadow: var(--shadow-2);
+  /* Opacity only: a transform would capture fixed popups opened from the panel. */
+  animation: scrim-in var(--dur-fast) var(--ease-out);
+}
+.agent-details:focus {
+  outline: none;
+}
+.agent-details > header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.agent-details > header > button {
+  margin-left: auto;
+}
+.agent-details p,
+.agent-details li {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.agent-details ol {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 8px 10px;
+  font-size: var(--text-xs);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.agent-card:hover {
+  border-color: var(--border-hover);
+}
+/* The whole card is a target, so it answers on press unless a button inside took the press. */
+.agent-card:active:not(:has(button:active)) {
+  background: var(--active);
+  transition-duration: 0s;
+}
+.react-flow__node.selected .agent-card {
+  border-color: var(--accent);
+}
+/* Recedes through color rather than opacity, so its text and buttons stay legible. */
+.agent-card[data-row='finished'] {
+  color: var(--muted);
+  background: var(--bg);
+}
+/* After the hover rule, so the role stays on the edge; a selected card's accent still wins. */
+.agent-card[data-role] {
+  border-left: 2px solid color-mix(in srgb, var(--role) 60%, transparent);
+}
+.agent-card-name,
+.agent-role {
+  color: color-mix(in srgb, var(--role) 70%, var(--text));
+}
+.agent-card[data-row='finished'] .agent-card-name {
+  color: color-mix(in srgb, var(--role) 45%, var(--muted));
+}
+.agent-card header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.agent-card-name {
+  flex: none;
+  padding: 0;
+  font-weight: 600;
+  background: none;
+  border: none;
+}
+.agent-card-name:is(:hover, :active):not(:disabled) {
+  background: none;
+}
+.agent-card-detail {
+  overflow: hidden;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-card-snippet {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.agent-card-snippet p {
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* A lone summary or reply uses the card's height; step lists stay one line each. */
+.agent-card-snippet p:only-child {
+  display: -webkit-box;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+.agent-card-snippet p + p {
+  color: var(--muted);
+}
+.agent-card footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.agent-card-actions {
+  display: flex;
+  gap: 4px;
+}
+.agent-card-handle.react-flow__handle {
+  visibility: hidden;
 }
 .simple-composer [role='option'][aria-selected='true'] {
   background: var(--hover);

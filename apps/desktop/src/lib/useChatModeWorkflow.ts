@@ -12,7 +12,7 @@ import { fixReviewFindings } from './reviewHandoff'
 import { roleDevice, roleDevices } from './agentRoles'
 import { startMergeAgent } from './reviewAgents'
 import { simpleReviewRequest, startSimpleReview, type StartedReviewer } from './simpleReview'
-import { gitBranches, gitWorktrees, mergeConflicts } from './ipc'
+import { gitBranches, gitWorktrees, mergeConflicts, mergeSourceChanges } from './ipc'
 import { mergeNow, resumeAuto, pauseAuto, stopAuto } from './auto'
 import { controlTeam, noteLead, resetLead, type ChatTeam } from './chatTeams'
 import { chatAutoActive, chatHandoff } from './chat'
@@ -90,6 +90,12 @@ export function useChatModeWorkflow({
       requestId,
     )
     await retire([sid])
+    await noteLead(
+      team,
+      `a merge of ${request.sourceBranch} into ${request.destinationBranch}`,
+      [sid],
+      requestId,
+    )
   }
   const run = async (action: string, fn: () => Promise<void>) => {
     const lock = key
@@ -182,6 +188,12 @@ export function useChatModeWorkflow({
       } else if (action === 'merge' && !target?.branch) {
         setDialog('merge')
       } else if (action === 'merge' && source?.branch && target?.branch) {
+        const project = useStore.getState().toProject()
+        // The dialog asks whether the merge agent should commit these first.
+        if ((await mergeSourceChanges(project, source.path, source.branch)).length) {
+          setDialog('merge')
+          return
+        }
         const request = {
           source: source.path,
           sourceBranch: source.branch,
@@ -190,18 +202,12 @@ export function useChatModeWorkflow({
         }
         const requestId = crypto.randomUUID()
         const sid = await startMergeAgent(
-          useStore.getState().toProject(),
+          project,
           request,
           roleDevice(devices, agentRoles, 'merge'),
           requestId,
         )
-        await logMerge(request, sid, requestId) // Also retires the finished stage agents.
-        await noteLead(
-          team,
-          `a merge of ${request.sourceBranch} into ${request.destinationBranch}`,
-          [sid],
-          requestId,
-        )
+        await logMerge(request, sid, requestId) // Also retires stage agents and tells the lead.
       } else if (action === 'resumeAuto') {
         await resumeAuto(projectId, task)
         logSimple(projectId, task, { kind: 'action', action: 'resumeAuto', stage: stage })

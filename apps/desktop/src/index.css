@@ -2955,6 +2955,15 @@ kbd {
 .review-merge-terminal select {
   max-width: 50%;
 }
+.merge-commit-changes p {
+  margin: 0 0 6px;
+}
+.merge-commit-changes pre {
+  margin: 0;
+  max-height: 140px;
+  overflow: auto;
+  font: var(--text-sm) var(--mono);
+}
 .merge-agent-dialog code {
   overflow-wrap: anywhere;
   font-size: var(--text-sm);
@@ -4613,7 +4622,7 @@ kbd {
 .canvas-controls .react-flow__controls-button[aria-label='Minimap'] svg {
   fill: none;
 }
-.canvas .react-flow__minimap {
+:is(.canvas, .agent-canvas) .react-flow__minimap {
   margin: 12px 12px 28px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -4813,7 +4822,9 @@ kbd {
   .toast,
   .extensions-panel,
   .node-extension-menu,
-  .search-results {
+  .search-results,
+  .agent-team-status,
+  .agent-details {
     border: 1px solid var(--border-hover);
   }
   .extension-overlay {

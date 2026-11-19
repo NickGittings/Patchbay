@@ -1,6 +1,7 @@
 import type {
   AutoRun,
   AutoStage,
+  MergeOutcome,
   PlanText,
   Review,
   SessionRecord,
@@ -360,6 +361,8 @@ export interface SimpleSnapshot {
   review?: Review
   findings?: import('../types').ReviewFindings | null
   createdMs?: number
+  /** The session of this worktree's coordinating lead. */
+  lead?: string
 }
 
 /** Reconciliation has this long to claim a launch before it falls back to the usual actions. */
@@ -522,6 +525,32 @@ const actionText = (entry: Extract<SimpleEntry, { kind: 'action' }>) =>
     handoff: entry.text ?? 'Agent handoff prepared.',
   })[entry.action]
 
+/** The shared planner's current run belongs to the chats that launched or prompted it. */
+export function foreignPlanner(
+  record: SessionRecord,
+  sessions: SimpleSnapshot['sessions'],
+  simple: SimpleState | null | undefined,
+) {
+  const session = sessions[record.id] ?? record.snapshot
+  return (
+    recordStage(record) === 'plan' &&
+    !record.metadata.task &&
+    (!ownsPlanner(simple, record.id, session?.generation) || !session?.running)
+  )
+}
+
+/** The branch "Merge again" retries: the one the merge that ended dirty was launched for. */
+export function retryMergeBranch(
+  simple: SimpleState | null | undefined,
+  outcome: MergeOutcome | undefined,
+) {
+  if (outcome !== 'dirty') return undefined
+  const merge = workflowLog(simple).findLast(
+    (e) => e.kind === 'action' && e.action === 'merge' && !!e.request,
+  )
+  return merge?.kind === 'action' ? merge.request?.destinationBranch : undefined
+}
+
 /** One chronological conversation. Replies use journal identity, never terminal text. */
 export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   const records = snapshot.records
@@ -574,30 +603,39 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
     }
   }
   log = boundedSimple({ ...(snapshot.simple ?? { startedMs: snapshot.createdMs ?? 0 }), log }).log
-  // The shared planner's current run belongs to the chats that launched or prompted it.
   const foreign = new Set(
-    records
-      .filter((r) => recordStage(r) === 'plan')
-      .filter((r) => {
-        const generation = (snapshot.sessions[r.id] ?? r.snapshot)?.generation
-        return (
-          !r.metadata.task &&
-          (!ownsPlanner(snapshot.simple, r.id, generation) ||
-            !(snapshot.sessions[r.id] ?? r.snapshot)?.running)
-        )
-      })
-      .map((r) => r.id),
+    records.filter((r) => foreignPlanner(r, snapshot.sessions, snapshot.simple)).map((r) => r.id),
   )
-  const workflow = records.filter((r) => r.metadata.componentId !== '@map')
+  // The lead talks with the user between stages, so its turns advance none, unless this run was
+  // itself launched for a stage and then adopted as the lead.
+  const stageActions = ['plan', 'implement', 'review', 'fix', 'merge']
+  const leadGeneration =
+    snapshot.lead === undefined
+      ? undefined
+      : (snapshot.sessions[snapshot.lead] ?? records.find((r) => r.id === snapshot.lead)?.snapshot)
+          ?.generation
+  const leadStageRuns = new Set(
+    workflowLog(snapshot.simple).flatMap((e) =>
+      snapshot.lead !== undefined &&
+      e.kind === 'action' &&
+      stageActions.includes(e.action) &&
+      e.sessionId === snapshot.lead
+        ? [e.generation]
+        : [],
+    ),
+  )
+  const lead = leadStageRuns.has(leadGeneration) ? undefined : snapshot.lead
+  const workflow = records.filter((r) => r.metadata.componentId !== '@map' && r.id !== lead)
   const latest =
     workflow.filter((r) => recordStage(r) !== 'plan' || !!r.metadata.task).at(-1) ?? workflow.at(-1)
   let stage = latest ? recordStage(latest) : 'plan'
   const action = workflowLog(snapshot.simple)
     .filter(
       (e) =>
-        (e.kind === 'action' &&
-          ['plan', 'implement', 'review', 'fix', 'merge'].includes(e.action)) ||
-        e.kind === 'prompt',
+        (snapshot.lead === undefined ||
+          e.sessionId !== snapshot.lead ||
+          leadStageRuns.has(e.generation)) &&
+        ((e.kind === 'action' && stageActions.includes(e.action)) || e.kind === 'prompt'),
     )
     .at(-1)
   if (action && action.atMs >= (latest ? (stageSessionTime(latest) ?? 0) : 0)) stage = action.stage
@@ -706,7 +744,7 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
       Number(b.kind === 'plan') - Number(a.kind === 'plan') ||
       a.id.localeCompare(b.id),
   )
-  return { stage, planReady: currentPlan, records, foreign, items, planningStarted: start }
+  return { stage, planReady: currentPlan, records, foreign, items, planningStarted: start, lead }
 }
 
 /** A review's counts without the zeros, e.g. `1 high, 2 low`; `clean` when nothing was found. */

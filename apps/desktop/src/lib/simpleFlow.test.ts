@@ -1,6 +1,12 @@
 import { expect, test } from 'vitest'
 import { chatStepper, flow, workflowPromptKey, type FlowSnapshot } from './simpleFlow'
-import { LAUNCH_RECORD_GRACE_MS, pendingLaunch, thread } from './simple'
+import {
+  LAUNCH_RECORD_GRACE_MS,
+  pendingLaunch,
+  retryMergeBranch,
+  thread,
+  type SimpleState,
+} from './simple'
 import type { AutoRun, ReviewFindings, SessionRecord, SessionState } from '../types'
 const worktree = { projectId: 'p', task: 't', path: '/t', branch: 'feature' }
 const record = (scope: string): SessionRecord =>
@@ -382,10 +388,14 @@ test('a recovered merge with unknown status does not claim it is unfinished', ()
 test('merge status loading and failures never offer conflict recovery', () => {
   const s = snapshot('@merge')
   expect(flow({ ...s, outcomePending: true }).prompt).toBeUndefined()
-  for (const outcome of [undefined, 'inProgress', 'dirty'] as const) {
+  for (const outcome of [undefined, 'inProgress'] as const) {
     const prompt = flow({ ...s, outcome }).prompt!
     expect(prompt.actions).toEqual([{ action: 'retryMergeStatus', label: 'Retry status' }])
   }
+  expect(flow({ ...s, outcome: 'dirty' }).prompt!.actions).toEqual([
+    { action: 'merge', label: 'Merge again' },
+    { action: 'retryMergeStatus', label: 'Retry status' },
+  ])
   expect(flow({ ...s, outcomeError: 'The merge branches changed' }).prompt).toMatchObject({
     text: 'Merge status unavailable: The merge branches changed',
   })
@@ -459,6 +469,97 @@ test('a build lead prompt advances a merged chat to the build stage', () => {
   finished.status!.agent!.sinceMs = 50
   s.sessions = { ...s.sessions, [lead.id]: finished }
   expect(flow(s).prompt?.text).toBe('Building done. Review the changes?')
+})
+
+test('a coordinating lead’s turns advance no workflow stage', () => {
+  const s = snapshot('@task', 'working')
+  s.lead = '@task'
+  expect(flow(s).step).toBe('idle')
+  s.sessions['@task'] = session('review')
+  s.simple!.retainedWorkflow = [
+    { id: 'old-fix', kind: 'action', action: 'fix', stage: 'build', atMs: 5, sessionId: 'gone' },
+  ]
+  s.now = 5 + LAUNCH_RECORD_GRACE_MS
+  expect(flow(s).step).toBe('idle')
+  expect(chatStepper(flow(s).step).every((item) => item.state === 'upcoming')).toBe(true)
+})
+
+test('messaging the lead keeps the finished review in charge of the step', () => {
+  const s = snapshot('@review')
+  s.findings = findings(true)
+  s.records = [...s.records, { ...record('@task'), snapshot: { startedMs: 30 } } as SessionRecord]
+  s.sessions['@task'] = session('review')
+  s.lead = '@task'
+  s.simple!.log.push({
+    id: 'question',
+    kind: 'prompt',
+    stage: 'build',
+    atMs: 35,
+    sessionId: '@task',
+    generation: 1,
+    text: 'What changed?',
+    mentions: [],
+  })
+  expect(flow(s).step).toBe('reviewed')
+})
+
+test('a stage agent adopted as the lead still reports its stage', () => {
+  const s = snapshot('@task')
+  s.lead = '@task'
+  s.simple!.log.push({
+    id: 'build',
+    kind: 'action',
+    action: 'implement',
+    stage: 'build',
+    atMs: 5,
+    sessionId: '@task',
+    generation: 1,
+  })
+  expect(flow(s).step).toBe('built')
+})
+
+test('an adopted lead keeps its stage after its process restarts', () => {
+  const s = snapshot('@task')
+  s.lead = '@task'
+  s.sessions['@task'] = { ...s.sessions['@task'], generation: 2 }
+  s.simple!.log.push({
+    id: 'build',
+    kind: 'action',
+    action: 'implement',
+    stage: 'build',
+    atMs: 500,
+    sessionId: '@task',
+    generation: 1,
+  })
+  expect(thread(s, worktree).stage).toBe('build')
+})
+
+test('a saved prompt without a session still sets the stage', () => {
+  const s = snapshot('@review')
+  s.simple!.log.push({
+    id: 'saved',
+    kind: 'prompt',
+    stage: 'build',
+    atMs: 500,
+    text: 'Keep going',
+    mentions: [],
+  })
+  expect(thread(s, worktree).stage).toBe('build')
+})
+
+test('merging again targets the branch the dirty merge was launched for', () => {
+  const request = {
+    source: '/feature',
+    sourceBranch: 'feature',
+    destination: '/develop',
+    destinationBranch: 'develop',
+  }
+  const simple: SimpleState = {
+    startedMs: 0,
+    log: [{ id: 'merge', kind: 'action', action: 'merge', stage: 'merge', atMs: 1, request }],
+  }
+  expect(retryMergeBranch(simple, 'dirty')).toBe('develop')
+  expect(retryMergeBranch(simple, 'merged')).toBeUndefined()
 })
 
 const states = (items: ReturnType<typeof chatStepper>) =>

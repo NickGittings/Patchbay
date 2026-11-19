@@ -1,6 +1,6 @@
 import { useContext } from 'react'
 import { SimpleChangesContext } from './stories/simpleChanges'
-import { simpleKey, useSimpleUi, type SimpleDiff } from '../lib/simpleUi'
+import { pinChatTerminal, simpleKey, type SimpleDiff } from '../lib/simpleUi'
 import type { SimpleEntry } from '../lib/simple'
 import { useChatIdentity } from '../lib/chatIdentity'
 import { chatReplyId } from '../lib/chatNavigation'
@@ -46,10 +46,11 @@ export default function SimpleAgent({
             title={`View ${identity.role} terminal`}
             onClick={() => {
               const s = useStore.getState()
-              useSimpleUi.getState().patch(simpleKey(s.project?.id, s.activeTask), {
-                terminal: 'user',
-                terminalSession: { id: sessionId, generation: session?.generation, pinned: true },
-              })
+              pinChatTerminal(
+                simpleKey(s.project?.id, s.activeTask),
+                sessionId,
+                session?.generation,
+              )
             }}
           >
             Terminal
