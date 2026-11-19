@@ -66,7 +66,7 @@ async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<Launche
     components: strings(request.settings.components),
   })
   const launched = { sessionId, requestId }
-  await logStageLaunch(team.projectId, team.task, 'plan', 'plan', launched)
+  await logStageLaunch(team.projectId, team.task, 'plan', 'plan', launched, true)
   return launched
 }
 
@@ -85,7 +85,7 @@ async function startLeadBuild(team: ChatTeam): Promise<LaunchedStage> {
     roleDevice(devices, agentRoles, 'plan')?.id
   if (!planner) throw new Error('Choose an agent for the plan role first')
   const launched = await implementPlannerPlan(planner, undefined, undefined, 'stay', target(team))
-  await logStageLaunch(team.projectId, team.task, 'implement', 'build', launched)
+  await logStageLaunch(team.projectId, team.task, 'implement', 'build', launched, true)
   return launched
 }
 
@@ -98,7 +98,7 @@ async function startLeadFix(team: ChatTeam): Promise<LaunchedStage> {
   )
   if (!reviewer) throw new Error('Review this worktree before fixing its findings')
   const launched = await fixReviewFindings(reviewer, undefined, undefined, 'stay', target(team))
-  await logStageLaunch(team.projectId, team.task, 'fix', 'build', launched)
+  await logStageLaunch(team.projectId, team.task, 'fix', 'build', launched, true)
   return launched
 }
 
@@ -136,7 +136,14 @@ async function startLeadMerge(team: ChatTeam, request: Workflow): Promise<Launch
   await logLaunch(
     team.projectId,
     team.task,
-    { kind: 'action', action: 'merge', stage: 'merge', request: merge, sessionId: sid },
+    {
+      kind: 'action',
+      action: 'merge',
+      stage: 'merge',
+      request: merge,
+      sessionId: sid,
+      byLead: true,
+    },
     requestId,
   )
   return { sessionId: sid, requestId, merge }

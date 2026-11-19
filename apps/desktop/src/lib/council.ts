@@ -92,7 +92,9 @@ function leadReviewers(): TerminalSpec[] {
 async function recordLeadReviewer(team: ChatTeam, request: Workflow, member: Member) {
   if (!leadReview(request) || !member.sessionId) return
   const launched = { sessionId: member.sessionId, requestId: member.requestId }
-  await logStageLaunch(team.projectId, team.task, 'review', 'review', launched).catch(() => {})
+  await logStageLaunch(team.projectId, team.task, 'review', 'review', launched, true).catch(
+    () => {},
+  )
   await controlTeam(team, {
     kind: 'note',
     id: member.requestId,

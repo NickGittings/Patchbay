@@ -15,9 +15,12 @@ import {
 import { leadStageSessions } from '../lib/leadStageRun'
 import {
   chatStatus,
-  chatStepHeading,
   chatStepper,
   flow,
+  forLead,
+  leadDeciding,
+  leadStarted,
+  stepCardHeading,
   workflowPromptKey,
 } from '../lib/simpleFlow'
 import { inPlace } from '../lib/auto'
@@ -149,7 +152,7 @@ export default function ChatMode({
     team,
     focusComposer: () => chatRef.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus(),
   })
-  const { pending, failure, dialog, setDialog, check, act, logReviewers, logMerge } = workflow
+  const { pending, failure, dialog, setDialog, act, logReviewers, logMerge } = workflow
   const checkKey = JSON.stringify([key, source?.head, target?.head])
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
   const identity = useChatIdentity(recipient)
@@ -160,10 +163,24 @@ export default function ChatMode({
     outcomePending: !data && !error,
     outcomeError: data?.outcomeError || error || undefined,
     base: base ?? undefined,
-    conflicts: check?.key === checkKey ? check.paths : undefined,
+    // The last conflict check, kept per worktree so a remount still shows its conflicts.
+    conflicts: ui.mergeCheck?.key === checkKey ? ui.mergeCheck.paths : undefined,
     now,
   }
-  const derived = flow(flowSnapshot, model)
+  const flowed = flow(flowSnapshot, model)
+  // The lead decides what follows a stage it started; the card returns once it is done deciding.
+  const derived = forLead(
+    flowed,
+    leadDeciding({
+      started: leadStarted(
+        s.simple,
+        flowed.agent?.id,
+        s.sessions[flowed.agent?.id ?? '']?.generation,
+      ),
+      team,
+      lead: team ? s.sessions[team.lead.sessionId] : undefined,
+    }),
+  )
   const status = chatStatus(derived.step, {
     lead: team?.status,
     autoRunning: !!s.auto && !['stopped', 'failed', 'done'].includes(s.auto.status),
@@ -182,7 +199,10 @@ export default function ChatMode({
     // A stopped Auto run hands the worktree back to you, so only a paused or failed one halts it.
     halt:
       autoHalt ?? (team?.state === 'paused' || team?.state === 'stopped' ? team.state : undefined),
-    note: autoActive || autoHalt ? s.auto?.reason || undefined : status.note,
+    note:
+      autoActive || autoHalt
+        ? s.auto?.reason || undefined
+        : (status.note ?? (state.waitingOn === 'lead' ? 'Lead deciding' : undefined)),
   })
   const runs = useChatTeams((state) => (team ? state.runs[team.projectId] : undefined))
   const offered = useAgentQuestions((q) => q.pending)
@@ -247,7 +267,13 @@ export default function ChatMode({
   const promptKey = workflowPromptKey(flowSnapshot, model, state)
   if (!s.project) return null
   // Review's own dialog, beside the step's actions once there is work to review.
-  const options = ['built', 'reviewed', 'fixed'].includes(state.step)
+  const options =
+    !!state.prompt?.actions.length && ['built', 'reviewed', 'fixed'].includes(state.step)
+  const cardDismissed = !!ui.dismissedPrompts?.includes(promptKey)
+  const restoreCard = () =>
+    useSimpleUi.getState().patch(key, {
+      dismissedPrompts: (ui.dismissedPrompts ?? []).filter((k) => k !== promptKey),
+    })
   const openFile = (path: string, line?: number) => {
     const match = changedFileRef(changed, path, source?.path)
     useSimpleUi.getState().patch(key, {
@@ -260,15 +286,7 @@ export default function ChatMode({
     launch && now === undefined
       ? model.items.filter((i) => i.kind !== 'result' || i.result !== launch.stage)
       : model.items
-  const stepHeading = state.prompt?.actions.some((a) => a.action === 'resumeAuto')
-    ? 'Continue Auto mode'
-    : state.prompt?.actions.some((a) => a.action === 'mergeApproval')
-      ? 'Merge'
-      : state.prompt?.actions.some((a) => ['merge', 'checkMerge'].includes(a.action))
-        ? state.prompt.actions.some((a) => ['review', 'fix'].includes(a.action))
-          ? 'Review and merge'
-          : 'Merge'
-        : chatStepHeading(state.step)
+  const stepHeading = stepCardHeading(state.prompt)
   const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
   const openWorkerTerminal = (record: SessionRecord) =>
     pinChatTerminal(key, record.id, s.sessions[record.id]?.generation)
@@ -446,10 +464,25 @@ export default function ChatMode({
                 data-state={item.state}
                 title={item.note}
               >
-                <span>
-                  {CHAT_STAGE_LABELS[item.stage]}
-                  {item.note && <small> · {item.note}</small>}
-                </span>
+                {cardDismissed &&
+                state.prompt?.actions.length &&
+                ['ready', 'attention'].includes(item.state) ? (
+                  // A dismissed card comes back from the stage it was about.
+                  <button
+                    className="chat-stepper-restore"
+                    aria-label={`Show ${stepHeading} actions`}
+                    title={`Show ${stepHeading} actions`}
+                    onClick={restoreCard}
+                  >
+                    {CHAT_STAGE_LABELS[item.stage]}
+                    {item.note && <small> · {item.note}</small>}
+                  </button>
+                ) : (
+                  <span>
+                    {CHAT_STAGE_LABELS[item.stage]}
+                    {item.note && <small> · {item.note}</small>}
+                  </span>
+                )}
               </li>
             ))}
           </ol>
@@ -511,7 +544,7 @@ export default function ChatMode({
         openFile={openFile}
         openDiff={(file) => useSimpleUi.getState().patch(key, { changes: true, diff: file })}
       />
-      {!launching && !ui.dismissedPrompts?.includes(promptKey) && (state.prompt || options) && (
+      {!launching && !cardDismissed && !!state.prompt?.actions.length && (
         <section
           className="simple-step"
           data-step={state.step}

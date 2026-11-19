@@ -36,6 +36,7 @@ import {
   lastSubmission,
   editedMentions,
   forceable,
+  imageFiles,
   interruptible,
   interruptSession,
   deliveryConfirmed,
@@ -44,7 +45,9 @@ import {
   promptReady,
   transmittedText,
   waitForPrompt,
+  withImages,
 } from '../lib/simpleComposer'
+import { saveChatAttachment } from '../lib/ipc'
 import { logLaunch, logSimple } from '../lib/simpleActions'
 import { cancelQueued, enqueuePrompt, flushQueued, sendableNow } from '../lib/simpleQueue'
 import { refreshSession, reconcileFreshSessions, restartTerminal } from '../lib/sessions'
@@ -100,6 +103,32 @@ export default function SimpleComposer({
   const setError = (text: string, kind?: ChatFailureKind) =>
     setErrorResult({ key: scopeKey, text, kind })
   const [caret, setCaret] = useState(0)
+  const [attaching, setAttaching] = useState(0)
+  /** Save pasted or dropped images and put their paths in the draft where the caret was. */
+  const attach = async (files: File[], at: number) => {
+    const projectId = s.project?.id
+    if (!files.length || !projectId) return
+    setAttaching((n) => n + 1)
+    try {
+      const paths = await Promise.all(
+        files.map(async (f) =>
+          saveChatAttachment(projectId, new Uint8Array(await f.arrayBuffer())),
+        ),
+      )
+      // Read the draft now: the user may have typed while the images saved.
+      const current = useSimpleUi.getState().worktrees[scopeKey] ?? EMPTY_SIMPLE_UI
+      const next = withImages(current.draft, Math.min(at, current.draft.length), paths)
+      patch({
+        draft: next.draft,
+        mentions: editedMentions(current.draft, next.draft, current.mentions),
+      })
+      setCaret(next.caret)
+    } catch (e) {
+      setError(`Couldn't attach the image: ${String(e)}`)
+    } finally {
+      setAttaching((n) => n - 1)
+    }
+  }
   const submitting = useRef(false)
   const input = useRef<HTMLTextAreaElement>(null)
   const lifecycle = useRef(0)
@@ -476,7 +505,7 @@ export default function SimpleComposer({
           candidates.length > 0 ? `${mentionListId}-${candidates[selectedIndex].id}` : undefined
         }
         value={ui.draft}
-        placeholder="Message the agent… @component to scope · Shift+Enter for a newline"
+        placeholder="Message the agent… @component to scope · paste images · Shift+Enter for a newline"
         onSelect={(e) => {
           setCaret(e.currentTarget.selectionStart)
         }}
@@ -486,6 +515,22 @@ export default function SimpleComposer({
             draft: e.target.value,
             mentions: editedMentions(ui.draft, e.target.value, ui.mentions),
           })
+        }}
+        onPaste={(e) => {
+          const files = imageFiles(e.clipboardData.files)
+          if (!files.length) return
+          e.preventDefault()
+          void attach(files, e.currentTarget.selectionStart)
+        }}
+        onDragOver={(e) => {
+          if (Array.from(e.dataTransfer.items).some((i) => i.type.startsWith('image/')))
+            e.preventDefault()
+        }}
+        onDrop={(e) => {
+          const files = imageFiles(e.dataTransfer.files)
+          if (!files.length) return
+          e.preventDefault()
+          void attach(files, e.currentTarget.selectionStart)
         }}
         onKeyDown={(e) => {
           if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
@@ -501,7 +546,7 @@ export default function SimpleComposer({
             mention(candidates[selectedIndex].id)
           } else if (!e.shiftKey || e.metaKey || e.ctrlKey) {
             e.preventDefault()
-            if (status.sendable) void send()
+            if (status.sendable && !attaching) void send()
           }
         }}
       />
@@ -561,7 +606,8 @@ export default function SimpleComposer({
         )}
         <button
           className="primary"
-          disabled={!!ui.unconfirmed || !status.sendable || !ui.draft.trim()}
+          disabled={!!ui.unconfirmed || !status.sendable || !ui.draft.trim() || attaching > 0}
+          title={attaching ? 'Attaching image…' : undefined}
           onClick={() => void send()}
         >
           {status.action === 'queue' ? 'Queue' : 'Send'}

@@ -1,4 +1,5 @@
-import type { MergeOutcome, ReviewFindings, SessionRecord } from '../types'
+import type { MergeOutcome, ReviewFindings, SessionRecord, SessionState } from '../types'
+import type { ChatTeam } from './chatTeams'
 import { reviewerBusy } from './review'
 import {
   workflowLog,
@@ -50,6 +51,8 @@ export interface FlowSnapshot extends SimpleSnapshot {
 export interface SimpleFlow {
   step: SimpleStep
   prompt?: StepPrompt
+  /** The lead started this stage and hasn't had its say on the result yet. */
+  waitingOn?: 'lead'
   busyAgent?: SessionRecord
   agent?: SessionRecord
 }
@@ -126,6 +129,7 @@ export function flow(
       (snapshot.outcome === 'merged' || snapshot.outcome === 'alreadyIntegrated')) ||
     (auto?.status === 'done' && !manualAfterAuto)
   )
+    // No actions: the timeline narrates it and the step card stays away.
     return { step: 'merged', agent, prompt: { text: `Merged into ${base}.`, actions: [] } }
   if (auto && !['stopped', 'failed', 'done'].includes(auto.status)) {
     const step: SimpleStep = (
@@ -211,7 +215,7 @@ export function flow(
             ? mergePrompt()
             : {
                 text: 'Merge has not completed.',
-                actions: [button('checkMerge', 'Check conflicts')],
+                actions: [button('checkMerge', 'Retry merge')],
               }
           : {
               text: snapshot.outcomeError
@@ -364,23 +368,81 @@ export function workflowPromptKey(
   ])
 }
 
-const STEP_HEADINGS: Record<SimpleStep, string> = {
-  idle: 'Next step',
-  planning: 'Planning',
-  planReady: 'Planning',
-  building: 'Build',
-  built: 'Build',
-  reviewing: 'Review',
-  reviewed: 'Review',
-  fixing: 'Fix',
-  fixed: 'Fix',
-  merging: 'Merge',
-  merged: 'Merge complete',
+/**
+ * The step card's heading: the stage its actions start, the same stage the strip marks as waiting
+ * on you, so the card and the strip never name different stages.
+ */
+export function stepCardHeading(prompt: StepPrompt | undefined): string {
+  const actions = new Set<FlowAction>(prompt?.actions.map((a) => a.action))
+  if (actions.has('resumeAuto')) return 'Continue Auto mode'
+  const merge = actions.has('checkMerge') || actions.has('merge') || actions.has('mergeApproval')
+  if (merge && (actions.has('fix') || actions.has('review'))) return 'Review and merge'
+  if (merge || actions.has('retryMergeStatus')) return 'Merge'
+  if (actions.has('build')) return 'Build'
+  return 'Review'
 }
-/** The step card's heading when its actions don't name a more specific one. */
-export const chatStepHeading = (step: SimpleStep) => STEP_HEADINGS[step]
 
 const STAGE_LAUNCHES = ['plan', 'implement', 'review', 'fix', 'merge']
+
+/** Whether the newest stage launch that claimed this agent's run came from the lead. */
+export function leadStarted(
+  simple: FlowSnapshot['simple'] | undefined,
+  agentId: string | undefined,
+  generation: number | undefined,
+) {
+  if (!agentId) return false
+  const launch = workflowLog(simple).findLast(
+    (e) =>
+      e.kind === 'action' &&
+      e.sessionId === agentId &&
+      STAGE_LAUNCHES.includes(e.action) &&
+      (e.generation === undefined || generation === undefined || e.generation === generation),
+  )
+  return launch?.kind === 'action' && !!launch.byLead
+}
+
+const SETTLED_REQUESTS = ['completed', 'failed']
+const LEAD_STAGE_REQUESTS = [
+  'startPlan',
+  'startBuild',
+  'startFix',
+  'startReview',
+  'startCouncilReview',
+  'startMerge',
+]
+/**
+ * Whether the lead still owns what follows a stage it started. That holds while its team is
+ * running and the lead is working, has a message on its way, or has a stage request unsettled.
+ * Once the lead is back at its prompt with nothing pending, the step card returns.
+ */
+export function leadDeciding({
+  started,
+  team,
+  lead,
+}: {
+  started: boolean
+  team: Pick<ChatTeam, 'state' | 'messages' | 'requests'> | undefined
+  lead: Pick<SessionState, 'running' | 'status'> | undefined
+}) {
+  if (!started || team?.state !== 'running' || !lead?.running) return false
+  const state = lead.status?.agent?.state
+  return (
+    state === 'working' ||
+    state === 'needsInput' ||
+    (team.messages ?? []).some(
+      (m) => m.recipient === 'lead' && !m.passive && m.state !== 'delivered',
+    ) ||
+    (team.requests ?? []).some(
+      (r) => LEAD_STAGE_REQUESTS.includes(r.action) && !SETTLED_REQUESTS.includes(r.state),
+    )
+  )
+}
+
+/** While the lead decides, the step card offers nothing and the strip says who it waits on. */
+export function forLead(state: SimpleFlow, deciding: boolean): SimpleFlow {
+  if (!deciding || !state.prompt?.actions.length) return state
+  return { ...state, prompt: undefined, waitingOn: 'lead' }
+}
 /**
  * The step Chat shows. The lead decides it, except that Auto runs its own stages, and a stage
  * launched after the lead last spoke (a step-card button while it was idle) is newer news. Chats

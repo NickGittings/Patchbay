@@ -177,7 +177,12 @@ export default function ChatModeTimeline({
                   </article>
                 )
               )
-            if (state.step === 'merged') return null
+            if (state.step === 'merged')
+              return state.prompt ? (
+                <p className="simple-narration" key={item.id}>
+                  {state.prompt.text}
+                </p>
+              ) : null
             return (
               <p className="simple-narration" key={item.id}>
                 {data?.outcomeError ??

@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'vitest'
 import {
   chatStatus,
-  chatStepHeading,
   chatStepper,
   flow,
+  forLead,
+  leadDeciding,
+  leadStarted,
+  stepCardHeading,
   workflowPromptKey,
   type FlowSnapshot,
 } from './simpleFlow'
@@ -15,6 +18,7 @@ import {
   type SimpleState,
 } from './simple'
 import type { AutoRun, ReviewFindings, SessionRecord, SessionState } from '../types'
+import type { FlowAction } from './simpleFlow'
 const worktree = { projectId: 'p', task: 't', path: '/t', branch: 'feature' }
 const record = (scope: string): SessionRecord =>
   ({
@@ -666,8 +670,150 @@ describe('chatStatus', () => {
   test('a chat without a lead status keeps the derived step', () => {
     expect(chatStatus('built', { autoRunning: false, simple: simple(50) }).step).toBe('built')
   })
-  test('every step has its own heading', () => {
-    expect(chatStepHeading('built')).toBe('Build')
-    expect(chatStepHeading('idle')).not.toBe('Review')
+})
+
+describe('step card', () => {
+  const heading = (...actions: FlowAction[]) =>
+    stepCardHeading({ text: '', actions: actions.map((action) => ({ action, label: action })) })
+  test('the heading names the stage its actions start, as the strip does', () => {
+    expect(heading('build', 'plan')).toBe('Build')
+    expect(heading('review')).toBe('Review')
+    expect(heading('fix', 'checkMerge')).toBe('Review and merge')
+    expect(heading('review', 'checkMerge')).toBe('Review and merge')
+    expect(heading('checkMerge')).toBe('Merge')
+    expect(heading('merge')).toBe('Merge')
+    expect(heading('mergeApproval')).toBe('Merge')
+    expect(heading('retryMergeStatus')).toBe('Merge')
+    expect(heading('resumeAuto')).toBe('Continue Auto mode')
+  })
+  test('a plan ready to build is headed Build, matching the strip’s ready stage', () => {
+    const ready = { ...prompted(snapshot('@plan')), plan: { text: 'new', cut: false, savedMs: 30 } }
+    const state = flow(ready)
+    expect(stepCardHeading(state.prompt)).toBe('Build')
+    expect(chatStepper(state.step).find((i) => i.state === 'ready')?.stage).toBe('build')
+  })
+  test('a finished merge offers no actions', () => {
+    expect(flow({ ...snapshot('@merge'), outcome: 'merged' }).prompt?.actions).toEqual([])
+  })
+})
+
+describe('lead-started stages', () => {
+  const launch = (byLead: boolean, generation = 1): SimpleState => ({
+    startedMs: 1,
+    log: [
+      {
+        id: 'launch',
+        kind: 'action',
+        action: 'implement',
+        stage: 'build',
+        atMs: 5,
+        sessionId: '@task',
+        generation,
+        ...(byLead ? { byLead } : {}),
+      },
+    ],
+  })
+  const team = (overrides: Partial<Parameters<typeof leadDeciding>[0]['team'] & object> = {}) => ({
+    state: 'running' as const,
+    messages: [],
+    requests: [],
+    ...overrides,
+  })
+  const lead = (state: string) => session(state)
+  test('only a launch the lead made for this run counts as lead-started', () => {
+    expect(leadStarted(launch(true), '@task', 1)).toBe(true)
+    expect(leadStarted(launch(false), '@task', 1)).toBe(false)
+    expect(leadStarted(launch(true, 1), '@task', 2)).toBe(false)
+    expect(leadStarted(launch(true), '@other', 1)).toBe(false)
+    expect(leadStarted(launch(true), undefined, 1)).toBe(false)
+  })
+  test('a later button launch for the same agent takes the decision back', () => {
+    const simple = launch(true)
+    simple.log.push({
+      id: 'button',
+      kind: 'action',
+      action: 'fix',
+      stage: 'build',
+      atMs: 9,
+      sessionId: '@task',
+      generation: 1,
+    })
+    expect(leadStarted(simple, '@task', 1)).toBe(false)
+  })
+  test('the lead decides while it works, has news coming, or has a stage unsettled', () => {
+    const started = true
+    expect(leadDeciding({ started, team: team(), lead: lead('working') })).toBe(true)
+    expect(leadDeciding({ started, team: team(), lead: lead('needsInput') })).toBe(true)
+    expect(leadDeciding({ started, team: team(), lead: lead('idle') })).toBe(false)
+    const message = (passive: boolean, state: 'pending' | 'delivered') => ({
+      id: 'm',
+      sequence: 1,
+      sender: 'patchbay',
+      recipient: 'lead',
+      assignment: null,
+      text: 'Build agent reached a ready prompt.',
+      state,
+      generation: 1,
+      passive,
+    })
+    expect(
+      leadDeciding({
+        started,
+        team: team({ messages: [message(false, 'pending')] }),
+        lead: lead('idle'),
+      }),
+    ).toBe(true)
+    expect(
+      leadDeciding({
+        started,
+        team: team({ messages: [message(true, 'pending')] }),
+        lead: lead('idle'),
+      }),
+    ).toBe(false)
+    expect(
+      leadDeciding({
+        started,
+        team: team({ messages: [message(false, 'delivered')] }),
+        lead: lead('idle'),
+      }),
+    ).toBe(false)
+    const request = (state: string) => ({
+      id: 'r',
+      action: 'startBuild',
+      settings: {},
+      state,
+      result: null,
+    })
+    expect(
+      leadDeciding({ started, team: team({ requests: [request('running')] }), lead: lead('idle') }),
+    ).toBe(true)
+    expect(
+      leadDeciding({
+        started,
+        team: team({ requests: [request('completed')] }),
+        lead: lead('idle'),
+      }),
+    ).toBe(false)
+  })
+  test('a paused team, a stopped lead or a button launch leave the card to the user', () => {
+    expect(leadDeciding({ started: false, team: team(), lead: lead('working') })).toBe(false)
+    expect(
+      leadDeciding({ started: true, team: team({ state: 'paused' }), lead: lead('working') }),
+    ).toBe(false)
+    expect(leadDeciding({ started: true, team: undefined, lead: lead('working') })).toBe(false)
+    expect(
+      leadDeciding({ started: true, team: team(), lead: { ...lead('working'), running: false } }),
+    ).toBe(false)
+  })
+  test('while the lead decides, an ended build offers nothing and says it waits on the lead', () => {
+    const built = { ...snapshot('@task'), simple: launch(true) }
+    const state = flow(built)
+    expect(state).toMatchObject({ step: 'built', prompt: { actions: [{ action: 'review' }] } })
+    expect(forLead(state, true)).toMatchObject({ step: 'built', waitingOn: 'lead' })
+    expect(forLead(state, true).prompt).toBeUndefined()
+    expect(forLead(state, false)).toBe(state)
+    // A step with nothing to offer has nothing to hold back.
+    const working = flow({ ...built, sessions: { '@task': session('working') } })
+    expect(forLead(working, true)).toBe(working)
   })
 })

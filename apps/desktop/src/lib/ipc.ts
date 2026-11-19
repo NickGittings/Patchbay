@@ -243,6 +243,12 @@ export const planTransferPending = (projectId: string) =>
   invoke<string | null>('plan_transfer_pending', { projectId })
 export const planTransfer = (projectId: string, task: string, finish: boolean) =>
   invoke<void>('plan_transfer', { projectId, task, finish })
+/** Save an image for Chat's composer; resolves to the path the agent reads it from. */
+export const saveChatAttachment = (projectId: string, bytes: Uint8Array) =>
+  // Raw bytes, not JSON: a screenshot can be several megabytes.
+  tauriInvoke<string>('save_chat_attachment', bytes, {
+    headers: { 'patchbay-project': encodeURIComponent(projectId) },
+  })
 export const planRead = (projectId: string, task?: string) =>
   invoke<PlanText>('plan_read', {
     projectId,

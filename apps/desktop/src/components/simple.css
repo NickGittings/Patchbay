@@ -174,9 +174,23 @@
     color-mix(in srgb, var(--accent) 35%, transparent) 6px 9px
   );
 }
-.chat-stepper li span {
+.chat-stepper li span,
+.chat-stepper-restore {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* A dismissed step card comes back from its stage: same look, underlined as a link. */
+.chat-stepper-restore {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  white-space: nowrap;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
 .chat-stepper small {
   font-size: inherit;
@@ -823,4 +837,13 @@
 .simple-composer [role='option'][aria-selected='true'] {
   background: var(--hover);
   outline: 1px solid var(--border);
+}
+.simple-turn-time {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+p.simple-turn-time,
+.simple-turn-steps {
+  margin: 4px 0;
+  color: var(--muted);
 }

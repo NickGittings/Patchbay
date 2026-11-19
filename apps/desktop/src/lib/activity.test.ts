@@ -7,6 +7,8 @@ import {
   fileActivity,
   hydrateActivity,
   liveComponents,
+  replyTurn,
+  turnLength,
   writeActivity,
 } from './activity'
 import type { Activity, SessionRecord } from '../types'
@@ -305,4 +307,48 @@ test('chat names a step by its verb and target, with files relative to the agent
     ),
   ).toEqual([1, 2, 3])
   expect(turnSteps(undefined)).toEqual([])
+})
+
+test('a saved reply keeps the steps of the turn it ended, timed from its prompt', () => {
+  const step = (sequence: number, turn: string | null, atMs: number): Activity => ({
+    sequence,
+    atMs,
+    tool: 'Bash',
+    target: `step ${sequence}`,
+    turn,
+  })
+  const session = {
+    generation: 2,
+    replies: [
+      { sequence: 1, atMs: 50, turn: 'a', text: 'first' },
+      { sequence: 2, atMs: 200, turn: 'b', text: 'second' },
+    ],
+    activity: [step(4, 'b', 120), step(3, 'b', 110), step(1, 'a', 20), step(5, null, 150)],
+  }
+  const reply = { generation: 2, sequence: 2, atMs: 200 }
+  const turn = replyTurn(session, reply, 100)
+  expect(turn.steps.map((s) => s.sequence)).toEqual([3, 4])
+  expect(turn.durationMs).toBe(100)
+  // Without the prompt, the turn starts at its first step.
+  expect(replyTurn(session, reply).durationMs).toBe(90)
+  // A reply of an earlier run, or one the window dropped, shows no steps.
+  expect(replyTurn(session, { ...reply, generation: 1 }, 100)).toEqual({
+    steps: [],
+    durationMs: 100,
+  })
+  expect(replyTurn(session, { ...reply, sequence: 9 }).steps).toEqual([])
+  // A provider that names no turn attributes no steps.
+  expect(
+    replyTurn({ ...session, replies: [{ ...session.replies[1], turn: null }] }, reply).steps,
+  ).toEqual([])
+  // A prompt after the reply is not its start.
+  expect(replyTurn(undefined, reply, 300)).toEqual({ steps: [], durationMs: undefined })
+})
+
+test('turn lengths read as seconds, minutes and hours', () => {
+  expect(turnLength(42_000)).toBe('42s')
+  expect(turnLength(192_000)).toBe('3m 12s')
+  expect(turnLength(180_000)).toBe('3m')
+  expect(turnLength(3_840_000)).toBe('1h 4m')
+  expect(turnLength(-5)).toBe('0s')
 })

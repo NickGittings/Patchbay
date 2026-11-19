@@ -1128,6 +1128,37 @@ fn handoff_sections(
     )
 }
 
+/// Save an image pasted or dropped into Chat's composer and return its path. The
+/// body is the image's raw bytes, so a large screenshot isn't sent as JSON; the
+/// project id travels percent-encoded in the `patchbay-project` header.
+#[tauri::command]
+async fn save_chat_attachment(
+    request: tauri::ipc::Request<'_>,
+    state: State<'_, AppState>,
+) -> CmdResult<String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected the image's bytes".into());
+    };
+    let project_id = request
+        .headers()
+        .get("patchbay-project")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            percent_encoding::percent_decode_str(v)
+                .decode_utf8_lossy()
+                .into_owned()
+        })
+        .ok_or_else(|| "Missing project".to_string())?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    let bytes = bytes.clone();
+    blocking(move || {
+        patchbay_core::attachments::save(&root, &bytes)
+            .map(|path| path.display().to_string())
+            .map_err(err)
+    })
+    .await
+}
+
 /// The saved plan of the project (or `task`), empty when there is none.
 #[tauri::command]
 async fn plan_read(
@@ -3297,6 +3328,7 @@ pub fn run() {
                 orchestration::provider_job_start,
                 plan_context,
                 plan_read,
+                save_chat_attachment,
                 plan_transfer,
                 plan_transfer_pending,
                 task_root_start,

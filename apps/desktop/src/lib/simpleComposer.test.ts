@@ -598,3 +598,27 @@ test('the agent’s own prompt hook settles an unconfirmed delivery', async () =
   // A message stored before turns were recorded waits for the user.
   expect(deliveryConfirmed({ ...message, previousTurnId: undefined }, session({}))).toBe(false)
 })
+
+test('pasted images become path lines of their own at the caret', async () => {
+  const { withImages } = await import('./simpleComposer')
+  expect(withImages('', 0, ['/a.png'])).toEqual({ draft: 'Image: /a.png', caret: 13 })
+  expect(withImages('Look at this', 12, ['/a.png', '/b.jpg'])).toEqual({
+    draft: 'Look at this\nImage: /a.png\nImage: /b.jpg',
+    caret: 40,
+  })
+  const middle = withImages('before after', 6, ['/a.png'])
+  expect(middle.draft).toBe('before\nImage: /a.png\n after')
+  expect(middle.draft.slice(0, middle.caret)).toBe('before\nImage: /a.png')
+  expect(withImages('line\n', 99, ['/a.png']).draft).toBe('line\nImage: /a.png')
+  expect(withImages('keep', 2, [])).toEqual({ draft: 'keep', caret: 2 })
+})
+
+test('only image files are attached', async () => {
+  const { imageFiles } = await import('./simpleComposer')
+  const file = (type: string) => ({ type }) as File
+  expect(imageFiles([file('image/png'), file('text/plain'), file('image/jpeg')])).toEqual([
+    file('image/png'),
+    file('image/jpeg'),
+  ])
+  expect(imageFiles(null)).toEqual([])
+})

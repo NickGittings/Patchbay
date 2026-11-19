@@ -181,6 +181,7 @@ test('a lead review launches the regular reviewer and appears as its stage', asy
     'review',
     'review',
     expect.objectContaining({ sessionId: 'review-session' }),
+    true, // The lead started it, so the lead decides what follows.
   )
   expect(controlTeam).toHaveBeenCalledWith(
     expect.anything(),

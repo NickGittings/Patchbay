@@ -490,3 +490,24 @@ export async function sendToSession({
   })
   persistReplies(sid, generation, useStore.getState().sessions[sid]?.replies ?? [])
 }
+
+/** The image files among pasted or dropped items, in order. */
+export function imageFiles(files: Iterable<File> | ArrayLike<File> | null | undefined): File[] {
+  return Array.from(files ?? []).filter((f) => f.type.startsWith('image/'))
+}
+
+/**
+ * Insert one `Image: <path>` line per saved image at the caret, on lines of their own, so the
+ * agent reads each file by its path. Returns the draft and the caret after the inserted lines.
+ */
+export function withImages(draft: string, caret: number, paths: readonly string[]) {
+  if (!paths.length) return { draft, caret }
+  const at = Math.max(0, Math.min(caret, draft.length))
+  const before = draft.slice(0, at)
+  const after = draft.slice(at)
+  const lines = paths.map((p) => `Image: ${p}`).join('\n')
+  const lead = before && !before.endsWith('\n') ? '\n' : ''
+  const trail = after && !after.startsWith('\n') ? '\n' : ''
+  const inserted = lead + lines + trail
+  return { draft: before + inserted + after, caret: at + lead.length + lines.length }
+}

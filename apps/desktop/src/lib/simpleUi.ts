@@ -38,6 +38,8 @@ export interface SimpleUi {
   chatPreset?: string
   dismissedAssignments?: string[]
   dismissedPrompts?: string[]
+  /** Conflicts the last merge check found, keyed by the worktree and both heads it compared. */
+  mergeCheck?: { key: string; paths: string[] }
   coordinationReset?: boolean
   inputRequests?: import('./chat').ChatInputRequest[]
   pendingAction?: boolean

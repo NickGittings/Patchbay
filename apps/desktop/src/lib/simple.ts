@@ -57,6 +57,8 @@ export type SimpleEntry = EntryBase &
     | {
         kind: 'action'
         action: SimpleAction
+        /** The chat's lead started this stage, so it decides what follows. */
+        byLead?: boolean
         text?: string
         mentions?: string[]
         request?: import('../types').MergeRequest

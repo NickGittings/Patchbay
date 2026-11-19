@@ -63,7 +63,6 @@ export function useChatModeWorkflow({
   const failure = failureResult.key === key ? failureResult.text : ''
   const setFailure = (text: string) => setFailureResult({ key, text })
   const [dialog, setDialog] = useState<'review' | 'merge'>()
-  const [check, setCheck] = useState<{ key: string; paths: string[] }>()
   const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
   const planner =
     model.records
@@ -173,7 +172,7 @@ export function useChatModeWorkflow({
         await log('fix', 'build', fixing)
         await retire([fixing.sessionId])
         await noteLead(team, 'fixes for the review findings', [fixing.sessionId], fixing.requestId)
-      } else if (action === 'checkMerge') {
+      } else if (action === 'checkMerge' || action === 'merge') {
         if (!target?.branch || !source?.branch) {
           setDialog('merge')
           return
@@ -183,11 +182,17 @@ export function useChatModeWorkflow({
         const to = trees.find((w) => w.path === target.path)
         if (!from || !to)
           throw new Error('The merge worktrees changed. Choose a destination again.')
-        const paths = await mergeConflicts(projectId, from.head, to.head)
-        setCheck({ key: JSON.stringify([key, from.head, to.head]), paths })
-      } else if (action === 'merge' && !target?.branch) {
-        setDialog('merge')
-      } else if (action === 'merge' && source?.branch && target?.branch) {
+        // Merge checks for conflicts first and stops to show them; Merge with agent goes ahead.
+        if (action === 'checkMerge') {
+          const paths = await mergeConflicts(projectId, from.head, to.head)
+          if (paths.length) {
+            useSimpleUi.getState().patch(key, {
+              mergeCheck: { key: JSON.stringify([key, from.head, to.head]), paths },
+            })
+            return
+          }
+        }
+        useSimpleUi.getState().patch(key, { mergeCheck: undefined })
         const project = useStore.getState().toProject()
         // The dialog asks whether the merge agent should commit these first.
         if ((await mergeSourceChanges(project, source.path, source.branch)).length) {
@@ -283,7 +288,6 @@ export function useChatModeWorkflow({
     failure,
     dialog,
     setDialog,
-    check,
     act,
     logReviewers,
     logMerge,
