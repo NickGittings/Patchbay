@@ -38,7 +38,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 26 serializes branch mutations with terminal launches.
 // Protocol 27 serializes merge cleanup and restoration with terminal launches.
 // Protocol 29 reports turns ended by usage limits, which an older service would leave busy.
-pub const PROTOCOL: u32 = 29;
+// Protocol 30 replaces ValidationSelection and StackSelection with DetectionLaunch.
+pub const PROTOCOL: u32 = 30;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -551,19 +552,28 @@ pub enum Request {
     /// Stop the project's running validation; returns whether one was running.
     ActionCancel {
         project_id: String,
+        /// Only this checkout's validation (`task` null for the main one) when worktrees
+        /// validate in parallel; absent for any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkout: Option<Checkout>,
     },
-    /// The immutable selected component ids retained with a discovery launch.
-    ValidationSelection {
-        id: String,
-    },
-    /// The stack replacement target, or `None` for additive or unrecorded detection.
-    StackSelection {
+    /// What a run & test detection session was launched with
+    /// (`stack_proposals::Launch`): its stack target, check selection and whether an
+    /// agent triggered it. Default for an unrecorded session.
+    DetectionLaunch {
         id: String,
     },
     /// The running session launched with this agent command token, if any.
     AgentSession {
         token: String,
     },
+}
+/// One checkout of a project: a task's worktree, or the main checkout without one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Checkout {
+    #[serde(default)]
+    pub task: Option<String>,
 }
 /// A running agent session, found by the command token it was launched with.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1950,29 +1960,17 @@ impl Service {
                 crate::merges::cleanup_if_idle(&project, &request, &self.summaries())?;
                 serde_json::Value::Null
             }
-            Request::StackSelection { id } => {
+            Request::DetectionLaunch { id } => {
                 let records = self.records.lock().unwrap();
-                let target = records
+                let launch = records
                     .get(&id)
                     .filter(|r| {
                         r.metadata.component_id == crate::model::MAP_SCOPE
                             && r.metadata.terminal_id == crate::stack_proposals::STACK_TERMINAL
                     })
-                    .and_then(|r| r.spec.env.get(crate::stack_proposals::TARGET_ENV));
-                serde_json::to_value(target)?
-            }
-            Request::ValidationSelection { id } => {
-                let records = self.records.lock().unwrap();
-                let selection = records
-                    .get(&id)
-                    .filter(|r| {
-                        r.metadata.component_id == crate::model::MAP_SCOPE
-                            && r.metadata.terminal_id
-                                == crate::validation_proposals::VALIDATION_TERMINAL
-                    })
-                    .and_then(|r| r.spec.env.get(crate::validation_proposals::SELECTION_ENV))
-                    .ok_or_else(|| anyhow::anyhow!("Discovery selection unavailable"))?;
-                serde_json::from_str::<serde_json::Value>(selection)?
+                    .map(|r| crate::stack_proposals::Launch::from_env(&r.spec.env))
+                    .unwrap_or_default();
+                serde_json::to_value(launch)?
             }
             Request::PlannerScanOptions { id } => {
                 let records = self.records.lock().unwrap();
@@ -2406,9 +2404,13 @@ impl Service {
                 actions.stop_group(&project_id, &group_id, task.as_deref(), epoch, &terminals)?;
                 serde_json::Value::Null
             }
-            Request::ActionCancel { project_id } => {
-                serde_json::to_value(self.actions_for(&project_id).cancel_validation())?
-            }
+            Request::ActionCancel {
+                project_id,
+                checkout,
+            } => serde_json::to_value(
+                self.actions_for(&project_id)
+                    .cancel_validation_in(checkout.as_ref().map(|c| c.task.as_deref())),
+            )?,
             Request::Shutdown { stop_running } => {
                 self.stop_all(true, stop_running)?;
                 serde_json::Value::Null
@@ -4153,16 +4155,24 @@ mod tests {
             "id": "claude", "name": "Claude", "command": "claude", "kind": "agent"
         }))
         .unwrap();
-        let selection = || Request::StackSelection {
+        let selection = || Request::DetectionLaunch {
             id: "detection".into(),
         };
         let mut service = Service::load(&dir).unwrap();
-        assert!(service.handle("desktop", selection()).unwrap().is_null());
+        assert_eq!(
+            service.handle("desktop", selection()).unwrap(),
+            serde_json::json!({"componentIds": [], "auto": false})
+        );
         for target in [Some("target"), None] {
+            let launch = crate::stack_proposals::Launch {
+                stack_id: target.map(Into::into),
+                component_ids: vec![],
+                auto: target.is_none(),
+            };
             let (_, spec) = crate::stack_proposals::prepare_for(
                 &project,
                 &preset,
-                target,
+                &launch,
                 &crate::policy::AllowAll,
             )
             .unwrap();
@@ -4186,8 +4196,11 @@ mod tests {
             service.persist().unwrap();
             service = Service::load(&dir).unwrap();
             assert_eq!(
-                service.handle("desktop", selection()).unwrap(),
-                serde_json::json!(target)
+                serde_json::from_value::<crate::stack_proposals::Launch>(
+                    service.handle("desktop", selection()).unwrap()
+                )
+                .unwrap(),
+                launch
             );
             // Retained targets stay private, just like validation selections.
             assert!(service.summaries()[0].spec.env.is_empty());
@@ -4312,6 +4325,7 @@ mod tests {
         .unwrap();
         let project = crate::model::Project {
             worktree_setup: None,
+            instances: None,
             schema_version: crate::model::SCHEMA_VERSION,
             root: dir.to_string_lossy().into_owned(),
             name: "P".into(),

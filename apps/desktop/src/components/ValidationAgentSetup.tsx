@@ -3,47 +3,43 @@ import { useStore } from '../store'
 import { planTerminals } from '../lib/plan'
 import { roleTerminal } from '../lib/agentRoles'
 import { mapEditsBlocked } from '../lib/mapSave'
+import { revealTerminal } from '../lib/attention'
+import { selectPanel } from '../lib/rail'
+import { useGraphActionRunning } from '../lib/graphActivity'
+import { stackAgentSession, startStackAgent, useStackProposals } from '../lib/stackAgent'
 import {
   applyValidationProposal,
   discardValidationProposal,
-  startValidationAgent,
   useValidationProposals,
-  validationAgentSession,
 } from '../lib/validationAgent'
-import type { PendingValidation } from '../types'
+import { MAP_SCOPE, type MissingCheck, type PendingValidation, type ProposedCheck } from '../types'
 
-function Review({ pending, projectId }: { pending: PendingValidation; projectId: string }) {
-  const [unchecked, setUnchecked] = useState<number[]>([])
+/**
+ * Proposed checks with their evidence, each ticked unless in `unchecked`, and why the remaining
+ * components have none. `onToggle` is omitted for a read-only review.
+ */
+export function CheckList({
+  checks,
+  missing,
+  unchecked,
+  onToggle,
+}: {
+  checks: ProposedCheck[]
+  missing: MissingCheck[]
+  unchecked: number[]
+  onToggle?: (index: number, on: boolean) => void
+}) {
   const nodes = useStore((s) => s.nodes)
-  const busy = useValidationProposals((s) => !!s.busy[projectId])
-  const blocked = useStore((s) => mapEditsBlocked(s.projects[projectId]))
-  const running = useStore(
-    (s) =>
-      s.graphActionBusy ||
-      Object.values(s.taskActivities).some(
-        (a) =>
-          a.state === 'running' &&
-          ['validate', 'validateChanged', 'validateSelected', 'environmentStart'].includes(
-            a.action.kind,
-          ),
-      ),
-  )
-  const absent = useStore((s) => s.projects[projectId]?.fingerprint === 'absent')
-  const chosen = pending.terminals.filter((_, i) => !unchecked.includes(i))
   const name = (id: string) => nodes.find((n) => n.id === id)?.data.name ?? id
   return (
-    <div className="task-action-result">
-      <strong>Proposed validation checks</strong>
-      {pending.terminals.map((t, i) => (
+    <>
+      {checks.map((t, i) => (
         <label className="validator-suggestion" key={i}>
           <input
             type="checkbox"
             checked={!unchecked.includes(i)}
-            onChange={(e) =>
-              setUnchecked((prev) =>
-                e.target.checked ? prev.filter((x) => x !== i) : [...prev, i],
-              )
-            }
+            disabled={!onToggle}
+            onChange={(e) => onToggle?.(i, e.target.checked)}
           />
           <span className="validator-suggestion-details">
             <span>
@@ -55,16 +51,33 @@ function Review({ pending, projectId }: { pending: PendingValidation; projectId:
           </span>
         </label>
       ))}
-      {pending.missing.map((m) => (
+      {missing.map((m) => (
         <p className="hint" key={m.component}>
-          {name(m.component)}: {m.reason}
+          No checks for {name(m.component)}: {m.reason}
         </p>
       ))}
-      {absent && (
-        <p className="hint">
-          After applying, choose Create map configuration in the Project panel to keep these checks.
-        </p>
-      )}
+    </>
+  )
+}
+
+/** A submission the retired validation discovery agent left, reviewed one last time. */
+function LegacyReview({ pending, projectId }: { pending: PendingValidation; projectId: string }) {
+  const [unchecked, setUnchecked] = useState<number[]>([])
+  const busy = useValidationProposals((s) => !!s.busy[projectId])
+  const blocked = useStore((s) => mapEditsBlocked(s.projects[projectId]))
+  const running = useGraphActionRunning()
+  const chosen = pending.terminals.filter((_, i) => !unchecked.includes(i))
+  return (
+    <div className="task-action-result">
+      <strong>Proposed validation checks</strong>
+      <CheckList
+        checks={pending.terminals}
+        missing={pending.missing}
+        unchecked={unchecked}
+        onToggle={(i, on) =>
+          setUnchecked((prev) => (on ? prev.filter((x) => x !== i) : [...prev, i]))
+        }
+      />
       <div className="row">
         <button
           disabled={busy || blocked || !chosen.length}
@@ -76,7 +89,7 @@ function Review({ pending, projectId }: { pending: PendingValidation; projectId:
           disabled={busy || blocked || running || !chosen.length}
           onClick={() => void applyValidationProposal(pending, chosen, projectId, true)}
         >
-          Apply and run
+          Apply and run checks
         </button>
         <button
           disabled={busy}
@@ -89,12 +102,17 @@ function Review({ pending, projectId }: { pending: PendingValidation; projectId:
   )
 }
 
+/**
+ * Run → Set up validation: run & test detection for chosen components, whose proposed checks are
+ * reviewed with the rest of its proposal in the Stack panel.
+ */
 export default function ValidationAgentSetup({ projectId }: { projectId: string }) {
   const nodes = useStore((s) => s.nodes)
   const devices = useStore((s) => s.devices)
   const roles = useStore((s) => s.agentRoles)
-  const pending = useValidationProposals((s) => s.pending[projectId])
-  const running = useStore((s) => !!s.sessions[validationAgentSession(projectId)]?.running)
+  const legacy = useValidationProposals((s) => s.pending[projectId])
+  const pending = useStackProposals((s) => s.pending[projectId])
+  const running = useStore((s) => !!s.sessions[stackAgentSession(projectId)]?.running)
   const blocked = useStore((s) => mapEditsBlocked(s.projects[projectId]))
   const [picking, setPicking] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
@@ -106,9 +124,12 @@ export default function ValidationAgentSetup({ projectId }: { projectId: string 
     <div className="task-action-result">
       <button
         disabled={blocked || (!running && !!pending)}
+        title={
+          !running && pending ? 'Review the waiting run & test proposal in the Stack panel' : ''
+        }
         onClick={() => {
-          if (running && preset) {
-            void startValidationAgent(projectId, preset, [])
+          if (running) {
+            revealTerminal({ sid: stackAgentSession(projectId), componentId: MAP_SCOPE })
             return
           }
           const s = useStore.getState()
@@ -116,12 +137,21 @@ export default function ValidationAgentSetup({ projectId }: { projectId: string 
           setPicking(true)
         }}
       >
-        {running ? 'Show validation discovery' : 'Configure checks with an agent…'}
+        {running ? 'Show run & test detection' : 'Configure checks with an agent…'}
       </button>
+      {!running && pending && (
+        <p className="hint">
+          Run & test detection proposed a setup.{' '}
+          <button className="link" onClick={() => selectPanel('stack')}>
+            Review it in the Stack panel
+          </button>
+        </p>
+      )}
       {picking && (
         <div>
           <p className="hint">
-            Choose components. The agent reads existing tooling and proposes checks for review.
+            Choose components. The agent reads existing tooling and proposes checks, with the rest
+            of the run & test setup, for review in the Stack panel.
           </p>
           {nodes.map((n) => (
             <label className="validator-suggestion" key={n.id}>
@@ -138,7 +168,7 @@ export default function ValidationAgentSetup({ projectId }: { projectId: string 
             </label>
           ))}
           <select
-            aria-label="Validation discovery agent"
+            aria-label="Run & test detection agent"
             value={preset?.id ?? ''}
             onChange={(e) => setChoice(e.target.value)}
           >
@@ -151,7 +181,7 @@ export default function ValidationAgentSetup({ projectId }: { projectId: string 
           <button
             disabled={!preset || !selected.length || blocked}
             onClick={() => {
-              if (preset) void startValidationAgent(projectId, preset, selected)
+              if (preset) void startStackAgent(projectId, preset, { componentIds: selected })
               setPicking(false)
             }}
           >
@@ -160,7 +190,7 @@ export default function ValidationAgentSetup({ projectId }: { projectId: string 
           <button onClick={() => setPicking(false)}>Cancel</button>
         </div>
       )}
-      {pending && <Review key={pending.id} pending={pending} projectId={projectId} />}
+      {legacy && <LegacyReview key={legacy.id} pending={legacy} projectId={projectId} />}
     </div>
   )
 }

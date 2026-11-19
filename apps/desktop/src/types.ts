@@ -383,16 +383,42 @@ export interface ProposedStackTerminal {
   reason: string
 }
 
-/** Mirrors `stack_proposals::Pending`. `id` is unique per submission. */
+/** Mirrors `stack_proposals::IsolatedResource`: something parallel instances keep apart. */
+export interface IsolatedResource {
+  name: string
+  kind: string
+  approach: string
+  evidence: string
+}
+
+/** Mirrors `stack_proposals::Isolation`. */
+export interface Isolation {
+  parallelSafe: boolean
+  resources: IsolatedResource[]
+  blockers: { name: string; reason: string }[]
+}
+
+/**
+ * Mirrors `stack_proposals::Pending`: how to run and test the project, as run & test detection
+ * proposed it. `id` is unique per submission. Version 1 submissions have no checks or isolation.
+ * `componentIds` narrowed the checks (empty: the whole map); `auto` ones are applied without
+ * review because an agent triggered the detection.
+ */
 export interface PendingStack {
   id: string
   sessionId: string
   submittedMs: number
+  version?: number
   stackId?: string | null
   name: string
   orderedStartup: boolean
   terminals: ProposedStackTerminal[]
+  checks?: ProposedCheck[]
+  missingChecks?: MissingCheck[]
   worktreeSetup?: { command: string; reason: string } | null
+  isolation?: Isolation | null
+  componentIds?: string[]
+  auto?: boolean
 }
 
 /** What a rescan or Add repo… put on the map: new components and their links, with final ids. */
@@ -401,8 +427,17 @@ export interface Added {
   links: Link[]
 }
 
+/** Mirrors `model::Instances`: run & test detection's verdict on parallel instances. */
+export interface Instances {
+  parallelSafe: boolean
+  notes?: string
+  /** Detection was applied or declined, so agents don't trigger it again. */
+  detected?: boolean
+}
+
 export interface Project {
   worktreeSetup?: { command: string }
+  instances?: Instances
   projectId?: string
   schemaVersion: number
   name: string
@@ -420,8 +455,8 @@ export interface ComponentGroup {
   readinessTimeoutSeconds: number
 }
 
-export const VALIDATION_AGENT_TERMINAL = 'validation-discovery'
-export interface ProposedValidationCheck {
+/** Mirrors `validation_proposals::ProposedCheck`: a one-shot check for a component. */
+export interface ProposedCheck {
   component: string
   path: string
   terminal?: string | null
@@ -429,13 +464,19 @@ export interface ProposedValidationCheck {
   command: string
   reason: string
 }
+/** Mirrors `validation_proposals::MissingCheck`. */
+export interface MissingCheck {
+  component: string
+  reason: string
+}
+/** Mirrors `validation_proposals::Pending`, left by the retired validation discovery agent. */
 export interface PendingValidation {
   id: string
   sessionId: string
   submittedMs: number
   componentIds: string[]
-  terminals: ProposedValidationCheck[]
-  missing: { component: string; reason: string }[]
+  terminals: ProposedCheck[]
+  missing: MissingCheck[]
 }
 export type ActionRequest =
   | { kind: 'validateSelected'; componentIds: string[] }
@@ -969,6 +1010,8 @@ export interface Task {
   missing: boolean
   /** The project is open in this worktree. */
   current: boolean
+  /** Mirrors `tasks::Task::instance`: this worktree's `PATCHBAY_INSTANCE` (main is 0). */
+  instance?: number
 }
 
 /** `tasks::TaskDraft` */

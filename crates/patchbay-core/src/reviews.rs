@@ -2428,6 +2428,7 @@ mod tests {
             let dir = dir.canonicalize().unwrap();
             let project = Project {
                 worktree_setup: None,
+                instances: None,
                 schema_version: crate::model::SCHEMA_VERSION,
                 name: "Review test".into(),
                 root: dir.to_string_lossy().into(),

@@ -27,9 +27,9 @@
   }
   const detection = () => {
     const summary = [...document.querySelectorAll('.component-groups summary')].find(
-      (el) => el.textContent === 'Stack Detection',
+      (el) => el.textContent === 'Run & test detection',
     )
-    assert(summary, 'missing Stack Detection section')
+    assert(summary, 'missing Run & test detection section')
     summary.parentElement.open = true
     return summary.parentElement
   }
@@ -180,7 +180,10 @@
     ])
     smoke.selectPanel('stack')
     const panel = await until('stack panel', () => document.querySelector('.component-groups'))
-    assert(panel.textContent.includes('Stack Detection'), 'empty state uses the old section name')
+    assert(
+      panel.textContent.includes('Run & test detection'),
+      'empty state names the detection section',
+    )
     assert(
       detection().querySelector('[aria-label="Stack detection target"]').value === '',
       'detection should default to New stack',
@@ -202,7 +205,7 @@
       'deleted target reset',
       () => detection().querySelector('[aria-label="Stack detection target"]').value === '',
     )
-    const detect = await until('detect button', () => button(detection(), 'Detect stack'))
+    const detect = await until('detect button', () => button(detection(), 'Detect run & test'))
     detect.click()
     const sid = smoke.sessionId('@map', 'stack', null)
     await until('agent submission', () =>
@@ -305,7 +308,7 @@
     }
     state().setDevices(submitter(replacement))
     assert(!card('Renamed stack').querySelector('.stack-agent'), 'saved card repeats detection')
-    button(detection(), 'Detect stack').click()
+    button(detection(), 'Detect run & test').click()
     const replacementReview = await until('replacement review', () =>
       document.querySelector('[aria-label="Proposed stack"]'),
     )
@@ -322,15 +325,15 @@
     smoke.stopTerminal(sid)
     await until('proposal agent stopped', () => !state().sessions[sid]?.running)
     assertDetectionLocked()
-    assert(button(detection(), 'Detect stack').disabled, 'pending proposal allows another run')
+    assert(button(detection(), 'Detect run & test').disabled, 'pending proposal allows another run')
     const beforeCancel = JSON.stringify(state().toProject())
     button(replacementReview, 'Discard').click()
     await until('discarded', () => !document.querySelector('[aria-label="Proposed stack"]'))
     assert(JSON.stringify(state().toProject()) === beforeCancel, 'discard changed configuration')
     smoke.stopTerminal(sid)
     await until('detection stopped again', () => !state().sessions[sid]?.running)
-    await until('detection unlocked', () => !button(detection(), 'Detect stack').disabled)
-    button(detection(), 'Detect stack').click()
+    await until('detection unlocked', () => !button(detection(), 'Detect run & test').disabled)
+    button(detection(), 'Detect run & test').click()
     const secondReview = await until('second replacement', () =>
       document.querySelector('[aria-label="Proposed stack"]'),
     )
@@ -381,7 +384,7 @@
         detection().querySelector('[aria-label="Stack detection agent"]').value ===
         'smoke-removed-target',
     )
-    button(detection(), 'Detect stack').click()
+    button(detection(), 'Detect run & test').click()
     const removedReview = await until('removed target review', () =>
       document.querySelector('[aria-label="Proposed stack"]'),
     )
@@ -430,7 +433,7 @@
         .nodes.find((n) => n.id === 'api')
         .data.terminals.find((t) => t.name === 'Development'),
     )
-    const command = `printf 'prepared:%s\\n' "$PWD" && printf 'build-ok\\n' && printf 'APP_READY:%s\\n' "$PWD" && exec cat`
+    const command = `printf 'prepared:%s\\n' "$PWD" && printf 'build-ok\\n' && printf 'APP_READY:%s instance:%s\\n' "$PWD" "$PATCHBAY_INSTANCE" && exec cat`
     edit(manual.querySelector(`[aria-label="API › ${custom.id} name"]`), 'App')
     edit(manual.querySelector(`[aria-label="API › ${custom.id} command"]`), command)
     edit(manual.querySelector(`[aria-label="API › ${custom.id} ready when"]`), 'APP_READY:')
@@ -471,9 +474,10 @@
       const snapshot = await smoke.terminalSnapshot(taskSid)
       return (
         snapshot?.launchDirectory === task.worktree &&
-        atob(snapshot.data).includes(`APP_READY:${task.worktree}`)
+        atob(snapshot.data).includes(`APP_READY:${task.worktree} instance:${task.instance}`)
       )
     })
+    assert(task.instance >= 1, 'a task worktree runs instance 0')
     const startedMs = state().sessions[taskSid].startedMs
     button(card('Manual stack'), 'Start').click()
     await until(
@@ -496,9 +500,10 @@
       const snapshot = await smoke.terminalSnapshot(mainSid)
       return (
         snapshot?.launchDirectory === state().project.root &&
-        atob(snapshot.data).includes(`APP_READY:${state().project.root}`)
+        atob(snapshot.data).includes(`APP_READY:${state().project.root} instance:0`)
       )
     })
+    // Both checkouts' copies run at once, each with its own instance.
     assert(state().sessions[taskSid]?.running, 'switching checkouts stopped the other app')
     // Both stacks use the same shared terminal definition and release ownership independently.
     button(card('Repaired stack'), 'Start').click()

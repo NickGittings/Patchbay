@@ -1,40 +1,66 @@
-# Agent-assisted validation setup
+# Run & test setup with an agent
 
-Open **Run → Set up validation → Configure checks with an agent…**. Choose at least one
-component and an agent preset. The picker starts with the canvas selection. Discovery reads
-existing documentation, scripts and configuration; its briefing excludes running checks,
-repository edits, installation, setup, watchers, servers and automatic fixes.
+One detection agent works out how to prepare, run and test a project in a worktree: the
+Development terminals a stack starts, the one-shot checks that validate each component, optional
+worktree preparation, and what two copies of the app running at once would share. It submits
+everything as one version 2 proposal (`agent propose-stack --file -`), reviewed in the Stack panel.
 
-Review each proposed command, component execution folder and source evidence. Checks start
-selected. Components without suitable checks have an explanation, including missing prerequisites.
-**Apply** adds task terminals or assigns matching unassigned task terminals to Validation.
-**Apply and run** also runs every configured validator for the selected components in the captured
-active worktree, without traversing dependents. Failed checks keep the applied configuration.
-Existing affected-component validation and Auto retain their existing traversal.
+Start it from either place:
 
-Applications use normal map edits and save conflict handling. A project without `patchbay.json`
-keeps the existing **Create map configuration** flow. Changed folders, removed terminals,
-changed commands and assigned terminal roles are left unapplied with an explanation. Retrying
-an application reuses matching validators. Pending reports survive desktop restarts, and clearing
-an old report preserves any newer submission.
+- **Stack panel → Run & test detection → Detect run & test setup** (optionally targeting a stack
+  to replace).
+- **Run → Set up validation → Configure checks with an agent…**, which picks components first. The
+  selection narrows only the checks; the rest of the proposal covers the whole map.
 
-The discovery role may submit `agent propose-validation --file <path|->`; it cannot start graph
-actions. The session service retains the selected component IDs with the launch and checks every
-submission against them and the project's existing folder permissions. Discovery only adds
-selected external component folders to the agent's folder access. Implementation agents can use
-`agent validate-selected <componentId> [componentId…]` when downstream checks are unnecessary.
+The review lists Development changes, checks with their execution folder and evidence, why
+components have no checks, worktree setup, and the parallel-instance resources and blockers.
+**Apply** makes one ordinary map edit: Development startup, Validation terminals, worktree
+preparation and `Project.instances` (`parallelSafe`, notes). **Apply and run checks** also runs the
+applied components' validators in the active worktree, without traversing dependents. **Discard**
+changes nothing. Changed folders, removed terminals, changed commands and assigned roles are left
+unapplied with an explanation.
 
-Verification:
+## Parallel instances
 
-- `npm run check` and `npm run build` in `apps/desktop`.
-- `cargo fmt --all -- --check`, workspace Clippy and workspace tests.
-- `node scripts/smoke-all.mjs validation` in `apps/desktop` exercises the actual desktop picker,
-  authenticated discovery submission, evidence review and failed first run, checking that a
-  dependent component is excluded and configuration is retained.
-- Core regression tests cover monorepo and external working folders, selection enforcement,
-  missing-check reports, persistence, submission-aware clearing, failures and cancellation.
-- Frontend regression tests cover additive edits, stale folders and commands, duplicate
-  prevention, project switching, report recovery and Apply versus Apply and run.
+Every component terminal and worktree preparation gets `PATCHBAY_INSTANCE` (0 in the main
+checkout, the lowest free number from 1 per task), `PATCHBAY_INSTANCE_ID` (`main` or the task id),
+`PATCHBAY_PROJECT_ROOT` and `PATCHBAY_WORKTREE_ROOT`. Detected commands derive ports, database and
+compose project names from them with shell defaults, so the main checkout behaves as before, for
+example `PORT=$((3000 + ${PATCHBAY_INSTANCE:-0}*10))`. Patchbay does no templating. When
+`instances.parallelSafe` is set, environment starts and validations run per checkout at once;
+otherwise one at a time per project.
 
-The desktop smoke test uses a deterministic discovery agent fixture. Discovery with real agent
-providers across separate repositories still needs hands-on acceptance testing.
+## Secret files
+
+The briefing forbids opening or searching `.env`, `.env.*`, keys, certificates, credentials and
+similar files; templates (`.env.example`, `.sample`, `.template`) may be read for variable names.
+Detection sessions carry `PATCHBAY_SECRET_GUARD=1`, and the Claude/Codex `PreToolUse` hook denies
+file tools on matching paths or globs and shell commands that name them or search hidden or
+ignored files. Shell matching is best effort: quoting, variables and substitutions can hide a path.
+It relies on the provider hook integration being enabled. Worktree preparation may copy secret
+files from `$PATCHBAY_PROJECT_ROOT` without reading them; per-instance overrides go in a generated
+file the app's loader reads after `.env`, never in edits to `.env`.
+
+## Agents set it up themselves
+
+When an agent runs `agent validate…` or `agent environment start` in a project that was never
+detected (no `instances.detected`) and has nothing to run (no Validation terminal in the plan, or
+no stack at all), Patchbay starts the detection with the agent's provider and applies the result
+without review. Agents in other worktrees asking meanwhile join the same detection. The CLI prints
+progress lines and waits up to 15 minutes; on failure, timeout or a fallback to review it reports
+why and the original request runs with the current configuration. After applying, the detected
+worktree preparation is enabled and run in the asking worktree, and the request continues. A
+toast offers **Undo** (restores what is unchanged since, disables the preparation, and keeps the
+project marked detected) and **Review** (the applied proposal, read-only). Discarding an
+agent-triggered proposal that fell back to review also marks the project detected. The Stack
+panel's **Let agents set up run & test automatically** (workspace layout, on by default) turns
+this off; agents then get the old result with a hint.
+
+Pending submissions left by the retired standalone discovery (`propose-validation`) still get one
+last review under Run → Set up validation; the command itself now fails with a pointer to
+`propose-stack`.
+
+Verification: `smoke:stack` and `node scripts/smoke-all.mjs validation` cover detection with checks
+from the Run entry, retained selection on restart, Apply and run checks, and two checkouts running
+at once with distinct `PATCHBAY_INSTANCE` values. Detection with real providers, the secret guard
+and automatic setup need hands-on acceptance testing.

@@ -122,9 +122,14 @@ export const graphGroupStop = (
   task?: string,
   projectId = useStore.getState().project?.id,
 ) => invoke<void>('graph_group_stop', { groupId, task, projectId })
-/** Stop the running validation; `false` if none was running. */
-export const graphValidationCancel = (projectId = useStore.getState().project?.id) =>
-  invoke<boolean>('graph_validation_cancel', { projectId })
+/**
+ * Stop the running validation in `task`'s checkout (or a project-wide one); `false` if none was
+ * running. Parallel validation in other worktrees keeps running.
+ */
+export const graphValidationCancel = (
+  projectId = useStore.getState().project?.id,
+  task: string | null = useStore.getState().activeTask,
+) => invoke<boolean>('graph_validation_cancel', { projectId, task })
 export const componentContext = async (
   project: Project,
   componentId: string,
@@ -611,14 +616,17 @@ export const stackProposalRead = (projectId: string) =>
 /** Forget submission `id`; a newer one stays. */
 export const stackProposalClear = (projectId: string, id: string) =>
   invoke<boolean>('stack_proposal_clear', { projectId, id })
-/** Launch the stack detection agent with agent preset `terminal`. */
+/**
+ * Launch run & test detection with agent preset `terminal`. `detection` is an explicit request
+ * (a stack to replace, a check selection, an agent's automatic setup); without it a restart
+ * keeps the retained one.
+ */
 export const stackAgentStart = (
   project: Project,
   terminal: TerminalSpec,
   requestId: string,
   resume?: boolean,
-  stackId?: string,
-  newDetection = false,
+  detection?: { stackId?: string; componentIds?: string[]; auto?: boolean },
 ) =>
   invoke<string>('stack_agent_start', {
     projectId: project.projectId,
@@ -626,9 +634,29 @@ export const stackAgentStart = (
     terminal,
     requestId,
     resume,
-    stackId,
-    newDetection,
+    stackId: detection?.stackId,
+    componentIds: detection?.componentIds,
+    auto: detection?.auto,
+    newDetection: !!detection,
   })
+/** An agent asked to set up run & test (`agent_commands.rs` `request_setup`). */
+export const onAutoSetup = (
+  handler: (event: { projectId: string; task: string | null; sessionId: string }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ projectId: string; task: string | null; sessionId: string }>(
+    'patchbay://auto-setup',
+    (e) => handler(e.payload),
+  )
+/** What happened to an automatic setup; the agents waiting on it continue. */
+export type AutoSetupOutcome =
+  | { kind: 'applied'; setup?: string | null }
+  | { kind: 'review'; reason: string }
+  | { kind: 'failed'; reason: string }
+export const autoSetupReport = (projectId: string, outcome: AutoSetupOutcome) =>
+  invoke<boolean>('auto_setup_report', { projectId, outcome })
+/** Whether agents may set up run & test for the project themselves. */
+export const autoSetupSet = (projectId: string, enabled: boolean) =>
+  invoke<void>('auto_setup_set', { projectId, enabled })
 export const proposalRead = (projectId: string, task?: string) =>
   invoke<import('../types').PlannerProposal | null>('proposal_read', {
     projectId,
@@ -798,28 +826,14 @@ export const worktreeSetup = (projectId: string, task: string, action = 'read') 
   invoke<import('../types').WorktreeSetup | null>('worktree_setup', { projectId, task, action })
 export const enableWorktreeSetup = (projectId: string, command: string) =>
   invoke<void>('worktree_setup_enable', { projectId, command })
+export const disableWorktreeSetup = (projectId: string) =>
+  invoke<void>('worktree_setup_disable', { projectId })
 
-export const onValidationProposals = (handler: (event: { projectId: string }) => void) =>
-  listen<{ projectId: string }>('patchbay://validation-proposals', (e) => handler(e.payload))
+/** A submission the retired validation discovery agent left, reviewed once more. */
 export const validationProposalRead = (projectId: string) =>
   invoke<import('../types').PendingValidation | null>('validation_proposal_read', { projectId })
 export const validationProposalClear = (projectId: string, id: string) =>
   invoke<boolean>('validation_proposal_clear', { projectId, id })
-export const validationAgentStart = (
-  project: Project,
-  terminal: TerminalSpec,
-  requestId: string,
-  resume: boolean,
-  componentIds: string[],
-) =>
-  invoke<string>('validation_agent_start', {
-    projectId: project.projectId,
-    project,
-    terminal,
-    requestId,
-    resume,
-    componentIds,
-  })
 
 /** Read-only history; omitted repo lists the authorized repositories. */
 export const gitHistory = <T>(

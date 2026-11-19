@@ -87,7 +87,8 @@ export async function stopGroup(groupId: string, everywhere = false) {
 /** Stops the running validation; its report keeps the validators that already ran. */
 export async function stopValidation() {
   try {
-    await graphValidationCancel(useStore.getState().project?.id)
+    const s = useStore.getState()
+    await graphValidationCancel(s.project?.id, s.activeTask)
   } catch (e) {
     useStore.getState().setMessage(String(e), undefined, undefined, 'error')
   }

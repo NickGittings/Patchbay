@@ -59,11 +59,25 @@ impl Host for Desktop {
             serde_json::json!({"projectId":launch.project_id}),
         );
     }
-    fn validation_proposed(&self, launch: &LaunchContext) {
-        let _ = self.0.emit(
-            "patchbay://validation-proposals",
-            serde_json::json!({"projectId":launch.project_id}),
-        );
+    fn auto_setup_enabled(&self, project_id: &str) -> bool {
+        self.0
+            .state::<AppState>()
+            .project(project_id)
+            .is_ok_and(|p| !p.auto_setup_off.load(std::sync::atomic::Ordering::Relaxed))
+    }
+    /// The main window starts (or shows) detection with the asking agent's provider and
+    /// reports the outcome through `auto_setup_report`.
+    fn request_setup(&self, launch: &LaunchContext) -> anyhow::Result<()> {
+        self.0
+            .emit(
+                "patchbay://auto-setup",
+                serde_json::json!({
+                    "projectId": launch.project_id,
+                    "task": launch.task,
+                    "sessionId": launch.agent_session,
+                }),
+            )
+            .map_err(anyhow::Error::from)
     }
     /// Runs on the bridge's connection thread, so waiting blocks only this hook.
     fn ask_user(
@@ -99,6 +113,32 @@ impl Host for Desktop {
         }
         answer
     }
+}
+
+/// Whether agents may set up run & test for the project themselves.
+#[tauri::command]
+pub fn auto_setup_set(
+    project_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> CmdResult<()> {
+    state
+        .project(&project_id)?
+        .auto_setup_off
+        .store(!enabled, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+/// What the main window did with an automatic run & test detection; the agents waiting
+/// on it continue.
+#[tauri::command]
+pub fn auto_setup_report(
+    project_id: String,
+    outcome: patchbay_core::auto_setup::Outcome,
+    window: tauri::WebviewWindow,
+) -> CmdResult<bool> {
+    crate::main_only(&window)?;
+    Ok(patchbay_core::auto_setup::finish(&project_id, outcome))
 }
 
 /// Agent questions waiting for Chat, for a window that opened after they were asked.
@@ -290,6 +330,7 @@ pub async fn stack_proposal_clear(
     blocking(move || patchbay_core::stack_proposals::clear(&root, &id).map_err(err)).await
 }
 
+/// A submission the retired validation discovery agent left, reviewed once more.
 #[tauri::command]
 pub async fn validation_proposal_read(
     project_id: String,
@@ -299,7 +340,7 @@ pub async fn validation_proposal_read(
     blocking(move || patchbay_core::validation_proposals::read(&root).map_err(err)).await
 }
 
-/// Forget a reviewed stack proposal; a newer submission stays.
+/// Forget the retired discovery agent's reviewed submission.
 #[tauri::command]
 pub async fn validation_proposal_clear(
     project_id: String,

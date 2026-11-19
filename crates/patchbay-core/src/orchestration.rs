@@ -1415,6 +1415,7 @@ mod tests {
                 links: vec![],
                 groups: vec![],
                 schema_version: 4,
+                instances: None,
             };
             Self { dir, root, project }
         }

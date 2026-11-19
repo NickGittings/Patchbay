@@ -21,7 +21,10 @@ import {
   stackAgentSession,
   startStackAgent,
   useStackProposals,
+  type AutoApplied,
 } from '../lib/stackAgent'
+import { CheckList } from './ValidationAgentSetup'
+import { useGraphActionRunning } from '../lib/graphActivity'
 import type { PendingStack, ProposedStackTerminal } from '../types'
 import { mapEditsBlocked } from '../lib/mapSave'
 import { useStore, type FlowNode } from '../store'
@@ -412,14 +415,93 @@ function StackSuggestions() {
 const proposedKey = (t: ProposedStackTerminal) =>
   `${t.component}\n${t.terminal ?? `new:${t.name?.trim().toLowerCase()}`}`
 
-/** The agent's proposed stack, every terminal ticked, to apply or discard. */
+/** What parallel instances share and how detection kept them apart. */
+function IsolationReview({ pending }: { pending: PendingStack }) {
+  const isolation = pending.isolation
+  if (!isolation) return null
+  return (
+    <div className="stack-isolation" aria-label="Parallel instances">
+      <strong>Parallel instances</strong>
+      <p className="hint">
+        {isolation.parallelSafe
+          ? 'Worktrees can run their own copy of the app and its checks at the same time.'
+          : 'Worktrees run environments and checks one at a time until the blockers are solved.'}
+      </p>
+      {isolation.resources.map((r, i) => (
+        <p className="hint" key={`r${i}`}>
+          {r.name} ({r.kind}): <code>{r.approach}</code> · {r.evidence}
+        </p>
+      ))}
+      {isolation.blockers.map((b, i) => (
+        <p className="hint" key={`b${i}`}>
+          Blocker · {b.name}: {b.reason}
+        </p>
+      ))}
+    </div>
+  )
+}
+
+/** A setup applied without review because an agent asked for it: what changed, with Undo. */
+function AppliedReview({ applied }: { applied: AutoApplied }) {
+  const { pending } = applied
+  return (
+    <div className="task-action-result stack-suggestions" aria-label="Applied run & test setup">
+      <strong>Applied automatically · {pending.name}</strong>
+      <p className="hint">
+        An agent in {applied.checkout} set up run &amp; test. This is what was applied.
+      </p>
+      {pending.worktreeSetup && (
+        <p className="hint">
+          Worktree setup: <code>{pending.worktreeSetup.command}</code> ·{' '}
+          {pending.worktreeSetup.reason}
+        </p>
+      )}
+      {pending.terminals.map((t, i) => (
+        <p className="hint" key={i}>
+          Development · {t.component} › {t.terminal ?? t.name}
+          {t.command ? (
+            <>
+              : <code>{t.command}</code>
+            </>
+          ) : null}{' '}
+          · {t.reason}
+        </p>
+      ))}
+      <CheckList
+        checks={pending.checks ?? []}
+        missing={pending.missingChecks ?? []}
+        unchecked={[]}
+      />
+      <IsolationReview pending={pending} />
+      <div className="row">
+        <button onClick={applied.undo.run}>Undo</button>
+      </div>
+    </div>
+  )
+}
+
+/** Discard a proposal; one an agent triggered also stops agents from detecting again. */
+function discard(projectId: string, pending: PendingStack) {
+  const s = useStore.getState()
+  if (pending.auto && s.project?.id === projectId && !s.project.instances?.detected)
+    useStore.setState({
+      project: { ...s.project, instances: { parallelSafe: false, detected: true } },
+      dirty: true,
+    })
+  void discardStackProposal(projectId, pending.id)
+}
+
+/** The agent's proposed run & test setup, everything ticked, to apply or discard. */
 export function StackReview({ pending, projectId }: { pending: PendingStack; projectId: string }) {
   const nodes = useStore((s) => s.nodes)
   const busy = useStackProposals((s) => !!s.busy[projectId])
   const blocked = useStore((s) => mapEditsBlocked(s.projects[projectId]))
+  const running = useGraphActionRunning()
   const [unticked, setUnticked] = useState<ReadonlySet<string>>(() => new Set())
+  const [uncheckedChecks, setUncheckedChecks] = useState<number[]>([])
   const [includeSetup, setIncludeSetup] = useState(true)
   const chosen = pending.terminals.filter((t) => !unticked.has(proposedKey(t)))
+  const checks = (pending.checks ?? []).filter((_, i) => !uncheckedChecks.includes(i))
   const target = useStore((s) => s.groups.find((g) => g.id === pending.stackId))
   const members = [...new Set(chosen.map((t) => t.component))]
   const removals = target
@@ -440,7 +522,7 @@ export function StackReview({ pending, projectId }: { pending: PendingStack; pro
   const name = (id: string) => nodes.find((n) => n.id === id)?.data.name ?? id
   return (
     <div className="task-action-result stack-suggestions" aria-label="Proposed stack">
-      <strong>Proposed stack · {pending.name}</strong>
+      <strong>Proposed run &amp; test setup · {pending.name}</strong>
       <p className="hint">
         {target ? `Replaces “${target.name}” (${target.id}).` : 'Configures Development startup.'}{' '}
         {pending.orderedStartup ? 'Starts dependencies first.' : 'Starts members together.'}{' '}
@@ -550,9 +632,35 @@ export function StackReview({ pending, projectId }: { pending: PendingStack; pro
           )
         })}
       </div>
+      {((pending.checks?.length ?? 0) > 0 || (pending.missingChecks?.length ?? 0) > 0) && (
+        <div className="validator-suggestions" aria-label="Proposed checks">
+          <strong>Checks</strong>
+          <CheckList
+            checks={pending.checks ?? []}
+            missing={pending.missingChecks ?? []}
+            unchecked={uncheckedChecks}
+            onToggle={(i, on) =>
+              setUncheckedChecks((prev) => (on ? prev.filter((x) => x !== i) : [...prev, i]))
+            }
+          />
+        </div>
+      )}
+      <IsolationReview pending={pending} />
       <div className="row">
-        <button disabled={busy} onClick={() => void discardStackProposal(projectId, pending.id)}>
+        <button disabled={busy} onClick={() => discard(projectId, pending)}>
           Discard
+        </button>
+        <button
+          disabled={busy || blocked || running || !checks.length || (!!pending.stackId && !target)}
+          title={blocked ? 'Resolve the map conflict or project recovery first' : undefined}
+          onClick={() =>
+            void applyStackProposal(pending, chosen, projectId, includeSetup, {
+              checks,
+              run: true,
+            })
+          }
+        >
+          Apply and run checks
         </button>
         <button
           className="primary"
@@ -560,10 +668,16 @@ export function StackReview({ pending, projectId }: { pending: PendingStack; pro
             busy ||
             blocked ||
             (!!pending.stackId && !target) ||
-            (!target && !chosen.length && !(includeSetup && pending.worktreeSetup))
+            (!target &&
+              !chosen.length &&
+              !checks.length &&
+              !pending.isolation &&
+              !(includeSetup && pending.worktreeSetup))
           }
           title={blocked ? 'Resolve the map conflict or project recovery first' : undefined}
-          onClick={() => void applyStackProposal(pending, chosen, projectId, includeSetup)}
+          onClick={() =>
+            void applyStackProposal(pending, chosen, projectId, includeSetup, { checks })
+          }
         >
           Apply
         </button>
@@ -635,19 +749,41 @@ function StackAgent({ projectId, pending }: { projectId: string; pending?: Pendi
                 ? 'Locked until the proposed stack is applied or discarded'
                 : blocked
                   ? 'Resolve the map conflict or project recovery first'
-                  : 'An agent reads the project and proposes worktree preparation and services for you to review'
+                  : 'An agent reads the project and proposes how to prepare, run and test it in a worktree, and how worktrees run copies at the same time, for you to review'
           }
           onClick={() => {
             if (running)
               revealTerminal({ sid: stackAgentSession(projectId), componentId: MAP_SCOPE })
-            else if (preset) void startStackAgent(projectId, preset, stackId)
+            else if (preset) void startStackAgent(projectId, preset, { stackId })
           }}
         >
-          {running ? 'Show stack detection' : 'Detect stack'}
+          {running ? 'Show run & test detection' : 'Detect run & test setup'}
         </button>
       </div>
-      {locked && <p className="hint">Apply or discard the proposed stack to detect again.</p>}
+      {locked && <p className="hint">Apply or discard the proposed setup to detect again.</p>}
+      <AutoSetupToggle />
     </>
+  )
+}
+
+/** "Let agents set up run & test automatically": per project, in the workspace layout. */
+function AutoSetupToggle() {
+  const off = useStore((s) => s.autoSetupOff)
+  return (
+    <label className="validator-suggestion">
+      <input
+        type="checkbox"
+        checked={!off}
+        onChange={(e) => useStore.setState({ autoSetupOff: !e.target.checked })}
+      />
+      <span className="validator-suggestion-details">
+        <span>Let agents set up run &amp; test automatically</span>
+        <span className="hint">
+          An agent that validates or starts an environment before run &amp; test is set up starts
+          detection and applies it, with Undo.
+        </span>
+      </span>
+    </label>
   )
 }
 
@@ -705,14 +841,15 @@ export default function StackPanel() {
   const task = useStore((s) => s.activeTask)
   const projectId = useStore((s) => s.project?.id)
   const pending = useStackProposals((s) => (projectId ? s.pending[projectId] : undefined))
+  const applied = useStackProposals((s) => (projectId ? s.applied[projectId] : undefined))
   const groups = useStore((s) => s.groups)
   const report = useStore((s) => s.graphActionReport)
   return (
     <section className="component-groups" aria-label="Stacks">
       {!groups.length && (
         <p className="panel-empty panel-empty-start">
-          Start related Development terminals together. Create a stack or discover one in Stack
-          Detection.
+          Start related Development terminals together. Create a stack or detect one in Run &amp;
+          test detection.
         </p>
       )}
       <PanelSection title="Stacks" actions={<NewStackForm />}>
@@ -721,11 +858,12 @@ export default function StackPanel() {
         ))}
       </PanelSection>
       <WorktreeSetupStatus key={task ?? 'main'} />
-      <PanelDetails title="Stack Detection" reveal={!!pending}>
+      <PanelDetails title="Run & test detection" reveal={!!pending || !!applied}>
         {projectId && <StackAgent key={projectId} projectId={projectId} pending={pending} />}
         {projectId && pending && (
           <StackReview key={pending.id} pending={pending} projectId={projectId} />
         )}
+        {applied && !pending && <AppliedReview applied={applied} />}
         <StackSuggestions />
       </PanelDetails>
       <PanelDetails title="Worktree preparation">

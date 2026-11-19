@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 pub const SESSION_ENV: &str = "PATCHBAY_REPORT_SESSION";
 pub const GENERATION_ENV: &str = "PATCHBAY_REPORT_GENERATION";
 pub const PROVIDER_ENV: &str = "PATCHBAY_REPORT_PROVIDER";
+/// Set on run & test detection sessions: their `PreToolUse` hook denies reading or
+/// searching secret files ([`secret_path`]).
+pub const SECRET_GUARD_ENV: &str = "PATCHBAY_SECRET_GUARD";
 pub const JOURNAL_ENV: &str = "PATCHBAY_REPORT_DIR";
 const MARKER: &str = "Patchbay status v1";
 const EVENTS: &[&str] = &[
@@ -419,6 +422,144 @@ fn ask_permission_in_chat(provider: Adapter, input: &Value) -> Option<Value> {
     Some(permission_output(answers.first()?))
 }
 
+/// Templates whose variable names detection may read.
+fn template_name(name: &str) -> bool {
+    [".example", ".sample", ".template", ".dist"]
+        .iter()
+        .any(|suffix| name.contains(suffix))
+}
+
+/// Whether `path` (a file path, or a glob naming files) names a secret file: `.env`,
+/// `.env.*` (but not templates such as `.env.example`), keys and certificates, `id_*`
+/// private keys, `credentials*`, `secrets*`, `.npmrc`, `.netrc`, `*.tfvars`, or anything
+/// under `.aws/` or `.ssh/`.
+#[must_use]
+pub fn secret_path(path: &str) -> bool {
+    let path = path.trim().trim_matches(['"', '\'']);
+    let mut parts = path.split(['/', '\\']).filter(|p| !p.is_empty());
+    let Some(name) = parts.next_back() else {
+        return false;
+    };
+    if path
+        .split(['/', '\\'])
+        .any(|part| matches!(part, ".aws" | ".ssh"))
+    {
+        return true;
+    }
+    let lower = name.to_ascii_lowercase();
+    if template_name(&lower) {
+        return false;
+    }
+    lower.starts_with(".env")
+        || [".pem", ".key", ".p12", ".pfx", ".tfvars"]
+            .iter()
+            .any(|ext| lower.ends_with(ext))
+        || (lower.starts_with("id_") && !lower.contains('.'))
+        || lower.starts_with("credentials")
+        || lower.starts_with("secrets")
+        || matches!(lower.as_str(), ".npmrc" | ".netrc")
+}
+
+/// Whether one shell command (no separators) searches hidden or ignored files.
+fn searches_hidden(words: &[&str]) -> bool {
+    let program = words.first().map(|w| w.rsplit('/').next().unwrap_or(w));
+    match program {
+        Some("rg" | "ag" | "fd" | "fdfind") => words.iter().any(|w| {
+            matches!(
+                *w,
+                "--hidden" | "--no-ignore" | "-uu" | "-uuu" | "-H" | "-u"
+            ) || w.starts_with("-uu")
+        }),
+        Some("grep" | "egrep" | "fgrep") => {
+            words.iter().any(|w| {
+                matches!(*w, "-r" | "-R" | "--recursive" | "--dereference-recursive")
+                    || (w.starts_with('-')
+                        && !w.starts_with("--")
+                        && (w.contains('r') || w.contains('R')))
+            }) && !words.iter().any(|w| w.starts_with("--exclude"))
+        }
+        _ => false,
+    }
+}
+
+/// Best effort: a shell command that names a secret file outside `ls`, `test` or `git
+/// check-ignore`, or searches hidden or ignored files. Quoting, variables and
+/// substitutions can hide a path from this check.
+fn secret_command(command: &str) -> bool {
+    command
+        .split(['\n', ';', '|', '&', '(', ')', '`'])
+        .map(|segment| {
+            segment
+                .split(|c: char| c.is_whitespace() || c == '<' || c == '>')
+                .map(|w| w.trim_matches(['"', '\'']))
+                .filter(|w| !w.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .any(|words| {
+            let program = words.first().map(|w| w.rsplit('/').next().unwrap_or(w));
+            let existence_only = matches!(program, Some("ls" | "test" | "["))
+                || (program == Some("git") && words.get(1) == Some(&"check-ignore"));
+            searches_hidden(&words)
+                || (!existence_only
+                    && words.iter().any(|w| {
+                        // Excluding secrets from a search names them without reading them.
+                        !w.starts_with("--exclude") && !w.starts_with("--glob=!") && secret_path(w)
+                            || (!w.starts_with("--exclude")
+                                && w.split_once('=')
+                                    .is_some_and(|(_, value)| secret_path(value)))
+                    }))
+        })
+}
+
+/// Why a detection session's tool call is refused, if it reads, edits or searches a
+/// secret file. File tools are checked by their path and glob fields; shell tools by
+/// [`secret_command`].
+fn secret_guard(input: &Value) -> Option<String> {
+    let tool = input.get("tool_input")?;
+    let field = |key: &str| tool.get(key).and_then(Value::as_str);
+    let named = ["file_path", "path", "notebook_path", "glob"]
+        .into_iter()
+        .filter_map(field)
+        .chain(
+            (input.get("tool_name").and_then(Value::as_str) == Some("Glob"))
+                .then(|| field("pattern"))
+                .flatten(),
+        )
+        .find(|path| secret_path(path));
+    if let Some(path) = named {
+        return Some(format!(
+            "Patchbay blocks run & test detection from reading secret files ({path}). Learn \
+             that it exists from ls or git check-ignore only, and read .env.example-style \
+             templates for variable names."
+        ));
+    }
+    // Codex can pass argv as an array.
+    let command = match tool.get("command") {
+        Some(Value::String(c)) => c.clone(),
+        Some(Value::Array(words)) => words
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => return None,
+    };
+    secret_command(&command).then(|| {
+        "Patchbay blocks run & test detection from reading or searching secret files \
+         (.env, keys, credentials) and hidden or ignored files. Learn that a secret file \
+         exists from ls or git check-ignore only."
+            .to_string()
+    })
+}
+
+/// A `PreToolUse` refusal with `reason`, which both providers take.
+fn deny_output(reason: &str) -> Value {
+    json!({"hookSpecificOutput":{
+        "hookEventName":"PreToolUse",
+        "permissionDecision":"deny",
+        "permissionDecisionReason":reason,
+    }})
+}
+
 /// What a planner's hook event says about Claude's native plan dialog.
 #[derive(Debug, PartialEq, Eq)]
 enum PlanSignal<'a> {
@@ -694,6 +835,9 @@ pub fn reporter(provider: &str) {
             return Ok(());
         }
         let input: Value = serde_json::from_slice(&bytes)?;
+        let guarded = std::env::var(SECRET_GUARD_ENV).ok().as_deref() == Some("1")
+            && input.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse");
+        let refusal = guarded.then(|| secret_guard(&input)).flatten();
         let mut asked = None;
         let mut approval = None;
         if let Some(mut event) = normalize(provider, &input) {
@@ -708,6 +852,12 @@ pub fn reporter(provider: &str) {
                 asked = questions;
                 approval = permission;
             }
+        }
+        if let Some(reason) = refusal {
+            let mut stdout = std::io::stdout().lock();
+            serde_json::to_writer(&mut stdout, &deny_output(&reason))?;
+            stdout.flush()?;
+            return Ok(());
         }
         if let Some(mut decided) = approval
             && let Some(output) = ask_permission_in_chat(provider, &input)
@@ -1919,5 +2069,89 @@ mod tests {
         let handlers = reinstalled["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(handlers.len(), 1);
         assert_eq!(handlers[0]["hooks"][0]["timeout"], QUESTION_HOOK_TIMEOUT);
+    }
+
+    #[test]
+    fn secret_paths_are_blocked_and_templates_allowed() {
+        for path in [
+            ".env",
+            ".env.local",
+            "config/.env.prod",
+            "/repo/.env*",
+            "certs/server.pem",
+            "tls.key",
+            "store.p12",
+            "/home/me/.ssh/id_ed25519",
+            "id_rsa",
+            ".aws/config",
+            "credentials.json",
+            "secrets.yaml",
+            ".npmrc",
+            ".netrc",
+            "prod.tfvars",
+        ] {
+            assert!(secret_path(path), "{path}");
+        }
+        for path in [
+            ".env.example",
+            "web/.env.sample",
+            ".env.template",
+            "src/id_utils.ts",
+            "src/keys.ts",
+            "package.json",
+            "",
+        ] {
+            assert!(!secret_path(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn the_guard_denies_secret_reads_searches_and_commands_only() {
+        let call = |tool: &str, input: Value| {
+            secret_guard(
+                &json!({"hook_event_name":"PreToolUse","tool_name":tool,"tool_input":input}),
+            )
+        };
+        assert!(call("Read", json!({"file_path":"/repo/.env"})).is_some());
+        assert!(call("Read", json!({"file_path":"/repo/.env.example"})).is_none());
+        assert!(call("Edit", json!({"file_path":"api/.env.local"})).is_some());
+        assert!(call("Grep", json!({"pattern":"KEY","glob":".env*"})).is_some());
+        assert!(call("Grep", json!({"pattern":"PORT","path":"api"})).is_none());
+        assert!(call("Glob", json!({"pattern":"**/.env.*"})).is_some());
+        assert!(call("Glob", json!({"pattern":"**/package.json"})).is_none());
+        for command in [
+            "cat .env",
+            "grep PORT api/.env.local",
+            "head -5 config/.env.prod | cut -c1-3",
+            "ls && cat ~/.ssh/id_rsa",
+            "rg --hidden PORT",
+            "rg -uu DATABASE_URL",
+            "grep -rn SECRET .",
+            "source ./.env",
+        ] {
+            assert!(
+                call("Bash", json!({"command":command})).is_some(),
+                "{command}"
+            );
+        }
+        for command in [
+            "ls -la .env .env.example",
+            "git check-ignore -q .env",
+            "test -f .env && echo present",
+            "cat .env.example",
+            "rg PORT src",
+            "grep -rn PORT --exclude=.env* .",
+            "npm test",
+        ] {
+            assert!(
+                call("Bash", json!({"command":command})).is_none(),
+                "{command}"
+            );
+        }
+        assert!(call("exec", json!({"command":["cat", ".env"]})).is_some());
+        assert_eq!(
+            deny_output("x")["hookSpecificOutput"]["permissionDecision"],
+            "deny"
+        );
     }
 }

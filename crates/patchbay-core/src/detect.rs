@@ -1213,6 +1213,7 @@ fn build_project(
 
     Project {
         worktree_setup: None,
+        instances: None,
         schema_version: SCHEMA_VERSION,
         name: dir_name(root),
         root: root.display().to_string(),

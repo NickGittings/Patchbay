@@ -15,7 +15,7 @@ import { mapEditsBlocked, onMapCreated } from './mapSave'
 import { revealTerminal } from './attention'
 import { arrangeMap, undoArrange } from './arrange'
 import { planTerminals } from './plan'
-import { launching, mapPresetId, startMapAgent } from './sessions'
+import { launching, mapPresetId, startMapAgent, type StackDetection } from './sessions'
 
 /** A dependency to review: found in manifests, or proposed by the detection agent. */
 export interface FoundLink {
@@ -273,9 +273,8 @@ export async function startDetectionAgent(
     terminalId,
     label,
     tab,
-    componentIds,
-    stackId,
-  }: { terminalId: string; label: string; tab: string; componentIds?: string[]; stackId?: string },
+    detection,
+  }: { terminalId: string; label: string; tab: string; detection?: StackDetection },
 ) {
   const sid = sessionId(MAP_SCOPE, terminalId, null, projectId)
   const s = useStore.getState()
@@ -311,11 +310,9 @@ export async function startDetectionAgent(
   const ours = useStore.getState().runtimeTerminals[sid]
   let started = false
   try {
-    started = stackId
-      ? await startMapAgent(projectId, preset, terminalId, undefined, stackId)
-      : componentIds
-        ? await startMapAgent(projectId, preset, terminalId, componentIds)
-        : await startMapAgent(projectId, preset, terminalId)
+    started = detection
+      ? await startMapAgent(projectId, preset, terminalId, detection)
+      : await startMapAgent(projectId, preset, terminalId)
   } finally {
     if (!started && useStore.getState().runtimeTerminals[sid] === ours)
       useStore.setState((st) => {

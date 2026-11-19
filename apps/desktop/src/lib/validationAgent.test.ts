@@ -4,7 +4,6 @@ import type { PendingValidation } from '../types'
 vi.mock('./ipc', () => ({
   validationProposalRead: vi.fn(async () => null),
   validationProposalClear: vi.fn(async () => true),
-  onValidationProposals: vi.fn(async () => () => {}),
 }))
 vi.mock('./dependencies', () => ({ startDetectionAgent: vi.fn() }))
 vi.mock('./mapSave', () => ({
@@ -93,17 +92,18 @@ test('project switching and competing actions prevent applying and running', asy
   expect(useStore.getState().nodes[0].data.terminals).toHaveLength(1)
 })
 
-test('saved proposals recover and clearing an old submission preserves a newer one', async () => {
+test('a leftover submission is read once and cleared only by its own id', async () => {
   const { validationProposalRead, validationProposalClear } = await import('./ipc')
-  const { refreshValidationProposal, discardValidationProposal } = await import('./validationAgent')
+  const { readValidationProposal, discardValidationProposal } = await import('./validationAgent')
   useValidationProposals.setState({ pending: {} })
   const recovered = { ...pending, id: 'recovered-submission' }
   vi.mocked(validationProposalRead).mockResolvedValueOnce(recovered)
-  await refreshValidationProposal('p')
+  expect(await readValidationProposal('p')).toBe(true)
   expect(useValidationProposals.getState().pending.p).toEqual(recovered)
-  const newer = { ...pending, id: 'new-submission' }
-  vi.mocked(validationProposalRead).mockResolvedValueOnce(newer)
   await discardValidationProposal('p', recovered.id)
   expect(validationProposalClear).toHaveBeenCalledWith('p', recovered.id)
-  expect(useValidationProposals.getState().pending.p).toEqual(newer)
+  expect(useValidationProposals.getState().pending.p).toBeUndefined()
+  // A stale read can't bring the cleared one back.
+  vi.mocked(validationProposalRead).mockResolvedValueOnce(recovered)
+  expect(await readValidationProposal('p')).toBe(false)
 })

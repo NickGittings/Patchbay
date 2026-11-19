@@ -24,6 +24,9 @@ vi.mock('./ipc', () => ipc)
 vi.mock('./dependencies', () => ({ startDetectionAgent: vi.fn() }))
 vi.mock('./mapSave', () => ({ mapEditsBlocked: () => false }))
 vi.mock('./rail', () => ({ selectPanel: vi.fn() }))
+vi.mock('./actions', () => ({ graphActionIn: vi.fn(async () => ({})) }))
+vi.mock('./plan', () => ({ planTerminals: () => [] }))
+vi.mock('./agentRoles', () => ({ roleTerminal: () => undefined }))
 
 import { applyStackProposal, discardStackProposal, startStackAgent } from './stackAgent'
 
@@ -229,11 +232,11 @@ test('a replacement may remove every member', async () => {
 
 test('Detect again carries the stable stack id into detection', async () => {
   const preset: TerminalSpec = { id: 'agent', name: 'Agent', kind: 'agent', command: 'agent' }
-  await startStackAgent('p', preset, 'target')
+  await startStackAgent('p', preset, { stackId: 'target' })
   expect(startDetectionAgent).toHaveBeenCalledWith(
     'p',
     preset,
-    expect.objectContaining({ stackId: 'target' }),
+    expect.objectContaining({ detection: { stackId: 'target' } }),
   )
 })
 

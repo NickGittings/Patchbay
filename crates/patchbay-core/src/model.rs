@@ -5,7 +5,8 @@ use std::io::Write;
 use std::path::{Component as PathPart, Path, PathBuf};
 use std::sync::Mutex;
 
-pub const SCHEMA_VERSION: u32 = 4;
+/// Format 5 adds `instances`, run & test detection's parallel-instance verdict.
+pub const SCHEMA_VERSION: u32 = 5;
 /// Reserved component scope for project-level planner sessions.
 pub const SCAN_SCOPE: &str = "@scan";
 pub const COORDINATOR_SCOPE: &str = "@coordinator";
@@ -52,11 +53,29 @@ pub struct Project {
     pub links: Vec<Link>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<ComponentGroup>,
+    /// What run & test detection found about running worktrees' copies of the app at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instances: Option<Instances>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorktreeSetup {
     pub command: String,
+}
+
+/// Run & test detection's verdict on parallel instances, applied with its proposal.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Instances {
+    /// Worktrees may start environments and run checks at the same time as each other.
+    #[serde(default)]
+    pub parallel_safe: bool,
+    /// What was isolated and what still blocks parallel runs, for agents' briefings.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+    /// Detection was applied or declined, so agents don't trigger it again.
+    #[serde(default)]
+    pub detected: bool,
 }
 
 /// A reusable environment. Ordering is opt-in and follows links within the group.
@@ -780,6 +799,7 @@ mod tests {
         };
         let project = Project {
             worktree_setup: None,
+            instances: None,
             schema_version: SCHEMA_VERSION,
             name: "shop".into(),
             root: "/code/shop".into(),
