@@ -163,8 +163,9 @@ fn wait(
 }
 
 /// Whether an agent's `request` should set run & test up first: detection was never
-/// applied or declined, and there is nothing to run (no Validation terminal in the
-/// validation's plan, or no stack at all for an environment start).
+/// applied or declined, and the project has nothing of that kind to run (no Validation
+/// terminal anywhere for a validation that covers components, no stack at all for an
+/// environment start). A project with some checks keeps its ordinary report.
 #[must_use]
 pub fn needed(
     project: &Project,
@@ -177,8 +178,16 @@ pub fn needed(
     }
     match request {
         ActionRequest::StartGroup { .. } => project.groups.is_empty(),
-        _ => ActionPlan::build(project, project_id, request.clone(), task)
-            .is_ok_and(|plan| plan.sessions.is_empty()),
+        _ => {
+            let validated = project.components.iter().any(|c| {
+                c.terminals
+                    .iter()
+                    .any(|t| t.action == Some(crate::model::TerminalAction::Validation))
+            });
+            !validated
+                && ActionPlan::build(project, project_id, request.clone(), task)
+                    .is_ok_and(|plan| !plan.component_ids().is_empty())
+        }
     }
 }
 
@@ -289,9 +298,8 @@ fn run_within(
                     "Worktree setup `{command}` finished in this worktree."
                 ));
             }
-            Ok(setup) => lines.push(format!(
-                "Worktree setup `{command}` didn't finish ({:?}); continuing without it.",
-                setup.status
+            Ok(_) => lines.push(format!(
+                "Worktree setup `{command}` didn't finish, so it was marked skipped for this worktree and the request continues without it; rerun it from the worktree's setup status."
             )),
             Err(e) => lines.push(format!(
                 "Worktree setup `{command}` couldn't run: {e:#}; continuing without it."
@@ -387,12 +395,27 @@ mod tests {
         });
         assert!(!needed(&project, "p", &validate, None));
         assert!(!needed(&project, "p", &start, None));
-        // Unknown components keep their ordinary error.
+        // A project with checks elsewhere keeps its ordinary report for others.
         project.instances = None;
+        project.components.push(
+            serde_json::from_value(
+                serde_json::json!({"id":"web","name":"Web","kind":"frontend",
+                "path":"web","terminals":[{"id":"lint","name":"Lint","kind":"task",
+                "command":"npm run lint","action":"validation"}]}),
+            )
+            .unwrap(),
+        );
+        assert!(!needed(&project, "p", &validate, None));
+        project.components.pop();
+        // Unknown components keep their ordinary error, and an empty plan sets nothing up.
         let unknown = ActionRequest::ValidateSelected {
             component_ids: vec!["db".into()],
         };
         assert!(!needed(&project, "p", &unknown, None));
+        let nothing_changed = ActionRequest::ValidateChanged {
+            component_ids: vec![],
+        };
+        assert!(!needed(&project, "p", &nothing_changed, None));
     }
 
     /// A desktop whose detection ends with `outcome` (or fails to start), and whose detection

@@ -5,6 +5,7 @@ vi.mock('./ipc', () => ({
   validationProposalRead: vi.fn(async () => null),
   validationProposalClear: vi.fn(async () => true),
 }))
+vi.mock('./sessions', () => ({ launching: () => false }))
 vi.mock('./dependencies', () => ({ startDetectionAgent: vi.fn() }))
 vi.mock('./mapSave', () => ({
   mapEditsBlocked: () => false,

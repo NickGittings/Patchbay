@@ -1597,7 +1597,7 @@ async fn worktree_setup_enable(
     project_id: String,
     state: State<'_, AppState>,
     command: String,
-) -> CmdResult<()> {
+) -> CmdResult<Option<String>> {
     let (root, _) = task_repo(&state, &project_id)?;
     blocking(move || patchbay_core::worktree_setup::enable(&root, &command).map_err(err)).await
 }
@@ -2145,6 +2145,8 @@ async fn stack_agent_start(
                 None,
             );
             launch = bridge.call(patchbay_core::session::Request::DetectionLaunch { id })?;
+            // A restart by hand is reviewed, unless an agent still waits for this detection.
+            launch.auto &= patchbay_core::auto_setup::running(&project_id);
         }
         let project = access.restrict(project, &[]).map_err(err)?;
         let (job, mut spec) =

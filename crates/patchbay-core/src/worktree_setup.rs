@@ -49,14 +49,19 @@ fn write(root: &Path, id: &str, setup: Setup) -> Result<Setup> {
         Ok(setup)
     })
 }
-/// Enable only this exact command, in the uncommitted common git directory.
+/// Enable only this exact command, in the uncommitted common git directory. Returns the
+/// command enabled before, so an Undo can put it back.
 /// # Errors
 /// Fails if the local store cannot be written.
-pub fn enable(root: &Path, command: &str) -> Result<()> {
+pub fn enable(root: &Path, command: &str) -> Result<Option<String>> {
     let dir = tasks::store_dir(root)?;
+    let file = dir.join("setup-enabled.json");
+    let previous = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<String>(&b).ok());
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("setup-enabled.json"), serde_json::to_vec(command)?)?;
-    Ok(())
+    std::fs::write(file, serde_json::to_vec(command)?)?;
+    Ok(previous)
 }
 /// # Errors
 /// Fails when the store is unavailable.
@@ -210,7 +215,9 @@ pub fn disable(root: &Path) -> Result<()> {
 }
 
 /// Run `command` as task `id`'s preparation now, recording it on a task created before it
-/// was configured, and wait up to `wait` for it to end. The command must be enabled.
+/// was configured, and wait up to `wait` for it to end. The command must be enabled. One
+/// that fails or outlives `wait` is stopped and marked skipped, so it never gates the
+/// worktree's agent launches ([`require_ready`]); the worktree's setup status offers a retry.
 /// # Errors
 /// Fails if the command isn't enabled, the task is gone, or the service fails.
 pub fn run_now(
@@ -246,6 +253,10 @@ pub fn run_now(
     while setup.status == Status::Preparing && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_secs(1));
         setup = read(root, id, call)?.ok_or_else(|| anyhow::anyhow!("Worktree setup vanished"))?;
+    }
+    if setup.status != Status::Ready {
+        setup = action(project, project_id, id, "skip", call)?
+            .ok_or_else(|| anyhow::anyhow!("Worktree setup vanished"))?;
     }
     Ok(setup)
 }

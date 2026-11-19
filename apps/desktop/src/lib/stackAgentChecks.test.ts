@@ -12,7 +12,8 @@ vi.mock('./ipc', () => ({
   disableWorktreeSetup: vi.fn(async () => {}),
   syncAgentProject: vi.fn(async () => {}),
 }))
-vi.mock('./dependencies', () => ({ startDetectionAgent: vi.fn(async () => {}) }))
+vi.mock('./sessions', () => ({ launching: () => false }))
+vi.mock('./dependencies', () => ({ startDetectionAgent: vi.fn(async () => true) }))
 vi.mock('./mapSave', () => ({
   mapEditsBlocked: () => false,
   flushMapSaves: vi.fn(async () => true),
@@ -24,6 +25,7 @@ const { applyStackProposal, autoApply, startAutoSetup, useStackProposals } =
 const { graphActionIn } = await import('./actions')
 const ipc = await import('./ipc')
 const { startDetectionAgent } = await import('./dependencies')
+const { flushMapSaves } = await import('./mapSave')
 
 const pending = (): PendingStack => ({
   id: `submission-${Math.random()}`,
@@ -150,4 +152,38 @@ test('an automatic setup for a project in the background waits for review', asyn
     reason: 'switch to P in Patchbay to review it',
   })
   expect(ipc.enableWorktreeSetup).not.toHaveBeenCalled()
+})
+
+test('a detection already running or waiting for review answers the agent at once', async () => {
+  useStackProposals.setState({ pending: { p: pending() } })
+  await startAutoSetup('p', null, 'agent')
+  expect(ipc.autoSetupReport).toHaveBeenCalledWith('p', expect.objectContaining({ kind: 'review' }))
+  expect(startDetectionAgent).not.toHaveBeenCalled()
+  useStackProposals.setState({ pending: {} })
+  vi.mocked(startDetectionAgent).mockResolvedValueOnce(false)
+  await startAutoSetup('p', null, 'agent')
+  expect(ipc.autoSetupReport).toHaveBeenLastCalledWith('p', {
+    kind: 'failed',
+    reason: 'Patchbay could not start run & test detection',
+  })
+})
+
+test('an automatic apply that cannot be saved is taken back and kept for review', async () => {
+  vi.mocked(flushMapSaves).mockResolvedValueOnce(false)
+  const p = { ...pending(), auto: true }
+  await autoApply('p', p)
+  expect(terminals('api')).toHaveLength(1)
+  expect(terminals('api')[0].action).toBeUndefined()
+  expect(useStore.getState().groups).toHaveLength(0)
+  expect(useStore.getState().project?.instances).toBeUndefined()
+  expect(ipc.stackProposalClear).not.toHaveBeenCalled()
+  expect(ipc.autoSetupReport).toHaveBeenCalledWith('p', expect.objectContaining({ kind: 'review' }))
+})
+
+test('undo puts back the preparation command that was enabled before', async () => {
+  vi.mocked(ipc.enableWorktreeSetup).mockResolvedValueOnce('make bootstrap')
+  await autoApply('p', { ...pending(), auto: true })
+  useStackProposals.getState().applied.p.undo.run()
+  expect(ipc.enableWorktreeSetup).toHaveBeenLastCalledWith('p', 'make bootstrap')
+  expect(ipc.disableWorktreeSetup).not.toHaveBeenCalled()
 })

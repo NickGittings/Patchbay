@@ -44,14 +44,18 @@ file the app's loader reads after `.env`, never in edits to `.env`.
 ## Agents set it up themselves
 
 When an agent runs `agent validate…` or `agent environment start` in a project that was never
-detected (no `instances.detected`) and has nothing to run (no Validation terminal in the plan, or
-no stack at all), Patchbay starts the detection with the agent's provider and applies the result
+detected (no `instances.detected`) and has nothing of that kind configured (no Validation terminal
+anywhere for a validation that covers components, or no stack at all), Patchbay starts the detection with the agent's provider and applies the result
 without review. Agents in other worktrees asking meanwhile join the same detection. The CLI prints
 progress lines and waits up to 15 minutes; on failure, timeout or a fallback to review it reports
 why and the original request runs with the current configuration. After applying, the detected
-worktree preparation is enabled and run in the asking worktree, and the request continues. A
-toast offers **Undo** (restores what is unchanged since, disables the preparation, and keeps the
-project marked detected) and **Review** (the applied proposal, read-only). Discarding an
+worktree preparation is enabled and run in the asking worktree, and the request continues; a
+preparation that fails or outlives 10 minutes is marked skipped there, so it never blocks that
+worktree's agents. A detection already running or waiting for review answers the agent at once,
+and a proposal whose save fails is taken back and left for review. A toast offers **Undo**
+(restores what is unchanged since, re-enables the preparation command enabled before or disables
+it, and keeps the project marked detected) and **Review** (the applied proposal, read-only).
+Restarting the detection terminal by hand gives a reviewed proposal unless an agent still waits. Discarding an
 agent-triggered proposal that fell back to review also marks the project detected. The Stack
 panel's **Let agents set up run & test automatically** (workspace layout, on by default) turns
 this off; agents then get the old result with a hint.

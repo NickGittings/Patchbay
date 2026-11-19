@@ -30,7 +30,7 @@ import { proposedPatch, proposedTerminal, sameStackName } from './stack'
 import { graphActionIn } from './actions'
 import { planTerminals } from './plan'
 import { roleTerminal } from './agentRoles'
-import type { StackDetection } from './sessions'
+import { launching, type StackDetection } from './sessions'
 
 /** A proposal applied without review because an agent asked for it, and how to undo it. */
 export interface AutoApplied {
@@ -213,6 +213,8 @@ export interface Applied {
   before: { nodes: unknown[]; groups: ComponentGroup[]; project: unknown }
   after: { nodes: unknown[]; groups: ComponentGroup[] }
   setup?: string
+  /** The preparation command enabled locally before an automatic apply enabled `setup`. */
+  previouslyEnabled?: string | null
 }
 
 /**
@@ -295,6 +297,7 @@ export async function applyStackProposal(
       'None of the chosen terminals can be applied: they were removed, renamed, or are no longer task terminals (or are Validation ones).',
     )
   const before = { nodes: s.nodes, groups: s.groups, project: s.project }
+  const wasDirty = s.dirty
   const task = s.activeTask
   if (setup || verdict) {
     const instances: Instances | undefined = verdict
@@ -381,7 +384,18 @@ export async function applyStackProposal(
     setBusy(projectId, true)
     try {
       if (!(await flushMapSaves(projectId))) {
-        if (!options.auto && useStore.getState().project?.id === projectId)
+        // Unreviewed edits that can't be saved are taken back; the proposal stays for review.
+        if (options.auto) {
+          if (useStore.getState().project?.id === projectId)
+            useStore.setState({
+              nodes: before.nodes,
+              groups: before.groups,
+              project: before.project,
+              dirty: wasDirty,
+            })
+          return null
+        }
+        if (useStore.getState().project?.id === projectId)
           s.setMessage(
             'The proposal was applied locally. Resolve the map save error or conflict before running its checks.',
             undefined,
@@ -389,7 +403,7 @@ export async function applyStackProposal(
             'warning',
           )
         await discardStackProposal(projectId, pending.id, true)
-        return options.auto ? null : result
+        return result
       }
     } finally {
       setBusy(projectId, false)
@@ -458,7 +472,11 @@ export function undoApplied(projectId: string, applied: Applied): MessageAction 
         dirty: true,
       })
       if (applied.setup)
-        void disableWorktreeSetup(projectId).catch((e: unknown) =>
+        void (
+          applied.previouslyEnabled
+            ? enableWorktreeSetup(projectId, applied.previouslyEnabled)
+            : disableWorktreeSetup(projectId)
+        ).catch((e: unknown) =>
           useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
         )
       useStackProposals.setState(({ applied: all }) => {
@@ -504,6 +522,20 @@ export async function startAutoSetup(projectId: string, task: string | null, ses
       kind: 'review',
       reason: 'the map has a save conflict or is in recovery',
     })
+  // A detection already running or waiting for review isn't automatic: say so at once rather
+  // than leave the agent waiting for an outcome that never comes.
+  const sid = stackAgentSession(projectId)
+  if (s.sessions[sid]?.running || launching(sid))
+    return report(projectId, {
+      kind: 'review',
+      reason:
+        'run & test detection is already running in Patchbay, and its proposal waits for review',
+    })
+  if (useStackProposals.getState().pending[projectId])
+    return report(projectId, {
+      kind: 'review',
+      reason: 'a run & test proposal is already waiting for review in the Stack panel',
+    })
   const presets = planTerminals(s.devices)
   const adapter = s.sessionRecords.find((r) => r.id === sessionId)?.metadata.adapter
   const preset =
@@ -512,7 +544,8 @@ export async function startAutoSetup(projectId: string, task: string | null, ses
     presets[0]
   if (!preset) return report(projectId, { kind: 'failed', reason: 'No agent preset is available' })
   try {
-    await startStackAgent(projectId, preset, { auto: true })
+    if (!(await startStackAgent(projectId, preset, { auto: true })))
+      report(projectId, { kind: 'failed', reason: 'Patchbay could not start run & test detection' })
   } catch (e) {
     report(projectId, { kind: 'failed', reason: String(e) })
   }
@@ -540,21 +573,26 @@ export async function autoApply(projectId: string, pending: PendingStack) {
   const applied = await applyStackProposal(pending, pending.terminals, projectId, true, {
     auto: true,
   })
-  if (!applied) return review('it could not be applied or saved')
-  try {
-    if (applied.setup) await enableWorktreeSetup(projectId, applied.setup)
-    const project = projectOf(projectId)
-    if (project) await syncAgentProject(project)
-  } catch (e) {
-    report(projectId, { kind: 'failed', reason: String(e) })
-    return
-  }
-  report(projectId, { kind: 'applied', setup: applied.setup ?? null })
+  if (!applied) return review('it could not be applied or the map could not be saved')
   const checkout = checkoutName(askedFrom.get(projectId))
+  // Undo is available from here on, whatever the remaining steps do.
   const undo = undoApplied(projectId, applied)
   useStackProposals.setState(({ applied: all }) => ({
     applied: { ...all, [projectId]: { pending, checkout, undo } },
   }))
+  try {
+    if (applied.setup)
+      applied.previouslyEnabled = await enableWorktreeSetup(projectId, applied.setup)
+    const project = projectOf(projectId)
+    if (project) await syncAgentProject(project)
+  } catch (e) {
+    report(projectId, { kind: 'failed', reason: String(e) })
+    useStore
+      .getState()
+      .setMessage(`Applied run & test for ${name}, but couldn't finish: ${e}`, false, undo, 'error')
+    return
+  }
+  report(projectId, { kind: 'applied', setup: applied.setup ?? null })
   useStore
     .getState()
     .setMessage(
@@ -570,6 +608,8 @@ function followAutoSetupToggle() {
   const sent = new Map<string, boolean>()
   const sync = () => {
     const s = useStore.getState()
+    // A reopened project's backend access starts enabled, so it is told again.
+    for (const id of sent.keys()) if (!s.projects[id]) sent.delete(id)
     for (const [id, entry] of Object.entries(s.projects)) {
       const off = s.project?.id === id ? s.autoSetupOff : !!entry.state?.autoSetupOff
       if (sent.get(id) === !off) continue

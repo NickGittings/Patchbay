@@ -21,6 +21,7 @@ vi.mock('../store', () => ({
   useStore: { getState: () => state, setState: (patch: object) => Object.assign(state, patch) },
 }))
 vi.mock('./ipc', () => ipc)
+vi.mock('./sessions', () => ({ launching: () => false }))
 vi.mock('./dependencies', () => ({ startDetectionAgent: vi.fn() }))
 vi.mock('./mapSave', () => ({ mapEditsBlocked: () => false }))
 vi.mock('./rail', () => ({ selectPanel: vi.fn() }))

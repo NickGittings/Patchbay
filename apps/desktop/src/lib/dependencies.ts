@@ -265,6 +265,7 @@ export async function startDependencyAgent(projectId: string, preset: TerminalSp
  * unless map edits wait for recovery. One already running or on its way is shown instead (also
  * while they wait), and the user is told when it runs another preset; an exited one restarts with
  * `preset`. Only a session that started is revealed. `label` names the job in messages, `tab` its terminal.
+ * Returns whether this call started a session.
  */
 export async function startDetectionAgent(
   projectId: string,
@@ -275,7 +276,7 @@ export async function startDetectionAgent(
     tab,
     detection,
   }: { terminalId: string; label: string; tab: string; detection?: StackDetection },
-) {
+): Promise<boolean> {
   const sid = sessionId(MAP_SCOPE, terminalId, null, projectId)
   const s = useStore.getState()
   // A launch on its way keeps the preset and tab it started with. Showing it edits no map, so it
@@ -290,9 +291,9 @@ export async function startDetectionAgent(
       )
     }
     if (s.project?.id === projectId) revealTerminal({ sid, componentId: MAP_SCOPE })
-    return
+    return false
   }
-  if (!canDetect(projectId)) return
+  if (!canDetect(projectId)) return false
   // The tab names the preset this launch runs, also when an earlier one ran another, and goes
   // back to the earlier one if the launch doesn't start.
   const previous = s.runtimeTerminals[sid]
@@ -324,6 +325,7 @@ export async function startDetectionAgent(
   }
   if (started && useStore.getState().project?.id === projectId)
     revealTerminal({ sid, componentId: MAP_SCOPE })
+  return started
 }
 
 /**

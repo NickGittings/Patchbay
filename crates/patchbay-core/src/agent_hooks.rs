@@ -460,23 +460,55 @@ pub fn secret_path(path: &str) -> bool {
         || matches!(lower.as_str(), ".npmrc" | ".netrc")
 }
 
-/// Whether one shell command (no separators) searches hidden or ignored files.
+/// Whether a short-flag cluster (`-uH`, not `--long`) holds any of `flags`.
+fn short_flag(word: &str, flags: &[char]) -> bool {
+    word.strip_prefix('-')
+        .filter(|rest| !rest.starts_with('-'))
+        .is_some_and(|rest| rest.chars().any(|c| flags.contains(&c)))
+}
+
+/// Whether one shell command (no separators) searches hidden or ignored files: ripgrep or
+/// ag with hidden or unrestricted flags, fd with hidden or no-ignore flags, or a recursive
+/// grep that doesn't exclude secret files (`--exclude=.env*` and the like).
 fn searches_hidden(words: &[&str]) -> bool {
     let program = words.first().map(|w| w.rsplit('/').next().unwrap_or(w));
+    let long = |names: &[&str]| words.iter().any(|w| names.contains(w));
     match program {
-        Some("rg" | "ag" | "fd" | "fdfind") => words.iter().any(|w| {
-            matches!(
-                *w,
-                "--hidden" | "--no-ignore" | "-uu" | "-uuu" | "-H" | "-u"
-            ) || w.starts_with("-uu")
-        }),
+        Some("rg") => {
+            long(&[
+                "--hidden",
+                "--no-ignore",
+                "--unrestricted",
+                "--no-ignore-vcs",
+            ]) || words.iter().any(|w| short_flag(w, &['u', '.']))
+        }
+        Some("ag") => {
+            long(&[
+                "--hidden",
+                "--unrestricted",
+                "--skip-vcs-ignores",
+                "--all-types",
+            ]) || words.iter().any(|w| short_flag(w, &['u', 'U']))
+        }
+        Some("fd" | "fdfind") => {
+            long(&["--hidden", "--no-ignore", "--unrestricted"])
+                || words.iter().any(|w| short_flag(w, &['H', 'I', 'u']))
+        }
         Some("grep" | "egrep" | "fgrep") => {
-            words.iter().any(|w| {
-                matches!(*w, "-r" | "-R" | "--recursive" | "--dereference-recursive")
-                    || (w.starts_with('-')
-                        && !w.starts_with("--")
-                        && (w.contains('r') || w.contains('R')))
-            }) && !words.iter().any(|w| w.starts_with("--exclude"))
+            let recursive = long(&["--recursive", "--dereference-recursive"])
+                || words.iter().any(|w| short_flag(w, &['r', 'R']));
+            let excludes_secrets = words.windows(2).any(|pair| {
+                let value = match pair[0].strip_prefix("--exclude=") {
+                    Some(value) => value,
+                    None if pair[0] == "--exclude" => pair[1],
+                    None => return false,
+                };
+                secret_path(value.trim_matches(['"', '\'']))
+            }) || words
+                .last()
+                .and_then(|w| w.strip_prefix("--exclude="))
+                .is_some_and(secret_path);
+            recursive && !excludes_secrets
         }
         _ => false,
     }
@@ -501,11 +533,14 @@ fn secret_command(command: &str) -> bool {
                 || (program == Some("git") && words.get(1) == Some(&"check-ignore"));
             searches_hidden(&words)
                 || (!existence_only
-                    && words.iter().any(|w| {
+                    && words.iter().enumerate().any(|(i, w)| {
                         // Excluding secrets from a search names them without reading them.
-                        !w.starts_with("--exclude") && !w.starts_with("--glob=!") && secret_path(w)
-                            || (!w.starts_with("--exclude")
-                                && w.split_once('=')
+                        let excluding = w.starts_with("--exclude")
+                            || w.starts_with("--glob=!")
+                            || (i > 0 && matches!(words[i - 1], "--exclude" | "--exclude-dir"));
+                        !excluding
+                            && (secret_path(w)
+                                || w.split_once('=')
                                     .is_some_and(|(_, value)| secret_path(value)))
                     }))
         })
@@ -803,7 +838,31 @@ pub fn reporter(provider: &str) {
             "codex" => Adapter::Codex,
             _ => return Ok(()),
         };
-        if std::env::var(PROVIDER_ENV).ok().as_deref() != Some(provider_name(provider)) {
+        let invoked_ms = crate::pty::now_ms();
+        let guarded = std::env::var(SECRET_GUARD_ENV).ok().as_deref() == Some("1");
+        let ours = std::env::var(PROVIDER_ENV).ok().as_deref() == Some(provider_name(provider));
+        if !ours && !guarded {
+            return Ok(());
+        }
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 1024 * 1024 {
+            return Ok(());
+        }
+        let input: Value = serde_json::from_slice(&bytes)?;
+        // Before anything that needs the journal: the guard holds even without status reporting.
+        if guarded
+            && input.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse")
+            && let Some(reason) = secret_guard(&input)
+        {
+            let mut stdout = std::io::stdout().lock();
+            serde_json::to_writer(&mut stdout, &deny_output(&reason))?;
+            stdout.flush()?;
+            return Ok(());
+        }
+        if !ours {
             return Ok(());
         }
         let Some(session) = std::env::var(SESSION_ENV).ok().filter(|s| !s.is_empty()) else {
@@ -825,19 +884,6 @@ pub fn reporter(provider: &str) {
         if !meta.is_dir() || meta.file_type().is_symlink() {
             return Ok(());
         }
-        let invoked_ms = crate::pty::now_ms();
-        // Do not create a journal: only a running Patchbay process supplies it.
-        let mut bytes = Vec::new();
-        std::io::stdin()
-            .take(1024 * 1024 + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > 1024 * 1024 {
-            return Ok(());
-        }
-        let input: Value = serde_json::from_slice(&bytes)?;
-        let guarded = std::env::var(SECRET_GUARD_ENV).ok().as_deref() == Some("1")
-            && input.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse");
-        let refusal = guarded.then(|| secret_guard(&input)).flatten();
         let mut asked = None;
         let mut approval = None;
         if let Some(mut event) = normalize(provider, &input) {
@@ -852,12 +898,6 @@ pub fn reporter(provider: &str) {
                 asked = questions;
                 approval = permission;
             }
-        }
-        if let Some(reason) = refusal {
-            let mut stdout = std::io::stdout().lock();
-            serde_json::to_writer(&mut stdout, &deny_output(&reason))?;
-            stdout.flush()?;
-            return Ok(());
         }
         if let Some(mut decided) = approval
             && let Some(output) = ask_permission_in_chat(provider, &input)
@@ -2128,6 +2168,11 @@ mod tests {
             "rg -uu DATABASE_URL",
             "grep -rn SECRET .",
             "source ./.env",
+            "grep -rn DATABASE_URL --exclude-dir=node_modules .",
+            "grep -r KEY --exclude=*.log .",
+            "rg -. PORT",
+            "rg -uH PORT",
+            "fd -H env",
         ] {
             assert!(
                 call("Bash", json!({"command":command})).is_some(),
@@ -2141,6 +2186,8 @@ mod tests {
             "cat .env.example",
             "rg PORT src",
             "grep -rn PORT --exclude=.env* .",
+            "grep -rn PORT --exclude .env* .",
+            "rg -H PORT src",
             "npm test",
         ] {
             assert!(

@@ -897,9 +897,11 @@ fn implementation_actions(shell: Shell, project: &Project) -> String {
         ),
         _ => out.push_str(
             " Until run & test detection has run for this project, validate and environment \
-             start set the project up on first use, which can take a few minutes; don't \
-             hand-roll servers or tests in the shell meanwhile. After that, one environment \
-             start or validation runs at a time unless parallel instances were found safe.",
+             start set the project up on first use when the user allows it, which can take a \
+             few minutes; when they return a hint instead, tell the user run & test isn't set \
+             up. Either way, don't hand-roll servers or tests in the shell meanwhile. After \
+             that, one environment start or validation runs at a time unless parallel \
+             instances were found safe.",
         ),
     }
     if let Some(notes) = project

@@ -824,8 +824,9 @@ export const onProviderLoginEvent = async (handler: (event: TerminalEvent) => vo
 }
 export const worktreeSetup = (projectId: string, task: string, action = 'read') =>
   invoke<import('../types').WorktreeSetup | null>('worktree_setup', { projectId, task, action })
+/** Enable `command` locally; returns the command enabled before, for Undo. */
 export const enableWorktreeSetup = (projectId: string, command: string) =>
-  invoke<void>('worktree_setup_enable', { projectId, command })
+  invoke<string | null>('worktree_setup_enable', { projectId, command })
 export const disableWorktreeSetup = (projectId: string) =>
   invoke<void>('worktree_setup_disable', { projectId })
 
