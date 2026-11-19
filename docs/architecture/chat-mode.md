@@ -35,7 +35,7 @@ desktop opener; local, unsafe and malformed links remain text. Code copying pres
 source bytes, including whitespace and line endings. Unsupported blocks remain plain text, and
 copy/open failures show actionable feedback.
 
-Tool activity remains mirrored through `HookEvent.{tool,target,file_target}`, `status::Activity` and `types.ts::Activity`. Explicit file targets alone link to diffs or pulse map components; command previews and patch bodies are never paths. The newest 50 accepted tool events are retained per generation, merged by sequence in `activity.ts`, and scoped to the selected worktree. While its agent works, the latest block names the current step (`activity.ts` `activityLabel`: a verb and the command, file or query, files relative to the agent's folder) with a collapsed list of the turn's retained steps (`turnSteps`); the Workers list shows each working worker's step. Chat's Auto button keeps the existing Light settings, hook checks and ownership controls; Auto stages drive the flow and gates appear as chat prompts.
+Tool activity remains mirrored through `HookEvent.{tool,target,file_target}`, `status::Activity` and `types.ts::Activity`. Explicit file targets alone link to diffs or pulse map components; command previews and patch bodies are never paths. The newest 50 accepted tool events are retained per generation, merged by sequence in `activity.ts`, and scoped to the selected worktree. While its agent works, the latest block names the current step (`activity.ts` `activityLabel`: a verb and the command, file or query, files relative to the agent's folder) with a collapsed list of the turn's retained steps (`turnSteps`); Agents tab cards show each working agent's recent steps. Chat's Auto button keeps the existing Light settings, hook checks and ownership controls; Auto stages drive the flow and gates appear as chat prompts.
 
 `npm run smoke:simple` runs disposable fake agents through prompt, reply, plan, new worktree, Build, Review, Fix, conflict check and Merge while Chat stays open. It also checks drawer following, input waits and saved replies. See [Simple verification](../simple-verification.md) for checks requiring a real interactive desktop and provider.
 
@@ -52,6 +52,16 @@ The existing **Merge complete** confirmation still controls branch/worktree dele
 returning the original checkout to the destination branch. Chat clears whether the merged
 branch/worktree is kept or deleted. Merges into other destination branches leave Chat history intact.
 
+Deleting the work ends its chat. After **Delete worktree and branch**, **Return to `main` and delete
+feature branch**, or the worktree picker's **Remove worktree** and **Forget only** succeed,
+`chat::retire_task` removes the team with its checkpoint, saved context, messages and worktree lease,
+and stops its unfinished rounds. The desktop closes and forgets the team's agent terminals, including
+isolated workers, whose worktrees stay because they can hold unintegrated commits. `forgetTeamChat`
+resets the worktree's Chat log, workflow facts, draft and queued message. No replacement lead starts;
+the next message launches one. A failed cleanup changes none of this, so it can be retried.
+
+Chat's Merge button checks the source first. With uncommitted changes it opens the shared merge dialog on the chosen destination, which asks whether the merge agent should commit them; see [Worktrees](worktrees.md). A merge that ends with a dirty worktree offers **Merge again** through the same path.
+
 Every stage already launches a fresh conversation, so finishing work retires agents rather than
 clearing them. A finished turn alone proves nothing, because an agent may have stopped to ask a
 question. Launching the next stage is the confirmation: after a review, fix or merge launch from
@@ -61,8 +71,9 @@ prompt, was prompted since that state, belongs to another chat, or is the lead, 
 while Auto owns the worktree.
 Stopped agents keep their conversations, so messaging one resumes it.
 
-The task itself finishes on a confirmed merge into `main` whose checkout survives cleanup, or when
-an Auto run in place reaches `done`. The cleanup choice is final immediately: `contextPending` on
+The task itself finishes on a confirmed merge into `main` whose worktree is kept, or when
+an Auto run in place reaches `done`. A merge agent's finish is a passive notice, so it does not give
+the lead a turn that would count as moving on. The cleanup choice is final immediately: `contextPending` on
 the job, or `taskDoneAtMs` on the run, keeps retrying `completeTeamTask` across restarts. Its
 `completeTask` control carries a stable `task-done-<id>`, recorded in `Team.finished.tasks`, so each
 completion is decided once. A lead that is busy, has had a turn since the merge or run finished, or
@@ -135,6 +146,7 @@ Chat identities use durable team membership: Lead for the team's lead, Builder f
 and adopted scopes, otherwise Agent. Headers, the drawer and the composer show `chatIdentity`'s
 `title` (role · provider · preset), omitting a preset named after its provider. Opening a
 Builder terminal changes the drawer identity while the composer continues to address its recipient.
+Build view terminal tiles use the same Lead and Builder roles for team members.
 
 Each worktree can have one persistent chat team. The saved `selectedAgent` becomes its lead when
 coordination is initialized; existing conversations migrate paused, preserving their history and
@@ -142,7 +154,9 @@ recipient without launching workers. **Switch agent** queues an explicit durable
 replacement that stops the current lead at once, even mid-turn (after an inline confirmation) or
 while work is paused; a queued prompt for that lead returns as a draft. **Clear lead context** confirms inline that provider context resets and visible
 history is replaced with a concise handoff. It uses the same durable replacement while retaining
-workers, assignments, results, inbox messages and checkpoints. The confirmation belongs to one
+workers, assignments, results, inbox messages and checkpoints. Unless rounds or requests are active,
+the replacement's handoff is passive (`Team.quiet_recovery`): it travels with the user's next message
+and starts no turn. The confirmation belongs to one
 visit to a worktree and disappears after switching away; pending send/workflow actions and an
 existing reset disable confirmation. Failed replacement preserves history.
 **Clear chat** only advances the existing reply
@@ -170,7 +184,7 @@ The lead routes dependencies between workers. The desktop's typed team commands 
 resume, stop, retry, worker settings, new-lead selection, side messages and explicit delivery recovery.
 Auto, chat and manual provider runs share exclusive target ownership; stopping a team releases its
 target without deleting results or worktrees.
-The Assignments button in the chat composer opens the team's work status popup. Pause and stop use the Chat menu; retry uses the failed assignment's inline action. Manual plan handoffs cannot
+The Agents tab shows the team's work status. Pause and stop use the Chat menu; retry uses the failed assignment's inline action. Manual plan handoffs cannot
 adopt chat-owned coordinators.
 A Build, Review, Fix or Merge the user starts from Chat's step card is told to the lead once
 (`chatTeams.ts` `noteLead` → `Control::Note`, a `patchbay` inbox message keyed by the launch's
@@ -189,17 +203,27 @@ reply stays uncertain until explicitly marked delivered or retried. Explicit res
 waits notify the lead. Worker conversations remain available through Sessions; Chat shows one lead
 conversation. Failed and input-waiting workers, coordination errors and unconfirmed deliveries raise
 alert lines above the composer with their recovery actions (Retry work and Agent settings, View worker
-terminal, Mark delivered or Retry delivery). The composer's **Assignments** button shows the count and
-how many items are flagged; its accessible name carries the breakdown. It opens a non-blocking popover
-anchored above the button with routine status: active jobs, failures with retry and settings actions,
-long instructions behind a first-line disclosure, and completed jobs with summaries and reports.
-Dismissing a failed or completed assignment hides its current result from the popover, count and
-alerts, offers Undo (which takes focus), and lists it under Dismissed with Restore. The worktree's chat
-UI persists dismissals locally, pruned to the team's current results. Retried work appears again, and
-coordination retains its results. Chat-owned rounds appear here only;
+terminal, Mark delivered or Retry delivery).
+
+**Agents** sits beside Map / Stories / Changes, in Chat only (`AgentCanvas`, its own React Flow store, so
+the map's viewport is untouched). `chatAgents.ts` `chatAgentCards` lists the team's undismissed
+assignments and every other running agent of this chat, `agentSnippet` picks each card's line (input
+wait, failure, recent steps, summary, instructions, last reply) and `agentLayout` places the lead,
+workers, other agents and finished work in rows. Cards subscribe to their own sessions; the graph
+rebuilds only when membership or job state changes and refits when membership does. The tab's label
+counts unfinished agents and flagged items, with the breakdown in its accessible name. Terminal
+opens the session in Chat's drawer, expanding a hidden chat. Selecting a card opens details: steps or
+the last reply, and for assignments the instructions, summary, report, retry and settings actions.
+Under the tabs, the team's status line offers Open Sessions. Dismissing a failed or completed
+assignment hides its current result from the canvas, count and alerts, offers Undo (which takes
+focus), and lists it under Dismissed with Restore. The worktree's chat UI persists dismissals locally,
+pruned to the team's current results. Retried work appears again, and coordination retains its results.
+Chat-owned rounds appear here only;
 other provider runs remain in Plan or Build. **View worker terminal** opens the exact project session
 without changing the composer recipient. Messages and queued prompts take their recipient's workflow
-stage, so messaging a build lead after a merge resumes the build flow.
+stage, so messaging a build agent after a merge resumes the build flow. A team's lead has no stage:
+`thread` leaves its session and prompts out of stage selection (`SimpleSnapshot.lead`), so its turns
+never move the status strip, unless that run was launched for a stage and then adopted as lead.
 Continue work resumes previously launched rounds and rounds paused by restart. Unlaunched queued
 rounds otherwise stay paused and are included in the lead's recovery handoff.
 Worker presets and concurrency

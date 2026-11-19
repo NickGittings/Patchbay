@@ -1,5 +1,6 @@
 //! Resolve local merge destinations and prepare a dedicated agent briefing. Resolving may create
-//! a task worktree; preparing a job never commits, checks out, or merges anything.
+//! a task worktree; preparing a job never commits, checks out, or merges anything itself. The
+//! agent commits source changes only when the user confirmed that exact list.
 use crate::context;
 use crate::git::{self, Worktree};
 use crate::model::{MERGE_SCOPE, Project, TerminalSpec};
@@ -8,6 +9,7 @@ use crate::pty::SessionSpec;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +17,9 @@ pub struct MergeRequest {
     /// Refuse automatic merge preparation if the reviewed commit moved during frontend checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_source_head: Option<String>,
+    /// Uncommitted source changes the user agreed the merge agent should commit first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_source: Option<Vec<String>>,
     pub source: String,
     pub source_branch: String,
     pub destination: String,
@@ -25,12 +30,14 @@ pub struct MergeRequest {
 /// A newly created checkout persists if the subsequent agent launch fails.
 ///
 /// # Errors
-/// Fails for stale source state, missing local branches, dirty/busy worktrees, or creation errors.
+/// Fails for stale source state, missing local branches, dirty/busy worktrees, source changes
+/// other than `confirmed_changes`, or creation errors.
 pub fn resolve_destination(
     project: &Project,
     source_path: &str,
     source_branch: &str,
     destination_branch: &str,
+    confirmed_changes: Option<&[String]>,
 ) -> Result<MergeRequest> {
     // Concurrent dialogs in this process must adopt the same checkout and task.
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -45,7 +52,7 @@ pub fn resolve_destination(
     let trees = git::worktrees(root);
     let mut source = checked_tree(&trees, source_path, "source")?;
     let common = git::common_dir(root)?.canonicalize()?;
-    clean(&mut source, source_branch, "source", &common)?;
+    pending_commit(&mut source, source_branch, confirmed_changes, &common)?;
     ensure!(
         git::branches(root)?.iter().any(|b| b == destination_branch),
         "Destination branch {destination_branch} no longer exists; refresh and choose a local branch"
@@ -78,9 +85,10 @@ pub fn resolve_destination(
     };
     clean(&mut destination, destination_branch, "destination", &common)?;
     // Creation can take time: do not launch if the source changed during it.
-    clean(&mut source, source_branch, "source", &common)?;
+    let commit_source = pending_commit(&mut source, source_branch, confirmed_changes, &common)?;
     Ok(MergeRequest {
         expected_source_head: None,
+        commit_source,
         source: source.path,
         source_branch: source_branch.into(),
         destination: destination.path,
@@ -565,7 +573,8 @@ fn read_tree(tree: &mut Worktree, common: &Path) -> Result<(Vec<PathBuf>, bool)>
     Ok((dirs, busy))
 }
 
-fn clean(
+/// Check a worktree is on its expected branch with no Git operation in progress.
+fn settled(
     tree: &mut Worktree,
     expected_branch: &str,
     role: &str,
@@ -584,16 +593,81 @@ fn clean(
         !busy,
         "The {role} worktree has an operation in progress; finish or abort it first"
     );
-    let status = git::run(git::git(Path::new(&tree.path)).args([
-        "status",
-        "--porcelain",
-        "--untracked-files=all",
-    ]))?;
-    ensure!(
-        status.is_empty(),
-        "The {role} worktree has uncommitted changes; commit or clear them before merging"
-    );
     Ok(dirs)
+}
+
+/// Uncommitted entries, untrimmed because a leading space is part of Git's status code.
+fn status_entries(root: &Path) -> Result<Vec<String>> {
+    let output = git::git(root)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .stdin(Stdio::null())
+        .output()
+        .context("running git")?;
+    ensure!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect())
+}
+
+fn uncommitted_error(role: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "The {role} worktree has uncommitted changes; commit or clear them before merging"
+    )
+}
+
+fn clean(
+    tree: &mut Worktree,
+    expected_branch: &str,
+    role: &str,
+    common: &Path,
+) -> Result<Vec<PathBuf>> {
+    let dirs = settled(tree, expected_branch, role, common)?;
+    if !status_entries(Path::new(&tree.path))?.is_empty() {
+        return Err(uncommitted_error(role));
+    }
+    Ok(dirs)
+}
+
+/// The source changes to commit before merging, or `None` when the source is clean.
+/// Anything other than exactly what the user confirmed stops the merge.
+fn pending_commit(
+    source: &mut Worktree,
+    expected_branch: &str,
+    confirmed: Option<&[String]>,
+    common: &Path,
+) -> Result<Option<Vec<String>>> {
+    settled(source, expected_branch, "source", common)?;
+    let changes = status_entries(Path::new(&source.path))?;
+    if changes.is_empty() {
+        return Ok(None);
+    }
+    let confirmed = confirmed.ok_or_else(|| uncommitted_error("source"))?;
+    ensure!(
+        confirmed == changes.as_slice(),
+        "The uncommitted changes changed; review them and try again"
+    );
+    Ok(Some(changes))
+}
+
+/// List the source worktree's uncommitted changes so the user can decide whether to commit them.
+///
+/// # Errors
+/// Fails for missing, foreign, detached, changed or busy worktrees, or Git errors.
+pub fn source_changes(
+    project: &Project,
+    source_path: &str,
+    source_branch: &str,
+) -> Result<Vec<String>> {
+    let root = Path::new(&project.root);
+    let mut source = checked_tree(&git::worktrees(root), source_path, "source")?;
+    let common = git::common_dir(root)?.canonicalize()?;
+    settled(&mut source, source_branch, "source", &common)?;
+    status_entries(Path::new(&source.path))
 }
 
 fn checked_tree(trees: &[Worktree], path: &str, role: &str) -> Result<Worktree> {
@@ -606,7 +680,8 @@ fn checked_tree(trees: &[Worktree], path: &str, role: &str) -> Result<Worktree> 
 /// Validate the selected checkouts again immediately before building the launch.
 ///
 /// # Errors
-/// Fails for missing, foreign, detached, identical, dirty, or busy worktrees, or briefing I/O.
+/// Fails for missing, foreign, detached, identical, dirty, or busy worktrees, source changes
+/// other than the confirmed ones, or briefing I/O.
 pub fn prepare(
     project: &Project,
     request: &MergeRequest,
@@ -622,7 +697,12 @@ pub fn prepare(
         "Choose a different destination branch and worktree"
     );
     let common = git::common_dir(Path::new(&project.root))?.canonicalize()?;
-    clean(&mut source, &request.source_branch, "source", &common)?;
+    let commit = pending_commit(
+        &mut source,
+        &request.source_branch,
+        request.commit_source.as_deref(),
+        &common,
+    )?;
     ensure!(
         request
             .expected_source_head
@@ -643,11 +723,36 @@ pub fn prepare(
         "Merge {} → {}",
         request.source_branch, request.destination_branch
     );
+    let clean_scope = if commit.is_some() {
+        "the destination worktree is clean (including untracked files; the source has only the changes listed below)"
+    } else {
+        "both worktrees are clean (including untracked files)"
+    };
+    let (commit_steps, merge_target, source_rule) = match &commit {
+        Some(changes) => (
+            format!(
+                "## Commit the source changes first\n\nThe user asked you to commit these uncommitted source changes before merging:\n\n```\n{}\n```\n\nIn the source worktree, confirm git status --porcelain --untracked-files=all still shows exactly these entries, then run git add -A and commit on the source branch with a descriptive message that follows the repository's conventions. Do not bypass commit hooks. Stop and report, without merging, if the entries differ, the commit fails, or a listed file looks like a secret.\n\n",
+                changes.join("\n")
+            ),
+            "the new source HEAD from that commit",
+            "Apart from that commit, do not modify the source worktree. Do not push or delete branches or worktrees.",
+        ),
+        None => (
+            String::new(),
+            "the source commit shown above",
+            "Do not modify the source worktree, push, or delete branches or worktrees.",
+        ),
+    };
+    let work_scope = if commit.is_some() {
+        "After committing, work only in the destination worktree."
+    } else {
+        "Work only in the destination worktree."
+    };
     let mut text = format!(
         "# Patchbay local merge\n\nProject: {}\n\nSource worktree: {}\nSource branch: {}\nSource HEAD: {}\n\nDestination worktree: {}\nDestination branch: {}\nDestination HEAD: {}\n\n\
          Integrate the entire committed source branch into the destination branch. Review's component filters do not limit this job.\n\n\
-         Before changing anything, verify both paths still belong to this repository, both branches and HEADs still match the values above, both worktrees are clean (including untracked files), and neither has a merge, rebase, cherry-pick, or revert in progress. Stop and report if a precondition changed.\n\n\
-         Work only in the destination worktree. Merge the source commit shown above using git merge --no-commit --no-ff, resolving conflicts while preserving the intent of both branches. Read the repository's contribution instructions and run the relevant checks. Complete the local merge commit only after those checks pass. If already integrated, report that no merge is needed. If blocked or checks fail, report what remains and leave the work available for user review. Never reset, discard, stash, or commit unrelated changes. Do not modify the source worktree, push, or delete branches or worktrees.\n",
+         Before changing anything, verify both paths still belong to this repository, both branches and HEADs still match the values above, {clean_scope}, and neither has a merge, rebase, cherry-pick, or revert in progress. Stop and report if a precondition changed.\n\n\
+         {commit_steps}{work_scope} Merge {merge_target} using git merge --no-commit --no-ff, resolving conflicts while preserving the intent of both branches. Read the repository's contribution instructions and run the relevant checks. Complete the local merge commit only after those checks pass. If already integrated, report that no merge is needed. If blocked or checks fail, report what remains and leave the work available for user review. Never reset, discard, stash, or commit unrelated changes. {source_rule}\n",
         project.name,
         source.path,
         request.source_branch,
@@ -656,10 +761,16 @@ pub fn prepare(
         request.destination_branch,
         destination.head,
     );
+    // The commit made for this merge is newer than anything a saved review saw.
+    let reviewed_head = if commit.is_some() {
+        ""
+    } else {
+        source.head.as_str()
+    };
     if let Some(section) = crate::reviews::merge_handoff(
         Path::new(&project.root),
         &request.source_branch,
-        &source.head,
+        reviewed_head,
     ) {
         text.push_str(&format!("\n## {}\n\n{}\n", section.title, section.body));
     }
@@ -668,6 +779,11 @@ pub fn prepare(
     }
     // Linked worktrees write their private index/HEAD and the shared object/ref store.
     let mut dirs = destination_dirs;
+    if commit.is_some() {
+        // Only a confirmed commit reaches the source; `resume_roots` keys off this entry.
+        dirs.extend(owned_dirs(Path::new(&source.path), &common)?);
+        dirs.push(PathBuf::from(&source.path));
+    }
     dirs.sort();
     dirs.dedup();
     let mut scoped = project.clone();
@@ -680,22 +796,30 @@ pub fn prepare(
     Ok(AgentJob { terminal, spec })
 }
 
-/// Validate only the recorded destination before granting resume access.
-/// Unrelated worktrees never widen the grant or prevent a merge from resuming.
+/// Validate the recorded destination before granting resume access, plus the source when this
+/// run was launched to commit there. Unrelated worktrees never widen the grant, and an ordinary
+/// merge resumes without its source.
 ///
 /// # Errors
-/// Fails if the destination is missing, no longer registered, or belongs to another repo.
+/// Fails if a granted worktree is missing, no longer registered, or belongs to another repo.
 pub fn resume_roots(root: &Path, spec: &SessionSpec) -> Result<Vec<PathBuf>> {
     let common = git::common_dir(root)?.canonicalize()?;
     let trees = git::worktrees(root);
-    let path = spec.cwd.canonicalize()?;
-    ensure!(
-        trees.iter().any(|tree| Path::new(&tree.path) == path),
-        "The merge worktree at {} is no longer registered",
-        path.display()
-    );
-    let mut roots = owned_dirs(&path, &common)?;
-    roots.push(path);
+    let grant = |worktree: &Path| -> Result<Vec<PathBuf>> {
+        let path = worktree.canonicalize()?;
+        ensure!(
+            trees.iter().any(|tree| Path::new(&tree.path) == path),
+            "The merge worktree at {} is no longer registered",
+            path.display()
+        );
+        let mut roots = owned_dirs(&path, &common)?;
+        roots.push(path);
+        Ok(roots)
+    };
+    let mut roots = grant(&spec.cwd)?;
+    if let Some(source) = spec.merge_source.as_ref().filter(|s| spec.dirs.contains(s)) {
+        roots.extend(grant(source)?);
+    }
     roots.sort();
     roots.dedup();
     Ok(roots)
@@ -734,7 +858,8 @@ mod tests {
         git::run(git::git(root).args(["checkout", "feature"])).unwrap();
         fs::write(root.join("file.txt"), "feature change").unwrap();
         git::run(git::git(root).args(["commit", "-qam", "feature change"])).unwrap();
-        let request = resolve_destination(&f.project, &f.project.root, "feature", "main").unwrap();
+        let request =
+            resolve_destination(&f.project, &f.project.root, "feature", "main", None).unwrap();
         (f, request)
     }
 
@@ -934,7 +1059,7 @@ mod tests {
     fn destination_resolution_reuses_existing_checkout_without_creating_tasks() {
         let f = Fixture::new();
         let request =
-            resolve_destination(&f.project, &f.request.source, "feature", "main").unwrap();
+            resolve_destination(&f.project, &f.request.source, "feature", "main", None).unwrap();
         assert_eq!(request.destination, f.project.root);
         assert!(
             crate::tasks::list(Path::new(&f.project.root))
@@ -951,7 +1076,8 @@ mod tests {
         git::run(git::git(root).args(["worktree", "remove", &f.request.source])).unwrap();
         git::run(git::git(root).args(["checkout", "feature"])).unwrap();
         let before = git::run(git::git(root).args(["rev-parse", "HEAD"])).unwrap();
-        let request = resolve_destination(&f.project, &f.project.root, "feature", "main").unwrap();
+        let request =
+            resolve_destination(&f.project, &f.project.root, "feature", "main", None).unwrap();
         assert_eq!(request.source, f.project.root);
         assert_ne!(request.destination, f.project.root);
         assert_eq!(
@@ -989,7 +1115,8 @@ mod tests {
         let mut invalid = Fixture::terminal("claude");
         invalid.kind = TerminalKind::Shell;
         assert!(prepare(&f.project, &request, &invalid, &AllowAll, None).is_err());
-        let retry = resolve_destination(&f.project, &f.project.root, "feature", "main").unwrap();
+        let retry =
+            resolve_destination(&f.project, &f.project.root, "feature", "main", None).unwrap();
         assert_eq!(retry.destination, request.destination);
         assert_eq!(crate::tasks::list(root).unwrap().len(), 1);
         let job = prepare(
@@ -1008,7 +1135,7 @@ mod tests {
     fn resolver_rejects_stale_same_missing_dirty_and_busy_branches() {
         let f = Fixture::new();
         let resolve = |source, destination| {
-            resolve_destination(&f.project, &f.request.source, source, destination)
+            resolve_destination(&f.project, &f.request.source, source, destination, None)
         };
         assert!(
             resolve("feature", "feature")
@@ -1065,7 +1192,14 @@ mod tests {
         fs::create_dir_all(&store).unwrap();
         fs::write(store.join("tasks.json"), "invalid").unwrap();
         assert!(
-            resolve_destination(&f.project, &f.request.source, "feature", "destination").is_err()
+            resolve_destination(
+                &f.project,
+                &f.request.source,
+                "feature",
+                "destination",
+                None
+            )
+            .is_err()
         );
         assert_eq!(git::worktrees(root).len(), 2);
         assert_eq!(
@@ -1118,6 +1252,7 @@ mod tests {
             };
             let request = MergeRequest {
                 expected_source_head: None,
+                commit_source: None,
                 source: source.to_string_lossy().into(),
                 source_branch: "feature".into(),
                 destination: project.root.clone(),
@@ -1721,6 +1856,122 @@ mod tests {
             roots
         );
         crate::session::check_resume(&record, &roots).unwrap();
+        context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
+    }
+
+    fn dirty_source(f: &Fixture) -> Vec<String> {
+        let source = Path::new(&f.request.source);
+        fs::write(source.join("file.txt"), "edited\n").unwrap();
+        fs::write(source.join("new.txt"), "new\n").unwrap();
+        source_changes(&f.project, &f.request.source, "feature").unwrap()
+    }
+
+    #[test]
+    fn source_changes_keep_git_status_codes() {
+        let f = Fixture::new();
+        assert!(
+            source_changes(&f.project, &f.request.source, "feature")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(dirty_source(&f), [" M file.txt", "?? new.txt"]);
+    }
+
+    #[test]
+    fn dirty_source_merges_only_with_the_confirmed_changes() {
+        let mut f = Fixture::new();
+        let changes = dirty_source(&f);
+        let resolve = |confirmed: Option<&[String]>| {
+            resolve_destination(&f.project, &f.request.source, "feature", "main", confirmed)
+        };
+        assert!(
+            resolve(None)
+                .unwrap_err()
+                .to_string()
+                .contains("uncommitted")
+        );
+        let stale = vec![changes[0].clone()];
+        assert!(
+            resolve(Some(&stale))
+                .unwrap_err()
+                .to_string()
+                .contains("review them")
+        );
+        let request = resolve(Some(&changes)).unwrap();
+        assert_eq!(request.commit_source.as_ref(), Some(&changes));
+
+        assert!(f.error().contains("uncommitted"));
+        f.request.commit_source = Some(stale);
+        assert!(f.error().contains("review them"));
+        f.request = request;
+        let job = f.prepare().unwrap();
+        assert!(job.spec.dirs.contains(&PathBuf::from(&f.request.source)));
+        let body = fs::read_to_string(&job.spec.env[context::CONTEXT_ENV]).unwrap();
+        assert!(body.contains("Commit the source changes first"));
+        assert!(body.contains(" M file.txt\n?? new.txt"));
+        assert!(body.contains("Merge the new source HEAD"));
+        assert!(!body.contains("Do not modify the source worktree, push"));
+        context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
+
+        fs::write(Path::new(&f.request.source).join("later.txt"), "x").unwrap();
+        assert!(f.error().contains("review them"));
+    }
+
+    #[test]
+    fn confirmed_source_changes_do_not_excuse_a_dirty_destination() {
+        let f = Fixture::new();
+        let changes = dirty_source(&f);
+        fs::write(Path::new(&f.project.root).join("dirty"), "work").unwrap();
+        let error = resolve_destination(
+            &f.project,
+            &f.request.source,
+            "feature",
+            "main",
+            Some(&changes),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("destination worktree"));
+    }
+
+    #[test]
+    fn source_committed_after_confirmation_merges_normally() {
+        let f = Fixture::new();
+        let confirmed = vec![" M file.txt".to_string()];
+        let request = resolve_destination(
+            &f.project,
+            &f.request.source,
+            "feature",
+            "main",
+            Some(&confirmed),
+        )
+        .unwrap();
+        assert_eq!(request.commit_source, None);
+    }
+
+    #[test]
+    fn commit_runs_resume_with_the_source_until_it_is_removed() {
+        let mut f = Fixture::new();
+        f.request.commit_source = Some(dirty_source(&f));
+        let job = f.prepare().unwrap();
+        let roots = resume_roots(Path::new(&f.project.root), &job.spec).unwrap();
+        assert!(roots.contains(&PathBuf::from(&f.request.source)));
+        let record: crate::session::Record = serde_json::from_value(serde_json::json!({
+            "id":"merge", "metadata": {
+                "projectId":"p", "projectName":"P", "projectRoot":f.project.root,
+                "componentId":MERGE_SCOPE, "terminalId":"merge", "name":"Merge", "kind":"agent"
+            },
+            "spec":job.spec, "snapshot":null, "history":[], "interrupted":true, "requestIds":[]
+        }))
+        .unwrap();
+        crate::session::check_resume(&record, &roots).unwrap();
+        git::run(git::git(Path::new(&f.project.root)).args([
+            "worktree",
+            "remove",
+            "--force",
+            &f.request.source,
+        ]))
+        .unwrap();
+        assert!(resume_roots(Path::new(&f.project.root), &job.spec).is_err());
         context::remove_owned_briefing_file(&context::owned_briefing(&job.spec).unwrap());
     }
 

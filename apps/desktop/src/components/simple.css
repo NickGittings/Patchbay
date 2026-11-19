@@ -599,7 +599,7 @@
   padding: 6px;
   border-top: 1px solid var(--border);
 }
-/* Problems that need the user sit above the composer; routine status stays in the popover. */
+/* Problems that need the user sit above the composer; routine status stays in the Agents tab. */
 .chat-coordination {
   flex-shrink: 0;
   max-height: 30%;
@@ -612,33 +612,13 @@
   color: var(--bad);
   font-weight: 600;
 }
-/* A non-blocking status panel anchored above its composer button. */
-.chat-workers-popover {
-  width: min(440px, calc(100vw - 16px));
-  max-height: min(60vh, 520px);
-  padding: 8px 12px;
-  font-size: var(--text-xs);
-  transform-origin: bottom right;
-}
-.chat-workers-popover .chat-workers {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-}
-.chat-workers-popover .chat-workers > ul,
-.chat-workers-popover .chat-workers > details,
-.chat-workers-popover .chat-workers > p {
-  align-self: stretch;
-  margin: 0;
-}
 .chat-workers-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 4px;
 }
-.chat-workers .assignment-instructions summary {
+.assignment-instructions summary {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -648,20 +628,9 @@
   color: var(--muted);
   cursor: pointer;
 }
-.chat-workers ul {
+.chat-workers-dismissed ul {
+  margin: 4px 0 0;
   padding-left: 16px;
-}
-.chat-workers li {
-  margin: 6px 0;
-}
-.chat-workers li[data-status='complete'] {
-  color: var(--muted);
-}
-.chat-workers li[data-status='failed'] > strong {
-  color: var(--bad);
-}
-.chat-workers li[data-status='awaiting input'] > strong {
-  color: var(--input);
 }
 .assignment-report dl {
   margin: 4px 0;
@@ -674,9 +643,134 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.chat-workers li p {
+/* Chat's Agents tab: below Show chat, so a hidden chat can still be brought back. */
+.simple-canvas > .agent-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: var(--bg);
+}
+.agent-canvas-top {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+}
+.agent-team-status,
+.agent-details {
+  font-size: var(--text-xs);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.agent-team-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+  padding: 6px 10px;
+  color: var(--muted);
+}
+.agent-team-status p {
+  margin: 0;
+}
+.agent-details {
+  position: absolute;
+  top: 52px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 5;
+  width: min(360px, calc(100% - 24px));
+  overflow: auto;
+  padding: 10px 12px;
+}
+.agent-details > header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.agent-details > header > button {
+  margin-left: auto;
+}
+.agent-details p,
+.agent-details li {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.agent-details ol {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 8px 10px;
+  font-size: var(--text-xs);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.react-flow__node.selected .agent-card {
+  border-color: var(--accent);
+}
+.agent-card[data-row='finished'] {
+  opacity: 0.65;
+}
+.agent-card header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.agent-card-name {
+  flex: none;
+  padding: 0;
+  font-weight: 600;
+  color: var(--text);
+  background: none;
+  border: none;
+}
+.agent-card-detail {
+  overflow: hidden;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-card-snippet {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.agent-card-snippet p {
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-card-snippet p + p {
+  color: var(--muted);
+}
+.agent-card footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.agent-card-handle.react-flow__handle {
+  visibility: hidden;
 }
 .simple-composer [role='option'][aria-selected='true'] {
   background: var(--hover);

@@ -4697,7 +4697,8 @@ mod tests {
         }))
         .unwrap();
         let merge = restoration.then(|| {
-            crate::merges::resolve_destination(&project, &project.root, "main", "feature").unwrap()
+            crate::merges::resolve_destination(&project, &project.root, "main", "feature", None)
+                .unwrap()
         });
         let hook = repo.join(".git/hooks/post-checkout");
         std::fs::write(&hook, "#!/bin/sh\ncd \"$(dirname \"$0\")\"\ntouch entered\nwhile [ ! -f release ]; do sleep 0.01; done\n").unwrap();

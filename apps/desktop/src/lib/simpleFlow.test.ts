@@ -382,10 +382,14 @@ test('a recovered merge with unknown status does not claim it is unfinished', ()
 test('merge status loading and failures never offer conflict recovery', () => {
   const s = snapshot('@merge')
   expect(flow({ ...s, outcomePending: true }).prompt).toBeUndefined()
-  for (const outcome of [undefined, 'inProgress', 'dirty'] as const) {
+  for (const outcome of [undefined, 'inProgress'] as const) {
     const prompt = flow({ ...s, outcome }).prompt!
     expect(prompt.actions).toEqual([{ action: 'retryMergeStatus', label: 'Retry status' }])
   }
+  expect(flow({ ...s, outcome: 'dirty' }).prompt!.actions).toEqual([
+    { action: 'merge', label: 'Merge again' },
+    { action: 'retryMergeStatus', label: 'Retry status' },
+  ])
   expect(flow({ ...s, outcomeError: 'The merge branches changed' }).prompt).toMatchObject({
     text: 'Merge status unavailable: The merge branches changed',
   })
@@ -459,6 +463,53 @@ test('a build lead prompt advances a merged chat to the build stage', () => {
   finished.status!.agent!.sinceMs = 50
   s.sessions = { ...s.sessions, [lead.id]: finished }
   expect(flow(s).prompt?.text).toBe('Building done. Review the changes?')
+})
+
+test('a coordinating lead’s turns advance no workflow stage', () => {
+  const s = snapshot('@task', 'working')
+  s.lead = '@task'
+  expect(flow(s).step).toBe('idle')
+  s.sessions['@task'] = session('review')
+  s.simple!.retainedWorkflow = [
+    { id: 'old-fix', kind: 'action', action: 'fix', stage: 'build', atMs: 5, sessionId: 'gone' },
+  ]
+  s.now = 5 + LAUNCH_RECORD_GRACE_MS
+  expect(flow(s).step).toBe('idle')
+  expect(chatStepper(flow(s).step).every((item) => item.state === 'upcoming')).toBe(true)
+})
+
+test('messaging the lead keeps the finished review in charge of the step', () => {
+  const s = snapshot('@review')
+  s.findings = findings(true)
+  s.records = [...s.records, { ...record('@task'), snapshot: { startedMs: 30 } } as SessionRecord]
+  s.sessions['@task'] = session('review')
+  s.lead = '@task'
+  s.simple!.log.push({
+    id: 'question',
+    kind: 'prompt',
+    stage: 'build',
+    atMs: 35,
+    sessionId: '@task',
+    generation: 1,
+    text: 'What changed?',
+    mentions: [],
+  })
+  expect(flow(s).step).toBe('reviewed')
+})
+
+test('a stage agent adopted as the lead still reports its stage', () => {
+  const s = snapshot('@task')
+  s.lead = '@task'
+  s.simple!.log.push({
+    id: 'build',
+    kind: 'action',
+    action: 'implement',
+    stage: 'build',
+    atMs: 5,
+    sessionId: '@task',
+    generation: 1,
+  })
+  expect(flow(s).step).toBe('built')
 })
 
 const states = (items: ReturnType<typeof chatStepper>) =>

@@ -4,6 +4,9 @@ import type { SessionRecord, SessionState } from '../types'
 export function teamJobs(runs: ProviderRun[], teamId: string): ProviderJob[] {
   return runs.filter((run) => run.chatTeam === teamId).flatMap((run) => run.jobs)
 }
+/** A job that needs a retry, including a launch that could not be confirmed. */
+export const failedJob = (job: ProviderJob) =>
+  job.state === 'failed' || (job.state === 'launching' && !!job.error)
 export function workerStatus(job: ProviderJob, sessions: Record<string, SessionState>) {
   if (
     ['pending', 'launching', 'running', 'integrating'].includes(job.state) &&

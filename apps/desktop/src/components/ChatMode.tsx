@@ -10,7 +10,7 @@ import { chatStepper, flow, workflowPromptKey } from '../lib/simpleFlow'
 import { inPlace } from '../lib/auto'
 import type { useSimpleData } from '../lib/useSimpleData'
 import { useExpiredDeadline } from '../lib/clock'
-import { simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
+import { pinChatTerminal, simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
 import { chatRolePresets } from '../lib/agentRoles'
 import { defaultMergeDestination, chatReviewBase } from '../lib/reviewAgents'
 import {
@@ -35,7 +35,7 @@ import { useChatIdentity } from '../lib/chatIdentity'
 import { stopTerminal } from '../lib/sessions'
 import { useRail } from '../lib/rail'
 import ChatModeTimeline from './ChatModeTimeline'
-import ChatCoordination, { ChatCoordinationAlerts } from './ChatCoordination'
+import { ChatCoordinationAlerts } from './ChatCoordination'
 import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
@@ -95,6 +95,7 @@ export default function ChatMode({
     ...data,
     findings: findings?.findings,
     createdMs: s.tasks.find((t) => t.id === task)?.createdMs,
+    lead: team?.lead.sessionId,
   }
   const model = thread(snapshot, worktree)
   const launch = pendingLaunch(snapshot, model.records)
@@ -245,14 +246,7 @@ export default function ChatMode({
             : 'Review'
   const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
   const openWorkerTerminal = (record: SessionRecord) =>
-    useSimpleUi.getState().patch(key, {
-      terminal: 'user',
-      terminalSession: {
-        id: record.id,
-        generation: s.sessions[record.id]?.generation,
-        pinned: true,
-      },
-    })
+    pinChatTerminal(key, record.id, s.sessions[record.id]?.generation)
   return (
     <div className="simple-chat" ref={chatRef}>
       <header>
@@ -466,6 +460,7 @@ export default function ChatMode({
           source={source}
           worktrees={worktrees}
           branches={branches}
+          initialDestination={target?.branch ?? undefined}
           close={() => setDialog(undefined)}
           onRequest={(request, sid, requestId) => void logMerge(request, sid, requestId)}
           launched={() => setDialog(undefined)}
@@ -556,9 +551,7 @@ export default function ChatMode({
             },
           })
         }
-      >
-        {team && <ChatCoordination key={team.id} team={team} openTerminal={openWorkerTerminal} />}
-      </SimpleComposer>
+      />
     </div>
   )
 }

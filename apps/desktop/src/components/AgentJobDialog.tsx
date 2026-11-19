@@ -19,6 +19,7 @@ export default function AgentJobDialog({
   runningText,
   offlineText,
   hint,
+  submitLabel,
   launch,
   close,
   launched,
@@ -37,6 +38,8 @@ export default function AgentJobDialog({
   runningText: string
   offlineText: string
   hint: ReactNode
+  /** Replaces the default submit text when the launch does more than start the job. */
+  submitLabel?: string
   launch: (devices: DeviceManifest[]) => Promise<string>
   close: () => void
   launched: (sid: string) => void
@@ -178,7 +181,7 @@ export default function AgentJobDialog({
             className="primary"
             disabled={busy || !ready || !device || !connected || running}
           >
-            {busy ? 'Starting…' : compact ? `Start ${role}` : title}
+            {busy ? 'Starting…' : (submitLabel ?? (compact ? `Start ${role}` : title))}
           </button>
         </div>
       </form>

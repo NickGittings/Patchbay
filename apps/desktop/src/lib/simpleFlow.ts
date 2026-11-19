@@ -62,7 +62,13 @@ const button = (action: FlowAction, label: string) => ({ action, label })
 export function flow(
   snapshot: FlowSnapshot,
   model = thread(snapshot, snapshot.worktree),
-  agent = selectRecipient(model.records, snapshot.sessions, model.stage, undefined, model.foreign),
+  agent = selectRecipient(
+    model.records.filter((r) => r.id !== model.lead),
+    snapshot.sessions,
+    model.stage,
+    undefined,
+    model.foreign,
+  ),
 ): SimpleFlow {
   // A shared planner another chat is using is no agent of this conversation.
   const own = agent && !model.foreign.has(agent.id) ? agent : undefined
@@ -215,7 +221,12 @@ export function flow(
                   : outcome === 'inProgress'
                     ? 'Merge in progress…'
                     : 'Merge status unavailable. The original merge worktrees may have changed.',
-              actions: [button('retryMergeStatus', 'Retry status')],
+              actions: [
+                ...(outcome === 'dirty' && !snapshot.outcomeError
+                  ? [button('merge', 'Merge again')]
+                  : []),
+                button('retryMergeStatus', 'Retry status'),
+              ],
             },
     }
   }

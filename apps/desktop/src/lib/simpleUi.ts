@@ -46,6 +46,8 @@ export interface SimpleUi {
   mentions: Mention[]
   diff: SimpleDiff | null
   changes: boolean
+  /** The Agents tab is open; Changes wins while both are set. */
+  agents?: boolean
   queued?: QueuedPrompt
   terminal: 'closed' | 'user' | 'input'
   terminalSession?: { id: string; generation?: number; pinned?: boolean }
@@ -175,3 +177,10 @@ export const useSimpleUi = create<{
   ),
 )
 export const EMPTY_SIMPLE_UI = emptySimpleUi()
+/** Shows a session in Chat's terminal drawer until the user hides it. */
+export function pinChatTerminal(key: string, id: string, generation: number | undefined) {
+  useSimpleUi.getState().patch(key, {
+    terminal: 'user',
+    terminalSession: { id, generation, pinned: true },
+  })
+}

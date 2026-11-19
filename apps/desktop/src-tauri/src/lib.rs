@@ -1640,6 +1640,27 @@ async fn task_update(
     blocking(move || tasks::update(&root, &id, patch).map_err(err)).await
 }
 
+/// End a deleted task's chat team and close its agents, including workers in other worktrees.
+fn retire_chat_team(
+    root: &Path,
+    project_id: &str,
+    task: Option<&str>,
+    bridge: &service::Bridge,
+) -> Result<(), String> {
+    let sessions =
+        patchbay_core::orchestration::chat::retire_task(root, project_id, task).map_err(err)?;
+    for id in sessions {
+        // A session already gone needs no closing, and one still running can't be forgotten.
+        let stopped = bridge
+            .call::<serde_json::Value>(patchbay_core::session::Request::Stop { id: id.clone() });
+        if stopped.is_ok() {
+            let _ =
+                bridge.call::<serde_json::Value>(patchbay_core::session::Request::Forget { id });
+        }
+    }
+    Ok(())
+}
+
 /// Forget a task and optionally remove its (clean) worktree; the branch stays.
 /// The task's sessions are stopped first and forgotten afterwards; returns
 /// whether that forgetting succeeded.
@@ -1656,6 +1677,8 @@ async fn task_remove(
     blocking(move || {
         let removed =
             tasks::remove_with_sessions(&root, &id, delete_worktree, &*bridge).map_err(err)?;
+        // The task is gone, so nothing can reach its team any more.
+        let retired = retire_chat_team(&root, &project_id, Some(&id), &bridge);
         let worktree = Some(PathBuf::from(removed.task.worktree));
         let mut active = scoped
             .task_root
@@ -1666,7 +1689,7 @@ async fn task_remove(
             drop(active);
             rewatch(&app, &project_id);
         }
-        Ok(removed.sessions_cleared)
+        Ok(removed.sessions_cleared && retired.is_ok())
     })
     .await
 }
@@ -1950,6 +1973,7 @@ async fn task_root_start(
 }
 
 /// Reuse or create a checkout of an existing local destination branch, without activating it.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn merge_destination_resolve(
     window: WebviewWindow,
@@ -1959,6 +1983,7 @@ async fn merge_destination_resolve(
     source: String,
     source_branch: String,
     destination_branch: String,
+    commit_source: Option<Vec<String>>,
 ) -> CmdResult<patchbay_core::merges::MergeRequest> {
     main_only(&window)?;
     let scoped = state.project(&project_id)?;
@@ -1970,8 +1995,30 @@ async fn merge_destination_resolve(
             &source,
             &source_branch,
             &destination_branch,
+            commit_source.as_deref(),
         )
         .map_err(|error| format!("{error:#}"))
+    })
+    .await
+}
+
+/// The source worktree's uncommitted changes, for the merge dialog to confirm.
+#[tauri::command]
+async fn merge_source_changes(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    mut project: Project,
+    source: String,
+    source_branch: String,
+) -> CmdResult<Vec<String>> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    blocking(move || {
+        access.trust(&mut project).map_err(err)?;
+        patchbay_core::merges::source_changes(&project, &source, &source_branch)
+            .map_err(|error| format!("{error:#}"))
     })
     .await
 }
@@ -2220,8 +2267,13 @@ async fn merge_cleanup(
             return Err("The worktree to remove is open as a project".into());
         }
         stories::complete_merge(&root, Path::new(&request.source)).map_err(err)?;
-        let task = tasks::list(&root)
-            .map_err(err)?
+        let known = tasks::list(&root).map_err(err)?;
+        // Restoring keeps the source folder, but its feature branch and that work are finished.
+        let restored_task = known
+            .iter()
+            .find(|t| t.worktree == request.source)
+            .map(|t| t.id.clone());
+        let task = known
             .into_iter()
             .find(|t| t.worktree == preview.removed_worktree);
         if let Some(task) = &task {
@@ -2250,16 +2302,21 @@ async fn merge_cleanup(
         if removed.exists() {
             return cleanup;
         }
-        for record in owned
-            .into_iter()
-            .filter(|r| r.spec.cwd.starts_with(&removed))
-        {
+        let restored = preview.restore && cleanup.is_ok();
+        for record in owned.into_iter().filter(|r| {
+            r.spec.cwd.starts_with(&removed)
+                || (restored && r.metadata.kind == patchbay_core::TerminalKind::Agent)
+        }) {
             let _ = bridge.call::<serde_json::Value>(patchbay_core::session::Request::Forget {
                 id: record.id,
             });
         }
         if let Some(task) = task {
             tasks::remove_with_sessions(&root, &task.id, true, &*bridge).map_err(err)?;
+            retire_chat_team(&root, &project_id, Some(&task.id), &bridge)?;
+        }
+        if restored {
+            retire_chat_team(&root, &project_id, restored_task.as_deref(), &bridge)?;
         }
         cleanup
     })
@@ -3215,6 +3272,7 @@ pub fn run() {
                 plan_transfer_pending,
                 task_root_start,
                 merge_destination_resolve,
+                merge_source_changes,
                 merge_agent_start,
                 map_agent_start,
                 stack_agent_start,

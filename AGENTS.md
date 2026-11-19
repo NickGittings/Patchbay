@@ -66,6 +66,8 @@ Per-project backend `ProjectAccess { access, watcher, task_root }` owns trusted 
 
 Rust and TypeScript interfaces are mirrored by hand. Changes to model fields, commands, events, or shared encodings require both sides and their paired tests to change together. Core serde models generally use camelCase; Tauri command arguments map frontend camelCase to Rust snake_case. Session IDs are opaque: use recorded `Metadata` and frontend `sessionMetadata`, never parse hashes.
 
+Chat mode and the regular views are two routes through the same work. When changing behavior, labels, or workflow in one, check the other and apply the change to both, preferably through shared code; report any difference you leave in place.
+
 ### Topic references
 
 Read the relevant topic before editing its area. Keep implementation details in these documents:

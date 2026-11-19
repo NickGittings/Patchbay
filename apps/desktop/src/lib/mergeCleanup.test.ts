@@ -11,7 +11,7 @@ import {
   trackMergeCleanup,
 } from './mergeCleanup'
 import { gitWorktrees, mergeCleanup, mergeCleanupPreview, mergeOutcome, terminalStop } from './ipc'
-import { completeTeamTask } from './chatTeams'
+import { completeTeamTask, forgetTeamChat } from './chatTeams'
 import { forgetMainWorktree, refreshMainWorktree, useMainWorktree } from './mainWorktree'
 import type { Project, SessionRecord, SessionState } from '../types'
 import { restoredSimple, visibleReply, type SimpleState } from './simple'
@@ -24,7 +24,10 @@ vi.mock('./ipc', () => ({
   gitWorktrees: vi.fn(),
   terminalStop: vi.fn().mockResolvedValue(undefined),
 }))
-vi.mock('./chatTeams', () => ({ completeTeamTask: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('./chatTeams', () => ({
+  completeTeamTask: vi.fn().mockResolvedValue(undefined),
+  forgetTeamChat: vi.fn().mockResolvedValue(undefined),
+}))
 vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('./tasks', () => ({ refreshTasks: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('./git', () => ({ requestGitRefresh: vi.fn().mockResolvedValue(undefined) }))
@@ -145,6 +148,35 @@ test('merges into other branches and unattached worktrees keep the lead', async 
   trackMergeCleanup(project, request, 'session', 'unattached', 'keep', false)
   for (const job of cleanupJobs()) expect(await completeTaskContext(job)).toBe(true)
   expect(completeTeamTask).not.toHaveBeenCalled()
+})
+
+test('deleting merged work starts its Chat over only once cleanup succeeds', async () => {
+  vi.mocked(forgetTeamChat).mockClear()
+  vi.mocked(gitWorktrees).mockResolvedValue([])
+  trackMergeCleanup(
+    project,
+    { ...request, source: project.root },
+    'session',
+    'merge',
+    'delete',
+    false,
+  )
+  const [job] = cleanupJobs()
+  vi.mocked(mergeCleanup).mockRejectedValueOnce(new Error('dirty'))
+  await expect(deleteMergedWork(job)).rejects.toThrow('dirty')
+  expect(forgetTeamChat).not.toHaveBeenCalled()
+  vi.mocked(mergeCleanup).mockResolvedValueOnce(undefined)
+  await deleteMergedWork(job)
+  expect(forgetTeamChat).toHaveBeenCalledWith('p', null)
+})
+
+test('deleting an unattached worktree has no Chat to start over', async () => {
+  vi.mocked(forgetTeamChat).mockClear()
+  vi.mocked(gitWorktrees).mockResolvedValue([])
+  vi.mocked(mergeCleanup).mockResolvedValueOnce(undefined)
+  trackMergeCleanup(project, request, 'session', 'merge', 'delete', false)
+  await deleteMergedWork(cleanupJobs()[0])
+  expect(forgetTeamChat).not.toHaveBeenCalled()
 })
 
 test('tracks cleanup independently of the visible view and remembers dismissal', () => {

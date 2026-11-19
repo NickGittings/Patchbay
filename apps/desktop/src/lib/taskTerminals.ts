@@ -87,13 +87,16 @@ export function retainedTerminal(
 }
 /**
  * What a tile's header leads with: its component, else the kind of agent it holds. The session's
- * record decides when there is one, since only it knows a root agent is fixing a review.
+ * record decides when there is one, since only it knows a root agent is fixing a review. A chat
+ * team's role comes first, so an agent has the same name here and in Chat.
  */
 export function tileLabel(
   { componentId, label, terminal }: Pick<TaskTerminal, 'componentId' | 'label' | 'terminal'>,
   record?: Pick<SessionRecord, 'metadata'>,
+  teamRole?: string,
 ): string | undefined {
   if (label) return label
+  if (teamRole) return teamRole
   const metadata = record?.metadata ?? {
     componentId,
     kind: terminal.kind,

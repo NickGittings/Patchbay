@@ -364,6 +364,36 @@
         .querySelector('[aria-label="Source review status"]')
         ?.textContent.includes('changed since review'),
     )
+    // Uncommitted source work turns the launch into a question about committing it.
+    await smoke.terminalWrite(
+      fixtureShell,
+      `printf dirty > '${parent}/feature/merge-smoke-source'; printf "DIRTY-SOURCE-FIXTURE\\n"\r`,
+    )
+    await until('source file written', () =>
+      text(fixtureShell).includes('\nDIRTY-SOURCE-FIXTURE\n'),
+    )
+    window.dispatchEvent(new Event('focus'))
+    await until('merge dialog offers to commit source changes', () =>
+      dialog()
+        ?.querySelector('[aria-label="Uncommitted source changes"]')
+        ?.textContent.includes('merge-smoke-source'),
+    )
+    assert(
+      [...dialog().querySelectorAll('button')].some((b) => b.textContent === 'Commit and merge'),
+      'dirty source did not offer Commit and merge',
+    )
+    await smoke.terminalWrite(
+      fixtureShell,
+      `rm '${parent}/feature/merge-smoke-source'; printf "CLEAN-SOURCE-FIXTURE\\n"\r`,
+    )
+    await until('source file removed', () =>
+      text(fixtureShell).includes('\nCLEAN-SOURCE-FIXTURE\n'),
+    )
+    window.dispatchEvent(new Event('focus'))
+    await until(
+      'merge dialog drops the commit question',
+      () => dialog() && !dialog().querySelector('[aria-label="Uncommitted source changes"]'),
+    )
     // Backend errors remain in the dialog, and do not launch an agent.
     await smoke.startTerminal('@task', 'shell', null)
     const shell = smoke.sessionId('@task', 'shell', null)

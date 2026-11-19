@@ -607,6 +607,32 @@ test('branch merge resolves on submit, refreshes tasks, and launches/tracks the 
   expect(useStore.getState().activeTask).toBeNull()
 })
 
+test('branch merge forwards the source changes the user agreed to commit', async () => {
+  const { startBranchMerge } = await import('./reviewAgents')
+  const project = { projectId: 'p' } as Project
+  const open = tree('/project', 'feature', true)
+  const commitSource = [' M file.txt']
+  const device = { id: 'agent', name: 'Agent', command: 'claude' } as DeviceManifest
+  const request = {
+    commitSource,
+    source: open.path,
+    sourceBranch: 'feature',
+    destination: '/project-main',
+    destinationBranch: 'main',
+  }
+  vi.mocked(mergeDestinationResolve).mockResolvedValue(request)
+  vi.mocked(mergeAgentStart).mockResolvedValue('sid')
+  await startBranchMerge(project, open, 'main', device, 'request', commitSource)
+  expect(mergeDestinationResolve).toHaveBeenCalledWith(
+    project,
+    open.path,
+    'feature',
+    'main',
+    commitSource,
+  )
+  expect(mergeAgentStart).toHaveBeenCalledWith(project, request, expect.anything(), 'request')
+})
+
 test('resolution failure refreshes data and never launches an agent', async () => {
   const { startBranchMerge } = await import('./reviewAgents')
   const { refreshTasks } = await import('./tasks')

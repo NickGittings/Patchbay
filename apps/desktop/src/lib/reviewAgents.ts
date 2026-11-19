@@ -204,17 +204,27 @@ function launchJob<R>(
   return start(project, request, agentTerminal(device), requestId, ...(auto ? [auto] : []))
 }
 
-/** Resolve only on submit; keep the destination available even when launch fails. */
+/**
+ * Resolve only on submit; keep the destination available even when launch fails.
+ * `commitSource` is the list of uncommitted changes the user agreed the agent should commit.
+ */
 export async function startBranchMerge(
   project: Project,
   source: Worktree,
   destinationBranch: string,
   device: DeviceManifest,
   requestId: string,
+  commitSource?: string[],
 ) {
   let request: MergeRequest
   try {
-    request = await mergeDestinationResolve(project, source.path, source.branch!, destinationBranch)
+    request = await mergeDestinationResolve(
+      project,
+      source.path,
+      source.branch!,
+      destinationBranch,
+      ...(commitSource ? [commitSource] : []),
+    )
   } finally {
     await refreshTasks(project.projectId).catch(() => {})
   }

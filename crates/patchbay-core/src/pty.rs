@@ -48,7 +48,8 @@ pub struct SessionSpec {
     /// Reserve this worktree against all other terminals while running.
     #[serde(default)]
     pub exclusive_cwd: bool,
-    /// Merge provenance, never an additional writable folder or a recovery prerequisite.
+    /// Merge provenance. Writable, and needed to resume, only when also listed in `dirs` because
+    /// the user confirmed that the agent should commit source changes.
     #[serde(default)]
     pub merge_source: Option<PathBuf>,
     pub cwd: PathBuf,

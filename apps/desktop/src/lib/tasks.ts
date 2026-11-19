@@ -15,6 +15,7 @@ import {
 import { PROJECT_DRAFT, plannerSessionId, type Task, type TaskDraft } from '../types'
 import { taskActionState, unseenFinished } from './taskActions'
 import { forgetAutoDrafts } from './autoDrafts'
+import { forgetTeamChat } from './chatTeams'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import { reconcileFreshSessions, launching } from './sessions'
 import {
@@ -274,6 +275,7 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
     await refreshTasks(projectId).catch(() => {})
     throw e
   }
+  await forgetTeamChat(projectId, id)
   // The removal succeeded; refreshing the lists must neither report it as failed nor skip the
   // cleanup after it.
   await refreshTasks(projectId).catch(() => {})

@@ -35,13 +35,23 @@
     )
   }
   const confirmDialog = (title) => document.querySelector(`[role="dialog"][aria-label="${title}"]`)
-  const assignmentsButton = () =>
-    [...document.querySelectorAll('.simple-composer-controls button')].find((b) =>
-      b.textContent.startsWith('Assignments ('),
+  const agentsTab = () =>
+    [...document.querySelectorAll('.view-tabs button')].find((b) =>
+      b.textContent.startsWith('Agents '),
     )
-  const openAssignments = async () => {
-    ;(await until('assignments button', assignmentsButton)).click()
-    return until('assignments popup', () => confirmDialog('Assignments'))
+  const openAgents = async () => {
+    ;(await until('Agents tab', agentsTab)).click()
+    return until('Agents canvas', () => document.querySelector('.agent-canvas'))
+  }
+  const agentCard = (pane, text) =>
+    [...pane.querySelectorAll('.agent-card')].find((card) => card.textContent.includes(text))
+  const dismissCard = async (pane, text) => {
+    agentCard(pane, text).querySelector('.agent-card-name').click()
+    button(
+      'Dismiss',
+      await until('agent details', () => pane.querySelector('.agent-details')),
+    ).click()
+    await until('dismissed card', () => !agentCard(pane, text))
   }
   const input = (el, value, event = 'input') => {
     assert(el, 'missing input')
@@ -116,15 +126,14 @@
       }
       assert(rejected, `Manual provider ${control.kind} bypassed chat team ownership`)
     }
-    assert(!confirmDialog('Assignments'), 'Assignments popup should start closed')
-    const workers = await openAssignments()
+    assert(!document.querySelector('.agent-canvas'), 'Agents tab should start closed')
+    const workers = await openAgents()
     const workerButton = await until('worker terminal action', () => {
-      const b = button('View worker terminal', workers)
+      const b = workers.querySelector('.agent-card[data-row="worker"] footer button')
       return b && !b.disabled && b
     })
     workerButton.click()
     await until('worker drawer', () => document.querySelector('.simple-terminal-drawer'))
-    assert(!confirmDialog('Assignments'), 'Opening the worker terminal left the popup open')
     assert(state().simple.selectedAgent === lead, 'opening worker changed composer recipient')
     assert(
       document.querySelector('.chat-recipient').textContent.includes('Lead · Codex'),
@@ -185,39 +194,25 @@
       'Build showed chat assignments',
     )
     state().setSimpleMode(true)
-    await until('chat restored', () => assignmentsButton())
+    await until('chat restored', () => agentsTab())
     assert(state().simple.selectedAgent === team().lead.sessionId, 'lead selection lost')
     assert(
       !document.querySelector('.simple-thread').textContent.includes('WORKER-SIDE-THREAD-ONLY'),
       'worker reply entered main transcript',
     )
-    const results = await openAssignments()
-    assert(
-      results.textContent.includes('Inspected the committed baseline'),
-      'Completed assignment missing from Chat',
+    const results = await openAgents()
+    await until('completed assignment in Agents', () =>
+      agentCard(results, 'Inspected the committed baseline'),
     )
-    assert(
-      results.textContent.includes('Implemented worker file'),
-      'Code awaiting integration disappeared',
-    )
-    const reportRow = [...results.querySelectorAll('li')].find((row) =>
-      row.textContent.includes('Inspected the committed baseline'),
-    )
-    button('Dismiss', reportRow).click()
-    await until('dismissed report', () => !results.contains(reportRow))
-    assert(assignmentsButton().textContent.includes('Assignments (1)'), 'Count retained dismissal')
+    assert(agentCard(results, 'Implemented worker file'), 'Code awaiting integration disappeared')
+    await dismissCard(results, 'Inspected the committed baseline')
     assert(jobs().length === 2, 'Dismissal removed a coordination record')
     button('Undo', results).click()
-    await until('undone dismissal', () =>
-      assignmentsButton().textContent.includes('Assignments (2)'),
-    )
-    const restoredRow = [...results.querySelectorAll('li')].find((row) =>
-      row.textContent.includes('Inspected the committed baseline'),
-    )
-    button('Dismiss', restoredRow).click()
+    await until('undone dismissal', () => agentCard(results, 'Inspected the committed baseline'))
+    await dismissCard(results, 'Inspected the committed baseline')
     await until('dismissed again', () => button('Restore', results))
-    assignmentsButton().click()
-    await until('assignments popup closed', () => !confirmDialog('Assignments'))
+    button('Map', results).click()
+    await until('Agents canvas closed', () => !document.querySelector('.agent-canvas'))
     assert(!button('Open side thread'), 'Side-thread controls remain in Chat')
     ;(await chatMenu('Pause work')).click()
     await until('paused team', () => team().state === 'paused')

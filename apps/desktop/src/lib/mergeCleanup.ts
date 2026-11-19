@@ -1,7 +1,7 @@
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
 import type { MergeCleanup, MergeRequest, Project } from '../types'
 import { mergeCleanup, mergeCleanupPreview, mergeOutcome, terminalStop } from './ipc'
-import { completeTeamTask } from './chatTeams'
+import { completeTeamTask, forgetTeamChat } from './chatTeams'
 import { autoRuns } from './autoState'
 import { reviewerBusy } from './review'
 import { sessionLive } from './sessionList'
@@ -136,6 +136,7 @@ export async function completeMergeChat(job: CleanupJob) {
 /**
  * The merge into `main` finished the task and its worktree stays: stop the merge agent and give
  * the worktree's lead a fresh conversation. False or a rejection means it should be retried.
+ * After a deletion the team is already retired, so there is no lead left to replace.
  */
 export async function completeTaskContext(job: CleanupJob) {
   if (job.request.destinationBranch !== 'main') return true
@@ -162,11 +163,22 @@ export async function finishCleanup(job: CleanupJob) {
   await settleTaskContext(job)
 }
 
+/** The Chat of a job's source: a task, null for the project folder, undefined if it has none. */
+function sourceChat(job: CleanupJob) {
+  const state = projectStateOf(job.projectId)
+  const source = state?.tasks.find((t) => t.worktree === job.request.source)
+  if (source) return source.id
+  return job.request.source === state?.project?.root ? null : undefined
+}
+
 export async function deleteMergedWork(job: CleanupJob) {
   try {
     const project = projectOf(job.projectId)
     if (!project) throw new Error('Project is no longer open')
+    // Read first: the deleted worktree's task is about to disappear.
+    const chat = sourceChat(job)
     await mergeCleanup(project, job.request)
+    if (chat !== undefined) await forgetTeamChat(job.projectId, chat)
   } finally {
     refreshMainWorktree(job.projectId)
     await refreshTasks(job.projectId).catch(() => {})

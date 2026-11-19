@@ -73,6 +73,8 @@ export interface ChatTeam {
     response: string | null
   }[]
   recovery?: boolean
+  /** The pending recovery waits for the user's next message unless work is active. */
+  quietRecovery?: boolean
   deliveries?: { recipient: string; generation: number; readySince: number }[]
   messages: TeamMessage[]
   reset: {
@@ -477,6 +479,18 @@ export async function applyTeamHandoff(team: ChatTeam) {
     })
   }
   await controlTeam(team, { kind: 'handoffApplied', id: handoff.id })
+}
+/**
+ * The backend retired this worktree's team with its deleted branch or worktree: start its Chat
+ * over, dropping the conversation, workflow history, draft and queued message.
+ */
+export async function forgetTeamChat(projectId: string, task: string | null) {
+  useStore.getState().patchTask(projectId, task, { simple: { startedMs: Date.now(), log: [] } })
+  const key = simpleKey(projectId, task)
+  useSimpleUi.setState((s) => ({
+    worktrees: Object.fromEntries(Object.entries(s.worktrees).filter(([k]) => k !== key)),
+  }))
+  await refreshChatTeams(projectId).catch(() => {})
 }
 /** Migration adopts saved recipients paused and never launches workers. */
 export async function refreshChatTeams(projectId: string) {

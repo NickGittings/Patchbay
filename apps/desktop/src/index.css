@@ -2955,6 +2955,15 @@ kbd {
 .review-merge-terminal select {
   max-width: 50%;
 }
+.merge-commit-changes p {
+  margin: 0 0 6px;
+}
+.merge-commit-changes pre {
+  margin: 0;
+  max-height: 140px;
+  overflow: auto;
+  font-size: 12px;
+}
 .merge-agent-dialog code {
   overflow-wrap: anywhere;
   font-size: var(--text-sm);

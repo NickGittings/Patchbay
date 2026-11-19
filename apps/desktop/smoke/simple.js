@@ -351,6 +351,16 @@
     await smoke.terminalWrite(builder, 'smoke-changes\n')
     await until('three changed files', () => button('Changes 3'))
     click(
+      await until('Agents tab', () =>
+        [...document.querySelectorAll('.view-tabs button')].find((b) =>
+          b.textContent.trim().startsWith('Agents '),
+        ),
+      ),
+    )
+    await until('builder card', () =>
+      document.querySelector(`.agent-card[data-session="${CSS.escape(builder)}"]`),
+    )
+    click(
       await until('Changes tab', () =>
         [...document.querySelectorAll('.view-tabs button')].find((b) =>
           b.textContent.trim().startsWith('Changes '),
