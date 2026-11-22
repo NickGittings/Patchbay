@@ -793,7 +793,7 @@
       '"$PATCHBAY_CLI" agent validate web & "$PATCHBAY_CLI" agent validate web; wait; printf "contention-finished\\n"\r',
     )
     await until('bridge action contention', () =>
-      textOf(rootAgentSid).includes('Anothergraphactionisstillrunningorstopping'),
+      textOf(rootAgentSid).includes('Anotherenvironmentstartorvalidationisrunning'),
     )
     await until(
       'contended action finished',

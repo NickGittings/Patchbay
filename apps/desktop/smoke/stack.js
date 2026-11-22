@@ -221,7 +221,7 @@
     )
     assert(review.closest('details').open, 'waiting proposal is hidden')
     assertDetectionLocked()
-    const show = button(detection(), 'Show stack detection')
+    const show = button(detection(), 'Show run & test detection')
     assert(show && !show.disabled, 'running agent navigation locked by proposal')
     show.click()
     await until('running detection selected', () => state().activeSession === sid)

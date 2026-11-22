@@ -201,7 +201,7 @@
     await until('applied map autosaved', () => !state().dirty)
     const freshOpened = await smoke.openProject()
     assert(
-      freshOpened.project.schemaVersion === 4 &&
+      freshOpened.project.schemaVersion === 5 &&
         freshOpened.project.components.some((c) => c.id === 'new'),
       'Approved changes must autosave to patchbay.json',
     )
