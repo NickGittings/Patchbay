@@ -77,3 +77,17 @@ test.each(['running', 'waitingOnYou', 'paused'])('Auto %s keeps its agents', (au
 test('a finished Auto run no longer owns the chat agents', () => {
   expect(retirableStageAgents(input({ autoStatus: 'done' }))).toHaveLength(3)
 })
+
+test('agents Auto launched stay its own after its run ends', () => {
+  const simple = {
+    startedMs: 1,
+    log: [
+      { ...launch('fix', 'autoFixer'), origin: 'auto' },
+      { ...launch('implement', 'builder'), origin: 'manual' },
+    ],
+  } as unknown as SimpleState
+  const sessions = { autoFixer: session(), builder: session() }
+  expect(retirableStageAgents(input({ simple, sessions, autoStatus: 'failed' }))).toEqual([
+    'builder',
+  ])
+})

@@ -62,7 +62,7 @@ export function autoCurrent(
  * for your go; any other wait needs your attention.
  */
 export function autoStepper(
-  run: Pick<AutoRun, 'stage' | 'status' | 'reason' | 'baseCommit' | 'waitingFor'>,
+  run: Pick<AutoRun, 'stage' | 'status' | 'reason' | 'baseCommit'>,
 ): ChatStepperItem[] {
   const halt =
     run.status === 'paused' || run.status === 'failed' || run.status === 'stopped'
@@ -73,8 +73,8 @@ export function autoStepper(
     issues: run.stage === 'mergeGate' ? 0 : undefined,
     inPlace: runsInPlace(run),
     halt,
-    attention:
-      run.status === 'waitingOnYou' && run.stage !== 'mergeGate' && run.waitingFor !== 'agentInput',
+    // Waiting on an agent's question is waiting on you too, as is any wait but the merge gate.
+    attention: run.status === 'waitingOnYou' && run.stage !== 'mergeGate',
     note: run.reason || AUTO_NOTES[run.stage],
   })
 }

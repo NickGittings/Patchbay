@@ -101,19 +101,26 @@ export default function ReviewView() {
   const source = other ?? worktrees.find((w) => w.current)
   const agentSelection = useStore((s) => s.reviewAgents[s.project?.id ?? ''])
   // The shown worktree's reviewers and merges, wherever they were started.
-  const currentAgent = useStore((s) =>
-    currentReviewAgentRecord(
-      reviewAgentRecords(s.sessionRecords, s.project?.id).filter(
-        (r) =>
-          !source ||
-          (r.metadata.componentId === REVIEW_SCOPE
-            ? r.spec.cwd === source.path
-            : r.spec.merge_source === source.path),
-      ),
-      s.sessions,
-      s.reviewAgents[s.project?.id ?? '']?.sid,
-    ),
-  )
+  // An explicit selection (one just launched, from any source) always shows; otherwise the
+  // shown worktree's running reviewer or merge, wherever it was started.
+  const currentAgent = useStore((s) => {
+    const records = reviewAgentRecords(s.sessionRecords, s.project?.id)
+    const selected = s.reviewAgents[s.project?.id ?? '']?.sid
+    return (
+      records.find((r) => r.id === selected) ??
+      currentReviewAgentRecord(
+        records.filter(
+          (r) =>
+            !source ||
+            (r.metadata.componentId === REVIEW_SCOPE
+              ? r.spec.cwd === source.path
+              : r.spec.merge_source === source.path),
+        ),
+        s.sessions,
+        undefined,
+      )
+    )
+  })
   // Where the worktree's work is, as Chat and the Auto panel show it, and what comes next.
   const stage = useStageModel()
   const next = new Set(stage?.state.prompt?.actions.map((a) => a.action))

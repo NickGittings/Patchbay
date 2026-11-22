@@ -315,7 +315,8 @@ function WorktreeReader({ children }: { children: ReactNode }) {
     (s) =>
       (!s.simpleMode && (s.view === 'plan' || s.view === 'review')) || s.utilityPanel === 'auto',
   )
-  const reader = useSimpleData(chat || views)
+  // Only Chat lists changes; the views need the stage artifacts alone.
+  const reader = useSimpleData(chat || views, chat)
   return <WorktreeReaderContext value={reader}>{children}</WorktreeReaderContext>
 }
 

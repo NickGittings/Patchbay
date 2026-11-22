@@ -267,7 +267,6 @@ function withLegacyGenerations(log: SimpleEntry[]): SimpleEntry[] {
     .reverse()
 }
 
-/** Old layouts start empty. Never truncate the worktree's action history. */
 /** An action's origin as this build writes it: `byLead` becomes `lead`, unknown values drop. */
 function restoredAction(entry: Extract<SimpleEntry, { kind: 'action' }>): SimpleEntry {
   const { byLead, origin, autoRunId, ...rest } = entry
@@ -280,6 +279,7 @@ function restoredAction(entry: Extract<SimpleEntry, { kind: 'action' }>): Simple
   }
 }
 
+/** Old layouts start empty. Never truncate the worktree's action history. */
 export function restoredSimple(value: unknown): SimpleState | null {
   if (!value || typeof value !== 'object') return null
   const state = value as SimpleState

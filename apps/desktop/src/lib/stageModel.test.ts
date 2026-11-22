@@ -98,6 +98,13 @@ test.each(STAGES.flatMap((stage) => STATUSES.map((status) => [stage, status] as 
   },
 )
 
+test('an agent question Auto waits on needs attention like any other wait', () => {
+  expect(
+    autoStepper(run({ stage: 'implement', status: 'waitingOnYou', waitingFor: 'agentInput' }))[1]
+      .state,
+  ).toBe('attention')
+})
+
 test('folded Auto stages name themselves; a reason takes their place', () => {
   expect(autoStepper(run({ stage: 'validate' }))[1].note).toBe('Validating')
   expect(autoStepper(run({ stage: 'scan' }))[0].note).toBe('Scanning')

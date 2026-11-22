@@ -1,4 +1,4 @@
-import { useStore } from '../store'
+import { projectStateOf, useStore, workspaceOf } from '../store'
 import type { DeviceManifest, Project, ReviewRequest, SessionRecord } from '../types'
 import { implementPlannerPlan, type HandoffTarget } from './planHandoff'
 import { startMerge, type MergeOptions } from './reviewAgents'
@@ -45,11 +45,14 @@ export async function launchFix(
 export async function launchReview(
   origin: 'chat' | 'manual',
   project: Project,
-  task: string | null,
+  /** `undefined` for a worktree without a chat: the review runs, unrecorded. */
+  task: string | null | undefined,
   request: ReviewRequest,
   devices: DeviceManifest[],
 ) {
+  refuseWhileAutoReviews(project.projectId!, task)
   const result = await startSimpleReview(project, request, devices)
+  if (task === undefined) return result
   await recordStageLaunch({
     projectId: project.projectId!,
     task,
@@ -67,11 +70,12 @@ export async function launchReview(
  */
 export async function launchMerge(
   origin: 'chat' | 'manual',
-  task: string | null,
+  /** `undefined` for a source worktree without a chat: the merge runs, unrecorded. */
+  task: string | null | undefined,
   options: Extract<MergeOptions, { source: unknown }>,
 ) {
   const started = await startMerge(options)
-  if (started.kind === 'started')
+  if (started.kind === 'started' && task !== undefined)
     await recordStageLaunch({
       projectId: options.project.projectId!,
       task,
@@ -84,7 +88,22 @@ export async function launchMerge(
   return started
 }
 
-/** The task whose worktree is `path`; the project folder (or an unknown path) is `null`. */
-export function taskOfWorktree(path: string) {
-  return useStore.getState().tasks.find((t) => !t.missing && t.worktree === path)?.id ?? null
+/**
+ * The task whose worktree is `path`: `null` for the project folder, `undefined` for a worktree
+ * Patchbay doesn't know (one created outside it), which has no chat to record in.
+ */
+export function taskOfWorktree(path: string): string | null | undefined {
+  const s = useStore.getState()
+  if (path === s.project?.root) return null
+  return s.tasks.find((t) => !t.missing && t.worktree === path)?.id
+}
+
+const AUTO_OWNS = new Set(['running', 'waitingOnYou', 'paused'])
+/** Auto's reviewers in its worktree are its own while its run goes on; replacing one breaks it. */
+function refuseWhileAutoReviews(projectId: string, task: string | null | undefined) {
+  const state = projectStateOf(projectId)
+  if (!state || task === undefined) return
+  const auto = workspaceOf(state, task).auto
+  if (auto && AUTO_OWNS.has(auto.status))
+    throw new Error('Auto is running this worktree. Pause or stop it before reviewing here.')
 }

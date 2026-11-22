@@ -32,7 +32,8 @@ interface Artifacts {
   plan: PlanText
   acceptedPlan: PlanText
   proposal: PlannerProposal | null
-  review: Review
+  /** Absent when the reader skipped the diff. */
+  review?: Review
   base?: string
   worktrees: Worktree[]
   branches: string[]
@@ -41,7 +42,11 @@ interface Artifacts {
   outcomeError?: string
 }
 /** Disk-backed reader. Late replies never cross project/worktree boundaries. */
-export function useSimpleData(visible: boolean) {
+/**
+ * `diff` reads the worktree's changes too, which only Chat's Changes need; the Plan and Review
+ * views and the Auto panel read just the stage artifacts.
+ */
+export function useSimpleData(visible: boolean, diff = true) {
   const projectId = useStore((s) => s.project?.id)
   const root = useStore((s) => s.project?.root)
   const nodes = useStore((s) => (visible ? s.nodes : undefined))
@@ -55,7 +60,7 @@ export function useSimpleData(visible: boolean) {
   const source = sourceData?.worktrees.find((w) => (worktree ? w.path === worktree : w.current))
   const findings = useReviewFindings(projectId, source?.branch, visible, revision)
   const savedBase = findings?.findings?.base
-  const key = JSON.stringify([selectionKey, savedBase])
+  const key = JSON.stringify([selectionKey, savedBase, diff])
   const [error, setError] = useState<{ key: string; text: string }>()
   useEffect(() => {
     if (!visible || !projectId) return
@@ -92,7 +97,7 @@ export function useSimpleData(visible: boolean) {
         // saved base cannot prevent these artifacts from refreshing.
         const source = worktrees.find((w) => (worktree ? w.path === worktree : w.current))
         const base = chatReviewBase(source, state.tasks, worktrees, branches, savedBase)
-        const review = await gitReview(project, worktree, base)
+        const review = diff ? await gitReview(project, worktree, base) : undefined
         const merge = latestMerge(state)
         const request: MergeRequest | undefined =
           merge?.kind === 'action' ? merge.request : undefined
@@ -196,7 +201,7 @@ export function useSimpleData(visible: boolean) {
       window.removeEventListener('focus', focus)
       document.removeEventListener('visibilitychange', focus)
     }
-  }, [visible, projectId, task, worktree, key, savedBase, selectionKey, retryVersion])
+  }, [visible, diff, projectId, task, worktree, key, savedBase, selectionKey, retryVersion])
   const current = data?.key === key && error?.key !== key ? data : undefined
   const scope = useMemo(
     () => ({

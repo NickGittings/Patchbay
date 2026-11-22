@@ -41,7 +41,7 @@ function ChangesContent({ scopeKey, selection, reader }: Props) {
   // Resolve their path again when files arrive, preserving explicit listed selections.
   const selected = resolveChangeSelection(files, selection, reader.source?.path)
   const file = selected
-    ? (reader.data?.review.changes[selected.componentId]?.find((f) => f.path === selected.path) ??
+    ? (reader.data?.review?.changes[selected.componentId]?.find((f) => f.path === selected.path) ??
       null)
     : null
   const patch = useSimpleUi.getState().patch
