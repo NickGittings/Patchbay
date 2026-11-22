@@ -105,6 +105,12 @@ test('an agent question Auto waits on needs attention like any other wait', () =
   ).toBe('attention')
 })
 
+test('a wait on you says why rather than how far Auto got', () => {
+  expect(
+    autoStepper(run({ stage: 'fix', status: 'waitingOnYou', reason: 'Fix budget exhausted' }))[2],
+  ).toEqual({ stage: 'review', state: 'attention', note: 'Fix budget exhausted' })
+})
+
 test('folded Auto stages name themselves; a reason takes their place', () => {
   expect(autoStepper(run({ stage: 'validate' }))[1].note).toBe('Validating')
   expect(autoStepper(run({ stage: 'scan' }))[0].note).toBe('Scanning')

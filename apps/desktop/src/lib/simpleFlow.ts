@@ -555,7 +555,10 @@ export function chatStepper(
         state: halt === 'failed' ? 'failed' : 'stopped',
         note: [HALT_NOTES[halt], fallback].filter(Boolean).join(' · '),
       }
-    : { state: attention && state === 'current' ? 'attention' : state, note: note ?? fallback }
+    : attention && state === 'current'
+      ? // Why it waits on you matters more than how far it got.
+        { state: 'attention', note: fallback ?? note }
+      : { state, note: note ?? fallback }
   return stages.map((stage, i) =>
     i < at
       ? { stage, state: 'done' }

@@ -101,13 +101,19 @@ export default function ReviewView() {
   const source = other ?? worktrees.find((w) => w.current)
   const agentSelection = useStore((s) => s.reviewAgents[s.project?.id ?? ''])
   // The shown worktree's reviewers and merges, wherever they were started.
-  // An explicit selection (one just launched, from any source) always shows; otherwise the
-  // shown worktree's running reviewer or merge, wherever it was started.
+  // An explicit selection of this worktree's agent (one just launched, even merging another
+  // source into it) shows first; otherwise its running reviewer or merge, wherever started.
   const currentAgent = useStore((s) => {
     const records = reviewAgentRecords(s.sessionRecords, s.project?.id)
     const selected = s.reviewAgents[s.project?.id ?? '']?.sid
+    // A selection belongs to the shown worktree when it reviews it or merges from or into it.
+    const ofShown = (r: (typeof records)[number]) =>
+      !source ||
+      (r.metadata.componentId === REVIEW_SCOPE
+        ? r.spec.cwd === source.path
+        : r.spec.merge_source === source.path || r.spec.cwd === source.path)
     return (
-      records.find((r) => r.id === selected) ??
+      records.find((r) => r.id === selected && ofShown(r)) ??
       currentReviewAgentRecord(
         records.filter(
           (r) =>

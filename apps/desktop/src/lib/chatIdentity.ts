@@ -80,6 +80,7 @@ export function namedBuilder(
   return (
     teamWorker(record, teams, runs) ||
     (record?.metadata.componentId === TASK_ROOT_SCOPE &&
+      record.spec.purpose !== 'chat' &&
       sessionRole(record.metadata).role === 'Build')
   )
 }
@@ -99,8 +100,11 @@ function chatRoleKey(
       ? 'builder'
       : record && SCOPE_ROLES[record.metadata.componentId]
         ? SCOPE_ROLES[record.metadata.componentId]
-        : // Build, Fix, Coordinator and Worker agents build, whichever flow launched them.
-          record && sessionRole(record.metadata).tone === 'implement'
+        : // Build, Fix, Coordinator and Worker agents build, whichever flow launched them; a
+          // plain chat agent only talks.
+          record &&
+            record.spec.purpose !== 'chat' &&
+            sessionRole(record.metadata).tone === 'implement'
           ? 'builder'
           : 'agent'
 }

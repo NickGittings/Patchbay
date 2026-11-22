@@ -6,7 +6,7 @@ const team = vi.hoisted(() => ({ id: 'team' }))
 import { useStore } from '../store'
 import { noteLead } from './chatTeams'
 import { logLaunch } from './simpleActions'
-import { recordStageLaunch, type StageAction } from './stageRecord'
+import { recordPlannerStart, recordStageLaunch, type StageAction } from './stageRecord'
 import { retireStageAgents } from './stageRetire'
 import type { SimpleOrigin } from './simple'
 
@@ -114,4 +114,20 @@ test('nothing launched records nothing', async () => {
   })
   expect(logLaunch).not.toHaveBeenCalled()
   expect(noteLead).not.toHaveBeenCalled()
+})
+
+test('a planner started outside Chat’s composer is recorded as planning in its worktree', async () => {
+  recordPlannerStart('p', 't', 'claude', 'request')
+  await vi.waitFor(() => expect(logLaunch).toHaveBeenCalled())
+  expect(logLaunch).toHaveBeenCalledWith(
+    'p',
+    't',
+    expect.objectContaining({ action: 'plan', stage: 'plan', origin: 'manual' }),
+    'request',
+    { atRunStart: true },
+  )
+  vi.clearAllMocks()
+  recordPlannerStart('p', '_project_draft', 'claude', 'request')
+  await Promise.resolve()
+  expect(logLaunch).not.toHaveBeenCalled()
 })

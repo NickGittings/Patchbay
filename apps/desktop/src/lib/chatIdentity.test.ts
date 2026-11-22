@@ -18,7 +18,7 @@ const record = (id: string): SessionRecord => ({
     adapter: 'codex',
     conversationId: null,
   },
-  spec: { command: 'codex', cwd: '/p', purpose: 'chat' },
+  spec: { command: 'codex', cwd: '/p' },
   snapshot: null,
   history: [],
   interrupted: false,
@@ -74,4 +74,9 @@ test('agents outside any team take their role from the launch scope', () => {
   expect(chatIdentity(scoped('@review')).role).toBe('Reviewer')
   expect(chatIdentity(scoped('@map')).role).toBe('Agent')
   expect(chatIdentity(scoped('@task', 'shell')).role).toBe('Agent')
+})
+
+test('a plain chat agent only talks, so it is no Builder', () => {
+  const chatAgent = { ...record('solo'), spec: { command: 'codex', cwd: '/p', purpose: 'chat' } }
+  expect(chatIdentity(chatAgent as SessionRecord).role).toBe('Agent')
 })

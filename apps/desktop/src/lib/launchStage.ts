@@ -15,6 +15,7 @@ export async function launchBuild(
   presentation: 'stay' | 'follow',
   target?: HandoffTarget,
 ) {
+  refuseWhileAutoRuns(projectId, task)
   const launched = await implementPlannerPlan(planner, undefined, undefined, presentation, target)
   await recordStageLaunch({ projectId, task, origin, action: 'implement', launched: [launched] })
   return launched
@@ -27,6 +28,10 @@ export async function launchFix(
   presentation: 'stay' | 'follow',
   target?: HandoffTarget,
 ) {
+  refuseWhileAutoRuns(
+    reviewer.metadata.projectId,
+    target?.task ?? taskOfWorktree(reviewer.spec.cwd),
+  )
   const fixing = await fixReviewFindings(reviewer, undefined, undefined, presentation, target)
   await recordStageLaunch({
     projectId: reviewer.metadata.projectId,
@@ -50,7 +55,7 @@ export async function launchReview(
   request: ReviewRequest,
   devices: DeviceManifest[],
 ) {
-  refuseWhileAutoReviews(project.projectId!, task)
+  refuseWhileAutoRuns(project.projectId!, task)
   const result = await startSimpleReview(project, request, devices)
   if (task === undefined) return result
   await recordStageLaunch({
@@ -74,6 +79,7 @@ export async function launchMerge(
   task: string | null | undefined,
   options: Extract<MergeOptions, { source: unknown }>,
 ) {
+  refuseWhileAutoRuns(options.project.projectId!, task)
   const started = await startMerge(options)
   if (started.kind === 'started' && task !== undefined)
     await recordStageLaunch({
@@ -100,14 +106,15 @@ export function taskOfWorktree(path: string): string | null | undefined {
   return path === s.project?.root ? null : undefined
 }
 
-const AUTO_OWNS = new Set(['running', 'waitingOnYou', 'paused'])
-/** Auto's reviewers in its worktree are its own while its run goes on; replacing one breaks it. */
-function refuseWhileAutoReviews(projectId: string, task: string | null | undefined) {
+const AUTO_HOLDS: Record<string, string> = {
+  running: 'Auto is running this worktree',
+  waitingOnYou: 'Auto is waiting on you in this worktree',
+  paused: 'Auto is paused in this worktree',
+}
+/** Auto's agents in its worktree are its own while its run goes on; competing stages break it. */
+function refuseWhileAutoRuns(projectId: string, task: string | null | undefined) {
   const state = projectStateOf(projectId)
   if (!state || task === undefined) return
-  const auto = workspaceOf(state, task).auto
-  if (auto && AUTO_OWNS.has(auto.status))
-    throw new Error(
-      'Auto is running this worktree. Stop Auto or let it finish before reviewing here.',
-    )
+  const held = AUTO_HOLDS[workspaceOf(state, task).auto?.status ?? '']
+  if (held) throw new Error(`${held}. Stop Auto or let it finish first.`)
 }

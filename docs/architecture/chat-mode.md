@@ -76,14 +76,16 @@ Chat's Merge button checks the source first. With uncommitted changes it opens t
 
 Every Plan, Build, Fix, Review and Merge launch goes through `lib/launchStage.ts` (Chat, the Plan
 and Review views) or `lib/stageRecord.ts::recordStageLaunch` (the lead, councils and Auto), so all of
-them show the same way in Chat and the regular views. Each logs an action entry in its worktree's
+them show the same way in Chat and the regular views. Planners started outside Chat's composer (the
+Plan view, a terminal's Start, scan findings, a story's Plan in Full mode) go through
+`recordPlannerStart`; a project draft has no worktree chat. Each logs an action entry in its worktree's
 chat with its `origin` (`chat`, `manual`, `lead` or `auto`; older logs' `byLead` restores as `lead`,
 and anything else without one as `chat`), plus the merge request and Auto run id. Review and merge
 launches in the shown worktree become the Review view's current agent. Chat and regular-view launches also retire the
 stage before and tell the worktree's lead; the lead's own stages and Auto's do neither, and
-retiring never stops an agent Auto launched, even after its run ended. Reviews refuse while the
-worktree's Auto run is running, waiting or paused (stop Auto or let it finish), since replacing its
-reviewers would break it. A
+retiring never stops an agent Auto launched, even after its run ended. Build, Fix, Review and Merge
+launches refuse while the worktree's Auto run is running, waiting or paused (stop Auto or let it
+finish), since competing stages would break it. A
 worktree Patchbay has no task for (one created outside it) has no chat, so its reviews and merges run
 unrecorded. Auto records
 a launch only after confirming it still owns the run, and a failed record never fails the run.

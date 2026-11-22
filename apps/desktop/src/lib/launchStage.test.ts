@@ -12,7 +12,8 @@ vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
 import { useStore } from '../store'
 import type { AutoRun, Project, Task } from '../types'
-import { launchMerge, launchReview, taskOfWorktree } from './launchStage'
+import { launchFix, launchMerge, launchReview, taskOfWorktree } from './launchStage'
+import { fixReviewFindings } from './reviewHandoff'
 import { startMerge } from './reviewAgents'
 import { startSimpleReview } from './simpleReview'
 import { recordStageLaunch } from './stageRecord'
@@ -73,4 +74,20 @@ test('a review after Auto finished starts and is recorded', async () => {
   expect(recordStageLaunch).toHaveBeenCalledWith(
     expect.objectContaining({ origin: 'chat', action: 'review', task: null }),
   )
+})
+
+test('fixes and merges also wait for a running Auto run, which says how it holds the worktree', async () => {
+  useStore.setState({ auto: { status: 'paused' } as AutoRun, activeTask: null })
+  const reviewer = { metadata: { projectId: 'p' }, spec: { cwd: '/p' } } as never
+  await expect(launchFix('manual', reviewer, 'follow')).rejects.toThrow('Auto is paused')
+  expect(fixReviewFindings).not.toHaveBeenCalled()
+  await expect(
+    launchMerge('manual', null, {
+      project,
+      source: { path: '/p', branch: 'x', head: 'h', main: true, current: true },
+      destinationBranch: 'main',
+      device: {} as never,
+    }),
+  ).rejects.toThrow('Stop Auto or let it finish first')
+  expect(startMerge).not.toHaveBeenCalled()
 })

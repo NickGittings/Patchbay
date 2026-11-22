@@ -1,5 +1,5 @@
 import { useStore } from '../store'
-import type { MergeRequest } from '../types'
+import { PROJECT_DRAFT, plannerSessionId, type MergeRequest } from '../types'
 import { noteLead, teamFor } from './chatTeams'
 import type { SimpleOrigin, SimpleStage } from './simple'
 import { logLaunch } from './simpleActions'
@@ -107,4 +107,28 @@ function showReviewAgent(projectId: string, task: string | null, sid: string) {
       [projectId]: { sid, hidden: s.reviewAgents[projectId]?.hidden ?? true },
     },
   }))
+}
+
+/**
+ * Record a planner started outside Chat's composer (the Plan view, a terminal's Start, scan
+ * findings, a story's Plan), so its worktree's chat, strip and lead see planning begin like any
+ * other stage. A project draft has no worktree chat. Recording never fails the start.
+ */
+export function recordPlannerStart(
+  projectId: string | undefined,
+  task: string | null | undefined,
+  terminalId: string,
+  requestId?: string,
+) {
+  const state = useStore.getState()
+  const project = projectId ?? state.project?.id
+  const worktree = task === undefined ? state.activeTask : task
+  if (!project || worktree === PROJECT_DRAFT) return
+  void recordStageLaunch({
+    projectId: project,
+    task: worktree,
+    origin: state.simpleMode ? 'chat' : 'manual',
+    action: 'plan',
+    launched: [{ sessionId: plannerSessionId(terminalId, project, worktree), requestId }],
+  }).catch(() => {})
 }

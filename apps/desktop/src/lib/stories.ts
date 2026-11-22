@@ -19,6 +19,7 @@ import { finished, unfinished } from './autoSettings'
 import { storyCompleteAuto, storyList, storyReorder, storyUpdate, terminalSnapshot } from './ipc'
 import { stopAndWait } from './stopAndWait'
 import { startTerminal } from './sessions'
+import { recordPlannerStart } from './stageRecord'
 import { seedNewTask } from './tasks'
 import { logLaunch } from './simpleActions'
 import { confirmAction } from './confirm'
@@ -381,7 +382,8 @@ export async function planStory(projectId: string, story: Story) {
   s.setPlanActive(device.id)
   const planningAtMs = Date.now()
   const requestId = await launchStoryPlanner(projectId, s.activeTask, device.id, story)
-  if (chat)
+  if (!chat) recordPlannerStart(projectId, task, device.id, requestId)
+  else
     // Logged in the background, so a run lookup never delays the story's status.
     void logLaunch(
       projectId,

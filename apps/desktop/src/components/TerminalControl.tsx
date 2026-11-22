@@ -10,6 +10,7 @@ import {
   type TerminalSpec,
 } from '../types'
 import { confirmAction } from '../lib/confirm'
+import { recordPlannerStart } from '../lib/stageRecord'
 
 /** Header actions stay available even when the pane cannot load its saved output. */
 export default function TerminalControl({
@@ -100,7 +101,12 @@ export default function TerminalControl({
       ) : !isReviewAgentScope(componentId) ? (
         <button
           disabled={disabled || busy}
-          onClick={() => void startTerminal(componentId, terminalId, task, projectId)}
+          onClick={() =>
+            void startTerminal(componentId, terminalId, task, projectId).then((requestId) => {
+              if (requestId && componentId === PLAN_SCOPE)
+                recordPlannerStart(projectId, task, terminalId, requestId)
+            })
+          }
         >
           ▶ {busy ? 'Stopping…' : session ? 'Restart' : 'Start'}
         </button>

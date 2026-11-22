@@ -35,6 +35,7 @@ import { planDrafts } from '../lib/planDrafts'
 import { linkStory } from '../lib/stories'
 import { launchBuild } from '../lib/launchStage'
 import { useStageModel } from '../lib/useStageModel'
+import { recordPlannerStart } from '../lib/stageRecord'
 import StageStrip from './StageStrip'
 
 const EMPTY_PLANNING_WORKSPACE = emptyTaskWorkspace()
@@ -290,6 +291,7 @@ export default function PlanView() {
     setRestarting(true)
     try {
       await restartTerminal(PLAN_SCOPE, active.id, task)
+      recordPlannerStart(projectId, task, active.id)
     } finally {
       setRestarting(false)
     }
