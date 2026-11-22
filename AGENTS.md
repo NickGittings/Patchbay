@@ -45,7 +45,7 @@ For code changes, run the Rust formatting, lint and test checks and `npm run che
 - Shared encodings such as `sessionId` and `componentLabel` have paired Rust/TypeScript golden tests; update both together.
 - Smoke tests need a desktop session and port 1420; stop `tauri dev` first. Use disposable fixture repositories and isolated state, never the personal root map.
 - Smoke hooks (`src-tauri/src/smoke.rs`, `src/lib/smoke.ts`, `window.__patchbaySmoke`) must remain debug/dev-only. `PATCHBAY_SMOKE_SCRIPT` enables the harness.
-- Smoke windows run without focus on macOS. Verify focus events, `document.hasFocus()`, terminal authority claims, focus-driven `terminal_seen`, and Git refresh on focus manually; smoke checks cannot wait on them. Screenshot runs are the documented foreground exception.
+- Smoke windows run without focus on macOS, transparent and click-through so nothing shows on screen (keep them ordered in: hidden windows report `visibilityState` hidden and terminals won't attach). Verify focus events, `document.hasFocus()`, terminal authority claims, focus-driven `terminal_seen`, and Git refresh on focus manually; smoke checks cannot wait on them. Screenshot runs are the documented foreground exception.
 - Read [smoke launcher internals](docs/architecture/smoke.md) before changing the harness, fixtures, process handling, or screenshots.
 
 ## Style

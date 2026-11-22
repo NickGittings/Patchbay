@@ -3246,6 +3246,8 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             let main = main.decorations(false);
             let _main = main.build()?;
+            #[cfg(debug_assertions)]
+            smoke::conceal(&_main);
             #[cfg(target_os = "windows")]
             window_controls::verify(&_main)?;
             #[cfg(target_os = "macos")]
@@ -4022,6 +4024,8 @@ async fn window_open(
         #[cfg(target_os = "windows")]
         let builder = window_controls::configure(builder, true);
         let _popout = builder.build().map_err(err)?;
+        #[cfg(debug_assertions)]
+        smoke::conceal(&_popout);
         #[cfg(target_os = "windows")]
         window_controls::verify(&_popout).map_err(err)?;
         #[cfg(target_os = "macos")]
