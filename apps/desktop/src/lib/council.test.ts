@@ -14,7 +14,10 @@ vi.mock('./reviewAgents', () => ({
   chatReviewBase: vi.fn(() => 'main'),
 }))
 vi.mock('./agentRoles', () => ({ roleDevices: vi.fn(() => []) }))
-vi.mock('./stageRecord', () => ({ recordStageLaunch: vi.fn(async () => {}) }))
+vi.mock('./stageRecord', () => ({
+  recordStageLaunch: vi.fn(async () => {}),
+  refuseWhileAutoRuns: vi.fn(),
+}))
 vi.mock('./sessions', () => ({
   listenForTerminals: vi.fn(async () => {}),
   reconcileFreshSessions: vi.fn(async () => {}),

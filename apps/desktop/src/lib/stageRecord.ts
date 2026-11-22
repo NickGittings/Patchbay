@@ -1,5 +1,5 @@
-import { useStore } from '../store'
-import { PROJECT_DRAFT, plannerSessionId, type MergeRequest } from '../types'
+import { projectStateOf, useStore, workspaceOf } from '../store'
+import { PROJECT_DRAFT, plannerChatTask, plannerSessionId, type MergeRequest } from '../types'
 import { noteLead, teamFor } from './chatTeams'
 import type { SimpleOrigin, SimpleStage } from './simple'
 import { logLaunch } from './simpleActions'
@@ -29,7 +29,7 @@ const WHAT: Record<StageAction, string> = {
 }
 const WHERE: Record<SimpleOrigin, string> = {
   chat: 'with Chat’s workflow buttons',
-  manual: 'from the Plan or Review view',
+  manual: 'outside Chat',
   lead: '',
   auto: '',
 }
@@ -46,6 +46,12 @@ export interface StageLaunch {
   /** What the lead hears it as, e.g. `a review of feature`; the lead's own launches tell it. */
   what?: string
   autoRunId?: string
+  /** Where the lead hears it came from, when the origin's usual wording would mislead. */
+  from?: string
+  /** What the chat shows beside the launch, such as a story's title. */
+  text?: string
+  /** When the launch happened, if known better than its run's start. */
+  atMs?: number
   /** Agents another chat claims, which retiring never stops. */
   foreign?: ReadonlySet<string>
 }
@@ -73,6 +79,8 @@ export async function recordStageLaunch(launch: StageLaunch) {
           origin,
           ...(autoRunId ? { autoRunId } : {}),
           ...(request ? { request } : {}),
+          ...(launch.text ? { text: launch.text } : {}),
+          ...(launch.atMs !== undefined ? { atMs: launch.atMs } : {}),
         },
         agent.requestId,
         // A merge's entry stays at its click; other stages sit at their run's start.
@@ -90,7 +98,7 @@ export async function recordStageLaunch(launch: StageLaunch) {
     launch.what ?? WHAT[action],
     ids,
     launched[0].requestId,
-    WHERE[origin],
+    launch.from ?? WHERE[origin],
   )
 }
 
@@ -119,16 +127,35 @@ export function recordPlannerStart(
   task: string | null | undefined,
   terminalId: string,
   requestId?: string,
+  details: Pick<StageLaunch, 'text' | 'atMs'> = {},
 ) {
   const state = useStore.getState()
   const project = projectId ?? state.project?.id
-  const worktree = task === undefined ? state.activeTask : task
-  if (!project || worktree === PROJECT_DRAFT) return
-  void recordStageLaunch({
+  const raw = task === undefined ? state.activeTask : task
+  if (!project || raw === PROJECT_DRAFT) return
+  // A main-worktree planner's session task names the project folder's chat.
+  const worktree = plannerChatTask(raw)
+  return recordStageLaunch({
     projectId: project,
     task: worktree,
     origin: state.simpleMode ? 'chat' : 'manual',
     action: 'plan',
     launched: [{ sessionId: plannerSessionId(terminalId, project, worktree), requestId }],
+    from: 'by starting a planner',
+    ...details,
   }).catch(() => {})
+}
+
+const AUTO_HOLDS: Record<string, string> = {
+  running: 'Auto is running this worktree',
+  waitingOnYou: 'Auto is waiting on you in this worktree',
+  paused: 'Auto is paused in this worktree',
+}
+/** Auto's agents in its worktree are its own while its run goes on; competing stages break it. */
+/** Every flow's Build, Fix, Review and Merge, the lead's included, waits for Auto. */
+export function refuseWhileAutoRuns(projectId: string, task: string | null | undefined) {
+  const state = projectStateOf(projectId)
+  if (!state || task === undefined) return
+  const held = AUTO_HOLDS[workspaceOf(state, task).auto?.status ?? '']
+  if (held) throw new Error(`${held}. Stop Auto or let it finish first.`)
 }

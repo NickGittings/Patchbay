@@ -21,7 +21,6 @@ import { stopAndWait } from './stopAndWait'
 import { startTerminal } from './sessions'
 import { recordPlannerStart } from './stageRecord'
 import { seedNewTask } from './tasks'
-import { logLaunch } from './simpleActions'
 import { confirmAction } from './confirm'
 
 const ordered = (items: Story[]) =>
@@ -382,22 +381,15 @@ export async function planStory(projectId: string, story: Story) {
   s.setPlanActive(device.id)
   const planningAtMs = Date.now()
   const requestId = await launchStoryPlanner(projectId, s.activeTask, device.id, story)
-  if (!chat) recordPlannerStart(projectId, task, device.id, requestId)
-  else
-    // Logged in the background, so a run lookup never delays the story's status.
-    void logLaunch(
-      projectId,
-      task,
-      {
-        kind: 'action',
-        action: 'plan',
-        stage: 'plan',
-        sessionId: sid,
-        text: story.title,
-        atMs: planningAtMs,
-      },
-      requestId,
-    )
+  // Recorded the same way in Chat and the regular views, in the background, so a run lookup
+  // never delays the story's status. Chat also shows the story's title from the click.
+  void recordPlannerStart(
+    projectId,
+    task,
+    device.id,
+    requestId,
+    chat ? { text: story.title, atMs: planningAtMs } : {},
+  )
 }
 
 /** Components a story's planner or Auto run covers: its own and its descendants'. */

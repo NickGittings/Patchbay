@@ -21,7 +21,12 @@ import {
 } from './reviewAgents'
 import { sessionTimeMs } from './sessionList'
 import { startTerminal } from './sessions'
-import { recordStageLaunch, type LaunchedAgent, type StageAction } from './stageRecord'
+import {
+  recordStageLaunch,
+  refuseWhileAutoRuns,
+  type LaunchedAgent,
+  type StageAction,
+} from './stageRecord'
 
 type Workflow = NonNullable<ChatTeam['requests']>[number]
 interface LaunchedStage {
@@ -176,6 +181,8 @@ function launchStage(team: ChatTeam, request: Workflow) {
 
 /** Launch a claimed stage. It stays active until `settleLeadStage` sees its agent finish. */
 export async function startLeadStage(team: ChatTeam, request: Workflow) {
+  // Auto's agents own the worktree while its run goes on, for the lead as for the user.
+  refuseWhileAutoRuns(team.projectId, team.task)
   const startedMs = Date.now()
   const launched = await launchStage(team, request)
   // The workflow result wakes the lead, so the agent's own finish stays passive.

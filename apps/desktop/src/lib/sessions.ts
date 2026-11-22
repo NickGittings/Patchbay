@@ -87,7 +87,7 @@ const fetchingReplies = new Map<string, symbol>()
 // logged again on every pass.
 const persistedReplies = new Map<string, string>()
 const starting = new Map<string, Promise<string | undefined>>()
-const restarting = new Map<string, Promise<void>>()
+const restarting = new Map<string, Promise<string | undefined>>()
 // Keep successful shared-agent launches until their request can be matched to a run.
 const pendingChatLaunches = new Map<
   string,
@@ -867,27 +867,28 @@ export async function closeTerminal(componentId: string, terminalId: string) {
 }
 
 /** Keep restarts tracked across their stop/wait/start gap so removal can join them. */
+/** Resolves to the new run's launch request id, or `undefined` when it didn't start. */
 export function restartTerminal(
   componentId: string,
   terminalId: string,
   task?: string | null,
-): Promise<void> {
+): Promise<string | undefined> {
   const requestedEpoch = epoch
   let launch: Launch
   try {
     launch = captureLaunch(componentId, terminalId, task)
   } catch (e) {
     useStore.getState().setMessage(String(e), undefined, undefined, 'error')
-    return Promise.resolve()
+    return Promise.resolve(undefined)
   }
-  if (isClosing(launch)) return Promise.resolve()
+  if (isClosing(launch)) return Promise.resolve(undefined)
   const existing = restarting.get(launch.sid)
   if (existing) return existing
   const request = (async () => {
     try {
       await checkLaunchAuth(launch)
       await starting.get(launch.sid)
-      if (requestedEpoch !== epoch || isClosing(launch)) return
+      if (requestedEpoch !== epoch || isClosing(launch)) return undefined
       if (
         !(await stopAndWait(
           launch.sid,
@@ -895,13 +896,14 @@ export function restartTerminal(
           () => requestedEpoch === epoch && !isClosing(launch),
         ))
       )
-        return
+        return undefined
       launch.restart = true
-      if (requestedEpoch === epoch && !isClosing(launch)) await launchTerminal(launch)
+      if (requestedEpoch === epoch && !isClosing(launch)) return await launchTerminal(launch)
     } catch (e) {
       if (requestedEpoch === epoch)
         useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     }
+    return undefined
   })().finally(() => {
     if (restarting.get(launch.sid) === request) restarting.delete(launch.sid)
   })

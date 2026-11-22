@@ -290,8 +290,9 @@ export default function PlanView() {
   const restart = async () => {
     setRestarting(true)
     try {
-      await restartTerminal(PLAN_SCOPE, active.id, task)
-      recordPlannerStart(projectId, task, active.id)
+      const requestId = await restartTerminal(PLAN_SCOPE, active.id, task)
+      // Only a planner that started is planning.
+      if (requestId) recordPlannerStart(projectId, task, active.id, requestId)
     } finally {
       setRestarting(false)
     }

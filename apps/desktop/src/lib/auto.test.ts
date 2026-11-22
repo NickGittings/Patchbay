@@ -50,7 +50,10 @@ vi.mock('./sessions', () => ({
 }))
 vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
-vi.mock('./stageRecord', () => ({ recordStageLaunch: vi.fn(async () => {}) }))
+vi.mock('./stageRecord', () => ({
+  recordStageLaunch: vi.fn(async () => {}),
+  refuseWhileAutoRuns: vi.fn(),
+}))
 vi.mock('./reviewAgents', async () => {
   const actual = await vi.importActual<typeof import('./reviewAgents')>('./reviewAgents')
   const startReviewAgent = vi.fn()

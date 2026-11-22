@@ -7,7 +7,10 @@ vi.mock('./simpleReview', () => ({
   })),
 }))
 vi.mock('./reviewAgents', () => ({ startMerge: vi.fn() }))
-vi.mock('./stageRecord', () => ({ recordStageLaunch: vi.fn(async () => {}) }))
+vi.mock('./stageRecord', async () => ({
+  ...(await vi.importActual<typeof import('./stageRecord')>('./stageRecord')),
+  recordStageLaunch: vi.fn(async () => {}),
+}))
 vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
 import { useStore } from '../store'

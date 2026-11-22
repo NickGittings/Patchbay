@@ -70,7 +70,7 @@ test('Chat and the regular views retire the stage before and tell the lead', asy
       'a review of this worktree',
       ['agent'],
       'request',
-      origin === 'chat' ? 'with Chat’s workflow buttons' : 'from the Plan or Review view',
+      origin === 'chat' ? 'with Chat’s workflow buttons' : 'outside Chat',
     )
   }
   vi.clearAllMocks()
@@ -130,4 +130,10 @@ test('a planner started outside Chat’s composer is recorded as planning in its
   recordPlannerStart('p', '_project_draft', 'claude', 'request')
   await Promise.resolve()
   expect(logLaunch).not.toHaveBeenCalled()
+})
+
+test('a main-worktree planner from the Sessions panel records in the project folder’s chat', async () => {
+  recordPlannerStart('p', '_worktree_main', 'claude', 'request')
+  await vi.waitFor(() => expect(logLaunch).toHaveBeenCalled())
+  expect(vi.mocked(logLaunch).mock.calls[0][1]).toBeNull()
 })

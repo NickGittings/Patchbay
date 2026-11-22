@@ -14,7 +14,10 @@ vi.mock('./ipc', () => ({
   mergeOutcome: vi.fn(async () => 'merged'),
 }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn(async () => 'launch') }))
-vi.mock('./stageRecord', () => ({ recordStageLaunch: vi.fn(async () => {}) }))
+vi.mock('./stageRecord', () => ({
+  recordStageLaunch: vi.fn(async () => {}),
+  refuseWhileAutoRuns: vi.fn(),
+}))
 vi.mock('./chatTeams', () => ({ controlTeam: vi.fn(async () => {}) }))
 vi.mock('./agentRoles', () => ({ roleDevice: vi.fn(() => ({ id: 'planner' })) }))
 vi.mock('./planHandoff', () => ({
@@ -63,7 +66,7 @@ import { implementPlannerPlan } from './planHandoff'
 import { fixReviewFindings } from './reviewHandoff'
 import { reviewWorktreeBusy, startMerge } from './reviewAgents'
 import { startTerminal } from './sessions'
-import { recordStageLaunch } from './stageRecord'
+import { recordStageLaunch, refuseWhileAutoRuns } from './stageRecord'
 import { launchStoryPlanner } from './stories'
 
 const team = { id: 'team', projectId: 'p', task: 't1', target: '/p' } as ChatTeam
@@ -248,4 +251,13 @@ test('a stage whose session no longer exists fails', async () => {
   vi.mocked(terminalSnapshot).mockResolvedValueOnce(null)
   await settleLeadStage(team, running)
   expect(lastControl()).toMatchObject({ state: 'failed' })
+})
+
+test('the lead’s stages wait for an Auto run that owns the worktree', async () => {
+  vi.mocked(refuseWhileAutoRuns).mockImplementationOnce(() => {
+    throw new Error('Auto is running this worktree. Stop Auto or let it finish first.')
+  })
+  await expect(startLeadStage(team, request('startBuild'))).rejects.toThrow('Auto is running')
+  expect(implementPlannerPlan).not.toHaveBeenCalled()
+  expect(recordStageLaunch).not.toHaveBeenCalled()
 })

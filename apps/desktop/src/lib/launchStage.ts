@@ -1,10 +1,13 @@
-import { projectStateOf, useStore, workspaceOf } from '../store'
+import { useStore } from '../store'
 import type { DeviceManifest, Project, ReviewRequest, SessionRecord } from '../types'
 import { implementPlannerPlan, type HandoffTarget } from './planHandoff'
 import { startMerge, type MergeOptions } from './reviewAgents'
 import { fixReviewFindings } from './reviewHandoff'
 import { startSimpleReview } from './simpleReview'
-import { recordStageLaunch } from './stageRecord'
+import { recordStageLaunch, refuseWhileAutoRuns, type StageLaunch } from './stageRecord'
+
+/** The agent already runs, so a failure to record it never reports the launch as failed. */
+const recordQuietly = (launch: StageLaunch) => recordStageLaunch(launch).catch(() => {})
 
 /** Build the saved plan, from Chat's Build or the Plan view's Implement. */
 export async function launchBuild(
@@ -17,7 +20,7 @@ export async function launchBuild(
 ) {
   refuseWhileAutoRuns(projectId, task)
   const launched = await implementPlannerPlan(planner, undefined, undefined, presentation, target)
-  await recordStageLaunch({ projectId, task, origin, action: 'implement', launched: [launched] })
+  await recordQuietly({ projectId, task, origin, action: 'implement', launched: [launched] })
   return launched
 }
 
@@ -33,7 +36,7 @@ export async function launchFix(
     target?.task ?? taskOfWorktree(reviewer.spec.cwd),
   )
   const fixing = await fixReviewFindings(reviewer, undefined, undefined, presentation, target)
-  await recordStageLaunch({
+  await recordQuietly({
     projectId: reviewer.metadata.projectId,
     task: fixing.task,
     origin,
@@ -58,7 +61,7 @@ export async function launchReview(
   refuseWhileAutoRuns(project.projectId!, task)
   const result = await startSimpleReview(project, request, devices)
   if (task === undefined) return result
-  await recordStageLaunch({
+  await recordQuietly({
     projectId: project.projectId!,
     task,
     origin,
@@ -82,7 +85,7 @@ export async function launchMerge(
   refuseWhileAutoRuns(options.project.projectId!, task)
   const started = await startMerge(options)
   if (started.kind === 'started' && task !== undefined)
-    await recordStageLaunch({
+    await recordQuietly({
       projectId: options.project.projectId!,
       task,
       origin,
@@ -104,17 +107,4 @@ export function taskOfWorktree(path: string): string | null | undefined {
   const task = s.tasks.find((t) => !t.missing && t.worktree === path)
   if (task) return task.id
   return path === s.project?.root ? null : undefined
-}
-
-const AUTO_HOLDS: Record<string, string> = {
-  running: 'Auto is running this worktree',
-  waitingOnYou: 'Auto is waiting on you in this worktree',
-  paused: 'Auto is paused in this worktree',
-}
-/** Auto's agents in its worktree are its own while its run goes on; competing stages break it. */
-function refuseWhileAutoRuns(projectId: string, task: string | null | undefined) {
-  const state = projectStateOf(projectId)
-  if (!state || task === undefined) return
-  const held = AUTO_HOLDS[workspaceOf(state, task).auto?.status ?? '']
-  if (held) throw new Error(`${held}. Stop Auto or let it finish first.`)
 }

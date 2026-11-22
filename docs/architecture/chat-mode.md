@@ -84,8 +84,11 @@ and anything else without one as `chat`), plus the merge request and Auto run id
 launches in the shown worktree become the Review view's current agent. Chat and regular-view launches also retire the
 stage before and tell the worktree's lead; the lead's own stages and Auto's do neither, and
 retiring never stops an agent Auto launched, even after its run ended. Build, Fix, Review and Merge
-launches refuse while the worktree's Auto run is running, waiting or paused (stop Auto or let it
-finish), since competing stages would break it. A
+launches, the lead's stages and councils included, refuse while the worktree's Auto run is running,
+waiting or paused (`refuseWhileAutoRuns`; stop Auto or let it finish), since competing stages would
+break it. A restart records planning only when its planner actually started, and story planning
+records the same way in Chat and Full mode. A recording failure never reports a started launch as
+failed. The Review view never offers Auto's merge gate as its own Merge. A
 worktree Patchbay has no task for (one created outside it) has no chat, so its reviews and merges run
 unrecorded. Auto records
 a launch only after confirming it still owns the run, and a failed record never fails the run.

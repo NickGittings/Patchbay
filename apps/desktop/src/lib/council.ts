@@ -12,7 +12,7 @@ import { controlTeam, requireTeamPreset, useChatTeams, type ChatTeam } from './c
 import { roleDevices } from './agentRoles'
 import { agentTerminal } from './plan'
 import { requireProviderAuth } from './providerAuth'
-import { recordStageLaunch } from './stageRecord'
+import { recordStageLaunch, refuseWhileAutoRuns } from './stageRecord'
 import type { TerminalSpec, Worktree } from '../types'
 
 export interface CouncilSettings {
@@ -168,6 +168,8 @@ async function advanceCouncil(team: ChatTeam, request: Workflow) {
   const { listenForTerminals, reconcileFreshSessions } = await import('./sessions')
   let run = savedCouncil(request)
   if (!run) {
+    // A new review round waits for Auto, whose reviewers it would replace.
+    refuseWhileAutoRuns(team.projectId, team.task)
     const project = projectOf(team.projectId)
     if (!project) throw new Error('Project is unavailable')
     const worktrees = await gitWorktrees(team.projectId)

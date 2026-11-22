@@ -101,12 +101,16 @@ export default function TerminalControl({
       ) : !isReviewAgentScope(componentId) ? (
         <button
           disabled={disabled || busy}
-          onClick={() =>
+          onClick={() => {
+            // The launch's own project and worktree, before a slow start lets the user move on.
+            const now = useStore.getState()
+            const owner = projectId ?? now.project?.id
+            const scope = task === undefined ? now.activeTask : task
             void startTerminal(componentId, terminalId, task, projectId).then((requestId) => {
               if (requestId && componentId === PLAN_SCOPE)
-                recordPlannerStart(projectId, task, terminalId, requestId)
+                recordPlannerStart(owner, scope, terminalId, requestId)
             })
-          }
+          }}
         >
           ▶ {busy ? 'Stopping…' : session ? 'Restart' : 'Start'}
         </button>

@@ -130,7 +130,8 @@ export default function ReviewView() {
   // Where the worktree's work is, as Chat and the Auto panel show it, and what comes next.
   const stage = useStageModel()
   const next = new Set(stage?.state.prompt?.actions.map((a) => a.action))
-  const nextMerge = next.has('checkMerge') || next.has('merge') || next.has('mergeApproval')
+  // Auto's own gate is approved in Chat or the Auto panel; the dialog here can't merge for it.
+  const nextMerge = next.has('checkMerge') || next.has('merge')
   const nextFix = next.has('fix')
   const agentsHidden = agentSelection?.sid === currentAgent?.id && !!agentSelection?.hidden
   const showAgents = !!currentAgent && !agentsHidden
