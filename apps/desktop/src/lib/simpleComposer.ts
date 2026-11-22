@@ -23,11 +23,15 @@ const KIND_NAMES: Record<Story['kind'], string> = {
 
 /** The composer token for a story: `@` and a short slug of its title, else its id. */
 export function storyToken(story: Pick<Story, 'id' | 'title'>) {
-  const slug = story.title
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-+|-+$/g, '')
+  const slug = Array.from(
+    story.title
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, '-')
+      .replace(/^-+|-+$/g, ''),
+  )
+    // Code points, so a cut never splits a surrogate pair.
     .slice(0, 40)
+    .join('')
     .replace(/-+$/, '')
   return `@${slug || story.id}`
 }

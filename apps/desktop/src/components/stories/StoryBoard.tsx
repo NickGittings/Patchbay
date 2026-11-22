@@ -275,12 +275,16 @@ export default function StoryBoard() {
                   if (dropAt?.id !== item.id || dropAt.after !== after)
                     setDropAt({ id: item.id, after })
                 }}
-                onDragLeave={() => {
+                onDragLeave={(e) => {
+                  // Moving onto the card's own title or chips isn't leaving it.
+                  if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
                   if (dropAt?.id === item.id) setDropAt(null)
                 }}
                 onDrop={(e) => {
                   e.preventDefault()
-                  const before = dropAt?.id === item.id ? landing(item, dropAt.after) : undefined
+                  // From the event, not the last render's marker, which may not have caught up.
+                  const box = e.currentTarget.getBoundingClientRect()
+                  const before = landing(item, e.clientY > box.top + box.height / 2)
                   if (dragging && before !== undefined) move(dragging, before)
                   setDragging(null)
                   setDropAt(null)

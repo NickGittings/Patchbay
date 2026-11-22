@@ -126,9 +126,25 @@ test('a plan for a story gives its planner the story briefing in the team worktr
     'planner',
     { id: 's1', components: ['api'] },
     ['api'],
+    undefined,
   )
   expect(startTerminal).not.toHaveBeenCalled()
   expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
+})
+
+test("a story plan keeps the user's goal and treats no components as the story's", async () => {
+  await startLeadStage(
+    team,
+    request('startPlan', 'starting', null, { story: 's1', goal: 'Skip CSV', components: [] }),
+  )
+  expect(launchStoryPlanner).toHaveBeenCalledExactlyOnceWith(
+    'p',
+    't1',
+    'planner',
+    { id: 's1', components: ['api'] },
+    ['api'],
+    'Skip CSV',
+  )
 })
 
 test('a plan never replaces a planner that is already running', async () => {

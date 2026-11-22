@@ -108,6 +108,8 @@ export async function moveStory(projectId: string, id: string, before: string | 
   const save = (reorders.get(projectId) ?? Promise.resolve()).then(async () => {
     try {
       await storyReorder(projectId, ids)
+      // A refresh that read the board before this save would restore the old order.
+      requests.set(projectId, (requests.get(projectId) ?? 0) + 1)
     } catch (e) {
       useStore.getState().setMessage(String(e), undefined, undefined, 'error')
       await refreshStories(projectId)
@@ -311,7 +313,8 @@ export async function refreshStories(projectId: string) {
   try {
     const stories = await storyList(projectId)
     const state = projectStateOf(projectId)
-    if (requests.get(projectId) === seq && state) {
+    // While moves are saving, the file lags the shown order; the next refresh after them catches up.
+    if (requests.get(projectId) === seq && !reorders.has(projectId) && state) {
       const removedPlanner = state.planStory && !stories.some((s) => s.id === state.planStory)
       useStore.getState().patchProject(projectId, {
         stories,
@@ -411,6 +414,7 @@ export async function launchStoryPlanner(
   device: string,
   story: Story,
   components?: string[],
+  request?: string,
 ) {
   // Saved components may have left the map since; none falls back to the worktree's highlights.
   const known = components?.filter((id) =>
@@ -420,8 +424,21 @@ export async function launchStoryPlanner(
     kickoff: { kind: 'planStory' },
     story: story.id,
     components: known?.length ? known : undefined,
+    planRequest: request?.trim() || undefined,
   })
-  await updateStory(projectId, story.id, { status: 'planned' })
+  // The planner is running either way, so its launch is still returned for logging.
+  try {
+    await updateStory(projectId, story.id, { status: 'planned' })
+  } catch (e) {
+    useStore
+      .getState()
+      .setMessage(
+        `Planner started, but its story could not be marked Planned: ${String(e)}`,
+        undefined,
+        undefined,
+        'error',
+      )
+  }
   return requestId
 }
 
@@ -429,8 +446,8 @@ export async function launchStoryPlanner(
 export async function findStory(projectId: string, id: string) {
   const known = projectStateOf(projectId)?.stories.find((s) => s.id === id)
   if (known) return known
-  await refreshStories(projectId)
-  const story = projectStateOf(projectId)?.stories.find((s) => s.id === id)
+  // Read the file directly: a concurrent refresh or move can discard refreshStories' result.
+  const story = (await storyList(projectId)).find((s) => s.id === id)
   if (!story) throw new Error(`Unknown story ${id}. Run \`agent stories\` for the board's ids.`)
   return story
 }

@@ -155,6 +155,7 @@ test('story tokens name their item and its details follow the message once', () 
   const token = storyToken(board[2])
   expect(token).toBe('@csv-import')
   expect(storyToken({ id: 's9', title: '!!!' })).toBe('@s9')
+  expect(storyToken({ id: 's8', title: 'a' + '𝒜'.repeat(45) })).toBe('@a' + '𝒜'.repeat(39))
   const draft = `Plan ${token} after @app, then ${token} again`
   const at = (text: string, from = 0) => draft.indexOf(text, from)
   const mentions = [

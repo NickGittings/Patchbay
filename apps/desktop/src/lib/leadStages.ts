@@ -74,8 +74,10 @@ async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<Launche
           team.task,
           device.id,
           story,
-          components ??
-            stories.storyComponents(projectStateOf(team.projectId)?.stories ?? [], story),
+          components?.length
+            ? components
+            : stories.storyComponents(projectStateOf(team.projectId)?.stories ?? [], story),
+          typeof goal === 'string' ? goal : undefined,
         )
       : await startTerminal(PLAN_SCOPE, device.id, team.task, team.projectId, {
           kickoff: { kind: 'planRequest' },

@@ -667,6 +667,35 @@ test('a story planner keeps only components still on the map, else the worktree 
   expect(vi.mocked(startTerminal).mock.lastCall?.[4]?.components).toBeUndefined()
 })
 
+test('a story planner sends the goal and still returns its launch when marking Planned fails', async () => {
+  vi.mocked(startTerminal).mockResolvedValueOnce('req')
+  vi.mocked(ipc.storyUpdate).mockRejectedValueOnce(new Error('gone'))
+  await expect(
+    launchStoryPlanner('p', 'task', 'planner', story('s'), [], ' Skip CSV '),
+  ).resolves.toBe('req')
+  expect(vi.mocked(startTerminal).mock.lastCall?.[4]).toMatchObject({ planRequest: 'Skip CSV' })
+  expect(useStore.getState().message).toContain('could not be marked Planned')
+})
+
+test('a refresh that read the board before a move saved never restores the old order', async () => {
+  const board = [story('a', 'story', null, 0), story('b', 'story', null, 1)]
+  useStore.getState().patchProject('p', { stories: board })
+  let release = () => {}
+  vi.mocked(ipc.storyReorder).mockImplementationOnce(
+    () => new Promise<void>((resolve) => (release = resolve)),
+  )
+  let read = (_: typeof board) => {}
+  vi.mocked(ipc.storyList).mockImplementationOnce(() => new Promise((resolve) => (read = resolve)))
+  const move = moveStory('p', 'b', 'a')
+  const refresh = refreshStories('p')
+  await vi.waitFor(() => expect(ipc.storyReorder).toHaveBeenCalled())
+  release()
+  await move
+  read(board)
+  await refresh
+  expect(boardOrder(projectStateOf('p')!.stories).map((s) => s.id)).toEqual(['b', 'a'])
+})
+
 test('moveStory shows the new order at once and reloads when the save fails', async () => {
   const board = [story('a', 'story', null, 0), story('b', 'story', null, 1)]
   useStore.getState().patchProject('p', { stories: board })
