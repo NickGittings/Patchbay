@@ -7,6 +7,7 @@ import { confirmAction } from './confirm'
 vi.mock('./ipc', () => ({
   storyList: vi.fn(),
   storyUpdate: vi.fn(),
+  storyReorder: vi.fn(async () => {}),
   storyCompleteAuto: vi.fn(async () => []),
   terminalSnapshot: vi.fn(async () => null),
   terminalStop: vi.fn(),
@@ -29,6 +30,11 @@ const {
   refreshStories,
   updateStory,
   completeAutoStories,
+  boardOrder,
+  siblings,
+  reorder,
+  moveStory,
+  launchStoryPlanner,
 } = await import('./stories')
 const ipc = await import('./ipc')
 const { startTerminal } = await import('./sessions')
@@ -559,4 +565,117 @@ test('a replacing story planner logs its new run, and a worktree switch while st
     })
   await expect(planStory('p', story('Feature name'))).rejects.toThrow('The worktree changed')
   vi.unstubAllGlobals()
+})
+
+test('board order matches the core golden order', () => {
+  // Paired with core `stories::tests::golden_board`; keep the two fixtures identical.
+  const at = (
+    id: string,
+    kind: Story['kind'],
+    parent: string | null,
+    order: number,
+    createdMs: number,
+  ) => ({
+    ...story(id, kind, parent, order),
+    createdMs,
+  })
+  const board = [
+    at('s1', 'story', null, 1, 1),
+    at('e2', 'epic', null, 2, 2),
+    at('e1', 'epic', null, 1, 3),
+    at('f2', 'feature', 'e1', 0, 4),
+    at('f1', 'feature', 'e1', 0, 3),
+    at('f3', 'feature', 'e2', 0, 5),
+    at('a2', 'story', 'f1', 5, 6),
+    at('a1', 'story', 'f1', 5, 6),
+    at('b1', 'story', 'f2', 0, 7),
+    at('c1', 'story', 'f3', 0, 8),
+    at('o1', 'story', 'gone', 0, 9),
+    at('s0', 'story', null, 0, 10),
+  ]
+  expect(boardOrder(board).map((s) => s.id)).toEqual([
+    'e1',
+    'f1',
+    'a1',
+    'a2',
+    'f2',
+    'b1',
+    'e2',
+    'f3',
+    'c1',
+    'o1',
+    's0',
+    's1',
+  ])
+})
+
+test('reorder moves an item only among its siblings', () => {
+  const board = [
+    story('e', 'epic'),
+    story('f', 'feature', 'e'),
+    story('a', 'story', 'f', 0),
+    story('b', 'story', 'f', 1),
+    story('c', 'story', 'f', 2),
+    story('loose', 'story', null, 0),
+    story('orphan', 'story', 'gone', 1),
+  ]
+  expect(siblings(board, board[2]).map((s) => s.id)).toEqual(['a', 'b', 'c'])
+  expect(siblings(board, board[5]).map((s) => s.id)).toEqual(['loose', 'orphan'])
+  expect(reorder(board, 'c', 'a')).toEqual(['c', 'a', 'b'])
+  expect(reorder(board, 'a', 'c')).toEqual(['b', 'a', 'c'])
+  expect(reorder(board, 'a', null)).toEqual(['b', 'c', 'a'])
+  expect(reorder(board, 'orphan', 'loose')).toEqual(['orphan', 'loose'])
+  // Unchanged positions, the item itself and other groups move nothing.
+  expect(reorder(board, 'a', 'b')).toBeUndefined()
+  expect(reorder(board, 'c', null)).toBeUndefined()
+  expect(reorder(board, 'a', 'a')).toBeUndefined()
+  expect(reorder(board, 'a', 'loose')).toBeUndefined()
+  expect(reorder(board, 'missing', null)).toBeUndefined()
+  // A column's groups: a story under an epic-less feature is shown, and ordered, as unassigned.
+  const loose = [story('lost', 'feature', null), story('x', 'story', 'lost'), story('y', 'story')]
+  expect(siblings(loose, loose[1]).map((s) => s.id)).toEqual(['x', 'y'])
+})
+
+test('quick moves save one at a time, in the order they were made', async () => {
+  const board = [
+    story('a', 'story', null, 0),
+    story('b', 'story', null, 1),
+    story('c', 'story', null, 2),
+  ]
+  useStore.getState().patchProject('p', { stories: board })
+  let release = () => {}
+  vi.mocked(ipc.storyReorder).mockImplementationOnce(
+    () => new Promise<void>((resolve) => (release = resolve)),
+  )
+  const first = moveStory('p', 'c', 'b')
+  const second = moveStory('p', 'c', 'a')
+  await Promise.resolve()
+  expect(ipc.storyReorder).toHaveBeenCalledTimes(1)
+  release()
+  await Promise.all([first, second])
+  expect(vi.mocked(ipc.storyReorder).mock.calls.map((c) => c[1])).toEqual([
+    ['a', 'c', 'b'],
+    ['c', 'a', 'b'],
+  ])
+})
+
+test('a story planner keeps only components still on the map, else the worktree highlights', async () => {
+  const planned = story('s')
+  await launchStoryPlanner('p', 'task', 'planner', planned, ['api', 'removed'])
+  expect(vi.mocked(startTerminal).mock.lastCall?.[4]).toMatchObject({ components: ['api'] })
+  await launchStoryPlanner('p', 'task', 'planner', planned, ['removed'])
+  expect(vi.mocked(startTerminal).mock.lastCall?.[4]?.components).toBeUndefined()
+})
+
+test('moveStory shows the new order at once and reloads when the save fails', async () => {
+  const board = [story('a', 'story', null, 0), story('b', 'story', null, 1)]
+  useStore.getState().patchProject('p', { stories: board })
+  await moveStory('p', 'b', 'a')
+  expect(ipc.storyReorder).toHaveBeenCalledWith('p', ['b', 'a'])
+  expect(boardOrder(projectStateOf('p')!.stories).map((s) => s.id)).toEqual(['b', 'a'])
+  vi.mocked(ipc.storyReorder).mockRejectedValueOnce(new Error('The board changed'))
+  vi.mocked(ipc.storyList).mockResolvedValueOnce(board)
+  await moveStory('p', 'a', 'b')
+  expect(boardOrder(projectStateOf('p')!.stories).map((s) => s.id)).toEqual(['a', 'b'])
+  expect(useStore.getState().message).toContain('The board changed')
 })

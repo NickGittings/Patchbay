@@ -691,6 +691,13 @@ async function driveLeadRequests(team: ChatTeam) {
           typeof request.settings.device === 'string'
             ? request.settings.device
             : team.lead.preset.id
+        const { story: storyId, ...requested } = request.settings
+        // Loaded only for a story, the board's code and its imports aren't needed otherwise.
+        const stories = typeof storyId === 'string' ? await import('./stories') : undefined
+        const story =
+          stories && typeof storyId === 'string'
+            ? await stories.findStory(team.projectId, storyId)
+            : undefined
         const settings = {
           goal: team.checkpoint.goal,
           effort: previous?.effort ?? 'standard',
@@ -703,12 +710,18 @@ async function driveLeadRequests(team: ChatTeam) {
           autonomous: previous?.autonomous,
           background: previous?.background,
           resumeOnUsageReset: previous?.resumeOnUsageReset,
-          ...request.settings,
+          ...requested,
+          // A story's own text is the goal, as in the Auto panel, even beside a requested goal.
+          ...(story
+            ? { goal: stories!.storyGoal(story, projectStateOf(team.projectId)?.stories ?? []) }
+            : {}),
           device,
         }
         if (settings.merge.mode !== 'ask')
           throw new Error('Lead-started Auto requires merge approval')
         await auto.startAuto(team.projectId, team.task, settings as import('./auto').AutoSettings)
+        // Linked once the run started, as the Auto panel does.
+        if (story) await stories!.linkAutoStory(team.projectId, team.task, story.id)
       } else if (request.action === 'pauseAuto') auto.pauseAuto(team.projectId, team.task)
       else if (request.action === 'resumeAuto') await auto.resumeAuto(team.projectId, team.task)
       else if (request.action === 'stopAuto') auto.stopAuto(team.projectId, team.task)

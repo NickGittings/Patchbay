@@ -42,6 +42,12 @@ vi.mock('../types', () => ({
 vi.mock('../store', () => ({
   useStore: { getState: vi.fn() },
   projectOf: vi.fn(() => ({ projectId: 'p' })),
+  projectStateOf: vi.fn(() => ({ stories: [] })),
+}))
+vi.mock('./stories', () => ({
+  findStory: vi.fn(async (_project: string, id: string) => ({ id, components: ['api'] })),
+  storyComponents: vi.fn(() => ['api']),
+  launchStoryPlanner: vi.fn(async () => 'story-launch'),
 }))
 import { useStore } from '../store'
 import { controlTeam, type ChatTeam } from './chatTeams'
@@ -51,6 +57,7 @@ import { implementPlannerPlan } from './planHandoff'
 import { fixReviewFindings } from './reviewHandoff'
 import { reviewWorktreeBusy, startBranchMerge } from './reviewAgents'
 import { startTerminal } from './sessions'
+import { launchStoryPlanner } from './stories'
 
 const team = { id: 'team', projectId: 'p', task: 't1', target: '/p' } as ChatTeam
 const request = (
@@ -108,6 +115,19 @@ test('a plan starts the plan role with the request in its briefing', async () =>
     'p',
     expect.objectContaining({ kickoff: { kind: 'planRequest' }, planRequest: 'Plan the importer' }),
   )
+  expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
+})
+
+test('a plan for a story gives its planner the story briefing in the team worktree', async () => {
+  await startLeadStage(team, request('startPlan', 'starting', null, { story: 's1' }))
+  expect(launchStoryPlanner).toHaveBeenCalledExactlyOnceWith(
+    'p',
+    't1',
+    'planner',
+    { id: 's1', components: ['api'] },
+    ['api'],
+  )
+  expect(startTerminal).not.toHaveBeenCalled()
   expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
 })
 

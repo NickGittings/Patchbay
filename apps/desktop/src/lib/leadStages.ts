@@ -1,4 +1,4 @@
-import { projectOf, useStore } from '../store'
+import { projectOf, projectStateOf, useStore } from '../store'
 import { PLAN_SCOPE, REVIEW_SCOPE, plannerChatTask, plannerSessionId } from '../types'
 import { roleDevice } from './agentRoles'
 import { controlTeam, type ChatTeam } from './chatTeams'
@@ -52,19 +52,36 @@ const strings = (value: unknown) =>
     : undefined
 
 async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<LaunchedStage> {
-  const goal = request.settings.goal
-  if (typeof goal !== 'string' || !goal.trim()) throw new Error('Say what to plan')
+  const { goal, story: storyId } = request.settings
+  const stories = typeof storyId === 'string' ? await import('./stories') : undefined
+  const story =
+    stories && typeof storyId === 'string'
+      ? await stories.findStory(team.projectId, storyId)
+      : undefined
+  if (!story && (typeof goal !== 'string' || !goal.trim())) throw new Error('Say what to plan')
   const { devices, agentRoles, sessions } = useStore.getState()
   const device = roleDevice(devices, agentRoles, 'plan')
   const sessionId = plannerSessionId(device.id, team.projectId, team.task)
   // Starting over would replace a conversation someone may still be using.
   if (sessions[sessionId]?.running)
     throw new Error('A planner is already running in this worktree. Ask the user how to proceed.')
-  const requestId = await startTerminal(PLAN_SCOPE, device.id, team.task, team.projectId, {
-    kickoff: { kind: 'planRequest' },
-    planRequest: goal,
-    components: strings(request.settings.components),
-  })
+  const components = strings(request.settings.components)
+  const requestId =
+    stories && story
+      ? // The same briefing and status as the board's Plan, in the team's worktree.
+        await stories.launchStoryPlanner(
+          team.projectId,
+          team.task,
+          device.id,
+          story,
+          components ??
+            stories.storyComponents(projectStateOf(team.projectId)?.stories ?? [], story),
+        )
+      : await startTerminal(PLAN_SCOPE, device.id, team.task, team.projectId, {
+          kickoff: { kind: 'planRequest' },
+          planRequest: goal as string,
+          components,
+        })
   const launched = { sessionId, requestId }
   await logStageLaunch(team.projectId, team.task, 'plan', 'plan', launched, true)
   return launched

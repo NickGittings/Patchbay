@@ -317,6 +317,12 @@
   gap: 6px;
   flex-wrap: wrap;
 }
+/* A referenced story's kind marker, before its title in a chip or the mention popup. */
+.simple-mentions .story-dot,
+.simple-composer [role='listbox'] .story-dot {
+  margin-right: 6px;
+  vertical-align: middle;
+}
 
 .simple-diff {
   display: flex;

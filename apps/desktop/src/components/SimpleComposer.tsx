@@ -34,7 +34,10 @@ import {
   resumeRecipient,
   sendToSession,
   lastSubmission,
+  componentMentions,
   editedMentions,
+  sentFromDraft,
+  storyToken,
   forceable,
   imageFiles,
   interruptible,
@@ -52,6 +55,15 @@ import { logLaunch, logSimple } from '../lib/simpleActions'
 import { cancelQueued, enqueuePrompt, flushQueued, sendableNow } from '../lib/simpleQueue'
 import { refreshSession, reconcileFreshSessions, restartTerminal } from '../lib/sessions'
 import { openIntegrations, useAgentHooksInstalled } from '../lib/agentHooks'
+import { boardOrder } from '../lib/stories'
+import type { StoryKind } from '../types'
+
+/** An autocomplete option: a map component, or a story board item when `story` names its kind. */
+interface MentionCandidate {
+  id: string
+  label: string
+  story?: StoryKind
+}
 
 export default function SimpleComposer({
   scopeKey,
@@ -71,6 +83,7 @@ export default function SimpleComposer({
       project: s.project,
       activeTask: s.activeTask,
       nodes: s.nodes,
+      stories: s.stories,
       devices: s.devices,
       agentRoles: s.agentRoles,
       chatAgent: s.workspaceSettings.chatAgent,
@@ -218,11 +231,21 @@ export default function SimpleComposer({
   const queryKey = JSON.stringify([scopeKey, query?.[1] ?? null])
   const [selection, setSelection] = useState({ key: queryKey, index: 0, dismissed: false })
   if (selection.key !== queryKey) setSelection({ key: queryKey, index: 0, dismissed: false })
-  const candidates =
+  // Components first, as they scope the work; then epics, features and stories in board order.
+  const candidates: MentionCandidate[] =
     query && !selection.dismissed
-      ? s.nodes
-          .filter((n) => `${n.id} ${n.data.name}`.toLowerCase().includes(query[1].toLowerCase()))
-          .slice(0, 8)
+      ? [
+          ...s.nodes
+            .filter((n) => `${n.id} ${n.data.name}`.toLowerCase().includes(query[1].toLowerCase()))
+            .slice(0, 8)
+            .map((n) => ({ id: n.id, label: n.data.name })),
+          ...boardOrder(s.stories)
+            .filter((item) =>
+              `${item.id} ${item.title}`.toLowerCase().includes(query[1].toLowerCase()),
+            )
+            .slice(0, 6)
+            .map((item) => ({ id: item.id, label: item.title, story: item.kind })),
+        ]
       : []
   const selectedIndex = Math.min(selection.index, Math.max(0, candidates.length - 1))
   // The service applies the same provider, turn and approval checks.
@@ -239,14 +262,14 @@ export default function SimpleComposer({
       mentions = [...ui.mentions]
     const mountedEpoch = lifecycle.current
     const initialGeneration = state?.generation
-    const text = transmittedText(draft, mentions)
+    const text = transmittedText(draft, mentions, useStore.getState().stories)
     if (!text.trim()) {
       if (mentions.length) {
         logSimple(projectId, task, {
           kind: 'action',
           action: 'scope',
           stage,
-          mentions: mentions.map((m) => m.id),
+          mentions: componentMentions(mentions),
         })
         patch({ draft: '', mentions: [] })
       }
@@ -393,7 +416,7 @@ export default function SimpleComposer({
         sid,
         generation,
         text,
-        mentions: mentions.map((m) => m.id),
+        mentions: componentMentions(mentions),
         stage: recordStage(target!),
         force,
         current: stillCurrent,
@@ -410,19 +433,27 @@ export default function SimpleComposer({
       patch({ pendingAction: false })
     }
   }
-  const mention = (id: string) => {
+  const mention = ({ id, label, story }: MentionCandidate) => {
     const end = caret,
       start = end - query![1].length - 1,
-      token = `@${id}`
+      token = story ? storyToken({ id, title: label }) : `@${id}`
     const draft = ui.draft.slice(0, start) + token + ui.draft.slice(end)
     patch({
       draft,
       mentions: [
         ...editedMentions(ui.draft, draft, ui.mentions),
-        { id, token, start, end: start + token.length },
+        {
+          id,
+          token,
+          start,
+          end: start + token.length,
+          ...(story ? { kind: 'story' as const } : {}),
+        },
       ],
     })
-    if (!useStore.getState().highlighted.includes(id)) useStore.getState().toggleHighlight(id)
+    // Stories travel as text in the message; only components change the work's scope.
+    if (!story && !useStore.getState().highlighted.includes(id))
+      useStore.getState().toggleHighlight(id)
     setCaret(start + token.length)
     input.current?.focus()
     requestAnimationFrame(() =>
@@ -454,7 +485,9 @@ export default function SimpleComposer({
     // The lead read the notes that message carried.
     void settleLeadNotes(s.project.id, s.activeTask, message.noteIds ?? [])
     const latest = useSimpleUi.getState().worktrees[scopeKey]
-    const matches = !!latest && transmittedText(latest.draft, latest.mentions) === message.text
+    const matches =
+      !!latest &&
+      sentFromDraft(message.text, latest.draft, latest.mentions, useStore.getState().stories)
     patch({ unconfirmed: undefined, ...(matches ? { draft: '', mentions: [] } : {}) })
   }
   // The agent's own hook naming the message settles a delivery whose reply was lost.
@@ -513,7 +546,17 @@ export default function SimpleComposer({
               patch({ draft, mentions: editedMentions(ui.draft, draft, ui.mentions) })
             }}
           >
-            {s.nodes.find((n) => n.id === m.id)?.data.name ?? m.id} ×
+            {m.kind === 'story' ? (
+              <>
+                <i
+                  className={`story-dot ${s.stories.find((i) => i.id === m.id)?.kind ?? 'story'}`}
+                />
+                {s.stories.find((i) => i.id === m.id)?.title ?? m.id}
+              </>
+            ) : (
+              (s.nodes.find((n) => n.id === m.id)?.data.name ?? m.id)
+            )}{' '}
+            ×
           </button>
         ))}
       </div>
@@ -525,10 +568,12 @@ export default function SimpleComposer({
         aria-expanded={candidates.length > 0}
         aria-controls={candidates.length > 0 ? mentionListId : undefined}
         aria-activedescendant={
-          candidates.length > 0 ? `${mentionListId}-${candidates[selectedIndex].id}` : undefined
+          candidates.length > 0
+            ? `${mentionListId}-${candidates[selectedIndex].story ? 'story-' : ''}${candidates[selectedIndex].id}`
+            : undefined
         }
         value={ui.draft}
-        placeholder="Message the agent… @component to scope · paste images · Shift+Enter for a newline"
+        placeholder="Message the agent… @component to scope, @story to reference · paste images · Shift+Enter for a newline"
         onSelect={(e) => {
           setCaret(e.currentTarget.selectionStart)
         }}
@@ -567,7 +612,7 @@ export default function SimpleComposer({
           if (e.key !== 'Enter') return
           if (candidates.length && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
             e.preventDefault()
-            mention(candidates[selectedIndex].id)
+            mention(candidates[selectedIndex])
           } else if (!e.shiftKey || e.metaKey || e.ctrlKey) {
             e.preventDefault()
             if (status.sendable && !attaching) void send()
@@ -575,18 +620,20 @@ export default function SimpleComposer({
         }}
       />
       {candidates.length > 0 && (
-        <div id={mentionListId} role="listbox" aria-label="Mention component">
+        <div id={mentionListId} role="listbox" aria-label="Mention component or story">
           {candidates.map((n, index) => (
             <button
               role="option"
               tabIndex={-1}
-              id={`${mentionListId}-${n.id}`}
+              id={`${mentionListId}-${n.story ? 'story-' : ''}${n.id}`}
               aria-selected={index === selectedIndex}
-              key={n.id}
+              aria-label={n.story ? `${n.story} ${n.label}` : undefined}
+              key={`${n.story ?? 'component'}:${n.id}`}
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => mention(n.id)}
+              onClick={() => mention(n)}
             >
-              {n.data.name}
+              {n.story && <i className={`story-dot ${n.story}`} />}
+              {n.label}
             </button>
           ))}
         </div>

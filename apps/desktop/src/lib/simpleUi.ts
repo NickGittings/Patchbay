@@ -6,6 +6,8 @@ export interface Mention {
   token: string
   start: number
   end: number
+  /** A story board item rather than a map component; saved drafts without it name components. */
+  kind?: 'story'
 }
 export interface SimpleDiff {
   componentId: string

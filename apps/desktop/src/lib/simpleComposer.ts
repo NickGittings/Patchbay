@@ -1,5 +1,5 @@
 import { hasVisibleTerminal } from './terminals'
-import type { SessionState } from '../types'
+import type { SessionState, Story } from '../types'
 import { useStore } from '../store'
 import {
   terminalAttach,
@@ -15,12 +15,89 @@ import type { SimpleStage } from './simple'
 import { simpleKey, useSimpleUi, type Mention } from './simpleUi'
 import { sessionReportedHooks, type HooksCheck } from './agentHooks'
 
-/** Only tokens selected through autocomplete are removed. Literal @text stays byte-for-byte. */
-export function transmittedText(draft: string, mentions: readonly Mention[]) {
+const KIND_NAMES: Record<Story['kind'], string> = {
+  epic: 'Epic',
+  feature: 'Feature',
+  story: 'Story',
+}
+
+/** The composer token for a story: `@` and a short slug of its title, else its id. */
+export function storyToken(story: Pick<Story, 'id' | 'title'>) {
+  const slug = story.title
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/, '')
+  return `@${slug || story.id}`
+}
+
+/** The ids of mentioned map components, which scope the work; stories travel as text. */
+export const componentMentions = (mentions: readonly Mention[]) =>
+  mentions.filter((m) => m.kind !== 'story').map((m) => m.id)
+
+const storyLabel = (id: string, stories: readonly Story[]) => {
+  const item = stories.find((s) => s.id === id)
+  return item ? `[${KIND_NAMES[item.kind]} ${item.id}: ${item.title}]` : `[Story ${id}]`
+}
+
+/** What any agent needs of a referenced board item: where it sits, its status and its criteria. */
+function storyReference(item: Story, stories: readonly Story[]) {
+  const path: string[] = []
+  for (
+    let parent = stories.find((s) => s.id === item.parent);
+    parent && path.length < 3;
+    parent = stories.find((s) => s.id === parent!.parent)
+  )
+    path.unshift(parent.title)
+  return [
+    `- ${KIND_NAMES[item.kind]} ${item.id}: ${item.title} (${item.status}${path.length ? `; in ${path.join(' → ')}` : ''})`,
+    ...(item.description.trim() ? [`  ${item.description.trim().replace(/\n/g, '\n  ')}`] : []),
+    ...item.acceptance.map((a) => `  - [ ] ${a}`),
+  ].join('\n')
+}
+
+/**
+ * Only tokens selected through autocomplete change; literal @text stays byte-for-byte. Component
+ * tokens are removed (they scope the work), and story tokens name their item, whose details follow
+ * the message once.
+ */
+export function transmittedText(
+  draft: string,
+  mentions: readonly Mention[],
+  stories: readonly Story[] = [],
+  details = true,
+) {
+  // Replacing from the end keeps every earlier range valid against the original draft.
+  const valid = mentions
+    .filter((m) => draft.slice(m.start, m.end) === m.token)
+    .sort((a, b) => a.start - b.start)
   let text = draft
-  for (const m of [...mentions].sort((a, b) => b.start - a.start))
-    if (text.slice(m.start, m.end) === m.token) text = text.slice(0, m.start) + text.slice(m.end)
-  return text
+  for (const m of [...valid].reverse())
+    text =
+      text.slice(0, m.start) +
+      (m.kind === 'story' ? storyLabel(m.id, stories) : '') +
+      text.slice(m.end)
+  const referenced = [...new Set(valid.filter((m) => m.kind === 'story').map((m) => m.id))]
+  const items = details ? referenced.flatMap((id) => stories.filter((s) => s.id === id)) : []
+  if (!items.length) return text
+  return `${text.trimEnd()}${REFERENCES}${items.map((item) => storyReference(item, stories)).join('\n')}`
+}
+const REFERENCES = '\n\nReferenced from the story board:\n'
+
+/**
+ * Whether `sent` was transmitted from this draft. A story's details can change once it's sent (the
+ * lead may plan it at once), so only the message before its references must still match.
+ */
+export function sentFromDraft(
+  sent: string,
+  draft: string,
+  mentions: readonly Mention[],
+  stories: readonly Story[] = [],
+) {
+  if (sent === transmittedText(draft, mentions, stories)) return true
+  const body = transmittedText(draft, mentions, stories, false)
+  return mentions.some((m) => m.kind === 'story') && sent.startsWith(body.trimEnd() + REFERENCES)
 }
 /** Preserve structured token identity across edits; overlapping edits turn it back into literal text. */
 export function editedMentions(

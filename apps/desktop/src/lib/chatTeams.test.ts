@@ -9,6 +9,11 @@ vi.mock('./auto', () => ({
   stopAuto: vi.fn(),
 }))
 vi.mock('./leadStages', () => ({ startLeadStage: vi.fn(), settleLeadStage: vi.fn() }))
+vi.mock('./stories', () => ({
+  findStory: vi.fn(async (_project: string, id: string) => ({ id, title: 'Import' })),
+  storyGoal: vi.fn(() => 'Import\n\n- [ ] Works'),
+  linkAutoStory: vi.fn(async () => {}),
+}))
 import { startAuto, pauseAuto } from './auto'
 import { settleLeadStage, startLeadStage } from './leadStages'
 import { invoke } from '@tauri-apps/api/core'
@@ -559,6 +564,20 @@ test.each([undefined, 'implement'] as const)(
     })
   },
 )
+
+test('a lead Auto start for a story uses its text as the goal and links it once started', async () => {
+  const stories = await import('./stories')
+  const saved = mockRequestDriver('startAuto', { story: 's1', goal: 'Something else' })
+  await refreshChatTeams('p')
+  expect(saved.requests![0].state).toBe('completed')
+  const settings = vi.mocked(startAuto).mock.calls[0][2]
+  expect(settings.goal).toBe('Import\n\n- [ ] Works')
+  expect(settings).not.toHaveProperty('story')
+  expect(stories.linkAutoStory).toHaveBeenCalledExactlyOnceWith('p', null, 's1')
+  expect(vi.mocked(startAuto).mock.invocationCallOrder[0]).toBeLessThan(
+    vi.mocked(stories.linkAutoStory).mock.invocationCallOrder[0],
+  )
+})
 
 test('live continuation resolves the durable lead once and keeps the transcript and draft', async () => {
   const saved = team()

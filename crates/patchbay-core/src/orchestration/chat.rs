@@ -1026,6 +1026,24 @@ pub fn command(
                         "Request ID already used"
                     );
                 } else {
+                    // A story id is checked once, when the request is made, so a replay of
+                    // the same request survives the story's later deletion.
+                    if let Some(story) = settings.get("story").filter(|v| !v.is_null()) {
+                        ensure!(
+                            action == "startPlan" || action == "startAuto",
+                            "Only startPlan and startAuto take a story"
+                        );
+                        // Auto links its story to the run's worktree; the project checkout has none.
+                        ensure!(
+                            action != "startAuto" || t.task.is_some(),
+                            "Auto can take a story only in a worktree. Ask the user to start one."
+                        );
+                        let story = story.as_str().unwrap_or_default();
+                        ensure!(
+                            crate::stories::load(root)?.iter().any(|s| s.id == story),
+                            "Unknown story {story:?}. Run `agent stories` for the board's ids."
+                        );
+                    }
                     if action == "startCouncilReview" {
                         ensure!(t.council.enabled, "Review council is disabled");
                         t.council.validate(&t.presets)?;
@@ -1035,10 +1053,11 @@ pub fn command(
                         ensure!(settings.is_object(), "Stage settings must be an object");
                         ensure!(
                             action != "startPlan"
+                                || settings["story"].is_string()
                                 || settings["goal"]
                                     .as_str()
                                     .is_some_and(|goal| !goal.trim().is_empty()),
-                            "startPlan needs the user's request as goal"
+                            "startPlan needs the user's request as goal, or a story"
                         );
                         // Store immutable launch inputs separately from the caller's settings.
                     }
@@ -2051,6 +2070,7 @@ const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. 
   - Fix: fix review findings with `startFix`, only when the user asks.
   - Merge: merge with `startMerge`, only when the user asks for it. A clean review is not permission to merge.
   - Investigation, and checks of the combined result, go to `report` workers. A complete plan → build → review → merge pipeline goes to `startAuto`.
+  - Stories: for "what's next?" or questions about the story board, run `agent stories` and answer with its `next` item (its epic → feature, title and acceptance criteria), then offer to plan it or run Auto on it. Start nothing until the user asks. Statuses are the saved ones; mention a linked worktree (`task`) when an item has one.
 - Keep the chat status current with `agent team-status`: set it when you take on a request, when you start a stage and after each stage result. It is what the user sees as the state of the work.
 - Do not use provider-native subagents. Use only Patchbay-managed workers and configured presets.
 - Distinguish reported from verified results.
@@ -2066,14 +2086,15 @@ Run each command below as {cli}.
 - `agent team-delegate --id <unique-round-id> --file <json-array>`: create a round of isolated workers. Each assignment has a globally unique `id`, `instructions`, `components`, `dependencies`, `preset` and `resultKind` (`report` or `code`). Report workers inspect the committed baseline; compare their findings with local edits. Isolated code delegation needs a clean Git checkpoint.
 - `agent team-request --id <id> --action <startAgent|startPlan|startBuild|startReview|startFix|startMerge|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json>`: control existing workflows.
   - `startAgent` settings: `{preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}`. Role-to-preset mappings are in `team.agentRoles`; presets are in `team.presets` (or `team.workers` until the catalog loads).
-  - `startPlan` settings: `{goal: the-user's-request, components: optional-component-ids}`. Starts a planner under the plan role, which saves its plan for Plan and Build. Wait for its durable result. A failed result may mean the planner is waiting on a question.
+  - `startPlan` settings: `{goal: the-user's-request, story: optional-story-id, components: optional-component-ids}`. With `story`, `goal` may be omitted: the planner receives that item's story briefing and its card becomes Planned. Starts a planner under the plan role, which saves its plan for Plan and Build. Wait for its durable result. A failed result may mean the planner is waiting on a question.
   - `startBuild` settings: `{}`. Starts one implementation agent for this worktree's saved plan. Wait for its durable result, then inspect the work.
   - `startReview` settings: `{base: optional-branch-name, focus: optional-review-focus}`. Starts the configured reviewers against `base`, else the branch's last review base, else its merge destination. The result names the base used. Wait for it, then report the verdict and findings. The full report is in Review. It does not authorize fixes or merges.
   - `startFix` settings: `{}`. Starts a fix agent on this worktree's latest finished review. Wait for its durable result, then inspect the work.
   - `startMerge` settings: `{destination: optional-branch-name, commitSource: optional-change-list}`. Starts a merge agent for this worktree's branch into `destination`, else the default merge destination. With uncommitted changes it fails and lists them: ask the user, and only if they agree retry under a new id with exactly those entries as `commitSource`. A confirmed merge needs no report from you, because Chat shows it.
   - Only one `startPlan`, `startBuild`, `startFix`, `startReview`, `startCouncilReview` or `startMerge` can be active at a time.
-  - `startAuto` accepts `goal`, `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`) and `stage`; omit fields to use app defaults. Never automatically enable merge approval bypass.
+  - `startAuto` accepts `goal`, `story` (a story id: the story's text becomes the goal and the story is linked to the run), `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`) and `stage`; omit fields to use app defaults. Never automatically enable merge approval bypass.
   - `startCouncilReview` settings: `{base: branch-name, focus: optional-review-focus}`, only when `team.council.enabled`. Use only this workflow for a council and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges.
+- `agent stories [--id <story-id>]`: the story board in priority order (each epic, its features and their stories, then unassigned stories), with `next`, the top Backlog story without linked work. `--id` adds that item's full briefing as `section`.
 - `agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...]`: record an existing agent's agreed components.
 - `agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>`: gather progress, blockers, findings and validation from EXISTING agents before launching more work. Requests and responses are durable in `team.informationRequests`. Busy agents receive questions at their next ready prompt and respond with `agent team-reply --id <request-id> --text <response>`.
 - `agent team-send --id <unique-id> --to <assignment-id> --text <message>`: route dependencies and messages. Workers contact only you.
@@ -3790,6 +3811,64 @@ mod tests {
         assert!(instructions.contains("agent team-status"));
         assert!(!instructions.to_lowercase().contains("continue locally"));
         assert!(!instructions.contains("trivial"));
+    }
+
+    #[test]
+    fn plan_and_auto_take_an_existing_story_in_place_of_a_goal() {
+        let f = Fixture::new();
+        let request = |id: &str, action: &str, settings| Command::Request {
+            id: id.into(),
+            action: action.into(),
+            settings,
+        };
+        assert!(
+            f.cmd(request(
+                "plan",
+                "startPlan",
+                serde_json::json!({"story": "missing"})
+            ))
+            .is_err()
+        );
+        let story = crate::stories::create(
+            &f.dir,
+            serde_json::from_value(serde_json::json!({"kind": "story", "title": "Import"}))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            f.cmd(request(
+                "review",
+                "startReview",
+                serde_json::json!({"story": story.id})
+            ))
+            .is_err()
+        );
+        f.cmd(request(
+            "plan",
+            "startPlan",
+            serde_json::json!({"story": story.id}),
+        ))
+        .unwrap();
+        // The fixture's chat is the project checkout, where Auto has no worktree to link.
+        assert!(
+            f.cmd(request(
+                "auto",
+                "startAuto",
+                serde_json::json!({"story": story.id}),
+            ))
+            .is_err()
+        );
+        // The request is checked once: replaying it after deletion stays idempotent.
+        crate::stories::remove(&f.dir, &story.id, false).unwrap();
+        f.cmd(request(
+            "plan",
+            "startPlan",
+            serde_json::json!({"story": story.id}),
+        ))
+        .unwrap();
+        let instructions = lead_instructions();
+        assert!(instructions.contains("agent stories"));
+        assert!(instructions.contains("story: optional-story-id"));
     }
 
     #[test]

@@ -107,6 +107,12 @@ pub enum Action {
         command: crate::orchestration::Command,
     },
     Context {},
+    /// The story board in priority order, its next unstarted story, and with `id`
+    /// that item's briefing.
+    Stories {
+        #[serde(default)]
+        id: Option<String>,
+    },
     Status {},
     Logs {
         #[serde(rename = "sessionId")]

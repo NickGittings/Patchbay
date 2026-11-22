@@ -10,7 +10,10 @@ import type { AutoRun, Story, StoryDraft, StoryKind } from '../../types'
 import { STAGE_LABELS, STATUS_LABELS, unfinished } from '../../lib/autoSettings'
 import {
   filterStories,
+  moveStory,
   progressLabel,
+  reorder,
+  siblings,
   STORY_FILTERS,
   storyStatuses,
   tree,
@@ -112,7 +115,23 @@ export default function StoryBoard() {
     feature: 'all',
     story: 'all',
   })
+  // The card being dragged, and where it would land: before or after another card.
+  const [dragging, setDragging] = useState<string | null>(null)
+  const [dropAt, setDropAt] = useState<{ id: string; after: boolean } | null>(null)
   const projectId = project?.id
+  /** Where a drop beside `target` puts the dragged card, or undefined if it can't land there. */
+  const landing = (target: Story, after: boolean) => {
+    if (!dragging) return
+    const group = siblings(stories, target)
+    if (!group.some((s) => s.id === dragging)) return
+    const before = after
+      ? (group[group.findIndex((s) => s.id === target.id) + 1]?.id ?? null)
+      : target.id
+    return reorder(stories, dragging, before) ? before : undefined
+  }
+  const move = (id: string, before: string | null) => {
+    if (projectId) void moveStory(projectId, id, before)
+  }
   const runs = useMemo(() => {
     const runs: Record<string, AutoRun | null> = Object.fromEntries(
       Object.entries(taskWorkspaces).map(([id, w]) => [id, w.auto]),
@@ -166,6 +185,8 @@ export default function StoryBoard() {
   const item = stories.find((s) => s.id === selected)
   const column = (kind: StoryKind, title: string, candidates: Story[], all: () => void) => {
     const items = filterStories(candidates, statuses, filters[kind])
+    // Hidden cards would make a filtered column's order ambiguous.
+    const sortable = filters[kind] === 'all'
     return (
       <section className="story-column" aria-label={title}>
         <header>
@@ -209,9 +230,61 @@ export default function StoryBoard() {
             return (
               <button
                 key={item.id}
-                className={`story-card ${selected === item.id ? 'selected' : ''}`}
+                className={[
+                  'story-card',
+                  selected === item.id && 'selected',
+                  dragging === item.id && 'dragging',
+                  dropAt?.id === item.id && (dropAt.after ? 'drop-after' : 'drop-before'),
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
                 aria-pressed={selected === item.id}
+                aria-keyshortcuts={sortable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
+                title={sortable ? 'Drag, or Alt+↑/↓, to change priority' : undefined}
+                draggable={sortable}
                 onClick={() => choose(item)}
+                onKeyDown={(e) => {
+                  if (!sortable || !e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown'))
+                    return
+                  e.preventDefault()
+                  const group = siblings(stories, item)
+                  const at = group.findIndex((s) => s.id === item.id)
+                  // Up lands before the previous sibling; down before the one after next.
+                  const before =
+                    e.key === 'ArrowUp' ? group[at - 1]?.id : (group[at + 2]?.id ?? null)
+                  if (before !== undefined && at >= 0) move(item.id, before)
+                }}
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData('text/plain', item.title)
+                  setDragging(item.id)
+                }}
+                onDragEnd={() => {
+                  setDragging(null)
+                  setDropAt(null)
+                }}
+                onDragOver={(e) => {
+                  const box = e.currentTarget.getBoundingClientRect()
+                  const after = e.clientY > box.top + box.height / 2
+                  if (landing(item, after) === undefined) {
+                    if (dropAt?.id === item.id) setDropAt(null)
+                    return
+                  }
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  if (dropAt?.id !== item.id || dropAt.after !== after)
+                    setDropAt({ id: item.id, after })
+                }}
+                onDragLeave={() => {
+                  if (dropAt?.id === item.id) setDropAt(null)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  const before = dropAt?.id === item.id ? landing(item, dropAt.after) : undefined
+                  if (dragging && before !== undefined) move(dragging, before)
+                  setDragging(null)
+                  setDropAt(null)
+                }}
               >
                 <span className="story-card-title">
                   <i className={`story-dot ${kind}`} />

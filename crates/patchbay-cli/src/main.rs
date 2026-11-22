@@ -578,6 +578,12 @@ enum AgentCmd {
         assignment: String,
     },
     Context,
+    /// List the story board in priority order and its next unstarted story;
+    /// `--id` adds that item's briefing.
+    Stories {
+        #[arg(long)]
+        id: Option<String>,
+    },
     Environment {
         #[command(subcommand)]
         command: EnvironmentCmd,
@@ -723,6 +729,7 @@ fn agent(command: AgentCmd) -> Result<bool> {
                 command: patchbay_core::orchestration::Command::Integrate { assignment },
             },
             AgentCmd::Context => Action::Context {},
+            AgentCmd::Stories { id } => Action::Stories { id },
             AgentCmd::Status => Action::Status {},
             AgentCmd::Logs { session_id } => Action::Logs { session_id },
             AgentCmd::ValidateSelected { component_ids } => {

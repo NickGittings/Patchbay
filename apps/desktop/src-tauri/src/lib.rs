@@ -1584,6 +1584,16 @@ async fn story_update(
 }
 
 #[tauri::command]
+async fn story_reorder(
+    project_id: String,
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> CmdResult<()> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || stories::reorder(&root, &ids).map_err(err)).await
+}
+
+#[tauri::command]
 async fn story_remove(
     project_id: String,
     state: State<'_, AppState>,
@@ -3305,6 +3315,7 @@ pub fn run() {
                 story_list,
                 story_create,
                 story_update,
+                story_reorder,
                 story_remove,
                 story_complete_auto,
                 task_create,

@@ -765,6 +765,9 @@ export const storyCreate = (projectId: string, draft: StoryDraft) =>
   invoke<Story>('story_create', { projectId, draft })
 export const storyUpdate = (projectId: string, id: string, patch: StoryPatch) =>
   invoke<Story>('story_update', { projectId, id, patch })
+/** Sets one complete sibling group's top-to-bottom priority. */
+export const storyReorder = (projectId: string, ids: string[]) =>
+  invoke<void>('story_reorder', { projectId, ids })
 export const storyRemove = (projectId: string, id: string, cascade: boolean) =>
   invoke<void>('story_remove', { projectId, id, cascade })
 export const storyCompleteAuto = (projectId: string, task: string, runId: string) =>

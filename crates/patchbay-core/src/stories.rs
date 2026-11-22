@@ -289,6 +289,102 @@ pub fn update(root: &Path, id: &str, patch: StoryPatch) -> Result<Story> {
     })
 }
 
+/// Display order among siblings, mirrored by `lib/stories.ts` `ordered`.
+fn sibling_order(a: &Story, b: &Story) -> std::cmp::Ordering {
+    a.order
+        .cmp(&b.order)
+        .then(a.created_ms.cmp(&b.created_ms))
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+fn ordered<'a>(items: impl Iterator<Item = &'a Story>) -> Vec<&'a Story> {
+    let mut items: Vec<_> = items.collect();
+    items.sort_by(|a, b| sibling_order(a, b));
+    items
+}
+
+/// The board's top-to-bottom priority, matching `lib/stories.ts` `tree`: each epic,
+/// then its features, each followed by its stories, and finally unassigned stories
+/// (including orphans). Features without an epic aren't shown on the board.
+#[must_use]
+pub fn board_order(stories: &[Story]) -> Vec<&Story> {
+    let mut out = vec![];
+    let mut features = vec![];
+    for epic in ordered(stories.iter().filter(|s| s.kind == StoryKind::Epic)) {
+        out.push(epic);
+        for feature in ordered(stories.iter().filter(|s| {
+            s.kind == StoryKind::Feature && s.parent.as_deref() == Some(epic.id.as_str())
+        })) {
+            out.push(feature);
+            features.push(feature.id.as_str());
+            out.extend(ordered(stories.iter().filter(|s| {
+                s.kind == StoryKind::Story && s.parent.as_deref() == Some(feature.id.as_str())
+            })));
+        }
+    }
+    out.extend(ordered(stories.iter().filter(|s| {
+        s.kind == StoryKind::Story && s.parent.as_deref().is_none_or(|p| !features.contains(&p))
+    })));
+    out
+}
+
+/// The highest-priority story nobody has started: saved as Backlog with no linked work.
+#[must_use]
+pub fn next(stories: &[Story]) -> Option<&Story> {
+    board_order(stories).into_iter().find(|s| {
+        s.kind == StoryKind::Story
+            && s.status == StoryStatus::Backlog
+            && s.task.is_none()
+            && s.auto_run_id.is_none()
+    })
+}
+
+/// The sibling group a board column reorders within, matching what `board_order` shows
+/// together: a feature's stories, an epic's features, and otherwise one unassigned group.
+fn sibling_group<'a>(item: &'a Story, stories: &[Story]) -> Option<&'a str> {
+    let parent = item.parent.as_deref()?;
+    let found = stories.iter().find(|s| s.id == parent)?;
+    let shown = match (item.kind, found.kind) {
+        (StoryKind::Feature, StoryKind::Epic) => true,
+        // A story sits under its feature only while that feature sits under an epic.
+        (StoryKind::Story, StoryKind::Feature) => found.parent.as_deref().is_some_and(|e| {
+            stories
+                .iter()
+                .any(|s| s.id == e && s.kind == StoryKind::Epic)
+        }),
+        _ => false,
+    };
+    shown.then_some(parent)
+}
+
+/// Set the priority of one complete sibling group to the given top-to-bottom sequence.
+/// # Errors
+/// Fails unless `ids` lists every item of one sibling group exactly once, or on store I/O.
+pub fn reorder(root: &Path, ids: &[String]) -> Result<()> {
+    modify(root, |stories| {
+        let first = ids
+            .first()
+            .and_then(|id| stories.iter().find(|s| &s.id == id))
+            .ok_or_else(|| anyhow!("Unknown story to reorder"))?;
+        let (kind, group) = (first.kind, sibling_group(first, stories).map(str::to_owned));
+        let siblings: Vec<_> = stories
+            .iter()
+            .filter(|s| s.kind == kind && sibling_group(s, stories) == group.as_deref())
+            .map(|s| s.id.as_str())
+            .collect();
+        ensure!(
+            siblings.len() == ids.len() && siblings.iter().all(|id| ids.iter().any(|i| i == id)),
+            "The board changed. Reload it and try again."
+        );
+        for (index, id) in ids.iter().enumerate() {
+            if let Some(item) = stories.iter_mut().find(|s| &s.id == id) {
+                item.order = u32::try_from(index)?;
+            }
+        }
+        Ok(())
+    })
+}
+
 /// Remember a confirmed merge only for stories whose work advanced after linkage.
 /// Old integrated work on a reused worktree cannot complete a newly linked story.
 /// # Errors
@@ -439,7 +535,7 @@ pub fn section(stories: &[Story], id: &str) -> Result<ContextSection> {
                 .iter()
                 .filter(|s| s.parent.as_deref() == Some(&item.id))
                 .collect();
-            children.sort_by_key(|s| s.order);
+            children.sort_by(|a, b| sibling_order(a, b));
             for child in children {
                 append(body, child, stories, depth + 1);
             }
@@ -465,6 +561,131 @@ mod tests {
             components: vec!["api".into()],
         }
     }
+    fn item(id: &str, kind: StoryKind, parent: Option<&str>, order: u32, created_ms: u64) -> Story {
+        Story {
+            id: id.into(),
+            kind,
+            parent: parent.map(Into::into),
+            title: id.into(),
+            description: String::new(),
+            acceptance: vec![],
+            components: vec![],
+            task: None,
+            task_head: None,
+            auto_run_id: None,
+            status: StoryStatus::Backlog,
+            previous_status: None,
+            completed_head: None,
+            created_ms,
+            order,
+        }
+    }
+
+    /// Paired with `lib/stories.test.ts` "board order matches the core golden order".
+    fn golden_board() -> Vec<Story> {
+        use StoryKind::{Epic, Feature, Story as S};
+        vec![
+            item("s1", S, None, 1, 1),
+            item("e2", Epic, None, 2, 2),
+            item("e1", Epic, None, 1, 3),
+            item("f2", Feature, Some("e1"), 0, 4),
+            item("f1", Feature, Some("e1"), 0, 3),
+            item("f3", Feature, Some("e2"), 0, 5),
+            item("a2", S, Some("f1"), 5, 6),
+            item("a1", S, Some("f1"), 5, 6),
+            item("b1", S, Some("f2"), 0, 7),
+            item("c1", S, Some("f3"), 0, 8),
+            item("o1", S, Some("gone"), 0, 9),
+            item("s0", S, None, 0, 10),
+        ]
+    }
+
+    #[test]
+    fn board_order_walks_epics_features_then_unassigned_stories() {
+        let board = golden_board();
+        let ids: Vec<_> = board_order(&board).iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "e1", "f1", "a1", "a2", "f2", "b1", "e2", "f3", "c1", "o1", "s0", "s1"
+            ]
+        );
+    }
+
+    #[test]
+    fn next_skips_started_done_and_linked_stories() {
+        let mut board = golden_board();
+        assert_eq!(next(&board).map(|s| s.id.as_str()), Some("a1"));
+        for (id, change) in [("a1", 0), ("a2", 1), ("b1", 2), ("c1", 3)] {
+            let s = board.iter_mut().find(|s| s.id == id).unwrap();
+            match change {
+                0 => s.status = StoryStatus::Done,
+                1 => s.status = StoryStatus::Planned,
+                2 => s.task = Some("t1".into()),
+                _ => s.auto_run_id = Some("r1".into()),
+            }
+        }
+        assert_eq!(next(&board).map(|s| s.id.as_str()), Some("o1"));
+        board.retain(|s| s.kind != StoryKind::Story || s.status == StoryStatus::Done);
+        assert!(next(&board).is_none());
+    }
+
+    #[test]
+    fn sibling_groups_follow_the_columns_that_show_them() {
+        use StoryKind::{Epic, Feature, Story as S};
+        let board = vec![
+            item("e", Epic, None, 0, 1),
+            item("f", Feature, Some("e"), 0, 2),
+            item("lost", Feature, None, 0, 3),
+            item("a", S, Some("f"), 0, 4),
+            item("x", S, Some("lost"), 0, 5),
+            item("y", S, Some("e"), 0, 6),
+            item("z", S, None, 0, 7),
+        ];
+        let group = |id: &str| sibling_group(board.iter().find(|s| s.id == id).unwrap(), &board);
+        assert_eq!(group("f"), Some("e"));
+        assert_eq!(group("a"), Some("f"));
+        // Shown with the unassigned stories, so prioritized among them.
+        for id in ["x", "y", "z", "e", "lost"] {
+            assert_eq!(group(id), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn reorder_sets_one_complete_sibling_group() {
+        let root = std::env::temp_dir().join(format!("patchbay-stories-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("init")
+                .arg(&root)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let epic = create(&root, draft(StoryKind::Epic, None, "Epic")).unwrap();
+        let feature = create(&root, draft(StoryKind::Feature, Some(&epic.id), "F")).unwrap();
+        let a = create(&root, draft(StoryKind::Story, Some(&feature.id), "A")).unwrap();
+        let b = create(&root, draft(StoryKind::Story, Some(&feature.id), "B")).unwrap();
+        let loose = create(&root, draft(StoryKind::Story, None, "Loose")).unwrap();
+        reorder(&root, &[b.id.clone(), a.id.clone()]).unwrap();
+        let board = load(&root).unwrap();
+        let ids: Vec<_> = board_order(&board).iter().map(|s| &s.id).collect();
+        assert_eq!(ids, [&epic.id, &feature.id, &b.id, &a.id, &loose.id]);
+        // A partial group, another group's member or a duplicate leaves the store alone.
+        for bad in [
+            vec![a.id.clone()],
+            vec![a.id.clone(), loose.id.clone()],
+            vec![a.id.clone(), a.id.clone()],
+            vec![],
+        ] {
+            assert!(reorder(&root, &bad).is_err());
+        }
+        assert_eq!(load(&root).unwrap(), board);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn completion_preserves_saved_status_across_edits_and_reload() {
         let root = std::env::temp_dir().join(format!("patchbay-stories-{}", uuid::Uuid::new_v4()));

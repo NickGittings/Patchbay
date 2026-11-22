@@ -119,6 +119,19 @@
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.story-card[draggable='true'] {
+  cursor: grab;
+}
+.story-card.dragging {
+  opacity: 0.5;
+}
+/* Where a dragged card lands: a line along the edge it would take. */
+.story-card.drop-before {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+.story-card.drop-after {
+  box-shadow: 0 2px 0 var(--accent);
+}
 .story-card-title {
   display: flex;
   align-items: baseline;

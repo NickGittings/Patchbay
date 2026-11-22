@@ -16,7 +16,7 @@ import { roleDevice } from './agentRoles'
 import { autoDraftKey, autoDrafts, emptyAutoDraft } from './autoDrafts'
 import { autoRuns, autoWorkspace } from './autoState'
 import { finished, unfinished } from './autoSettings'
-import { storyCompleteAuto, storyList, storyUpdate, terminalSnapshot } from './ipc'
+import { storyCompleteAuto, storyList, storyReorder, storyUpdate, terminalSnapshot } from './ipc'
 import { stopAndWait } from './stopAndWait'
 import { startTerminal } from './sessions'
 import { seedNewTask } from './tasks'
@@ -47,6 +47,77 @@ export function tree(stories: Story[]) {
     ),
   }
 }
+
+/**
+ * The board's top-to-bottom priority, mirrored by core `stories::board_order`: each epic, then its
+ * features, each followed by its stories, and finally unassigned stories.
+ */
+export function boardOrder(stories: Story[]): Story[] {
+  const { epics, unassigned } = tree(stories)
+  return [
+    ...epics.flatMap((e) => [e.item, ...e.features.flatMap((f) => [f.item, ...f.stories])]),
+    ...unassigned,
+  ]
+}
+
+/**
+ * The items `item` is prioritized among, as a column shows them together (core
+ * `stories::sibling_group`): a feature's stories, an epic's features, else the unassigned.
+ */
+export function siblings(stories: Story[], item: Story): Story[] {
+  const byId = new Map(stories.map((s) => [s.id, s]))
+  const group = (s: Story) => {
+    const parent = s.parent ? byId.get(s.parent) : undefined
+    const shown =
+      (s.kind === 'feature' && parent?.kind === 'epic') ||
+      // A story sits under its feature only while that feature sits under an epic.
+      (s.kind === 'story' &&
+        parent?.kind === 'feature' &&
+        byId.get(parent.parent ?? '')?.kind === 'epic')
+    return shown ? s.parent : null
+  }
+  return ordered(stories.filter((s) => s.kind === item.kind && group(s) === group(item)))
+}
+
+/**
+ * The sibling ids, top to bottom, after moving `id` before `before` (`null`: to the end of its
+ * group). Undefined when `before` isn't a sibling or nothing would move.
+ */
+export function reorder(stories: Story[], id: string, before: string | null) {
+  const item = stories.find((s) => s.id === id)
+  if (!item || before === id) return
+  const group = siblings(stories, item).map((s) => s.id)
+  if (before !== null && !group.includes(before)) return
+  const rest = group.filter((s) => s !== id)
+  const at = before === null ? rest.length : rest.indexOf(before)
+  const ids = [...rest.slice(0, at), id, ...rest.slice(at)]
+  return ids.every((s, i) => s === group[i]) ? undefined : ids
+}
+
+/** Save a new priority for one sibling group, shown at once and restored if the save fails. */
+export async function moveStory(projectId: string, id: string, before: string | null) {
+  const state = projectStateOf(projectId)
+  const ids = state && reorder(state.stories, id, before)
+  if (!ids) return
+  const order = new Map(ids.map((s, i) => [s, i]))
+  requests.set(projectId, (requests.get(projectId) ?? 0) + 1)
+  useStore.getState().patchProject(projectId, {
+    stories: state.stories.map((s) => (order.has(s.id) ? { ...s, order: order.get(s.id)! } : s)),
+  })
+  // Saves run one at a time per project, so quick moves are stored in the order they were made.
+  const save = (reorders.get(projectId) ?? Promise.resolve()).then(async () => {
+    try {
+      await storyReorder(projectId, ids)
+    } catch (e) {
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
+      await refreshStories(projectId)
+    }
+  })
+  reorders.set(projectId, save)
+  await save
+  if (reorders.get(projectId) === save) reorders.delete(projectId)
+}
+const reorders = new Map<string, Promise<void>>()
 
 export type StoryProgress = StoryStatus | 'reviewing' | 'merging'
 
@@ -306,10 +377,7 @@ export async function planStory(projectId: string, story: Story) {
   else s.revealChat({ projectId, task })
   s.setPlanActive(device.id)
   const planningAtMs = Date.now()
-  const requestId = await startTerminal(PLAN_SCOPE, device.id, s.activeTask, projectId, {
-    kickoff: { kind: 'planStory' },
-    story: story.id,
-  })
+  const requestId = await launchStoryPlanner(projectId, s.activeTask, device.id, story)
   if (chat)
     // Logged in the background, so a run lookup never delays the story's status.
     void logLaunch(
@@ -325,7 +393,46 @@ export async function planStory(projectId: string, story: Story) {
       },
       requestId,
     )
+}
+
+/** Components a story's planner or Auto run covers: its own and its descendants'. */
+export function storyComponents(stories: Story[], story: Story) {
+  return [...new Set([story, ...descendants(stories, story)].flatMap((s) => s.components))]
+}
+
+/**
+ * Start `story`'s planner in `task`'s worktree, which receives the Story briefing, and mark the
+ * story Planned. Callers own confirmation, view changes and launch logging. `components` replaces
+ * the worktree's highlighted ones for this launch.
+ */
+export async function launchStoryPlanner(
+  projectId: string,
+  task: string | null,
+  device: string,
+  story: Story,
+  components?: string[],
+) {
+  // Saved components may have left the map since; none falls back to the worktree's highlights.
+  const known = components?.filter((id) =>
+    projectOf(projectId)?.components.some((c) => c.id === id),
+  )
+  const requestId = await startTerminal(PLAN_SCOPE, device, task, projectId, {
+    kickoff: { kind: 'planStory' },
+    story: story.id,
+    components: known?.length ? known : undefined,
+  })
   await updateStory(projectId, story.id, { status: 'planned' })
+  return requestId
+}
+
+/** A story by id, loading the board first when this project's isn't loaded or lacks it. */
+export async function findStory(projectId: string, id: string) {
+  const known = projectStateOf(projectId)?.stories.find((s) => s.id === id)
+  if (known) return known
+  await refreshStories(projectId)
+  const story = projectStateOf(projectId)?.stories.find((s) => s.id === id)
+  if (!story) throw new Error(`Unknown story ${id}. Run \`agent stories\` for the board's ids.`)
+  return story
 }
 
 export async function linkStory(projectId: string, story: string, task: string) {

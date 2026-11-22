@@ -314,6 +314,33 @@ fn planner_root(
     Ok(PathBuf::from(mapped.root))
 }
 
+/// The board in priority order for an agent: compact items, the next unstarted
+/// story, and with `id` the same briefing a story planner receives.
+fn stories_view(root: &Path, id: Option<&str>) -> Result<Value> {
+    let stories = crate::stories::load(root)?;
+    let item = |s: &crate::stories::Story| {
+        json!({
+            "id": s.id,
+            "kind": s.kind,
+            "title": s.title,
+            "parent": s.parent,
+            "status": s.status,
+            "task": s.task,
+            "autoRunId": s.auto_run_id,
+            "acceptance": s.acceptance,
+        })
+    };
+    let section = id
+        .map(|id| crate::stories::section(&stories, id))
+        .transpose()?
+        .map(|s| s.body);
+    Ok(json!({
+        "items": crate::stories::board_order(&stories).into_iter().map(item).collect::<Vec<_>>(),
+        "next": crate::stories::next(&stories).map(item),
+        "section": section,
+    }))
+}
+
 /// Execute an authenticated command in its fixed launch context.
 ///
 /// # Errors
@@ -395,6 +422,10 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
             Ok(
                 json!({"projectId":launch.project_id,"taskId":launch.task,"task":task,"scope":scope,"plan":plan,"assignments":assignments,"agentSessionId":launch.agent_session,"project":mapped}),
             )
+        }
+        Action::Stories { id } => {
+            let project = scoped.project()?;
+            stories_view(Path::new(&project.root), id.as_deref())
         }
         Action::Status {} => {
             let sessions = records(state, launch)?;
@@ -632,6 +663,7 @@ impl TryFrom<Action> for ActionRequest {
             Action::ChatTeam { .. }
             | Action::ProviderRun { .. }
             | Action::Context {}
+            | Action::Stories { .. }
             | Action::Status {}
             | Action::Logs { .. }
             | Action::EnvironmentStop { .. }
@@ -1103,6 +1135,94 @@ mod tests {
         );
         assert_eq!(Role::of(PLAN_SCOPE, "claude"), Role::Planner);
         assert_eq!(Role::of("web", "stack"), Role::Component);
+    }
+
+    #[test]
+    fn stories_lists_the_board_in_priority_order_with_next_and_briefing() {
+        use crate::stories::{StoryDraft, StoryKind, StoryPatch, StoryStatus};
+        let root = std::env::temp_dir().join(format!("patchbay-stories-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let draft = |kind, parent: Option<&str>, title: &str| StoryDraft {
+            kind,
+            parent: parent.map(Into::into),
+            title: title.into(),
+            description: format!("{title} details"),
+            acceptance: vec![format!("{title} works")],
+            components: vec![],
+        };
+        let epic = crate::stories::create(&root, draft(StoryKind::Epic, None, "Epic")).unwrap();
+        let feature =
+            crate::stories::create(&root, draft(StoryKind::Feature, Some(&epic.id), "Feature"))
+                .unwrap();
+        let done =
+            crate::stories::create(&root, draft(StoryKind::Story, Some(&feature.id), "Done"))
+                .unwrap();
+        let top = crate::stories::create(&root, draft(StoryKind::Story, Some(&feature.id), "Top"))
+            .unwrap();
+        crate::stories::update(
+            &root,
+            &done.id,
+            StoryPatch {
+                status: Some(StoryStatus::Done),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let host = Fixture {
+            calls: Mutex::default(),
+            saves: Mutex::default(),
+            sessions: None,
+            project: Some(Project {
+                worktree_setup: None,
+                schema_version: crate::model::SCHEMA_VERSION,
+                name: "Stories fixture".into(),
+                root: root.display().to_string(),
+                components: vec![],
+                links: vec![],
+                groups: vec![],
+            }),
+        };
+        let result = dispatch(&host, &launch(), Action::Stories { id: None }).unwrap();
+        let ids: Vec<_> = result["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [&epic.id, &feature.id, &done.id, &top.id]);
+        assert_eq!(result["next"]["id"], top.id.as_str());
+        assert_eq!(result["next"]["acceptance"][0], "Top works");
+        assert!(result["section"].is_null());
+        let result = dispatch(
+            &host,
+            &launch(),
+            Action::Stories {
+                id: Some(feature.id.clone()),
+            },
+        )
+        .unwrap();
+        let section = result["section"].as_str().unwrap();
+        assert!(section.starts_with("Epic\n") && section.contains("- [ ] Top works"));
+        assert!(
+            dispatch(
+                &host,
+                &launch(),
+                Action::Stories {
+                    id: Some("missing".into())
+                }
+            )
+            .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
