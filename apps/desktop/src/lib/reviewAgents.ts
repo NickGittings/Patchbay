@@ -3,6 +3,8 @@ import {
   MERGE_SCOPE,
   REVIEW_SCOPE,
   isReviewAgentScope,
+  type AutoBrief,
+  type MergeCleanup,
   type ReviewRequest,
   type ReviewFindings,
   type Task,
@@ -14,7 +16,14 @@ import {
   type TerminalSpec,
   type Worktree,
 } from '../types'
-import { mergeAgentStart, mergeDestinationResolve, reviewAgentStart } from './ipc'
+import {
+  gitWorktrees,
+  mergeAgentStart,
+  mergeConflicts,
+  mergeDestinationResolve,
+  mergeSourceChanges,
+  reviewAgentStart,
+} from './ipc'
 import { refreshTasks } from './tasks'
 import { useStore } from '../store'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
@@ -204,51 +213,100 @@ function launchJob<R>(
   return start(project, request, agentTerminal(device), requestId, ...(auto ? [auto] : []))
 }
 
+export type MergeStart =
+  | { kind: 'started'; request: MergeRequest; sessionId: string; requestId: string }
+  /** The branches conflict; nothing launched. The heads name what was checked. */
+  | { kind: 'conflicts'; paths: string[]; sourceHead: string; destinationHead: string }
+  /** The source has uncommitted changes nobody agreed to commit; nothing launched. */
+  | { kind: 'uncommitted'; changes: string[] }
+
+interface MergeLaunch {
+  project: Project
+  device: DeviceManifest
+  /** Defaults to a fresh id. */
+  requestId?: string
+}
+export type MergeOptions = MergeLaunch &
+  (
+    | {
+        source: Worktree
+        destinationBranch: string
+        /** Stop and report conflicts with the destination instead of launching. */
+        checkConflicts?: boolean
+        /**
+         * The uncommitted changes the user agreed the agent should commit, or `'report'` to
+         * return them as `uncommitted` instead of launching. Omitted, the backend refuses them.
+         */
+        commitSource?: string[] | 'report'
+      }
+    | {
+        /** A request already pinned by its caller, such as Auto's reviewed head. */
+        request: MergeRequest
+        auto?: { brief: AutoBrief; cleanup?: MergeCleanup; ownershipId?: string }
+      }
+  )
+
 /**
- * Resolve only on submit; keep the destination available even when launch fails.
- * `commitSource` is the list of uncommitted changes the user agreed the agent should commit.
+ * Every merge, whichever flow starts it: check conflicts and uncommitted changes when asked,
+ * resolve the destination (a dirty or busy destination refuses), then launch the merge agent.
+ * Resolving refreshes the worktree list even when it fails, and keeps the destination available
+ * when the launch does.
  */
-export async function startBranchMerge(
-  project: Project,
-  source: Worktree,
-  destinationBranch: string,
-  device: DeviceManifest,
-  requestId: string,
-  commitSource?: string[],
-) {
+export async function startMerge(options: MergeOptions): Promise<MergeStart> {
+  const { project, device } = options
+  const requestId = options.requestId ?? crypto.randomUUID()
+  if ('request' in options) {
+    const { request, auto } = options
+    const cleanup = auto?.cleanup ?? (auto ? 'keep' : 'ask')
+    const sessionId = await launchMerge(
+      project,
+      request,
+      device,
+      requestId,
+      auto?.brief,
+      cleanup,
+      auto?.ownershipId,
+    )
+    return { kind: 'started', request, sessionId, requestId }
+  }
+  const { source, destinationBranch, checkConflicts, commitSource } = options
+  const sourceBranch = source.branch
+  if (!sourceBranch) throw new Error('The source worktree has no branch to merge')
+  if (checkConflicts) {
+    const projectId = project.projectId
+    if (!projectId) throw new Error('Project is unavailable')
+    const destination = (await gitWorktrees(projectId)).find((w) => w.branch === destinationBranch)
+    const destinationHead = destination?.head ?? destinationBranch
+    const paths = await mergeConflicts(projectId, source.head, destinationHead)
+    if (paths.length) return { kind: 'conflicts', paths, sourceHead: source.head, destinationHead }
+  }
+  if (commitSource === 'report') {
+    const changes = await mergeSourceChanges(project, source.path, sourceBranch)
+    if (changes.length) return { kind: 'uncommitted', changes }
+  }
   let request: MergeRequest
   try {
     request = await mergeDestinationResolve(
       project,
       source.path,
-      source.branch!,
+      sourceBranch,
       destinationBranch,
-      ...(commitSource ? [commitSource] : []),
+      ...(Array.isArray(commitSource) ? [commitSource] : []),
     )
   } finally {
     await refreshTasks(project.projectId).catch(() => {})
   }
-  const sid = await startMergeAgent(project, request, device, requestId)
-  return { request, sid }
+  const sessionId = await launchMerge(project, request, device, requestId, undefined, 'ask')
+  return { kind: 'started', request, sessionId, requestId }
 }
-
-export const startMergeAgent = (
-  project: Project,
-  request: MergeRequest,
-  device: DeviceManifest,
-  requestId: string,
-  auto?: import('../types').AutoBrief,
-  cleanup: import('../types').MergeCleanup = auto ? 'keep' : 'ask',
-  autoOwnershipId?: string,
-) => launchMerge(project, request, device, requestId, auto, cleanup, autoOwnershipId)
 
 async function launchMerge(
   project: Project,
   request: MergeRequest,
   device: DeviceManifest,
   requestId: string,
-  auto: import('../types').AutoBrief | undefined,
-  cleanup: import('../types').MergeCleanup,
+  auto: AutoBrief | undefined,
+  cleanup: MergeCleanup,
   autoOwnershipId?: string,
 ) {
   await listenForTerminals()

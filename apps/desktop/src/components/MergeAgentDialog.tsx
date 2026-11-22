@@ -5,7 +5,7 @@ import {
   mergeDestinations,
   mergeDestinationRunning,
   reviewState,
-  startBranchMerge,
+  startMerge,
 } from '../lib/reviewAgents'
 import { useMergeSourceChanges } from '../lib/useMergeSourceChanges'
 import { useReviewFindings } from '../lib/useReviewFindings'
@@ -93,16 +93,17 @@ export default function MergeAgentDialog({
       launch={async ([device]) => {
         const requestId = crypto.randomUUID()
         try {
-          const { request, sid } = await startBranchMerge(
+          const started = await startMerge({
             project,
-            source!,
-            target!.branch,
+            source: source!,
+            destinationBranch: target!.branch,
             device,
             requestId,
-            ...(commitFirst ? [changes] : []),
-          )
-          onRequest?.(request, sid, requestId)
-          return sid
+            ...(commitFirst ? { commitSource: changes } : {}),
+          })
+          if (started.kind !== 'started') throw new Error('The merge did not start')
+          onRequest?.(started.request, started.sessionId, requestId)
+          return started.sessionId
         } catch (e) {
           // The confirmed list may be what went stale; show the current one for the retry.
           sourceChanges.reload()

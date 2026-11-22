@@ -56,7 +56,7 @@ vi.mock('./reviewAgents', async () => {
   return {
     ...actual,
     startReviewAgent,
-    startMergeAgent: vi.fn(),
+    startMerge: vi.fn(),
     // Through the mocked single launch, as the real one does, with a lane per reviewer of a round.
     startReviewAgents: vi.fn(
       async (...[project, request, devices, auto]: Parameters<typeof actual.startReviewAgents>) => {
@@ -111,6 +111,12 @@ const {
 const ipc = await import('./ipc')
 const jobs = await import('./reviewAgents')
 const awaitSessions = await import('./sessions')
+const started = (sessionId: string) => ({
+  kind: 'started' as const,
+  sessionId,
+  requestId: 'merge-request',
+  request: { source: '/w', sourceBranch: 'b', destination: '/p', destinationBranch: 'main' },
+})
 const tree: Worktree = {
   path: '/p/feature',
   branch: 'feature',
@@ -276,7 +282,7 @@ test('merge approval, verified outcome, overrides and validation failures', () =
   expect(nextStep(run({ validationFindings: 'Failed check' }), findings()).stage).toBe('fix')
 })
 function load() {
-  vi.mocked(jobs.startMergeAgent).mockResolvedValue('merge-s')
+  vi.mocked(jobs.startMerge).mockResolvedValue(started('merge-s'))
   const { reconcileFreshSessions } = awaitSessions
   vi.mocked(reconcileFreshSessions).mockImplementation(async () => {
     const sessions = { ...useStore.getState().sessions }
@@ -424,10 +430,10 @@ test('driver requires a new authoritative turn and stops reviewer before gating'
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
     expect(ipc.terminalStop).toHaveBeenCalledWith('s')
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
     mergeNow('p', 't')
     await flush()
-    expect(jobs.startMergeAgent).toHaveBeenCalledTimes(1)
+    expect(jobs.startMerge).toHaveBeenCalledTimes(1)
   })
 })
 test('parallel reviewers share a round; the run waits for all, then stops the others', async () => {
@@ -1007,7 +1013,7 @@ test('starting at Merge on an unreviewed branch waits for approval', async () =>
   await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
 
@@ -1090,7 +1096,7 @@ test('skipping a stale review clears the old head and permits an approved merge'
   await withFollower(async () => {
     mergeNow('p', 't')
     await flush()
-    expect(jobs.startMergeAgent).toHaveBeenCalledTimes(1)
+    expect(jobs.startMerge).toHaveBeenCalledTimes(1)
     expect(autoRun('p', 't')?.status).toBe('running')
   })
 })
@@ -1334,7 +1340,7 @@ test('a clean review in place ends Done without a merge gate', async () => {
     expect(ipc.terminalStop).toHaveBeenCalledWith('s')
   })
   expect(ipc.mergeOutcome).not.toHaveBeenCalled()
-  expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+  expect(jobs.startMerge).not.toHaveBeenCalled()
 })
 
 test('clean findings in place end Done, but a new goal on the same HEAD plans', () => {
@@ -1509,7 +1515,7 @@ test.each(['plan', 'implement', 'fix', 'merge'] as const)(
     })
     vi.mocked(implementPlannerPlan).mockResolvedValue({ sessionId: sid, requestId: 'r' })
     vi.mocked(fixReviewFindings).mockResolvedValue({ sessionId: sid, requestId: 'r' })
-    vi.mocked(jobs.startMergeAgent).mockResolvedValue(sid)
+    vi.mocked(jobs.startMerge).mockResolvedValue(started(sid))
     useStore.setState({
       sessionRecords: [
         {
@@ -1921,7 +1927,7 @@ test.each(['merged', 'alreadyIntegrated'] as const)(
       mergeNow('p', 't')
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -2022,7 +2028,7 @@ test.each(['merged', 'alreadyIntegrated'] as const)(
       vi.mocked(ipc.mergeOutcome).mockResolvedValue(outcome)
       await vi.advanceTimersByTimeAsync(5000)
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -2226,7 +2232,7 @@ test.each(['worktrees', 'outcome'] as const)(
       vi.mocked(ipc.mergeOutcome).mockResolvedValue('merged')
       await vi.advanceTimersByTimeAsync(5000)
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -2302,7 +2308,7 @@ test('approval polling refreshes its request after a changed destination worktre
     await vi.advanceTimersByTimeAsync(5000)
     expect(ipc.gitWorktrees).toHaveBeenCalledTimes(3)
     expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
 
@@ -2447,7 +2453,7 @@ test.each(['closed', 'stopped', 'idle', 'forgotten'] as const)(
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
       expect(ipc.gitReview).not.toHaveBeenCalled()
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
       // Only an agent still at its prompt is left to stop; a finished run offers no Stop.
       if (state === 'idle') expect(ipc.terminalStop).toHaveBeenCalledWith('s')
       else expect(ipc.terminalStop).not.toHaveBeenCalled()
@@ -2604,7 +2610,7 @@ test('Auto pauses legacy mixed-format findings instead of merging them', async (
     })
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'review', status: 'paused' })
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
 
@@ -2617,7 +2623,7 @@ test.each(['mergeGate', 'merge'] as const)(
     await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ status: 'paused' })
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -2671,7 +2677,7 @@ test.each(['refused', 'empty', 'unconfirmed'] as const)(
       expect(autoRun('p', 't')?.sessionId).toBeUndefined()
       await skipStage('p', 't')
       expect(autoRun('p', 't')?.stage).toBe('review')
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -2797,7 +2803,7 @@ test.each(['review', 'merge'] as const)(
       expect(ipc.terminalStop).toHaveBeenCalledWith('s')
       expect(ipc.terminalStop).not.toHaveBeenCalledWith('manual')
       expect(jobs.startReviewAgents).not.toHaveBeenCalled()
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -4787,7 +4793,7 @@ test('three interrupted agents with unchanged artifacts exhaust recovery; relaun
     expect(awaitSessions.startTerminal).toHaveBeenCalledTimes(3)
     expect(autoRun('p', 't')).toMatchObject({ status: 'failed', recovery: { attempts: 3 } })
     expect(autoRun('p', 't')?.reason).toContain('Recovery budget exhausted')
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
 
@@ -4876,7 +4882,7 @@ test.each([false, true])(
     await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')?.status).toBe('failed')
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
       const { fixReviewFindings } = await import('./reviewHandoff')
       expect(fixReviewFindings).not.toHaveBeenCalled()
     })
@@ -5013,13 +5019,13 @@ test.each(['missing', 'invalid'] as const)(
         stage: 'review',
         recovery: { attempts: 1 },
       })
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
       vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), startedMs: 50001 })
       agent('review', 52000)
       await flush()
       await vi.advanceTimersByTimeAsync(5000)
       await flush()
-      expect(jobs.startMergeAgent).toHaveBeenCalledOnce()
+      expect(jobs.startMerge).toHaveBeenCalledOnce()
     })
   },
 )
@@ -5104,14 +5110,11 @@ test.each(['light', 'standard'] as const)(
     await withFollower(async () => {
       await flush()
       await flush()
-      expect(jobs.startMergeAgent).toHaveBeenCalledExactlyOnceWith(
-        expect.anything(),
-        expect.objectContaining({ expectedSourceHead: 'abc' }),
-        expect.anything(),
-        expect.any(String),
-        expect.anything(),
-        'keep',
-        'owner',
+      expect(jobs.startMerge).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          request: expect.objectContaining({ expectedSourceHead: 'abc' }),
+          auto: expect.objectContaining({ cleanup: 'keep', ownershipId: 'owner' }),
+        }),
       )
       expect(autoRun('p', 't')).toMatchObject({
         stage: 'merge',
@@ -5155,7 +5158,7 @@ test.each(['head', 'findings'] as const)(
     await withFollower(async () => {
       await flush()
       await flush()
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
       expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'review', reviewedHead: undefined })
     })
@@ -5193,7 +5196,7 @@ test('automatic merge rechecks review inputs after asynchronous hook preflight',
       ReturnType<typeof ipc.agentHooksCheck>
     >)
     await flush()
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
     expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'review', reviewedHead: undefined })
   })
@@ -5209,7 +5212,7 @@ test('a source change caught by merge preparation returns autonomous execution t
     merge: { mode: 'auto', destinationBranch: 'main' },
   })
   vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
-  vi.mocked(jobs.startMergeAgent).mockRejectedValue(
+  vi.mocked(jobs.startMerge).mockRejectedValue(
     new Error('The source changed since review; review again before merging'),
   )
   vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
@@ -5219,14 +5222,11 @@ test('a source change caught by merge preparation returns autonomous execution t
   await withFollower(async () => {
     await flush()
     await flush()
-    expect(jobs.startMergeAgent).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ expectedSourceHead: 'abc' }),
-      expect.anything(),
-      expect.any(String),
-      expect.anything(),
-      'keep',
-      'run',
+    expect(jobs.startMerge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({ expectedSourceHead: 'abc' }),
+        auto: expect.objectContaining({ cleanup: 'keep', ownershipId: 'run' }),
+      }),
     )
     expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
     expect(autoRun('p', 't')).toMatchObject({
@@ -5638,7 +5638,7 @@ test('a new process generation reassesses completion immediately without waiting
     await flush()
     expect(ipc.reviewRead).toHaveBeenCalledTimes(2)
     expect(autoRun('p', 't')?.stage).toBe('review')
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
 

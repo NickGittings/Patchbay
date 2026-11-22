@@ -29,7 +29,14 @@ vi.mock('./reviewAgents', () => ({
   ]),
   reviewWorktreeBusy: vi.fn(() => false),
   defaultMergeDestination: vi.fn(() => 'main'),
-  startBranchMerge: vi.fn(async () => ({ request: mergeRequest, sid: 'merge' })),
+  // Reports the source's uncommitted changes the way the real preflight does.
+  startMerge: vi.fn(async (options: { commitSource?: unknown }) => {
+    const { mergeSourceChanges } = await import('./ipc')
+    const changes = await mergeSourceChanges({} as never, '', '')
+    return options.commitSource === 'report' && changes.length
+      ? { kind: 'uncommitted', changes }
+      : { kind: 'started', request: mergeRequest, sessionId: 'merge', requestId: 'merge-launch' }
+  }),
 }))
 vi.mock('./sessionList', () => ({ sessionTimeMs: vi.fn(() => 0) }))
 vi.mock('./stageLog', () => ({ logStageLaunch: vi.fn(async () => {}) }))
@@ -55,8 +62,9 @@ import { mergeOutcome, mergeSourceChanges, planRead, terminalSnapshot } from './
 import { settleLeadStage, startLeadStage } from './leadStages'
 import { implementPlannerPlan } from './planHandoff'
 import { fixReviewFindings } from './reviewHandoff'
-import { reviewWorktreeBusy, startBranchMerge } from './reviewAgents'
+import { reviewWorktreeBusy, startMerge } from './reviewAgents'
 import { startTerminal } from './sessions'
+import { logLaunch } from './simpleActions'
 import { launchStoryPlanner } from './stories'
 
 const team = { id: 'team', projectId: 'p', task: 't1', target: '/p' } as ChatTeam
@@ -164,21 +172,23 @@ test('a finished planner reports whether it saved a plan', async () => {
 
 test('a merge goes to the default destination through the merge role', async () => {
   await startLeadStage(team, request('startMerge'))
-  expect(vi.mocked(startBranchMerge).mock.calls[0].slice(2, 3)).toEqual(['main'])
-  expect(vi.mocked(startBranchMerge).mock.calls[0][5]).toBeUndefined()
+  expect(startMerge).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ destinationBranch: 'main', commitSource: 'report' }),
+  )
   expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
 })
 
 test('a merge commits uncommitted changes only when they were approved', async () => {
   vi.mocked(mergeSourceChanges).mockResolvedValue([' M a.ts'])
   await expect(startLeadStage(team, request('startMerge'))).rejects.toThrow(' M a.ts')
-  expect(startBranchMerge).not.toHaveBeenCalled()
+  expect(logLaunch).not.toHaveBeenCalled()
   await startLeadStage(
     team,
     request('startMerge', 'starting', null, { destination: 'dev', commitSource: [' M a.ts'] }),
   )
-  const call = vi.mocked(startBranchMerge).mock.calls[0]
-  expect([call[2], call[5]]).toEqual(['dev', [' M a.ts']])
+  expect(startMerge).toHaveBeenLastCalledWith(
+    expect.objectContaining({ destinationBranch: 'dev', commitSource: [' M a.ts'] }),
+  )
   vi.mocked(mergeSourceChanges).mockResolvedValue([])
 })
 

@@ -14,15 +14,25 @@ import {
 } from '../types'
 
 vi.mock('./ipc', () => ({
+  gitWorktrees: vi.fn(async () => []),
   mergeAgentStart: vi.fn(),
+  mergeConflicts: vi.fn(async () => []),
   mergeDestinationResolve: vi.fn(),
+  mergeSourceChanges: vi.fn(async () => []),
   reviewAgentStart: vi.fn(),
 }))
 vi.mock('./tasks', () => ({ refreshTasks: vi.fn(async () => {}) }))
 vi.mock('./sessions', () => ({ listenForTerminals: vi.fn(), reconcileFreshSessions: vi.fn() }))
-const { mergeAgentStart, mergeDestinationResolve, reviewAgentStart } = await import('./ipc')
+const {
+  gitWorktrees,
+  mergeAgentStart,
+  mergeConflicts,
+  mergeDestinationResolve,
+  mergeSourceChanges,
+  reviewAgentStart,
+} = await import('./ipc')
 const { listenForTerminals, reconcileFreshSessions } = await import('./sessions')
-const { defaultMergeDestination, mergeDestinations, reviewAgentRecords, startMergeAgent } =
+const { defaultMergeDestination, mergeDestinations, reviewAgentRecords, startMerge } =
   await import('./reviewAgents')
 const tree = (path: string, branch: string | undefined, current = false): Worktree => ({
   path,
@@ -107,7 +117,12 @@ test('launch uses the captured project and whole branch request, subscribes firs
     source: 'builtin',
   }
   vi.mocked(mergeAgentStart).mockResolvedValue('sid')
-  expect(await startMergeAgent(project, request, device, 'request-id')).toBe('sid')
+  expect(await startMerge({ project, request, device, requestId: 'request-id' })).toEqual({
+    kind: 'started',
+    request,
+    sessionId: 'sid',
+    requestId: 'request-id',
+  })
   expect(mergeAgentStart).toHaveBeenCalledWith(
     project,
     request,
@@ -131,15 +146,15 @@ test('launch uses the captured project and whole branch request, subscribes firs
 test('launch errors reach the dialog without reporting a successful session', async () => {
   vi.mocked(mergeAgentStart).mockRejectedValue(new Error('source worktree has uncommitted changes'))
   await expect(
-    startMergeAgent(
-      { projectId: 'p' } as Project,
-      {
+    startMerge({
+      project: { projectId: 'p' } as Project,
+      request: {
         source: '/feature',
         sourceBranch: 'feature',
         destination: '/main',
         destinationBranch: 'main',
       },
-      {
+      device: {
         id: 'codex',
         name: 'Codex',
         command: 'codex',
@@ -147,8 +162,8 @@ test('launch errors reach the dialog without reporting a successful session', as
         category: 'agent',
         source: 'builtin',
       },
-      'request',
-    ),
+      requestId: 'request',
+    }),
   ).rejects.toThrow('uncommitted changes')
   expect(reconcileFreshSessions).not.toHaveBeenCalled()
 })
@@ -582,7 +597,6 @@ test('source changes keep eligible branches and replace invalid ones safely', as
 })
 
 test('branch merge resolves on submit, refreshes tasks, and launches/tracks the concrete request', async () => {
-  const { startBranchMerge } = await import('./reviewAgents')
   const { refreshTasks } = await import('./tasks')
   const project = { projectId: 'p' } as Project
   const open = tree('/project', 'feature', true)
@@ -595,10 +609,15 @@ test('branch merge resolves on submit, refreshes tasks, and launches/tracks the 
   const device = { id: 'agent', name: 'Agent', command: 'claude' } as DeviceManifest
   vi.mocked(mergeDestinationResolve).mockResolvedValue(request)
   vi.mocked(mergeAgentStart).mockResolvedValue('sid')
-  expect(await startBranchMerge(project, open, 'main', device, 'request')).toEqual({
-    request,
-    sid: 'sid',
-  })
+  expect(
+    await startMerge({
+      project,
+      source: open,
+      destinationBranch: 'main',
+      device,
+      requestId: 'request',
+    }),
+  ).toEqual({ kind: 'started', request, sessionId: 'sid', requestId: 'request' })
   expect(mergeDestinationResolve).toHaveBeenCalledWith(project, open.path, 'feature', 'main')
   expect(refreshTasks).toHaveBeenCalledWith('p')
   expect(mergeAgentStart).toHaveBeenCalledWith(project, request, expect.anything(), 'request')
@@ -608,7 +627,6 @@ test('branch merge resolves on submit, refreshes tasks, and launches/tracks the 
 })
 
 test('branch merge forwards the source changes the user agreed to commit', async () => {
-  const { startBranchMerge } = await import('./reviewAgents')
   const project = { projectId: 'p' } as Project
   const open = tree('/project', 'feature', true)
   const commitSource = [' M file.txt']
@@ -622,7 +640,14 @@ test('branch merge forwards the source changes the user agreed to commit', async
   }
   vi.mocked(mergeDestinationResolve).mockResolvedValue(request)
   vi.mocked(mergeAgentStart).mockResolvedValue('sid')
-  await startBranchMerge(project, open, 'main', device, 'request', commitSource)
+  await startMerge({
+    project,
+    source: open,
+    destinationBranch: 'main',
+    device,
+    requestId: 'request',
+    commitSource,
+  })
   expect(mergeDestinationResolve).toHaveBeenCalledWith(
     project,
     open.path,
@@ -634,26 +659,24 @@ test('branch merge forwards the source changes the user agreed to commit', async
 })
 
 test('resolution failure refreshes data and never launches an agent', async () => {
-  const { startBranchMerge } = await import('./reviewAgents')
   const { refreshTasks } = await import('./tasks')
   vi.mocked(mergeDestinationResolve).mockRejectedValue(
     new Error('Destination branch main no longer exists'),
   )
   await expect(
-    startBranchMerge(
-      { projectId: 'p' } as Project,
+    startMerge({
+      project: { projectId: 'p' } as Project,
       source,
-      'main',
-      {} as DeviceManifest,
-      'request',
-    ),
+      destinationBranch: 'main',
+      device: {} as DeviceManifest,
+      requestId: 'request',
+    }),
   ).rejects.toThrow('no longer exists')
   expect(mergeAgentStart).not.toHaveBeenCalled()
   expect(refreshTasks).toHaveBeenCalledWith('p')
 })
 
 test('failed launch retries resolution and reuses its destination', async () => {
-  const { startBranchMerge } = await import('./reviewAgents')
   const request = {
     source: source.path,
     sourceBranch: 'feature',
@@ -664,14 +687,92 @@ test('failed launch retries resolution and reuses its destination', async () => 
   vi.mocked(mergeAgentStart)
     .mockRejectedValueOnce(new Error('launch failed'))
     .mockResolvedValueOnce('sid')
-  const args = [
-    { projectId: 'p' } as Project,
+  const options = {
+    project: { projectId: 'p' } as Project,
     source,
-    'main',
-    {} as DeviceManifest,
-    'request',
-  ] as const
-  await expect(startBranchMerge(...args)).rejects.toThrow('launch failed')
-  expect((await startBranchMerge(...args)).request).toEqual(request)
+    destinationBranch: 'main',
+    device: {} as DeviceManifest,
+    requestId: 'request',
+  }
+  await expect(startMerge(options)).rejects.toThrow('launch failed')
+  expect(await startMerge(options)).toMatchObject({ kind: 'started', request })
   expect(mergeDestinationResolve).toHaveBeenCalledTimes(2)
+})
+
+test('a conflict check stops before resolving and names the heads it compared', async () => {
+  const destination = { ...tree('/main', 'main'), head: 'main-head' }
+  vi.mocked(gitWorktrees).mockResolvedValue([destination])
+  vi.mocked(mergeConflicts).mockResolvedValue(['a.ts'])
+  const open = { ...tree('/feature', 'feature', true), head: 'feature-head' }
+  expect(
+    await startMerge({
+      project: { projectId: 'p' } as Project,
+      source: open,
+      destinationBranch: 'main',
+      device: {} as DeviceManifest,
+      checkConflicts: true,
+    }),
+  ).toEqual({
+    kind: 'conflicts',
+    paths: ['a.ts'],
+    sourceHead: 'feature-head',
+    destinationHead: 'main-head',
+  })
+  expect(mergeConflicts).toHaveBeenCalledWith('p', 'feature-head', 'main-head')
+  expect(mergeDestinationResolve).not.toHaveBeenCalled()
+  expect(mergeAgentStart).not.toHaveBeenCalled()
+})
+
+test('reporting uncommitted source changes returns them without launching', async () => {
+  vi.mocked(mergeSourceChanges).mockResolvedValue([' M file.txt'])
+  const open = tree('/feature', 'feature', true)
+  const project = { projectId: 'p' } as Project
+  expect(
+    await startMerge({
+      project,
+      source: open,
+      destinationBranch: 'main',
+      device: {} as DeviceManifest,
+      commitSource: 'report',
+    }),
+  ).toEqual({ kind: 'uncommitted', changes: [' M file.txt'] })
+  expect(mergeSourceChanges).toHaveBeenCalledWith(project, '/feature', 'feature')
+  expect(mergeConflicts).not.toHaveBeenCalled()
+  expect(mergeDestinationResolve).not.toHaveBeenCalled()
+  expect(mergeAgentStart).not.toHaveBeenCalled()
+})
+
+test('a pinned request skips resolving and keeps its head, cleanup and ownership', async () => {
+  vi.mocked(mergeAgentStart).mockResolvedValue('sid')
+  const request = {
+    expectedSourceHead: 'abc',
+    source: '/feature',
+    sourceBranch: 'feature',
+    destination: '/main',
+    destinationBranch: 'main',
+  }
+  const project = { projectId: 'p' } as Project
+  const brief = { goal: 'Ship' } as import('../types').AutoBrief
+  await startMerge({
+    project,
+    request,
+    device: {} as DeviceManifest,
+    requestId: 'request',
+    auto: { brief, cleanup: 'delete', ownershipId: 'owner' },
+  })
+  expect(mergeDestinationResolve).not.toHaveBeenCalled()
+  expect(mergeAgentStart).toHaveBeenCalledWith(
+    project,
+    request,
+    expect.anything(),
+    'request',
+    brief,
+  )
+  const { cleanupJobs } = await import('./mergeCleanup')
+  expect(cleanupJobs().at(-1)).toMatchObject({
+    request,
+    choice: 'delete',
+    auto: true,
+    autoOwnershipId: 'owner',
+  })
 })

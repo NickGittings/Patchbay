@@ -67,7 +67,7 @@ import {
   defaultReviewBase,
   reviewBaseInputs,
   reviewState,
-  startMergeAgent,
+  startMerge,
   startReviewAgents,
 } from './reviewAgents'
 import { reconcileFreshSessions, startTerminal } from './sessions'
@@ -2752,15 +2752,21 @@ async function drive(projectId: string, task: string | null) {
         break
       case 'merge':
         launching = true
-        sid = await startMergeAgent(
-          project,
-          mergeRequest(snapshot, run),
-          device,
-          crypto.randomUUID(),
-          brief,
-          run.merge.cleanup ?? 'keep',
-          run.ownershipId ?? run.runId,
-        )
+        {
+          const started = await startMerge({
+            project,
+            device,
+            request: mergeRequest(snapshot, run),
+            auto: {
+              brief,
+              cleanup: run.merge.cleanup ?? 'keep',
+              ownershipId: run.ownershipId ?? run.runId,
+            },
+          })
+          // A pinned request skips the checks that could stop short of launching.
+          if (started.kind !== 'started') throw new Error('The merge agent did not start')
+          sid = started.sessionId
+        }
         break
       default:
         throw new Error(`Unsupported Auto stage ${run.stage}`)

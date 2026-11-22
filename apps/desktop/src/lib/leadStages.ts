@@ -2,14 +2,7 @@ import { projectOf, projectStateOf, useStore } from '../store'
 import { PLAN_SCOPE, REVIEW_SCOPE, plannerChatTask, plannerSessionId } from '../types'
 import { roleDevice } from './agentRoles'
 import { controlTeam, type ChatTeam } from './chatTeams'
-import {
-  gitBranches,
-  gitWorktrees,
-  mergeOutcome,
-  mergeSourceChanges,
-  planRead,
-  terminalSnapshot,
-} from './ipc'
+import { gitBranches, gitWorktrees, mergeOutcome, planRead, terminalSnapshot } from './ipc'
 import { savedStage, type StageRun } from './leadStageRun'
 import { implementPlannerPlan, type HandoffTarget } from './planHandoff'
 import { agentTurnEnded } from './review'
@@ -18,7 +11,7 @@ import {
   defaultMergeDestination,
   reviewAgentRecords,
   reviewWorktreeBusy,
-  startBranchMerge,
+  startMerge,
 } from './reviewAgents'
 import { sessionTimeMs } from './sessionList'
 import { startTerminal } from './sessions'
@@ -136,22 +129,20 @@ async function startLeadMerge(team: ChatTeam, request: Workflow): Promise<Launch
       ? named.trim()
       : defaultMergeDestination(source, worktrees, branches)
   if (!destination) throw new Error('Ask the user which branch to merge into')
-  const changes = await mergeSourceChanges(project, source.path, source.branch)
-  const approved = strings(request.settings.commitSource)
-  if (changes.length && !approved)
-    throw new Error(
-      `${source.branch} has uncommitted changes. Ask the user whether the merge agent should commit them. If they agree, retry with exactly these as commitSource:\n${JSON.stringify(changes)}`,
-    )
   const { devices, agentRoles } = useStore.getState()
-  const requestId = crypto.randomUUID()
-  const { request: merge, sid } = await startBranchMerge(
+  const started = await startMerge({
     project,
     source,
-    destination,
-    roleDevice(devices, agentRoles, 'merge'),
-    requestId,
-    changes.length ? approved : undefined,
-  )
+    destinationBranch: destination,
+    device: roleDevice(devices, agentRoles, 'merge'),
+    commitSource: strings(request.settings.commitSource) ?? 'report',
+  })
+  if (started.kind === 'uncommitted')
+    throw new Error(
+      `${source.branch} has uncommitted changes. Ask the user whether the merge agent should commit them. If they agree, retry with exactly these as commitSource:\n${JSON.stringify(started.changes)}`,
+    )
+  if (started.kind !== 'started') throw new Error('The merge did not start')
+  const { request: merge, sessionId: sid, requestId } = started
   await logLaunch(
     team.projectId,
     team.task,

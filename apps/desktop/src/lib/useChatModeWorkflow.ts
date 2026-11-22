@@ -10,9 +10,9 @@ import { logStageLaunch } from './stageLog'
 import { implementPlannerPlan } from './planHandoff'
 import { fixReviewFindings } from './reviewHandoff'
 import { roleDevice, roleDevices } from './agentRoles'
-import { startMergeAgent } from './reviewAgents'
+import { startMerge } from './reviewAgents'
 import { simpleReviewRequest, startSimpleReview, type StartedReviewer } from './simpleReview'
-import { gitBranches, gitWorktrees, mergeConflicts, mergeSourceChanges } from './ipc'
+import { gitBranches, gitWorktrees } from './ipc'
 import { mergeNow, resumeAuto, pauseAuto, stopAuto } from './auto'
 import { controlTeam, noteLead, resetLead, type ChatTeam } from './chatTeams'
 import { chatAutoActive, chatHandoff } from './chat'
@@ -179,41 +179,33 @@ export function useChatModeWorkflow({
           setDialog('merge')
           return
         }
-        const trees = await gitWorktrees(projectId)
-        const from = trees.find((w) => w.path === source.path)
-        const to = trees.find((w) => w.path === target.path)
-        if (!from || !to)
-          throw new Error('The merge worktrees changed. Choose a destination again.')
+        const from = (await gitWorktrees(projectId)).find((w) => w.path === source.path)
+        if (!from) throw new Error('The merge worktrees changed. Choose a destination again.')
         // Merge checks for conflicts first and stops to show them; Merge with agent goes ahead.
-        if (action === 'checkMerge') {
-          const paths = await mergeConflicts(projectId, from.head, to.head)
-          if (paths.length) {
-            useSimpleUi.getState().patch(key, {
-              mergeCheck: { key: JSON.stringify([key, from.head, to.head]), paths },
-            })
-            return
-          }
+        // Uncommitted source changes open the dialog, which asks whether the agent commits them.
+        const started = await startMerge({
+          project: useStore.getState().toProject(),
+          source: from,
+          destinationBranch: target.branch,
+          device: roleDevice(devices, agentRoles, 'merge'),
+          checkConflicts: action === 'checkMerge',
+          commitSource: 'report',
+        })
+        if (started.kind === 'conflicts') {
+          useSimpleUi.getState().patch(key, {
+            mergeCheck: {
+              key: JSON.stringify([key, started.sourceHead, started.destinationHead]),
+              paths: started.paths,
+            },
+          })
+          return
         }
-        const project = useStore.getState().toProject()
-        // The dialog asks whether the merge agent should commit these first.
-        if ((await mergeSourceChanges(project, source.path, source.branch)).length) {
+        if (started.kind === 'uncommitted') {
           setDialog('merge')
           return
         }
-        const request = {
-          source: source.path,
-          sourceBranch: source.branch,
-          destination: target.path,
-          destinationBranch: target.branch,
-        }
-        const requestId = crypto.randomUUID()
-        const sid = await startMergeAgent(
-          project,
-          request,
-          roleDevice(devices, agentRoles, 'merge'),
-          requestId,
-        )
-        await logMerge(request, sid, requestId) // Also retires stage agents and tells the lead.
+        // Also retires stage agents and tells the lead.
+        await logMerge(started.request, started.sessionId, started.requestId)
       } else if (action === 'resumeAuto') {
         await resumeAuto(projectId, task)
         logSimple(projectId, task, { kind: 'action', action: 'resumeAuto', stage: stage })

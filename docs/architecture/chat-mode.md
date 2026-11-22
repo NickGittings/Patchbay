@@ -312,7 +312,7 @@ continue the work. Chat leads launch with `PATCHBAY_PLAN_FILE` so they can read 
 plan. `startPlan` (`{ goal, components? }`) launches the plan role's planner with
 `Kickoff::PlanRequest` and the goal in a `Plan request` briefing section, refuses a planner slot
 already running, and completes only if a plan was saved after it started. `startMerge`
-(`{ destination?, commitSource? }`) runs `startBranchMerge` from the team's worktree with the merge
+(`{ destination?, commitSource? }`) runs `startMerge` from the team's worktree with the merge
 role, to the named or default destination. Uncommitted changes fail the request with their list until
 the lead retries with the entries the user approved. A confirmed merge settles passively, and task
 completion settles a merge still marked running, so neither counts as lead work. Any other outcome
