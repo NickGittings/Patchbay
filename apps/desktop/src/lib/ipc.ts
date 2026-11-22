@@ -1,6 +1,7 @@
 import { planningScope, planningTask } from '../types'
 import { authenticateInvocation, type AuthRequest, type AuthStatus } from './providerAuth'
 import { extraContext } from '../extensions/context'
+import type { FileRequest } from './fileEditor'
 import type { ExtensionRegistry } from '../types'
 import { Channel, invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { projectStateOf, useStore, workspaceOf } from '../store'
@@ -46,6 +47,7 @@ import type {
   TerminalSpec,
   Worktree,
 } from '../types'
+import { MAIN_WINDOW_LABEL } from './mainWindow'
 
 export const GIT_DIRTY_EVENT = 'patchbay://git-dirty'
 /** Mirrors `BRANCHES_CHANGED_EVENT`: a watched `HEAD` or ref changed in the named project. */
@@ -376,7 +378,7 @@ export const serviceRetire = () => invoke<void>('service_retire')
 /** The main window hears every session; a pop-out only its own component's (`Bridge::route`). */
 export function onTerminalEvent(handler: (e: TerminalEvent) => void): Promise<UnlistenFn> {
   const label = getCurrentWebviewWindow().label
-  const channel = label === 'main' ? TERMINAL_EVENT : `${TERMINAL_EVENT}/${label}`
+  const channel = label === MAIN_WINDOW_LABEL ? TERMINAL_EVENT : `${TERMINAL_EVENT}/${label}`
   return listen<{ instanceId: string; event: TerminalEvent }>(channel, (e) =>
     handler({ ...e.payload.event, instanceId: e.payload.instanceId }),
   )
@@ -415,8 +417,47 @@ export const editorOpen = (
 ) => invoke<void>('editor_open', { target, projectId, task, worktree })
 export const fileSearch = (query: string, projectId: string, task: string | null) =>
   invoke<FileSearchResult[]>('file_search', { query, projectId, task })
-export const terminalOpenReference = (sessionId: string, generation: number, reference: string) =>
-  invoke<void>('terminal_open_reference', { sessionId, generation, reference })
+/** Opens a terminal file reference externally, or with `resolveOnly` returns it for the built-in editor. */
+export function terminalOpenReference(
+  sessionId: string,
+  generation: number,
+  reference: string,
+  resolveOnly: true,
+): Promise<FileRequest>
+export function terminalOpenReference(
+  sessionId: string,
+  generation: number,
+  reference: string,
+  resolveOnly?: false,
+): Promise<void>
+export function terminalOpenReference(
+  sessionId: string,
+  generation: number,
+  reference: string,
+  resolveOnly = false,
+) {
+  // The backend always returns the request when `resolveOnly` is set, and nothing otherwise.
+  return resolveOnly
+    ? invoke<FileRequest>('terminal_open_reference', {
+        sessionId,
+        generation,
+        reference,
+        resolveOnly,
+      })
+    : invoke<void>('terminal_open_reference', { sessionId, generation, reference })
+}
+export const editorResolveTarget = (
+  path: string,
+  projectId: string,
+  task: string | null,
+  worktree?: string,
+) =>
+  invoke<{ path: string; isDir: boolean }>('editor_resolve_target', {
+    projectId,
+    task,
+    worktree,
+    path,
+  })
 
 export const listExtensions = () => invoke<ExtensionRegistry>('list_extensions')
 export const reloadExtensions = () => invoke<ExtensionRegistry>('reload_extensions')

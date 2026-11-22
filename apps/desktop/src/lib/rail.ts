@@ -9,9 +9,11 @@ export const railViews: { id: View; label: string }[] = [
   { id: 'implementation', label: 'Build' },
   { id: 'review', label: 'Review' },
 ]
+const EXPANDED_KEY = 'patchbay.railExpanded'
+
 export function readRailExpanded() {
   try {
-    return localStorage.getItem('patchbay.railExpanded') === 'true'
+    return localStorage.getItem(EXPANDED_KEY) === 'true'
   } catch {
     return false
   }
@@ -26,7 +28,7 @@ export const useRail = create<{ settings: string | null; expanded: boolean }>(()
 export function setRailExpanded(expanded: boolean) {
   useRail.setState({ expanded })
   try {
-    localStorage.setItem('patchbay.railExpanded', String(expanded))
+    localStorage.setItem(EXPANDED_KEY, String(expanded))
   } catch {
     // Keep the preference for this window when storage is unavailable.
   }

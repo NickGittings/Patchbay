@@ -52,6 +52,8 @@ For code changes, run the Rust formatting, lint and test checks and `npm run che
 
 Follow `.editorconfig`: spaces, LF, final newline, two-space indentation except four for Rust. Format Rust with rustfmt and frontend files with `npm run format`. Prettier uses single quotes, no semicolons, trailing commas, and width 100. Use PascalCase React component filenames, camelCase TypeScript functions, and snake_case Rust modules/functions.
 
+Name strings that code matches on (scopes, sentinels, event names, storage keys) as constants in the module that owns them, and import them rather than repeating the literal. Window events are `patchbay:<kebab>` with a `*_EVENT` constant; localStorage keys are `patchbay.<camelCase>`. Display copy stays inline. Tests may use the literal values, which pins them to the Rust mirror. Each Tauri command has one wrapper; see [Rust/TS sync](docs/architecture/rust-ts-sync.md).
+
 Workspace lints forbid unsafe Rust. The desktop adapter uses `deny` so macOS-only `writing_tools.rs` can locally allow its Objective-C calls; keep its other lints aligned with the workspace. Clippy checks run with `-D warnings`, including truncation, wrap, and sign-loss cast warnings: use checked conversions or targeted allowances. Public fallible functions carry applicable `# Errors` / `# Panics` docs; pure getters use `#[must_use]`.
 
 Use concise commit subjects describing the change. PRs explain behavior, link related issues, report validation, and include screenshots for UI changes.

@@ -13,6 +13,26 @@ import './history.css'
 import PanelStatus from '../PanelStatus'
 
 const colors = ['#8b9eff', '#d598ed', '#65c9b0', '#eab66b', '#76bce7']
+const OPEN_KEY = 'patchbay.commitHistoryOpen'
+/** The key used before storage keys took the `patchbay.` prefix. */
+const LEGACY_OPEN_KEY = 'commit-history-open'
+
+function savedOpen() {
+  try {
+    return (localStorage.getItem(OPEN_KEY) ?? localStorage.getItem(LEGACY_OPEN_KEY)) !== 'false'
+  } catch {
+    return true
+  }
+}
+
+function saveOpen(open: boolean) {
+  try {
+    localStorage.setItem(OPEN_KEY, String(open))
+    localStorage.removeItem(LEGACY_OPEN_KEY)
+  } catch {
+    /* Keep the toggle usable when storage is unavailable. */
+  }
+}
 
 function HistoryBrowser({
   worktree,
@@ -33,7 +53,7 @@ function HistoryBrowser({
   const [error, setError] = useState('')
   const [repoRetry, setRepoRetry] = useState(0)
   const [tick, setTick] = useState(0)
-  const [open, setOpen] = useState(() => localStorage.getItem('commit-history-open') !== 'false')
+  const [open, setOpen] = useState(savedOpen)
   // Keep polling scoped to a mounted, expanded history browser.
   useEffect(() => {
     if (!open) return
@@ -88,7 +108,7 @@ function HistoryBrowser({
           aria-expanded={open}
           onClick={() => {
             setOpen(!open)
-            localStorage.setItem('commit-history-open', String(!open))
+            saveOpen(!open)
           }}
         >
           {open ? '▾' : '▸'} Recent commits

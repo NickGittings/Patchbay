@@ -43,9 +43,11 @@ const utilities: Record<UtilityPanel, { label: string }> = {
   sessions: { label: 'Sessions' },
   usage: { label: 'Usage' },
 }
+const WIDTH_KEY = 'patchbay.utilityPanelWidth'
+
 function initialWidth() {
   try {
-    return Number(localStorage.getItem('patchbay.utilityPanelWidth')) || 360
+    return Number(localStorage.getItem(WIDTH_KEY)) || 360
   } catch {
     return 360
   }
@@ -116,7 +118,7 @@ export default function WorkspaceRail() {
   }, [])
   const saveWidth = (next: number) => {
     try {
-      localStorage.setItem('patchbay.utilityPanelWidth', String(next))
+      localStorage.setItem(WIDTH_KEY, String(next))
     } catch {
       /* Storage may be unavailable. */
     }

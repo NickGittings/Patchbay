@@ -8,7 +8,7 @@ import type {
   SessionState,
   Verdict,
 } from '../types'
-import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE, plannerChatTask } from '../types'
+import { MAP_SCOPE, MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE, plannerChatTask } from '../types'
 import { agentChatTask } from './agentChats'
 import { sessionTimeMs } from './sessionList'
 import { shortTitle } from './shortTitle'
@@ -431,7 +431,7 @@ export function relatedSession(
 ) {
   if (record.metadata.projectId !== worktree.projectId || record.metadata.kind !== 'agent')
     return false
-  if (record.metadata.componentId === '@map')
+  if (record.metadata.componentId === MAP_SCOPE)
     return agentChatTask(record, generation) === worktree.task
   if (record.metadata.componentId === PLAN_SCOPE)
     return record.metadata.task ? plannerChatTask(record.metadata.task) === worktree.task : true
@@ -627,7 +627,7 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
     ),
   )
   const lead = leadStageRuns.has(leadGeneration) ? undefined : snapshot.lead
-  const workflow = records.filter((r) => r.metadata.componentId !== '@map' && r.id !== lead)
+  const workflow = records.filter((r) => r.metadata.componentId !== MAP_SCOPE && r.id !== lead)
   const latest =
     workflow.filter((r) => recordStage(r) !== 'plan' || !!r.metadata.task).at(-1) ?? workflow.at(-1)
   let stage = latest ? recordStage(latest) : 'plan'
@@ -787,7 +787,7 @@ export function sections(
         ? item.action === 'fix'
           ? 'fix'
           : (item.stage ?? 'plan')
-        : record?.metadata.componentId === '@map'
+        : record?.metadata.componentId === MAP_SCOPE
           ? (current?.stage ?? 'plan')
           : record
             ? recordStage(record)
@@ -857,7 +857,7 @@ export function selectRecipient(
   const explicit = eligible.find((r) => r.id === override)
   if (explicit) return explicit
   const stageRecords = eligible.filter(
-    (r) => r.metadata.componentId !== '@map' && recordStage(r) === stage,
+    (r) => r.metadata.componentId !== MAP_SCOPE && recordStage(r) === stage,
   )
   return (
     [...stageRecords].reverse().find((r) => sessions[r.id]?.running ?? r.snapshot?.running) ??

@@ -28,6 +28,7 @@ import {
   taskRemove,
   taskUpdate,
 } from './ipc'
+import { MAIN_WINDOW_LABEL } from './mainWindow'
 
 type Snapshot = Pick<ReturnType<typeof useStore.getState>, 'tasks' | 'activeTask'>
 
@@ -61,7 +62,7 @@ export async function refreshTasks(
   projectId = useStore.getState().project?.id,
   { quiet = false }: { quiet?: boolean } = {},
 ) {
-  if (getCurrentWebviewWindow().label !== 'main' || !projectId) return
+  if (getCurrentWebviewWindow().label !== MAIN_WINDOW_LABEL || !projectId) return
   const seq = (requested.get(projectId) ?? 0) + 1
   requested.set(projectId, seq)
   const request = (async () => {

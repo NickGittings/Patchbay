@@ -17,6 +17,8 @@ import { logSimple } from './simpleActions'
 import { claimAgentChat, selectChatAgent } from './agentChats'
 import { simpleKey, useSimpleUi } from './simpleUi'
 
+const chatTeams = (projectId: string) => invoke<ChatTeam[]>('chat_teams', { projectId })
+
 /** Mirrors core `orchestration::RESTART_NOTICE`, set when a restart pauses a team. */
 export const RESTART_NOTICE = 'Paused after restart'
 
@@ -389,7 +391,7 @@ export async function completeTeamTask(
   id: string,
   sinceMs?: number,
 ) {
-  const teams = await invoke<ChatTeam[]>('chat_teams', { projectId })
+  const teams = await chatTeams(projectId)
   const team = teams.find((t) => t.task === task)
   if (!team || team.state === 'stopped') return
   await controlTeam(team, { kind: 'completeTask', id, sinceMs })
@@ -520,7 +522,7 @@ export async function refreshChatTeams(projectId: string) {
       ),
     )
   }
-  const teams = await invoke<ChatTeam[]>('chat_teams', { projectId })
+  const teams = await chatTeams(projectId)
   useChatTeams.setState((s) => ({ teams: { ...s.teams, [projectId]: teams } }))
   for (const team of teams) {
     const available = planTerminals(useStore.getState().devices).filter(

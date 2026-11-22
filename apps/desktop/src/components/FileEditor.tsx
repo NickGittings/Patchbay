@@ -14,6 +14,7 @@ import {
   type TextFile,
 } from '../lib/fileEditor'
 import { editorOpen } from '../lib/ipc'
+import { MAIN_WINDOW_LABEL } from '../lib/mainWindow'
 
 interface Tab extends FileRequest {
   id: string
@@ -154,7 +155,7 @@ export default function FileEditor({
       else stopRequests = cleanup
     })
     // Main-window close is coordinated by workspace.ts; pop-outs need their own guard.
-    if (getCurrentWindow().label !== 'main') {
+    if (getCurrentWindow().label !== MAIN_WINDOW_LABEL) {
       void getCurrentWindow()
         .onCloseRequested((event) => {
           if (!current.current.some((tab) => dirty(tab) || tab.busy)) return

@@ -7,9 +7,10 @@ import {
   type GroupImperativeHandle,
   type GroupProps,
 } from 'react-resizable-panels'
-import { invoke } from '@tauri-apps/api/core'
+import { windowPanels } from '../lib/windows'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useStore } from '../store'
+import { MAIN_WINDOW_LABEL } from '../lib/mainWindow'
 
 type Layout = Record<string, number>
 
@@ -60,8 +61,8 @@ export default function PersistedGroup({
       defaultLayout={valid ? saved : undefined}
       onLayoutChanged={(layout) => {
         useStore.getState().setPanelLayout(layoutId, layout)
-        if (getCurrentWebviewWindow().label !== 'main')
-          void invoke('window_panels', { panels: useStore.getState().panels })
+        if (getCurrentWebviewWindow().label !== MAIN_WINDOW_LABEL)
+          void windowPanels(useStore.getState().panels)
       }}
     />
   )

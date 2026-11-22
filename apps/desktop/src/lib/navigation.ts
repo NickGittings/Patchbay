@@ -1,6 +1,5 @@
 import { isMac } from './platform'
-import { editorOpen, editorPreferences, terminalOpenReference } from './ipc'
-import { invoke } from '@tauri-apps/api/core'
+import { editorOpen, editorPreferences, editorResolveTarget, terminalOpenReference } from './ipc'
 import { FILE_EDITOR_EVENT, type FileRequest } from './fileEditor'
 import { useStore } from '../store'
 import { sessionMetadata, type EditorTarget } from '../types'
@@ -53,12 +52,7 @@ export async function openInEditor(
   const task = scope ? scope.task : s.activeTask
   try {
     const prefs = await editorPreferences()
-    const resolved = await invoke<{ path: string; isDir: boolean }>('editor_resolve_target', {
-      projectId,
-      task,
-      worktree: scope?.worktree,
-      path: target.path,
-    })
+    const resolved = await editorResolveTarget(target.path, projectId, task, scope?.worktree)
     if (prefs.fileOpenMode !== 'external' && !resolved.isDir) {
       target = { ...target, path: resolved.path }
       window.dispatchEvent(
@@ -80,12 +74,7 @@ export async function openTerminalReference(sid: string, reference: string, gene
   try {
     const prefs = await editorPreferences()
     if (prefs.fileOpenMode !== 'external') {
-      const resolved = await invoke<FileRequest>('terminal_open_reference', {
-        sessionId: sid,
-        generation,
-        reference,
-        resolveOnly: true,
-      })
+      const resolved = await terminalOpenReference(sid, generation, reference, true)
       window.dispatchEvent(new CustomEvent(FILE_EDITOR_EVENT, { detail: resolved }))
     } else await terminalOpenReference(sid, generation, reference)
   } catch (e) {

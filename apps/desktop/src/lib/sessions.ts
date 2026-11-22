@@ -76,6 +76,14 @@ interface Cursor {
 
 const lastSeq = new Map<string, Cursor>()
 
+const serviceStatus = () =>
+  invoke<{ connected: boolean; instanceId: string; retirement?: ServiceRetirement }>(
+    'service_status',
+  )
+
+/** Window event fired after the service connection comes back. */
+export const RECONNECTED_EVENT = 'patchbay:reconnected'
+
 /** The process generation whose output this window currently displays. */
 export const sessionGeneration = (sid: string) => lastSeq.get(sid)?.generation
 const pending = new Map<string, TerminalEvent[]>()
@@ -1190,11 +1198,7 @@ async function fetchReplies(record: SessionRecord) {
 export function reconcileSessions(force = true): Promise<void> {
   reconciling ??= (async () => {
     try {
-      const status = await invoke<{
-        connected: boolean
-        instanceId: string
-        retirement?: ServiceRetirement
-      }>('service_status')
+      const status = await serviceStatus()
       if (status.retirement) applyRetirement(status.retirement)
       if (!status.connected) {
         useStore.setState({ serviceConnected: false })
@@ -1316,7 +1320,7 @@ export function reconcileSessions(force = true): Promise<void> {
         serviceRetirement: 'idle',
         serviceRetirementError: undefined,
       })
-      if (reconnecting) window.dispatchEvent(new Event('patchbay:reconnected'))
+      if (reconnecting) window.dispatchEvent(new Event(RECONNECTED_EVENT))
     } catch (e) {
       useStore.setState({ serviceConnected: false })
       throw e

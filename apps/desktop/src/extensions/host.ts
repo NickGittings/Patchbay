@@ -5,6 +5,7 @@ import { fnv1a } from '../lib/hash'
 import { projectFrom, useStore } from '../store'
 import type { Component, ContextSection, Extension, ExtensionBadge, Project } from '../types'
 import { serveContextRequests, setContextCollector } from './context'
+import { MAIN_WINDOW_LABEL } from '../lib/mainWindow'
 
 const TIMEOUT = 10000
 /** Commands may legitimately wait on slow tools (docker, builds). */
@@ -756,7 +757,7 @@ export function bindViewFrame(id: string, frame: HTMLIFrameElement | null) {
   else viewFrames.delete(id)
 }
 export function startExtensionHost() {
-  if (getCurrentWebviewWindow().label !== 'main') return () => {}
+  if (getCurrentWebviewWindow().label !== MAIN_WINDOW_LABEL) return () => {}
   installed = true
   window.addEventListener('message', onMessage)
   setContextCollector(collectContext)

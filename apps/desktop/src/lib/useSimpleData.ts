@@ -23,6 +23,7 @@ import type {
   Review,
   Worktree,
 } from '../types'
+import { MERGE_SCOPE } from '../types'
 
 interface Artifacts {
   key: string
@@ -103,7 +104,7 @@ export function useSimpleData(visible: boolean) {
           state.sessionRecords.some(
             (r) =>
               r.metadata.projectId === projectId &&
-              r.metadata.componentId === '@merge' &&
+              r.metadata.componentId === MERGE_SCOPE &&
               r.spec.merge_source === (worktree ?? project.root),
           )
         let outcome: MergeOutcome | undefined

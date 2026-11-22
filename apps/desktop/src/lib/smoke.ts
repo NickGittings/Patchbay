@@ -106,6 +106,7 @@ import { restoredLayout, workspaceDocument } from './workspace'
 import type { NotificationDelivery } from './notifications'
 import { CHAT_LAYOUT, CHAT_PANEL } from './panelLayout'
 import * as agentQuestionsModule from './agentQuestions'
+import { MAIN_WINDOW_LABEL } from './mainWindow'
 const agentQuestions = {
   store: agentQuestionsModule.useAgentQuestions,
   listen: agentQuestionsModule.listenAgentQuestions,
@@ -186,7 +187,7 @@ const hooks = {
   inspectNativeMenu,
   nativeMenuAction: (id: string) =>
     import('@tauri-apps/api/event').then(({ emitTo }) =>
-      emitTo('main', 'patchbay://menu-action', id),
+      emitTo(MAIN_WINDOW_LABEL, 'patchbay://menu-action', id),
     ),
   selectPanel,
   selectRailView,

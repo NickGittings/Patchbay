@@ -26,6 +26,7 @@ import {
   TASK_ROOT_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
+  MAIN_PLANNING_TASK,
   TERMINAL_RUNNING,
   plannerSessionId,
   type AgentRole,
@@ -594,7 +595,7 @@ export async function autoSnapshot(
       (r.spec.cwd === path && r.metadata.componentId === REVIEW_SCOPE) ||
       // The planner is project-wide: it belongs to this run only while it plans or tracks it.
       (r.metadata.componentId === PLAN_SCOPE &&
-        ((r.metadata.task ?? null) === (task ?? '_worktree_main') ||
+        ((r.metadata.task ?? null) === (task ?? MAIN_PLANNING_TASK) ||
           (!r.metadata.task && r.id === run.sessionId)) &&
         (r.id === run.sessionId ||
           (run.stage === 'plan' &&
