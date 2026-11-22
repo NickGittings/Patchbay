@@ -823,6 +823,8 @@
       'agent environment stop is missing from task activity',
     )
     await smoke.stopGroup(group.id)
+    // Another stack remains, so the stale id is refused instead of starting run & test setup.
+    state().addGroup('Remaining stack', ['web'])
     state().removeGroup(group.id)
     await smoke.syncAgentProject(state().toProject())
     await smoke.terminalWrite(

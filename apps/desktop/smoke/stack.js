@@ -20,6 +20,9 @@
     Array.from(root?.querySelectorAll('button') ?? []).find((b) =>
       b.textContent.trim().startsWith(text),
     )
+  // "Apply" alone, not "Apply and run checks" before it.
+  const apply = (root) =>
+    Array.from(root?.querySelectorAll('button') ?? []).find((b) => b.textContent.trim() === 'Apply')
   const edit = (el, value) => {
     assert(el, 'missing field')
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value)
@@ -233,7 +236,7 @@
       !document.querySelector('[aria-label="Preparation needs attention"]'),
       'unconfigured task shows a notice',
     )
-    button(review, 'Apply').click()
+    apply(review).click()
     await until('stack applied', () => state().groups.length === 1)
     const [group] = state().groups
     assert(group.name === 'Local stack' && group.orderedStartup, 'stack settings lost')
@@ -337,7 +340,7 @@
     const secondReview = await until('second replacement', () =>
       document.querySelector('[aria-label="Proposed stack"]'),
     )
-    button(secondReview, 'Apply').click()
+    apply(secondReview).click()
     await until('replacement applied', () => state().groups[0].name === 'Repaired stack')
     assert(
       state().groups.length === 1 && state().groups[0].id === group.id,
@@ -389,7 +392,7 @@
       document.querySelector('[aria-label="Proposed stack"]'),
     )
     state().removeGroup(removed.id)
-    await until('removed target apply locked', () => button(removedReview, 'Apply').disabled)
+    await until('removed target apply locked', () => apply(removedReview).disabled)
     assert(
       removedReview.textContent.includes('target stack was removed'),
       'missing removed target explanation',
