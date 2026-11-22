@@ -162,25 +162,10 @@
 .chat-auto-pause {
   flex: none;
 }
-/* Waiting for your go, nothing wrong: the accent, distinct from amber attention. */
-.chat-stepper li[data-state='ready'] {
-  color: var(--accent-text);
-  font-weight: 600;
-}
-.chat-stepper li[data-state='ready']::before {
-  background: repeating-linear-gradient(
-    90deg,
-    var(--accent) 0 6px,
-    color-mix(in srgb, var(--accent) 35%, transparent) 6px 9px
-  );
-}
-.chat-stepper li span,
+/* A dismissed step card comes back from its stage: same look, underlined as a link. */
 .chat-stepper-restore {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-/* A dismissed step card comes back from its stage: same look, underlined as a link. */
-.chat-stepper-restore {
   padding: 0;
   border: 0;
   background: none;
@@ -191,10 +176,6 @@
   text-decoration: underline dotted;
   text-underline-offset: 3px;
   cursor: pointer;
-}
-.chat-stepper small {
-  font-size: inherit;
-  font-weight: 400;
 }
 .simple-step {
   position: relative;

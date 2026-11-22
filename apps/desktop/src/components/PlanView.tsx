@@ -34,6 +34,8 @@ import TerminalControl from './TerminalControl'
 import { planDrafts } from '../lib/planDrafts'
 import { linkStory } from '../lib/stories'
 import { launchBuild } from '../lib/launchStage'
+import { useStageModel } from '../lib/useStageModel'
+import StageStrip from './StageStrip'
 
 const EMPTY_PLANNING_WORKSPACE = emptyTaskWorkspace()
 
@@ -117,9 +119,11 @@ export default function PlanView() {
   const [planCut, setPlanCut] = useState(false)
   const terminals = planTerminals(devices)
   const planRole = roleDevice(devices, roles, 'plan').id
-  // Until a tab is picked, the project's plan agent is shown.
+  // Until a tab is picked, the running planner is shown (whichever flow started it), else the
+  // project's plan agent.
   const active =
     terminals.find((t) => t.id === activeId) ??
+    terminals.find((t) => sessions[plannerSessionId(t.id, project?.id, task)]?.running) ??
     terminals.find((t) => t.id === planRole) ??
     terminals[0]
   const sid = plannerSessionId(active.id, project?.id, task)
@@ -308,6 +312,7 @@ export default function PlanView() {
     }
   }
   const implementLabel = implementing ? 'Starting build…' : 'Implement →'
+  const stage = useStageModel()
 
   return (
     <PersistedGroup layoutId="PlanView-1" orientation="vertical" className="workspace">
@@ -318,6 +323,10 @@ export default function PlanView() {
       <Panel id="PlanView-pane-2" defaultSize="55" minSize="20">
         <div className="plan-dock">
           <aside className="plan-scope">
+            {/* The worktree's stages, as Chat, Review and the Auto panel show them. */}
+            {task !== PROJECT_DRAFT && stage?.visible && (
+              <StageStrip items={stage.stepper} className="view-stepper" />
+            )}
             <ProviderRunsPanel kind="scan" />
             <div className="row plan-scope-header">
               <span className="section-title">Planner scope</span>
@@ -393,7 +402,11 @@ export default function PlanView() {
                   <p className="hint">Create a worktree to build this project draft.</p>
                 )
               ) : (
-                <button disabled={implementing || proposalBusy} onClick={() => void implement()}>
+                <button
+                  className={stage?.state.step === 'planReady' ? 'primary' : undefined}
+                  disabled={implementing || proposalBusy}
+                  onClick={() => void implement()}
+                >
                   {implementing ? implementLabel : `Implement in ${taskTitle ?? 'main worktree'} →`}
                 </button>
               )}

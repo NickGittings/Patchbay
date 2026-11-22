@@ -8,9 +8,12 @@ import type { SessionRecord } from '../../types'
 export default function FixFindingsButton({
   record,
   hasFindings,
+  primary = false,
 }: {
   record: SessionRecord
   hasFindings: boolean
+  /** Fixing is the worktree's next step. */
+  primary?: boolean
 }) {
   const [starting, setStarting] = useState(false)
   // Any review still writing to this worktree's findings, not only this one.
@@ -19,6 +22,7 @@ export default function FixFindingsButton({
   )
   return (
     <button
+      className={primary ? 'primary' : undefined}
       disabled={starting || reviewing || !hasFindings}
       title={
         reviewing

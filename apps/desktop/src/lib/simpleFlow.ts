@@ -500,10 +500,11 @@ const HALT_NOTES: Record<ChatStepperHalt, string> = {
 
 /**
  * Where a worktree's chat is in Plan → Build → Review → Merge, projected from its `flow` step.
- * Fixing is a pass inside Review, as Auto folds fix into its build stage. `issues` counts the
+ * Fixing is a pass inside Review, in Chat and the Auto panel alike. `issues` counts the
  * latest review verdict's findings (undefined without a verdict); `inPlace` drops Merge. `halt`
- * marks the stage in progress as paused, stopped or failed; `note` (Auto's reason) qualifies the
- * stage in progress when the flow step gives it none, and follows a halt's label.
+ * marks the stage in progress as paused, stopped or failed, and `attention` as waiting on you;
+ * `note` (Auto's reason) qualifies the stage in progress when the flow step gives it none, and
+ * follows a halt's label.
  */
 export function chatStepper(
   step: SimpleStep,
@@ -511,8 +512,16 @@ export function chatStepper(
     issues,
     inPlace = false,
     halt,
+    attention = false,
     note: fallback,
-  }: { issues?: number; inPlace?: boolean; halt?: ChatStepperHalt; note?: string } = {},
+  }: {
+    issues?: number
+    inPlace?: boolean
+    halt?: ChatStepperHalt
+    /** The stage in progress waits on you, such as Auto waiting for an answer. */
+    attention?: boolean
+    note?: string
+  } = {},
 ): ChatStepperItem[] {
   const progress: Record<SimpleStep, [index: number, state: ChatStepperState, note?: string]> = {
     idle: [-1, 'upcoming'],
@@ -546,7 +555,7 @@ export function chatStepper(
         state: halt === 'failed' ? 'failed' : 'stopped',
         note: [HALT_NOTES[halt], fallback].filter(Boolean).join(' · '),
       }
-    : { state, note: note ?? fallback }
+    : { state: attention && state === 'current' ? 'attention' : state, note: note ?? fallback }
   return stages.map((stage, i) =>
     i < at
       ? { stage, state: 'done' }
