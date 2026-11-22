@@ -56,9 +56,7 @@ function roleLabel(record: SessionRecord) {
   const { teams, runs } = useChatTeams.getState()
   const { projectId } = record.metadata
   const chat = chatRole(record, teams[projectId], runs[projectId])
-  if (chat !== 'Agent') return chat
-  const { role, tone } = sessionRole(record.metadata)
-  return tone === 'implement' ? 'Builder' : role
+  return chat !== 'Agent' ? chat : sessionRole(record.metadata).role
 }
 
 function describe(s: Snapshot, record: SessionRecord) {

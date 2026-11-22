@@ -294,7 +294,8 @@ test('kind lookup follows records, runtimes, other-project nodes and planner pre
 test('descriptions label special scopes and project folders without an active project', () => {
   for (const [componentId, owner] of [
     [PLAN_SCOPE, 'Planner'],
-    [TASK_ROOT_SCOPE, 'Task root'],
+    // A root agent builds, whichever flow launched it.
+    [TASK_ROOT_SCOPE, 'Builder'],
     [REVIEW_SCOPE, 'Review agent'],
     [MERGE_SCOPE, 'Merge agent'],
   ]) {

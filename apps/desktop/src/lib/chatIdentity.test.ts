@@ -45,7 +45,7 @@ test('role follows durable team membership; a preset named after its provider is
     ]).title,
   ).toBe('Lead · Codex')
   expect(chatIdentity(record('worker'), [team], [run]).role).toBe('Builder')
-  expect(chatIdentity(record('unknown'), [team], [run]).role).toBe('Agent')
+  expect(chatIdentity(record('unknown'), [team], [run]).role).toBe('Builder')
   const scoped = (componentId: string) => ({
     ...record('scoped'),
     metadata: { ...record('scoped').metadata, componentId },
@@ -54,10 +54,24 @@ test('role follows durable team membership; a preset named after its provider is
   expect(chatIdentity(scoped('@plan')).role).toBe('Planner')
   expect(chatIdentity(scoped('@merge')).title).toBe('Merge agent · Codex · Thorough coding')
   expect(chatIdentity(scoped('@merge')).roleKey).toBe('merge')
-  expect(chatIdentity(record('worker'), [team], [{ ...run, chatTeam: 'other' }]).role).toBe('Agent')
+  expect(chatIdentity(record('worker'), [team], [{ ...run, chatTeam: 'other' }]).roleKey).toBe(
+    'builder',
+  )
   expect(
     chatIdentity(record('adopted'), [
       { ...team, scopes: { adopted: { generation: 1, components: [] } } },
     ]).role,
   ).toBe('Builder')
+})
+
+test('agents outside any team take their role from the launch scope', () => {
+  const scoped = (componentId: string, kind: 'agent' | 'shell' = 'agent') => ({
+    ...record('solo'),
+    metadata: { ...record('solo').metadata, componentId, kind },
+  })
+  expect(chatIdentity(scoped('@task')).roleKey).toBe('builder')
+  expect(chatIdentity(scoped('web')).role).toBe('Builder')
+  expect(chatIdentity(scoped('@review')).role).toBe('Reviewer')
+  expect(chatIdentity(scoped('@map')).role).toBe('Agent')
+  expect(chatIdentity(scoped('@task', 'shell')).role).toBe('Agent')
 })
