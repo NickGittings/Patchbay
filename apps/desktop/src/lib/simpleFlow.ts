@@ -3,6 +3,7 @@ import type { ChatTeam } from './chatTeams'
 import { savedStage } from './leadStageRun'
 import { reviewerBusy } from './review'
 import {
+  launchOrigin,
   workflowLog,
   recordStage,
   pendingLaunch,
@@ -88,12 +89,14 @@ export function flow(
             (state?.state === 'idle' && !!state.authoritative)))))
   const working = !!own && !ended
   const auto = snapshot.auto
+  // Auto's own launches are its run, not work that came after it.
   const manualAfterAuto =
     auto?.status === 'done' &&
     workflowLog(snapshot.simple).some(
       (e) =>
         (e.kind === 'prompt' ||
           (e.kind === 'action' &&
+            launchOrigin(e) !== 'auto' &&
             ['plan', 'implement', 'review', 'fix', 'merge'].includes(e.action))) &&
         e.atMs > (auto.log.at(-1)?.atMs ?? 0),
     )
@@ -399,7 +402,7 @@ export function leadStarted(
       STAGE_LAUNCHES.includes(e.action) &&
       (e.generation === undefined || generation === undefined || e.generation === generation),
   )
-  return launch?.kind === 'action' && !!launch.byLead
+  return launch?.kind === 'action' && launchOrigin(launch) === 'lead'
 }
 
 const ACTIVE_REQUESTS = ['starting', 'running', 'waiting']

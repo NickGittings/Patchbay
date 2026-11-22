@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { reviewWorktreeBusy } from '../../lib/reviewAgents'
-import { fixReviewFindings } from '../../lib/reviewHandoff'
+import { launchFix } from '../../lib/launchStage'
 import { useStore } from '../../store'
 import type { SessionRecord } from '../../types'
 
@@ -27,7 +27,7 @@ export default function FixFindingsButton({
       }
       onClick={() => {
         setStarting(true)
-        void fixReviewFindings(record)
+        void launchFix('manual', record, 'follow')
           .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
           .finally(() => setStarting(false))
       }}

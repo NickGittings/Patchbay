@@ -14,7 +14,7 @@ vi.mock('./reviewAgents', () => ({
   chatReviewBase: vi.fn(() => 'main'),
 }))
 vi.mock('./agentRoles', () => ({ roleDevices: vi.fn(() => []) }))
-vi.mock('./stageLog', () => ({ logStageLaunch: vi.fn(async () => {}) }))
+vi.mock('./stageRecord', () => ({ recordStageLaunch: vi.fn(async () => {}) }))
 vi.mock('./sessions', () => ({
   listenForTerminals: vi.fn(async () => {}),
   reconcileFreshSessions: vi.fn(async () => {}),
@@ -44,7 +44,7 @@ import { reconcileFreshSessions } from './sessions'
 import { useStore } from '../store'
 import { roleDevices } from './agentRoles'
 import { retireReviewSlots } from './simpleReview'
-import { logStageLaunch } from './stageLog'
+import { recordStageLaunch } from './stageRecord'
 import type { ReviewFindings } from '../types'
 const presets = ['codex', 'claude'].map((id) => ({
   id,
@@ -175,14 +175,14 @@ test('a lead review launches the regular reviewer and appears as its stage', asy
   expect(request).toMatchObject({ worktree: '/p', branch: 'feature', base: 'main' })
   expect(request.lane).toBeUndefined()
   expect(retireReviewSlots).toHaveBeenCalledWith('p', '/p', [null])
-  expect(logStageLaunch).toHaveBeenCalledWith(
-    'p',
-    't1',
-    'review',
-    'review',
-    expect.objectContaining({ sessionId: 'review-session' }),
-    true, // The lead started it, so the lead decides what follows.
-  )
+  expect(recordStageLaunch).toHaveBeenCalledWith({
+    projectId: 'p',
+    task: 't1',
+    action: 'review',
+    // The lead started it, so the lead decides what follows.
+    origin: 'lead',
+    launched: [expect.objectContaining({ sessionId: 'review-session' })],
+  })
   expect(controlTeam).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({ kind: 'note', sessions: ['review-session'] }),
@@ -245,7 +245,7 @@ test('a failed refresh after launch leaves the reviewer running and recorded', a
     state: 'running',
     sessionId: 'review-session',
   })
-  expect(logStageLaunch).toHaveBeenCalledOnce()
+  expect(recordStageLaunch).toHaveBeenCalledOnce()
 })
 test('a lead review needs provider sign-in but not status hooks', async () => {
   vi.mocked(roleDevices).mockReturnValue(devices('codex'))

@@ -1,5 +1,11 @@
 import { projectOf, projectStateOf, useStore } from '../store'
-import { PLAN_SCOPE, REVIEW_SCOPE, plannerChatTask, plannerSessionId } from '../types'
+import {
+  PLAN_SCOPE,
+  REVIEW_SCOPE,
+  plannerChatTask,
+  plannerSessionId,
+  type MergeRequest,
+} from '../types'
 import { roleDevice } from './agentRoles'
 import { controlTeam, type ChatTeam } from './chatTeams'
 import { gitBranches, gitWorktrees, mergeOutcome, planRead, terminalSnapshot } from './ipc'
@@ -15,8 +21,7 @@ import {
 } from './reviewAgents'
 import { sessionTimeMs } from './sessionList'
 import { startTerminal } from './sessions'
-import { logLaunch } from './simpleActions'
-import { logStageLaunch } from './stageLog'
+import { recordStageLaunch, type LaunchedAgent, type StageAction } from './stageRecord'
 
 type Workflow = NonNullable<ChatTeam['requests']>[number]
 interface LaunchedStage {
@@ -43,6 +48,22 @@ const strings = (value: unknown) =>
   Array.isArray(value) && value.every((item) => typeof item === 'string')
     ? (value as string[])
     : undefined
+
+// The lead's workflow tells it about its own stages, and it keeps earlier agents to investigate.
+const recordLead = (
+  team: ChatTeam,
+  action: StageAction,
+  launched: LaunchedAgent,
+  request?: MergeRequest,
+) =>
+  recordStageLaunch({
+    projectId: team.projectId,
+    task: team.task,
+    origin: 'lead',
+    action,
+    launched: [launched],
+    ...(request ? { request } : {}),
+  })
 
 async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<LaunchedStage> {
   const { goal, story: storyId } = request.settings
@@ -78,7 +99,7 @@ async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<Launche
           components,
         })
   const launched = { sessionId, requestId }
-  await logStageLaunch(team.projectId, team.task, 'plan', 'plan', launched, true)
+  await recordLead(team, 'plan', launched)
   return launched
 }
 
@@ -97,7 +118,7 @@ async function startLeadBuild(team: ChatTeam): Promise<LaunchedStage> {
     roleDevice(devices, agentRoles, 'plan')?.id
   if (!planner) throw new Error('Choose an agent for the plan role first')
   const launched = await implementPlannerPlan(planner, undefined, undefined, 'stay', target(team))
-  await logStageLaunch(team.projectId, team.task, 'implement', 'build', launched, true)
+  await recordLead(team, 'implement', launched)
   return launched
 }
 
@@ -110,7 +131,7 @@ async function startLeadFix(team: ChatTeam): Promise<LaunchedStage> {
   )
   if (!reviewer) throw new Error('Review this worktree before fixing its findings')
   const launched = await fixReviewFindings(reviewer, undefined, undefined, 'stay', target(team))
-  await logStageLaunch(team.projectId, team.task, 'fix', 'build', launched, true)
+  await recordLead(team, 'fix', launched)
   return launched
 }
 
@@ -143,19 +164,7 @@ async function startLeadMerge(team: ChatTeam, request: Workflow): Promise<Launch
     )
   if (started.kind !== 'started') throw new Error('The merge did not start')
   const { request: merge, sessionId: sid, requestId } = started
-  await logLaunch(
-    team.projectId,
-    team.task,
-    {
-      kind: 'action',
-      action: 'merge',
-      stage: 'merge',
-      request: merge,
-      sessionId: sid,
-      byLead: true,
-    },
-    requestId,
-  )
+  await recordLead(team, 'merge', { sessionId: sid, requestId }, merge)
   return { sessionId: sid, requestId, merge }
 }
 

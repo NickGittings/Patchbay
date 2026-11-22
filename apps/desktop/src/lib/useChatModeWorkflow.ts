@@ -1,23 +1,19 @@
 import { useState } from 'react'
 import { useStore } from '../store'
-import { PLAN_SCOPE, REVIEW_SCOPE, type MergeRequest } from '../types'
-import type { thread, SimpleAction, SimpleStage } from './simple'
+import { PLAN_SCOPE, REVIEW_SCOPE } from '../types'
+import type { thread } from './simple'
 import type { FlowAction } from './simpleFlow'
 import type { useSimpleData } from './useSimpleData'
 import { simpleKey, useSimpleUi } from './simpleUi'
-import { clearSimpleChat, logLaunch, logSimple } from './simpleActions'
-import { logStageLaunch } from './stageLog'
-import { implementPlannerPlan } from './planHandoff'
-import { fixReviewFindings } from './reviewHandoff'
+import { clearSimpleChat, logSimple } from './simpleActions'
 import { roleDevice, roleDevices } from './agentRoles'
-import { startMerge } from './reviewAgents'
-import { simpleReviewRequest, startSimpleReview, type StartedReviewer } from './simpleReview'
+import { simpleReviewRequest } from './simpleReview'
+import { launchBuild, launchFix, launchMerge, launchReview } from './launchStage'
 import { gitBranches, gitWorktrees } from './ipc'
 import { mergeNow, resumeAuto, pauseAuto, stopAuto } from './auto'
-import { controlTeam, noteLead, resetLead, type ChatTeam } from './chatTeams'
+import { controlTeam, resetLead, type ChatTeam } from './chatTeams'
 import { chatAutoActive, chatHandoff } from './chat'
 import { autoDrafts, autoDraftKey, emptyAutoDraft } from './autoDrafts'
-import { retireStageAgents } from './stageRetire'
 
 type Store = ReturnType<typeof useStore.getState>
 type Reader = ReturnType<typeof useSimpleData>
@@ -68,36 +64,10 @@ export function useChatModeWorkflow({
     model.records
       .filter((r) => r.metadata.componentId === PLAN_SCOPE && !model.foreign.has(r.id))
       .at(-1)?.metadata.terminalId ?? roleDevice(devices, agentRoles, 'plan')?.id
-  // A launch's entry claims only the run its request started, dated at its start (`logLaunch`).
-  const log = (
-    action: SimpleAction,
-    stage: SimpleStage,
-    launched: { sessionId: string; requestId?: string },
-    destinationTask = task,
-  ) => logStageLaunch(projectId, destinationTask, action, stage, launched)
-  // A started stage replaces the agents before it. These also serve the Review and Merge dialogs.
-  const retire = (launched: string[]) => retireStageAgents(projectId, task, launched, model.foreign)
-  const logReviewers = async (reviewers: StartedReviewer[]) => {
-    await Promise.all(reviewers.map((r) => log('review', 'review', r)))
-    if (reviewers.length) await retire(reviewers.map((r) => r.sessionId))
-  }
-  const logMerge = async (request: MergeRequest, sid: string, requestId: string) => {
-    // Only a started merge settles the conflicts; a canceled dialog or failed launch keeps them.
-    useSimpleUi.getState().patch(key, { mergeCheck: undefined })
-    await logLaunch(
-      projectId,
-      task,
-      { kind: 'action', action: 'merge', stage: 'merge', request, sessionId: sid },
-      requestId,
-    )
-    await retire([sid])
-    await noteLead(
-      team,
-      `a merge of ${request.sourceBranch} into ${request.destinationBranch}`,
-      [sid],
-      requestId,
-    )
-  }
+  // Only a started merge settles the conflicts; a canceled dialog or failed launch keeps them.
+  const mergeStarted = () => useSimpleUi.getState().patch(key, { mergeCheck: undefined })
+  // Every launch records itself in its worktree's chat, retires the stage before and tells the
+  // lead (`launchStage`), as the dialogs and the Plan and Review views do.
   const run = async (action: string, fn: () => Promise<void>) => {
     const lock = key
     if (pendingActions.has(lock)) return
@@ -124,15 +94,14 @@ export function useChatModeWorkflow({
     const current = useStore.getState()
     if (current.project?.id !== projectId || current.activeTask !== destinationTask)
       throw new Error('The worktree changed. Choose Build in the intended chat.')
-    const launched = await implementPlannerPlan(
+    await launchBuild(
+      'chat',
       planner,
-      undefined,
-      undefined,
+      projectId,
+      destinationTask,
       'stay',
       teamTarget(destinationTask),
     )
-    await log('implement', 'build', launched, destinationTask)
-    await noteLead(team, 'a build of the saved plan', [launched.sessionId], launched.requestId)
   }
   const act = (action: FlowAction) =>
     void run(action, async () => {
@@ -155,25 +124,16 @@ export function useChatModeWorkflow({
           setDialog('review')
           return
         }
-        const { started, errors } = await startSimpleReview(
+        const { errors } = await launchReview(
+          'chat',
           current.toProject(),
+          task,
           request,
           roleDevices(devices, agentRoles, 'review'),
         )
-        await logReviewers(started)
-        if (started.length)
-          await noteLead(
-            team,
-            `a review of ${source?.branch ?? 'this worktree'}`,
-            started.map((r) => r.sessionId),
-            started[0].requestId,
-          )
         if (errors.length) setFailure(errors.join('\n'))
       } else if (action === 'fix' && reviewer) {
-        const fixing = await fixReviewFindings(reviewer, undefined, undefined, 'stay', teamTarget())
-        await log('fix', 'build', fixing)
-        await retire([fixing.sessionId])
-        await noteLead(team, 'fixes for the review findings', [fixing.sessionId], fixing.requestId)
+        await launchFix('chat', reviewer, 'stay', teamTarget())
       } else if (action === 'checkMerge' || action === 'merge') {
         if (!target?.branch || !source?.branch) {
           setDialog('merge')
@@ -183,7 +143,7 @@ export function useChatModeWorkflow({
         if (!from) throw new Error('The merge worktrees changed. Choose a destination again.')
         // Merge checks for conflicts first and stops to show them; Merge with agent goes ahead.
         // Uncommitted source changes open the dialog, which asks whether the agent commits them.
-        const started = await startMerge({
+        const started = await launchMerge('chat', task, {
           project: useStore.getState().toProject(),
           source: from,
           destinationBranch: target.branch,
@@ -204,8 +164,7 @@ export function useChatModeWorkflow({
           setDialog('merge')
           return
         }
-        // Also retires stage agents and tells the lead.
-        await logMerge(started.request, started.sessionId, started.requestId)
+        mergeStarted()
       } else if (action === 'resumeAuto') {
         await resumeAuto(projectId, task)
         logSimple(projectId, task, { kind: 'action', action: 'resumeAuto', stage: stage })
@@ -282,8 +241,7 @@ export function useChatModeWorkflow({
     dialog,
     setDialog,
     act,
-    logReviewers,
-    logMerge,
+    mergeStarted,
     pauseWork,
     continueWork,
     stopWork,

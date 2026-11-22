@@ -33,6 +33,7 @@ import {
   type AutoLaunch,
   type AutoRun,
   type AutoStage,
+  type MergeRequest,
   type EffortSettings,
   type Severity,
   type ReviewFindings,
@@ -83,6 +84,7 @@ import {
 import { fnv1a } from './hash'
 import { checkHooks, hooksUsable, type HookProvider } from './agentHooks'
 import { autoRuns, autoWorkspace } from './autoState'
+import { recordStageLaunch, type StageAction } from './stageRecord'
 import { completeAutoStories } from './stories'
 export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
 
@@ -415,6 +417,14 @@ export function driveable(projectId: string, task: string | null, run = autoRun(
       !!projectStateOf(projectId))
   )
 }
+/** The chat action each launching Auto stage records. */
+const AUTO_LAUNCHES = {
+  plan: 'plan',
+  implement: 'implement',
+  review: 'review',
+  fix: 'fix',
+  merge: 'merge',
+} as const satisfies Partial<Record<AutoStage, StageAction>>
 function mergeRequest(snapshot: Pick<AutoSnapshot, 'source' | 'worktrees'>, run: AutoRun) {
   const destination = snapshot.worktrees.find((w) => w.branch === run.merge.destinationBranch)
   if (!destination || destination.path === snapshot.source.path)
@@ -2653,6 +2663,9 @@ async function drive(projectId: string, task: string | null) {
     let review: Pick<AutoLaunch, 'requestId' | 'lane'>[] = []
     let reviewRound: string | undefined
     let reviewErrors: string[] = []
+    // What the chat records about this launch once Auto owns it (`recordStageLaunch`).
+    let launchRequest: string | undefined
+    let launchedMerge: MergeRequest | undefined
     const brief = briefing(run)
     patch(
       projectId,
@@ -2681,7 +2694,7 @@ async function drive(projectId: string, task: string | null) {
         if (!live() || !driveable(projectId, task)) return
         patch(projectId, task, { plannerTurn: true, planMark: snapshot.planMark })
         launching = true
-        await startTerminal(PLAN_SCOPE, deviceId, task, projectId, {
+        launchRequest = await startTerminal(PLAN_SCOPE, deviceId, task, projectId, {
           kickoff: { kind: 'plan' },
           auto: brief,
           scanRound: run.scanRound,
@@ -2709,6 +2722,7 @@ async function drive(projectId: string, task: string | null) {
             ...(run.workers ? [run.workers] : []),
           )
           sid = started.sessionId
+          launchRequest = started.requestId
           if (started.implementationRun) {
             const owner = autoRun(projectId, task)
             if (owner?.runId !== runId || owner.status === 'stopped' || owner.status === 'done')
@@ -2739,12 +2753,17 @@ async function drive(projectId: string, task: string | null) {
         if (!snapshot.reviewRecord)
           throw new AutoConfigurationError('Open findings and start a review before fixing')
         launching = true
-        sid = (
-          await fixReviewFindings(snapshot.reviewRecord, brief, deviceId, presentation, {
-            projectId,
-            task,
-          })
-        ).sessionId
+        {
+          const fixing = await fixReviewFindings(
+            snapshot.reviewRecord,
+            brief,
+            deviceId,
+            presentation,
+            { projectId, task },
+          )
+          sid = fixing.sessionId
+          launchRequest = fixing.requestId
+        }
         // A refused launch rejects; one that returned may be running even if confirming it fails,
         // so it uses up its round now.
         if (sid && autoRun(projectId, task)?.runId === runId)
@@ -2766,6 +2785,8 @@ async function drive(projectId: string, task: string | null) {
           // A pinned request skips the checks that could stop short of launching.
           if (started.kind !== 'started') throw new Error('The merge agent did not start')
           sid = started.sessionId
+          launchRequest = started.requestId
+          launchedMerge = started.request
         }
         break
       default:
@@ -2809,6 +2830,20 @@ async function drive(projectId: string, task: string | null) {
           }
         : {}),
     })
+    // The chat and the regular views show Auto's stages like any other launch. Recording never
+    // fails the run, and Auto keeps its agents.
+    void recordStageLaunch({
+      projectId,
+      task,
+      origin: 'auto',
+      action: AUTO_LAUNCHES[run.stage as keyof typeof AUTO_LAUNCHES],
+      launched: [sid, ...lanes].map((id, i) => ({
+        sessionId: id,
+        requestId: run.stage === 'review' ? review[i]?.requestId : launchRequest,
+      })),
+      ...(launchedMerge ? { request: launchedMerge } : {}),
+      autoRunId: runId,
+    }).catch(() => {})
   } catch (e) {
     const latest = autoRun(projectId, task)
     if (

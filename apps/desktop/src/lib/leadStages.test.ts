@@ -14,7 +14,7 @@ vi.mock('./ipc', () => ({
   mergeOutcome: vi.fn(async () => 'merged'),
 }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn(async () => 'launch') }))
-vi.mock('./simpleActions', () => ({ logLaunch: vi.fn(async () => {}) }))
+vi.mock('./stageRecord', () => ({ recordStageLaunch: vi.fn(async () => {}) }))
 vi.mock('./chatTeams', () => ({ controlTeam: vi.fn(async () => {}) }))
 vi.mock('./agentRoles', () => ({ roleDevice: vi.fn(() => ({ id: 'planner' })) }))
 vi.mock('./planHandoff', () => ({
@@ -39,7 +39,6 @@ vi.mock('./reviewAgents', () => ({
   }),
 }))
 vi.mock('./sessionList', () => ({ sessionTimeMs: vi.fn(() => 0) }))
-vi.mock('./stageLog', () => ({ logStageLaunch: vi.fn(async () => {}) }))
 vi.mock('../types', () => ({
   PLAN_SCOPE: '__plan__',
   REVIEW_SCOPE: '__review__',
@@ -64,7 +63,7 @@ import { implementPlannerPlan } from './planHandoff'
 import { fixReviewFindings } from './reviewHandoff'
 import { reviewWorktreeBusy, startMerge } from './reviewAgents'
 import { startTerminal } from './sessions'
-import { logLaunch } from './simpleActions'
+import { recordStageLaunch } from './stageRecord'
 import { launchStoryPlanner } from './stories'
 
 const team = { id: 'team', projectId: 'p', task: 't1', target: '/p' } as ChatTeam
@@ -181,7 +180,7 @@ test('a merge goes to the default destination through the merge role', async () 
 test('a merge commits uncommitted changes only when they were approved', async () => {
   vi.mocked(mergeSourceChanges).mockResolvedValue([' M a.ts'])
   await expect(startLeadStage(team, request('startMerge'))).rejects.toThrow(' M a.ts')
-  expect(logLaunch).not.toHaveBeenCalled()
+  expect(recordStageLaunch).not.toHaveBeenCalled()
   await startLeadStage(
     team,
     request('startMerge', 'starting', null, { destination: 'dev', commitSource: [' M a.ts'] }),

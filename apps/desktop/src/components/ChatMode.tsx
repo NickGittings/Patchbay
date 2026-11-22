@@ -152,7 +152,7 @@ export default function ChatMode({
     team,
     focusComposer: () => chatRef.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus(),
   })
-  const { pending, failure, dialog, setDialog, act, logReviewers, logMerge } = workflow
+  const { pending, failure, dialog, setDialog, act, mergeStarted } = workflow
   const checkKey = JSON.stringify([key, source?.head, target?.head])
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
   const identity = useChatIdentity(recipient)
@@ -504,12 +504,12 @@ export default function ChatMode({
         <ReviewAgentDialog
           compact
           key={`${projectId}/${source.path}/${source.branch}`}
-          restartSettled
+          origin="chat"
+          task={task}
           initialBase={reviewBase || undefined}
           source={source}
           worktrees={worktrees}
           close={() => setDialog(undefined)}
-          started={(reviewers) => void logReviewers(reviewers)}
           launched={() => setDialog(undefined)}
         />
       )}
@@ -521,7 +521,9 @@ export default function ChatMode({
           branches={branches}
           initialDestination={retryBranch ?? target?.branch ?? undefined}
           close={() => setDialog(undefined)}
-          onRequest={(request, sid, requestId) => void logMerge(request, sid, requestId)}
+          origin="chat"
+          task={task}
+          onRequest={mergeStarted}
           launched={() => setDialog(undefined)}
         />
       )}

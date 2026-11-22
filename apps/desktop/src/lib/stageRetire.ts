@@ -65,7 +65,8 @@ export async function retireStageAgents(
   projectId: string,
   task: string | null,
   launched: readonly string[],
-  foreign: ReadonlySet<string>,
+  /** Only shared planners can be another chat's, and stage entries never name one. */
+  foreign: ReadonlySet<string> = new Set(),
 ) {
   const project = projectStateOf(projectId)
   if (!project) return

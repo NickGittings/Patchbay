@@ -33,7 +33,7 @@ import TerminalControl from './TerminalControl'
 
 import { planDrafts } from '../lib/planDrafts'
 import { linkStory } from '../lib/stories'
-import { implementPlannerPlan } from '../lib/planHandoff'
+import { launchBuild } from '../lib/launchStage'
 
 const EMPTY_PLANNING_WORKSPACE = emptyTaskWorkspace()
 
@@ -297,7 +297,7 @@ export default function PlanView() {
     setImplementing(true)
     setHandoffResult({ key, error: '' })
     try {
-      await implementPlannerPlan(active.id, undefined, undefined, 'follow', {
+      await launchBuild('manual', active.id, projectId!, task, 'follow', {
         projectId: projectId!,
         task,
       })

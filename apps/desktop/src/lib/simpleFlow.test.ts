@@ -186,6 +186,30 @@ test('a later planning action supersedes an earlier merge outcome and completed 
   })
   expect(flow(s)).toMatchObject({ step: 'planning' })
 })
+test('a launch from the regular views after a done Auto run leaves Merged; Auto’s own does not', () => {
+  const s = snapshot('@review', 'working')
+  s.auto = {
+    status: 'done',
+    stage: 'done',
+    log: [{ atMs: 1, text: 'Done' }],
+    merge: { destinationBranch: 'release' },
+  } as AutoRun
+  const launch = (origin: 'auto' | 'manual') =>
+    s.simple!.log.push({
+      id: origin,
+      kind: 'action',
+      action: 'review',
+      stage: 'review',
+      atMs: 10,
+      sessionId: '@review',
+      generation: 1,
+      origin,
+    })
+  launch('auto')
+  expect(flow(s)).toMatchObject({ step: 'merged' })
+  launch('manual')
+  expect(flow(s)).toMatchObject({ step: 'reviewing' })
+})
 test('an agent at its prompt after a resume nobody here prompted is done, a fresh kickoff is not', () => {
   const resumed = snapshot('@task', 'idle')
   resumed.sessions['@task'].status!.agent!.turnId = null
@@ -728,6 +752,16 @@ describe('lead-started stages', () => {
     expect(leadStarted(launch(true, 1), '@task', 2)).toBe(false)
     expect(leadStarted(launch(true), '@other', 1)).toBe(false)
     expect(leadStarted(launch(true), undefined, 1)).toBe(false)
+  })
+  test('a lead origin counts like the older byLead mark; other origins do not', () => {
+    const origin = (value: 'lead' | 'manual' | 'auto') => {
+      const simple = launch(false)
+      Object.assign(simple.log[0], { origin: value })
+      return simple
+    }
+    expect(leadStarted(origin('lead'), '@task', 1)).toBe(true)
+    expect(leadStarted(origin('manual'), '@task', 1)).toBe(false)
+    expect(leadStarted(origin('auto'), '@task', 1)).toBe(false)
   })
   test('a later button launch for the same agent takes the decision back', () => {
     const simple = launch(true)

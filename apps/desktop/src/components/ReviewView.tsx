@@ -277,6 +277,7 @@ export default function ReviewView() {
       {reviewDialog && source?.branch && (
         <ReviewAgentDialog
           key={`${projectId}/${source.path}/${source.branch}`}
+          origin="manual"
           source={source}
           worktrees={worktrees}
           close={() => setReviewDialogScope(null)}
@@ -290,6 +291,7 @@ export default function ReviewView() {
       {mergeDialog && source?.branch && (
         <MergeAgentDialog
           key={`${projectId}/${source.path}/${source.branch}`}
+          origin="manual"
           source={source}
           worktrees={worktrees}
           branches={branches}

@@ -50,6 +50,7 @@ vi.mock('./sessions', () => ({
 }))
 vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
+vi.mock('./stageRecord', () => ({ recordStageLaunch: vi.fn(async () => {}) }))
 vi.mock('./reviewAgents', async () => {
   const actual = await vi.importActual<typeof import('./reviewAgents')>('./reviewAgents')
   const startReviewAgent = vi.fn()
@@ -111,6 +112,7 @@ const {
 const ipc = await import('./ipc')
 const jobs = await import('./reviewAgents')
 const awaitSessions = await import('./sessions')
+const { recordStageLaunch } = await import('./stageRecord')
 const started = (sessionId: string) => ({
   kind: 'started' as const,
   sessionId,
@@ -434,6 +436,18 @@ test('driver requires a new authoritative turn and stops reviewer before gating'
     mergeNow('p', 't')
     await flush()
     expect(jobs.startMerge).toHaveBeenCalledTimes(1)
+    // Each stage Auto owns shows in the chat and the regular views like any other launch.
+    expect(vi.mocked(recordStageLaunch).mock.calls.map(([l]) => [l.origin, l.action])).toEqual([
+      ['auto', 'review'],
+      ['auto', 'merge'],
+    ])
+    expect(recordStageLaunch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        launched: [{ sessionId: 'merge-s', requestId: 'merge-request' }],
+        request: expect.objectContaining({ destinationBranch: 'main' }),
+        autoRunId: autoRun('p', 't')?.runId,
+      }),
+    )
   })
 })
 test('parallel reviewers share a round; the run waits for all, then stops the others', async () => {
@@ -1514,7 +1528,7 @@ test.each(['plan', 'implement', 'fix', 'merge'] as const)(
       useStore.setState({ sessions: { [sid]: { running: true } } })
     })
     vi.mocked(implementPlannerPlan).mockResolvedValue({ sessionId: sid, requestId: 'r' })
-    vi.mocked(fixReviewFindings).mockResolvedValue({ sessionId: sid, requestId: 'r' })
+    vi.mocked(fixReviewFindings).mockResolvedValue({ sessionId: sid, requestId: 'r', task: 't' })
     vi.mocked(jobs.startMerge).mockResolvedValue(started(sid))
     useStore.setState({
       sessionRecords: [
@@ -2118,7 +2132,7 @@ test.each(['review', 'fix'] as const)(
     const launch = stage === 'fix' ? fixReviewFindings : jobs.startReviewAgent
     if (stage === 'fix')
       vi.mocked(fixReviewFindings).mockImplementation(() =>
-        pending().then((sessionId) => ({ sessionId, requestId: undefined })),
+        pending().then((sessionId) => ({ sessionId, requestId: undefined, task: 't' })),
       )
     else vi.mocked(jobs.startReviewAgent).mockImplementation(pending)
     setRun({ stage })
@@ -2663,6 +2677,7 @@ test.each(['refused', 'empty', 'unconfirmed'] as const)(
       vi.mocked(fixReviewFindings).mockResolvedValue({
         sessionId: failure === 'empty' ? '' : 'unknown-session',
         requestId: undefined,
+        task: 't',
       })
     setRun({ stage: 'fix' })
     await withFollower(async () => {
@@ -3996,7 +4011,7 @@ test.each(['implement', 'fix'] as const)(
     const { fixReviewFindings } = await import('./reviewHandoff')
     const launch = stage === 'implement' ? implementPlannerPlan : fixReviewFindings
     useStore.setState({ sessionRecords: [reviewRecord('reviewer', null, reviewSession('review'))] })
-    vi.mocked(launch).mockResolvedValue({ sessionId: 'started', requestId: 'request' })
+    vi.mocked(launch).mockResolvedValue({ sessionId: 'started', requestId: 'request', task: 't' })
     vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
       useStore.setState({ serviceConnected: false })
       throw new Error('Connection lost while confirming the launch')
@@ -4221,7 +4236,7 @@ test.each([
     const { fixReviewFindings } = await import('./reviewHandoff')
     vi.mocked(fixReviewFindings).mockImplementation(async () => {
       agent('working', 2000)
-      return { sessionId: 's', requestId: 'request' }
+      return { sessionId: 's', requestId: 'request', task: 't' }
     })
     setRun({ stage: 'fix', background })
     await withFollower(async () => {

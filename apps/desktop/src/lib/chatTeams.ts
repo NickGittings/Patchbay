@@ -764,12 +764,13 @@ export async function noteLead(
   what: string,
   sessions: string[],
   id: string = crypto.randomUUID(),
+  from = 'with Chat’s workflow buttons',
 ) {
   if (!team) return
   await controlTeam(team, {
     kind: 'note',
     id,
-    text: `The user started ${what} with Chat’s workflow buttons. It runs in its own agent: don’t start or repeat it, and take its result into account.`,
+    text: `The user started ${what} ${from}. It runs in its own agent: don’t start or repeat it, and take its result into account.`,
     sessions,
   }).catch(() => {})
 }

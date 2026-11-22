@@ -15,7 +15,12 @@ vi.mock('react', async (original) => ({
 }))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
 vi.mock('./reviewAgents', () => ({ startMerge: vi.fn() }))
-vi.mock('./chatTeams', () => ({ controlTeam: vi.fn(), noteLead: vi.fn(), resetLead: vi.fn() }))
+vi.mock('./chatTeams', () => ({
+  controlTeam: vi.fn(),
+  noteLead: vi.fn(),
+  resetLead: vi.fn(),
+  teamFor: vi.fn(),
+}))
 vi.mock('./auto', () => ({
   mergeNow: vi.fn(),
   resumeAuto: vi.fn(),
@@ -160,7 +165,7 @@ test('partial review success logs started reviewers and surfaces remaining error
     { atRunStart: true },
   )
   expect(render().failure).toBe('second reviewer failed')
-  expect(retireStageAgents).toHaveBeenCalledWith('p', null, ['reviewer'], context.model.foreign)
+  expect(retireStageAgents).toHaveBeenCalledWith('p', null, ['reviewer'], undefined)
 })
 test('a stage that fails to launch leaves the earlier agents running', async () => {
   vi.mocked(gitBranches).mockResolvedValue(['main'])
