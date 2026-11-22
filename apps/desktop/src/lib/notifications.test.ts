@@ -309,6 +309,12 @@ test('descriptions label special scopes and project folders without an active pr
     })
   }
 })
+test('a Fix agent outside a team keeps its own label, as its terminal tile does', () => {
+  mock.state.sessionRecords = [
+    record('one', { componentId: TASK_ROOT_SCOPE, task: null, taskTitle: null, branch: 'feature' }),
+  ]
+  expect(describe(mock.state, 'one', 'finished').owner).toBe('Task root')
+})
 for (const field of ['enabled', 'finished', 'needsInput', 'failed'] as const)
   test(`disabled ${field} suppresses events`, async () => {
     mock.state.notifications[field] = false

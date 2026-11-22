@@ -79,10 +79,11 @@ and Review views) or `lib/stageRecord.ts::recordStageLaunch` (the lead, councils
 them show the same way in Chat and the regular views. Each logs an action entry in its worktree's
 chat with its `origin` (`chat`, `manual`, `lead` or `auto`; older logs' `byLead` restores as `lead`,
 and anything else without one as `chat`), plus the merge request and Auto run id. Review and merge
-launches become the Review view's current agent. Chat and regular-view launches also retire the
+launches in the shown worktree become the Review view's current agent. Chat and regular-view launches also retire the
 stage before and tell the worktree's lead; the lead's own stages and Auto's do neither, and
 retiring never stops an agent Auto launched, even after its run ended. Reviews refuse while the
-worktree's Auto run is running, waiting or paused, since replacing its reviewers would break it. A
+worktree's Auto run is running, waiting or paused (stop Auto or let it finish), since replacing its
+reviewers would break it. A
 worktree Patchbay has no task for (one created outside it) has no chat, so its reviews and merges run
 unrecorded. Auto records
 a launch only after confirming it still owns the run, and a failed record never fails the run.

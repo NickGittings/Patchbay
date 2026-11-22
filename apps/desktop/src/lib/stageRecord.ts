@@ -80,7 +80,8 @@ export async function recordStageLaunch(launch: StageLaunch) {
       ),
     ),
   )
-  if (action === 'review' || action === 'merge') showReviewAgent(projectId, launched[0].sessionId)
+  if (action === 'review' || action === 'merge')
+    showReviewAgent(projectId, task, launched[0].sessionId)
   if (origin !== 'chat' && origin !== 'manual') return
   const ids = launched.map((a) => a.sessionId)
   if (RETIRING.has(action)) await retireStageAgents(projectId, task, ids, launch.foreign)
@@ -93,8 +94,13 @@ export async function recordStageLaunch(launch: StageLaunch) {
   )
 }
 
-/** The Review view follows the newest review or merge agent, without opening its dock. */
-function showReviewAgent(projectId: string, sid: string) {
+/**
+ * The Review view follows the newest review or merge agent of the worktree it shows, without
+ * opening its dock. Launches in background worktrees leave its selection alone.
+ */
+function showReviewAgent(projectId: string, task: string | null, sid: string) {
+  const current = useStore.getState()
+  if (current.project?.id !== projectId || current.activeTask !== task) return
   useStore.setState((s) => ({
     reviewAgents: {
       ...s.reviewAgents,

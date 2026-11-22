@@ -60,7 +60,7 @@ export function useSimpleData(visible: boolean, diff = true) {
   const source = sourceData?.worktrees.find((w) => (worktree ? w.path === worktree : w.current))
   const findings = useReviewFindings(projectId, source?.branch, visible, revision)
   const savedBase = findings?.findings?.base
-  const key = JSON.stringify([selectionKey, savedBase, diff])
+  const key = JSON.stringify([selectionKey, savedBase])
   const [error, setError] = useState<{ key: string; text: string }>()
   useEffect(() => {
     if (!visible || !projectId) return

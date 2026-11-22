@@ -4,7 +4,6 @@ import { projectStateOf, useStore } from '../store'
 import {
   PLAN_SCOPE,
   TASK_ROOT_SCOPE,
-  isReservedScope,
   isReviewAgentScope,
   sessionMetadata,
   type AutoPauseTarget,
@@ -24,7 +23,7 @@ import {
   chatRole,
   leadsActiveTeam,
   providerLabel,
-  teamWorker,
+  namedBuilder,
 } from './chatIdentity'
 import { useChatTeams } from './chatTeams'
 
@@ -243,11 +242,10 @@ export function describe(
   const projectTeams = teams.teams[projectId ?? '']
   const projectRuns = teams.runs[projectId ?? '']
   const role = chatRole(record, projectTeams, projectRuns)
-  // A team's builders read as their role, never their assignment; a builder launched on a
-  // component outside any team keeps that component's name.
+  // A team's builders read as their role, never their assignment; other agents read as their
+  // terminal tiles do (`namedBuilder`).
   const owner =
-    role === 'Builder' &&
-    (teamWorker(record, projectTeams, projectRuns) || !componentId || isReservedScope(componentId))
+    role === 'Builder' && namedBuilder(record, projectTeams, projectRuns)
       ? role
       : sessionOwner(componentId, state?.nodes ?? [])
   const worktree = taskTitle ? shortTitle(taskTitle) : task || 'Project folder'

@@ -12,7 +12,11 @@ import type { SimpleOrigin } from './simple'
 
 beforeEach(() => {
   vi.clearAllMocks()
-  useStore.setState({ reviewAgents: {} })
+  useStore.setState({
+    reviewAgents: {},
+    project: { id: 'p', name: 'P', root: '/p' },
+    activeTask: 't',
+  })
 })
 const record = (origin: SimpleOrigin, action: StageAction) =>
   recordStageLaunch({
@@ -92,6 +96,12 @@ test('review and merge agents become the Review view’s current agent without o
   expect(useStore.getState().reviewAgents.p).toEqual({ sid: 'agent', hidden: false })
   await record('chat', 'fix')
   expect(useStore.getState().reviewAgents.p.sid).toBe('agent')
+})
+
+test('a launch in a background worktree leaves the Review view’s selection alone', async () => {
+  useStore.setState({ activeTask: 'other', reviewAgents: { p: { sid: 'old', hidden: false } } })
+  await record('auto', 'review')
+  expect(useStore.getState().reviewAgents.p).toEqual({ sid: 'old', hidden: false })
 })
 
 test('nothing launched records nothing', async () => {

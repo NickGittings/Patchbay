@@ -34,6 +34,11 @@ test('the project folder is no task, and a worktree Patchbay doesn’t know has 
   expect(taskOfWorktree('/elsewhere')).toBeUndefined()
 })
 
+test('a project folder attached as a task records in that task’s chat', () => {
+  useStore.setState({ tasks: [{ id: 'root-task', worktree: '/p', current: true } as Task] })
+  expect(taskOfWorktree('/p')).toBe('root-task')
+})
+
 test('a review or merge of a worktree without a chat runs but is recorded nowhere', async () => {
   await launchReview('manual', project, undefined, request, [])
   expect(startSimpleReview).toHaveBeenCalledOnce()

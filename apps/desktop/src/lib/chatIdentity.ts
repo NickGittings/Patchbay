@@ -1,4 +1,10 @@
-import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE, type SessionRecord } from '../types'
+import {
+  MERGE_SCOPE,
+  PLAN_SCOPE,
+  REVIEW_SCOPE,
+  TASK_ROOT_SCOPE,
+  type SessionRecord,
+} from '../types'
 import { profileHookProvider } from './agentProfiles'
 import { useChatTeams, type ChatTeam } from './chatTeams'
 import type { ProviderRun } from './orchestration'
@@ -58,6 +64,23 @@ export function teamWorker(
         (r) =>
           teams.some((t) => t.id === r.chatTeam) && r.jobs.some((j) => j.sessionId === record.id),
       ))
+  )
+}
+
+/**
+ * Whether a label names this agent as the Builder rather than its own role: a team's worker, or
+ * the worktree's root build agent. Component, Fix, Coordinator and Worker agents outside a team
+ * keep their own label.
+ */
+export function namedBuilder(
+  record: SessionRecord | undefined,
+  teams: readonly ChatTeam[] = [],
+  runs: readonly ProviderRun[] = [],
+) {
+  return (
+    teamWorker(record, teams, runs) ||
+    (record?.metadata.componentId === TASK_ROOT_SCOPE &&
+      sessionRole(record.metadata).role === 'Build')
   )
 }
 

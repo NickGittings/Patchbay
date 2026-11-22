@@ -94,8 +94,10 @@ export async function launchMerge(
  */
 export function taskOfWorktree(path: string): string | null | undefined {
   const s = useStore.getState()
-  if (path === s.project?.root) return null
-  return s.tasks.find((t) => !t.missing && t.worktree === path)?.id
+  // The project folder may itself be attached as a task, whose chat is then the task's.
+  const task = s.tasks.find((t) => !t.missing && t.worktree === path)
+  if (task) return task.id
+  return path === s.project?.root ? null : undefined
 }
 
 const AUTO_OWNS = new Set(['running', 'waitingOnYou', 'paused'])
@@ -105,5 +107,7 @@ function refuseWhileAutoReviews(projectId: string, task: string | null | undefin
   if (!state || task === undefined) return
   const auto = workspaceOf(state, task).auto
   if (auto && AUTO_OWNS.has(auto.status))
-    throw new Error('Auto is running this worktree. Pause or stop it before reviewing here.')
+    throw new Error(
+      'Auto is running this worktree. Stop Auto or let it finish before reviewing here.',
+    )
 }

@@ -1,6 +1,5 @@
 import { useState } from 'react'
-import { chatIdentity, teamWorker } from '../lib/chatIdentity'
-import { sessionRole } from '../lib/sessionList'
+import { chatIdentity, namedBuilder } from '../lib/chatIdentity'
 import { useChatTeams } from '../lib/chatTeams'
 import { describeTerminal, statusTitle, terminalStatus } from '../lib/display'
 import { openComponentWindow } from '../lib/windows'
@@ -30,16 +29,10 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
     const record = records.find((r) => r.id === sid)
     const owner = record?.metadata.projectId ?? ''
     const identity = record && chatIdentity(record, teams[owner], runs[owner])
-    // Team members and the worktree's root builder read as their Chat role; component, Fix,
-    // Coordinator and Worker agents outside a team keep their own label.
-    const plainBuilder =
-      identity?.roleKey === 'builder' &&
-      record?.metadata.componentId === TASK_ROOT_SCOPE &&
-      sessionRole(record.metadata).role === 'Build'
     const onTeam =
       identity?.roleKey === 'lead' ||
-      (identity?.roleKey === 'builder' && teamWorker(record, teams[owner], runs[owner]))
-    const prefix = tileLabel(entry, record, onTeam || plainBuilder ? identity.role : undefined)
+      (identity?.roleKey === 'builder' && namedBuilder(record, teams[owner], runs[owner]))
+    const prefix = tileLabel(entry, record, onTeam ? identity.role : undefined)
     return (
       <section
         className={`terminal-tile health-${status.health} ${focused === sid ? 'focused' : ''} ${maximized === sid ? 'maximized' : ''}`}
