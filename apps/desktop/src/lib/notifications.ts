@@ -18,7 +18,13 @@ import { finished } from './autoSettings'
 import { terminalStatus } from './display'
 import { distinctLabels } from './sessionList'
 import { shortTitle } from './shortTitle'
-import { agentProviderLabel, chatRole, leadsActiveTeam, providerLabel } from './chatIdentity'
+import {
+  agentProviderLabel,
+  chatRole,
+  leadsActiveTeam,
+  providerLabel,
+  namedBuilder,
+} from './chatIdentity'
 import { useChatTeams } from './chatTeams'
 
 const KIND_HEALTH = { finished: 'review', needsInput: 'input', failed: 'fail' } as const
@@ -233,8 +239,15 @@ export function describe(
     lane,
   } = identity
   const teams = useChatTeams.getState()
-  const role = chatRole(record, teams.teams[projectId ?? ''], teams.runs[projectId ?? ''])
-  const owner = role === 'Builder' ? role : sessionOwner(componentId, state?.nodes ?? [])
+  const projectTeams = teams.teams[projectId ?? '']
+  const projectRuns = teams.runs[projectId ?? '']
+  const role = chatRole(record, projectTeams, projectRuns)
+  // A team's builders read as their role, never their assignment; other agents read as their
+  // terminal tiles do (`namedBuilder`).
+  const owner =
+    role === 'Builder' && namedBuilder(record, projectTeams, projectRuns)
+      ? role
+      : sessionOwner(componentId, state?.nodes ?? [])
   const worktree = taskTitle ? shortTitle(taskTitle) : task || 'Project folder'
   const session = s.sessions[sid]
   const provider = agentProviderLabel(record) ?? providerLabel(session?.status?.agent?.provider)

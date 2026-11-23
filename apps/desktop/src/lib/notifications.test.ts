@@ -294,7 +294,8 @@ test('kind lookup follows records, runtimes, other-project nodes and planner pre
 test('descriptions label special scopes and project folders without an active project', () => {
   for (const [componentId, owner] of [
     [PLAN_SCOPE, 'Planner'],
-    [TASK_ROOT_SCOPE, 'Task root'],
+    // A root agent builds, whichever flow launched it.
+    [TASK_ROOT_SCOPE, 'Builder'],
     [REVIEW_SCOPE, 'Review agent'],
     [MERGE_SCOPE, 'Merge agent'],
   ]) {
@@ -307,6 +308,12 @@ test('descriptions label special scopes and project folders without an active pr
       toastBody: 'Claude · Project folder',
     })
   }
+})
+test('a Fix agent outside a team keeps its own label, as its terminal tile does', () => {
+  mock.state.sessionRecords = [
+    record('one', { componentId: TASK_ROOT_SCOPE, task: null, taskTitle: null, branch: 'feature' }),
+  ]
+  expect(describe(mock.state, 'one', 'finished').owner).toBe('Task root')
 })
 for (const field of ['enabled', 'finished', 'needsInput', 'failed'] as const)
   test(`disabled ${field} suppresses events`, async () => {

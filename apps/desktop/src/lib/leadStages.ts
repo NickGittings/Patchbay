@@ -1,15 +1,14 @@
 import { projectOf, projectStateOf, useStore } from '../store'
-import { PLAN_SCOPE, REVIEW_SCOPE, plannerChatTask, plannerSessionId } from '../types'
+import {
+  PLAN_SCOPE,
+  REVIEW_SCOPE,
+  plannerChatTask,
+  plannerSessionId,
+  type MergeRequest,
+} from '../types'
 import { roleDevice } from './agentRoles'
 import { controlTeam, type ChatTeam } from './chatTeams'
-import {
-  gitBranches,
-  gitWorktrees,
-  mergeOutcome,
-  mergeSourceChanges,
-  planRead,
-  terminalSnapshot,
-} from './ipc'
+import { gitBranches, gitWorktrees, mergeOutcome, planRead, terminalSnapshot } from './ipc'
 import { savedStage, type StageRun } from './leadStageRun'
 import { implementPlannerPlan, type HandoffTarget } from './planHandoff'
 import { agentTurnEnded } from './review'
@@ -18,12 +17,17 @@ import {
   defaultMergeDestination,
   reviewAgentRecords,
   reviewWorktreeBusy,
-  startBranchMerge,
+  startMerge,
 } from './reviewAgents'
 import { sessionTimeMs } from './sessionList'
 import { startTerminal } from './sessions'
-import { logLaunch } from './simpleActions'
-import { logStageLaunch } from './stageLog'
+import { taskOfWorktree } from './launchStage'
+import {
+  recordStageLaunch,
+  refuseWhileAutoRuns,
+  type LaunchedAgent,
+  type StageAction,
+} from './stageRecord'
 
 type Workflow = NonNullable<ChatTeam['requests']>[number]
 interface LaunchedStage {
@@ -50,6 +54,22 @@ const strings = (value: unknown) =>
   Array.isArray(value) && value.every((item) => typeof item === 'string')
     ? (value as string[])
     : undefined
+
+// The lead's workflow tells it about its own stages, and it keeps earlier agents to investigate.
+const recordLead = (
+  team: ChatTeam,
+  action: StageAction,
+  launched: LaunchedAgent,
+  request?: MergeRequest,
+) =>
+  recordStageLaunch({
+    projectId: team.projectId,
+    task: team.task,
+    origin: 'lead',
+    action,
+    launched: [launched],
+    ...(request ? { request } : {}),
+  })
 
 async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<LaunchedStage> {
   const { goal, story: storyId } = request.settings
@@ -85,7 +105,7 @@ async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<Launche
           components,
         })
   const launched = { sessionId, requestId }
-  await logStageLaunch(team.projectId, team.task, 'plan', 'plan', launched, true)
+  await recordLead(team, 'plan', launched)
   return launched
 }
 
@@ -104,7 +124,7 @@ async function startLeadBuild(team: ChatTeam): Promise<LaunchedStage> {
     roleDevice(devices, agentRoles, 'plan')?.id
   if (!planner) throw new Error('Choose an agent for the plan role first')
   const launched = await implementPlannerPlan(planner, undefined, undefined, 'stay', target(team))
-  await logStageLaunch(team.projectId, team.task, 'implement', 'build', launched, true)
+  await recordLead(team, 'implement', launched)
   return launched
 }
 
@@ -117,7 +137,7 @@ async function startLeadFix(team: ChatTeam): Promise<LaunchedStage> {
   )
   if (!reviewer) throw new Error('Review this worktree before fixing its findings')
   const launched = await fixReviewFindings(reviewer, undefined, undefined, 'stay', target(team))
-  await logStageLaunch(team.projectId, team.task, 'fix', 'build', launched, true)
+  await recordLead(team, 'fix', launched)
   return launched
 }
 
@@ -136,35 +156,24 @@ async function startLeadMerge(team: ChatTeam, request: Workflow): Promise<Launch
       ? named.trim()
       : defaultMergeDestination(source, worktrees, branches)
   if (!destination) throw new Error('Ask the user which branch to merge into')
-  const changes = await mergeSourceChanges(project, source.path, source.branch)
-  const approved = strings(request.settings.commitSource)
-  if (changes.length && !approved)
-    throw new Error(
-      `${source.branch} has uncommitted changes. Ask the user whether the merge agent should commit them. If they agree, retry with exactly these as commitSource:\n${JSON.stringify(changes)}`,
-    )
+  // The merge agent works in the destination, which Auto may own too.
+  const target = worktrees.find((w) => w.branch === destination)
+  if (target) refuseWhileAutoRuns(team.projectId, taskOfWorktree(target, team.projectId))
   const { devices, agentRoles } = useStore.getState()
-  const requestId = crypto.randomUUID()
-  const { request: merge, sid } = await startBranchMerge(
+  const started = await startMerge({
     project,
     source,
-    destination,
-    roleDevice(devices, agentRoles, 'merge'),
-    requestId,
-    changes.length ? approved : undefined,
-  )
-  await logLaunch(
-    team.projectId,
-    team.task,
-    {
-      kind: 'action',
-      action: 'merge',
-      stage: 'merge',
-      request: merge,
-      sessionId: sid,
-      byLead: true,
-    },
-    requestId,
-  )
+    destinationBranch: destination,
+    device: roleDevice(devices, agentRoles, 'merge'),
+    commitSource: strings(request.settings.commitSource) ?? 'report',
+  })
+  if (started.kind === 'uncommitted')
+    throw new Error(
+      `${source.branch} has uncommitted changes. Ask the user whether the merge agent should commit them. If they agree, retry with exactly these as commitSource:\n${JSON.stringify(started.changes)}`,
+    )
+  if (started.kind !== 'started') throw new Error('The merge did not start')
+  const { request: merge, sessionId: sid, requestId } = started
+  await recordLead(team, 'merge', { sessionId: sid, requestId }, merge)
   return { sessionId: sid, requestId, merge }
 }
 
@@ -176,6 +185,9 @@ function launchStage(team: ChatTeam, request: Workflow) {
 
 /** Launch a claimed stage. It stays active until `settleLeadStage` sees its agent finish. */
 export async function startLeadStage(team: ChatTeam, request: Workflow) {
+  // Auto's agents own the worktree while its run goes on, for the lead as for the user. Planning
+  // touches no code, so it may go ahead, as it does from Chat and the Plan view.
+  if (request.action !== 'startPlan') refuseWhileAutoRuns(team.projectId, team.task)
   const startedMs = Date.now()
   const launched = await launchStage(team, request)
   // The workflow result wakes the lead, so the agent's own finish stays passive.

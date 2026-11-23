@@ -10,6 +10,7 @@ import {
   type TerminalSpec,
 } from '../types'
 import { confirmAction } from '../lib/confirm'
+import { recordPlannerStart } from '../lib/stageRecord'
 
 /** Header actions stay available even when the pane cannot load its saved output. */
 export default function TerminalControl({
@@ -100,7 +101,17 @@ export default function TerminalControl({
       ) : !isReviewAgentScope(componentId) ? (
         <button
           disabled={disabled || busy}
-          onClick={() => void startTerminal(componentId, terminalId, task, projectId)}
+          onClick={() => {
+            // The launch's own project and worktree, before a slow start lets the user move on.
+            const now = useStore.getState()
+            const owner = projectId ?? now.project?.id
+            const scope = task === undefined ? now.activeTask : task
+            const origin = now.simpleMode ? 'chat' : 'manual'
+            void startTerminal(componentId, terminalId, task, projectId).then((requestId) => {
+              if (requestId && componentId === PLAN_SCOPE)
+                recordPlannerStart(owner, scope, terminalId, requestId, { origin })
+            })
+          }}
         >
           ▶ {busy ? 'Stopping…' : session ? 'Restart' : 'Start'}
         </button>

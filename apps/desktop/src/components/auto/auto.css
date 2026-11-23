@@ -249,6 +249,35 @@
 .auto-stepper li[data-state='stopped']::before {
   background: var(--muted);
 }
+/* Waiting for your go, nothing wrong: the accent, distinct from amber attention. */
+.auto-stepper li[data-state='ready'] {
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.auto-stepper li[data-state='ready']::before {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--accent) 0 6px,
+    color-mix(in srgb, var(--accent) 35%, transparent) 6px 9px
+  );
+}
+.auto-stepper li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.auto-stepper small {
+  font-size: inherit;
+  font-weight: 400;
+}
+/* The strip above the Plan and Review views' own controls. */
+.view-stepper {
+  margin: 0 0 8px;
+}
+.view-stepper-hint {
+  margin: -4px 0 8px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
 
 .auto-meta {
   display: flex;

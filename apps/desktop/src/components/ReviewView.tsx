@@ -35,6 +35,8 @@ import ValidationChips from './changes/ValidationChips'
 import FindingsPanel, { SeverityCounts, VerdictBadge } from './findings/FindingsPanel'
 import { useRunningReviewLanes } from '../lib/reviewAgents'
 import FixFindingsButton from './findings/FixFindingsButton'
+import StageStrip from './StageStrip'
+import { useStageModel } from '../lib/useStageModel'
 import type { FileRef } from '../lib/findings'
 import { shortSha } from '../lib/commitId'
 
@@ -92,21 +94,48 @@ export default function ReviewView() {
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
   const [reviewDialogScope, setReviewDialogScope] = useState<string | null>(null)
   const [mergeDialogScope, setMergeDialogScope] = useState<string | null>(null)
-  const agentSelection = useStore((s) => s.reviewAgents[s.project?.id ?? ''])
-  const currentAgent = useStore((s) =>
-    currentReviewAgentRecord(
-      reviewAgentRecords(s.sessionRecords, s.project?.id),
-      s.sessions,
-      s.reviewAgents[s.project?.id ?? '']?.sid,
-    ),
-  )
-
   const other = worktrees.find((w) => w.path === worktree && !w.current)
   // `undefined` reviews the open worktree, which the watcher keeps current.
   const target = other?.path
   const projectId = useStore((s) => s.project?.id)
   const source = other ?? worktrees.find((w) => w.current)
-  const agentsHidden = agentSelection?.sid === currentAgent?.id && !!agentSelection?.hidden
+  const agentSelection = useStore((s) => s.reviewAgents[s.project?.id ?? ''])
+  // The shown worktree's reviewers and merges, wherever they were started.
+  // An explicit selection of this worktree's agent (one just launched, even merging another
+  // source into it) shows first; otherwise its running reviewer or merge, wherever started.
+  const currentAgent = useStore((s) => {
+    const records = reviewAgentRecords(s.sessionRecords, s.project?.id)
+    const selected = s.reviewAgents[s.project?.id ?? '']?.sid
+    // A selection belongs to the shown worktree when it reviews it or merges from or into it.
+    const ofShown = (r: (typeof records)[number]) =>
+      !source ||
+      (r.metadata.componentId === REVIEW_SCOPE
+        ? r.spec.cwd === source.path
+        : r.spec.merge_source === source.path || r.spec.cwd === source.path)
+    return (
+      records.find((r) => r.id === selected && ofShown(r)) ??
+      currentReviewAgentRecord(
+        records.filter(
+          (r) =>
+            !source ||
+            (r.metadata.componentId === REVIEW_SCOPE
+              ? r.spec.cwd === source.path
+              : r.spec.merge_source === source.path),
+        ),
+        s.sessions,
+        undefined,
+      )
+    )
+  })
+  // Where the worktree's work is, as Chat and the Auto panel show it, and what comes next.
+  const stage = useStageModel()
+  const next = new Set(stage?.state.prompt?.actions.map((a) => a.action))
+  // Auto's own gate is approved in Chat or the Auto panel; the dialog here can't merge for it.
+  const nextMerge = next.has('checkMerge') || next.has('merge')
+  const nextFix = next.has('fix')
+  // Hiding the dock sticks, also for the shown worktree's own agent when the hidden selection was
+  // another worktree's; Show agents (or a launch here) brings it back.
+  const agentsHidden = !!currentAgent && !!agentSelection?.hidden
   const showAgents = !!currentAgent && !agentsHidden
   const hideAgents = () => {
     if (currentAgent) useStore.getState().hideReviewAgent(currentAgent.id)
@@ -277,6 +306,7 @@ export default function ReviewView() {
       {reviewDialog && source?.branch && (
         <ReviewAgentDialog
           key={`${projectId}/${source.path}/${source.branch}`}
+          origin="manual"
           source={source}
           worktrees={worktrees}
           close={() => setReviewDialogScope(null)}
@@ -290,6 +320,7 @@ export default function ReviewView() {
       {mergeDialog && source?.branch && (
         <MergeAgentDialog
           key={`${projectId}/${source.path}/${source.branch}`}
+          origin="manual"
           source={source}
           worktrees={worktrees}
           branches={branches}
@@ -307,6 +338,20 @@ export default function ReviewView() {
             <Panel id="ReviewView-pane-1" defaultSize="38" minSize="20">
               <div className="review-list" ref={listPane}>
                 <div className="review-header">
+                  {stage?.visible && (
+                    <>
+                      <StageStrip items={stage.stepper} className="view-stepper" />
+                      {stage.driver !== 'user' && (
+                        <p className="view-stepper-hint">
+                          {stage.driver === 'lead'
+                            ? 'The chat’s lead is deciding the next stage.'
+                            : stage.autoHalt === 'paused'
+                              ? 'Auto is paused here; work you do now is where Resume continues from.'
+                              : 'Auto is running this worktree’s stages.'}
+                        </p>
+                      )}
+                    </>
+                  )}
                   <div className="review-context">
                     <strong>{reviewTask?.title ?? 'Main worktree'}</strong>
                     <code>
@@ -328,14 +373,14 @@ export default function ReviewView() {
                       {review && shownFiles.length > 0 && <DiffStat {...totals} />}
                     </span>
                     <button
-                      className="review-agent-button primary"
+                      className={`review-agent-button${nextMerge || nextFix ? '' : ' primary'}`}
                       disabled={!source?.branch}
                       onClick={() => setReviewDialogScope(dialogScope)}
                     >
                       Review branch…
                     </button>
                     <button
-                      className="review-merge-button"
+                      className={`review-merge-button${nextMerge ? ' primary' : ''}`}
                       disabled={!canMerge}
                       title={
                         canMerge
@@ -514,6 +559,7 @@ export default function ReviewView() {
                         <FixFindingsButton
                           record={reviewRecord}
                           hasFindings={!!findings?.findings?.text.trim()}
+                          primary={nextFix}
                         />
                       )
                     }

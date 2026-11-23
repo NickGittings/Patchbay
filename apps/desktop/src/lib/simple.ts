@@ -43,6 +43,9 @@ export const SIMPLE_ACTIONS = [
   'handoff',
 ] as const
 export type SimpleAction = (typeof SIMPLE_ACTIONS)[number]
+/** Where a stage was started: Chat, the regular Plan/Review views, the chat's lead, or Auto. */
+export const SIMPLE_ORIGINS = ['chat', 'manual', 'lead', 'auto'] as const
+export type SimpleOrigin = (typeof SIMPLE_ORIGINS)[number]
 interface EntryBase {
   id: string
   atMs: number
@@ -57,8 +60,12 @@ export type SimpleEntry = EntryBase &
     | {
         kind: 'action'
         action: SimpleAction
-        /** The chat's lead started this stage, so it decides what follows. */
+        /** Where the stage started; the lead decides what follows its own. */
+        origin?: SimpleOrigin
+        /** Older logs' mark for a lead launch; `launchOrigin` reads it. */
         byLead?: boolean
+        /** The Auto run that launched it. */
+        autoRunId?: string
         text?: string
         mentions?: string[]
         request?: import('../types').MergeRequest
@@ -84,6 +91,10 @@ export interface SimpleState {
   retainedWorkflow?: SimpleEntry[]
 }
 export const SIMPLE_VERSION = 2
+
+/** Logs from before origins name Chat or its lead, the only flows that logged launches then. */
+export const launchOrigin = (entry: Extract<SimpleEntry, { kind: 'action' }>): SimpleOrigin =>
+  entry.origin ?? (entry.byLead ? 'lead' : 'chat')
 
 export const workflowLog = (simple: SimpleState | null | undefined) =>
   [...(simple?.retainedWorkflow ?? []), ...(simple?.log ?? [])].toSorted(entryOrder)
@@ -256,6 +267,18 @@ function withLegacyGenerations(log: SimpleEntry[]): SimpleEntry[] {
     .reverse()
 }
 
+/** An action's origin as this build writes it: `byLead` becomes `lead`, unknown values drop. */
+function restoredAction(entry: Extract<SimpleEntry, { kind: 'action' }>): SimpleEntry {
+  const { byLead, origin, autoRunId, ...rest } = entry
+  const known = SIMPLE_ORIGINS.includes(origin as SimpleOrigin) ? origin : undefined
+  const restored = known ?? (byLead === true ? 'lead' : undefined)
+  return {
+    ...rest,
+    ...(restored ? { origin: restored } : {}),
+    ...(typeof autoRunId === 'string' ? { autoRunId } : {}),
+  }
+}
+
 /** Old layouts start empty. Never truncate the worktree's action history. */
 export function restoredSimple(value: unknown): SimpleState | null {
   if (!value || typeof value !== 'object') return null
@@ -297,7 +320,7 @@ export function restoredSimple(value: unknown): SimpleState | null {
             ? [
                 e.kind === 'prompt'
                   ? { ...e, text: '', mentions: [] }
-                  : { ...e, text: undefined, mentions: undefined },
+                  : restoredAction({ ...e, text: undefined, mentions: undefined }),
               ]
             : [],
         )
@@ -311,36 +334,38 @@ export function restoredSimple(value: unknown): SimpleState | null {
             r.generation >= 0,
         )
       : undefined,
-    log: state.log.filter((entry) => {
-      if (
-        !entry ||
-        typeof entry.id !== 'string' ||
-        seen.has(entry.id) ||
-        !Number.isFinite(entry.atMs) ||
-        !SIMPLE_STAGES.includes(entry.stage)
-      )
-        return false
-      const valid =
-        entry.kind === 'prompt'
-          ? typeof entry.text === 'string' &&
-            Array.isArray(entry.mentions) &&
-            entry.mentions.every((id) => typeof id === 'string')
-          : entry.kind === 'reply'
-            ? typeof entry.sessionId === 'string' &&
-              Number.isSafeInteger(entry.generation) &&
-              entry.generation >= 0 &&
-              Number.isSafeInteger(entry.sequence) &&
-              entry.sequence > 0 &&
-              typeof entry.text === 'string' &&
-              !replies.has(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
-            : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
-      if (valid) {
-        seen.add(entry.id)
-        if (entry.kind === 'reply')
-          replies.add(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
-      }
-      return valid
-    }),
+    log: state.log
+      .filter((entry) => {
+        if (
+          !entry ||
+          typeof entry.id !== 'string' ||
+          seen.has(entry.id) ||
+          !Number.isFinite(entry.atMs) ||
+          !SIMPLE_STAGES.includes(entry.stage)
+        )
+          return false
+        const valid =
+          entry.kind === 'prompt'
+            ? typeof entry.text === 'string' &&
+              Array.isArray(entry.mentions) &&
+              entry.mentions.every((id) => typeof id === 'string')
+            : entry.kind === 'reply'
+              ? typeof entry.sessionId === 'string' &&
+                Number.isSafeInteger(entry.generation) &&
+                entry.generation >= 0 &&
+                Number.isSafeInteger(entry.sequence) &&
+                entry.sequence > 0 &&
+                typeof entry.text === 'string' &&
+                !replies.has(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
+              : entry.kind === 'action' && SIMPLE_ACTIONS.includes(entry.action)
+        if (valid) {
+          seen.add(entry.id)
+          if (entry.kind === 'reply')
+            replies.add(`${entry.sessionId}:${entry.generation}:${entry.sequence}`)
+        }
+        return valid
+      })
+      .map((entry) => (entry.kind === 'action' ? restoredAction(entry) : entry)),
   })
   return state.version === SIMPLE_VERSION
     ? restored

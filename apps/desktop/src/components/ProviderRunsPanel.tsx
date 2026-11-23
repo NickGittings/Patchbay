@@ -12,6 +12,7 @@ import {
   type ProviderRun,
 } from '../lib/orchestration'
 import { startTerminal } from '../lib/sessions'
+import { recordPlannerStart } from '../lib/stageRecord'
 import TerminalPane from './TerminalPane'
 
 /** Scan reports stay in Plan; assignment and integration results stay in Build. */
@@ -157,7 +158,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
                       shownGoal !== run.goal
                     )
                       throw new Error('Goal or scope changed; start a new scan round')
-                    await startTerminal(PLAN_SCOPE, planner.id, task, projectId, {
+                    const requestId = await startTerminal(PLAN_SCOPE, planner.id, task, projectId, {
                       kickoff: { kind: 'plan' },
                       scanRound: run.id,
                       auto: {
@@ -167,6 +168,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
                         commit: false,
                       },
                     })
+                    if (requestId) recordPlannerStart(projectId, task, planner.id, requestId)
                   })
                 }
               >

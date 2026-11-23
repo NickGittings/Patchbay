@@ -2,7 +2,7 @@ import { projectStateOf, useStore, workspaceOf } from '../store'
 import type { SessionState } from '../types'
 import { teamFor } from './chatTeams'
 import { terminalStop } from './ipc'
-import { workflowLog, type SimpleState } from './simple'
+import { launchOrigin, workflowLog, type SimpleState } from './simple'
 import { awaitingTurn } from './simpleFlow'
 import { simpleKey, useSimpleUi } from './simpleUi'
 
@@ -39,6 +39,8 @@ export function retirableStageAgents({
   const retirable = new Set<string>()
   for (const entry of workflowLog(simple)) {
     if (entry.kind !== 'action' || !STAGE_ACTIONS.has(entry.action) || !entry.sessionId) continue
+    // Auto's agents stay its own, even once its run ended: resuming it may need them.
+    if (launchOrigin(entry) === 'auto') continue
     const id = entry.sessionId
     const session = sessions[id]
     const agent = session?.status?.agent
@@ -65,7 +67,8 @@ export async function retireStageAgents(
   projectId: string,
   task: string | null,
   launched: readonly string[],
-  foreign: ReadonlySet<string>,
+  /** Only shared planners can be another chat's, and stage entries never name one. */
+  foreign: ReadonlySet<string> = new Set(),
 ) {
   const project = projectStateOf(projectId)
   if (!project) return

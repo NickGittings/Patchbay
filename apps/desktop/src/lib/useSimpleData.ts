@@ -33,7 +33,8 @@ interface Artifacts {
   plan: PlanText
   acceptedPlan: PlanText
   proposal: PlannerProposal | null
-  review: Review
+  /** Absent when the reader skipped the diff. */
+  review?: Review
   base?: string
   worktrees: Worktree[]
   branches: string[]
@@ -42,7 +43,11 @@ interface Artifacts {
   outcomeError?: string
 }
 /** Disk-backed reader. Late replies never cross project/worktree boundaries. */
-export function useSimpleData(visible: boolean) {
+/**
+ * `diff` reads the worktree's changes too, which only Chat's Changes need; the Plan and Review
+ * views and the Auto panel read just the stage artifacts.
+ */
+export function useSimpleData(visible: boolean, diff = true) {
   const projectId = useStore((s) => s.project?.id)
   const root = useStore((s) => s.project?.root)
   const nodes = useStore((s) => (visible ? s.nodes : undefined))
@@ -93,7 +98,7 @@ export function useSimpleData(visible: boolean) {
         // saved base cannot prevent these artifacts from refreshing.
         const source = worktrees.find((w) => (worktree ? w.path === worktree : w.current))
         const base = chatReviewBase(source, state.tasks, worktrees, branches, savedBase)
-        const review = await gitReview(project, worktree, base)
+        const review = diff ? await gitReview(project, worktree, base) : undefined
         const merge = latestMerge(state)
         const request: MergeRequest | undefined =
           merge?.kind === 'action' ? merge.request : undefined
@@ -197,8 +202,12 @@ export function useSimpleData(visible: boolean) {
       window.removeEventListener('focus', focus)
       document.removeEventListener('visibilitychange', focus)
     }
-  }, [visible, projectId, task, worktree, key, savedBase, selectionKey, retryVersion])
-  const current = data?.key === key && error?.key !== key ? data : undefined
+  }, [visible, diff, projectId, task, worktree, key, savedBase, selectionKey, retryVersion])
+  // Data read without the diff isn't Chat's yet: its Changes show loading, never an empty list.
+  const current =
+    data?.key === key && error?.key !== key && (!diff || data.review !== undefined)
+      ? data
+      : undefined
   const scope = useMemo(
     () => ({
       projectId: projectId ?? '',

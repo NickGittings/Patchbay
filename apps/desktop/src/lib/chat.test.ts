@@ -21,6 +21,43 @@ test('agent selection survives persistence, bounding, and clearing history', () 
   expect(restoredSimple({ startedMs: 1, log: [] })?.selectedAgent).toBeUndefined()
 })
 
+test('restoring a log keeps launch origins, maps the older lead mark and drops unknown ones', () => {
+  const action = (extra: object, id: string) => ({
+    id,
+    kind: 'action',
+    action: 'implement',
+    stage: 'build',
+    atMs: 1,
+    sessionId: id,
+    generation: 1,
+    ...extra,
+  })
+  const restored = restoredSimple({
+    startedMs: 1,
+    version: 2,
+    log: [
+      action({ byLead: true }, 'lead'),
+      action({ origin: 'manual' }, 'manual'),
+      action({ origin: 'auto', autoRunId: 'run' }, 'auto'),
+      action({ origin: 'robot', autoRunId: 7 }, 'bad'),
+    ],
+  })!
+  expect(restored.log.map((e) => (e.kind === 'action' ? e.origin : undefined))).toEqual([
+    'lead',
+    'manual',
+    'auto',
+    undefined,
+  ])
+  expect(restored.log[0]).not.toHaveProperty('byLead')
+  expect(restored.log[2]).toMatchObject({ autoRunId: 'run' })
+  expect(restored.log[3]).not.toHaveProperty('autoRunId')
+  // Clearing history keeps the origin with the launch fact.
+  const cleared = restoredSimple(clearedSimple(restored, {}, 10))!
+  expect(cleared.retainedWorkflow?.map((e) => (e.kind === 'action' ? e.origin : ''))).toContain(
+    'manual',
+  )
+})
+
 test('handoff contains workspace and recent discussion and is bounded', () => {
   const simple: SimpleState = {
     startedMs: 1,

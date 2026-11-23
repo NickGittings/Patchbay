@@ -17,6 +17,7 @@ import { useMapActivityFeedback } from './lib/mapActivity'
 import SimpleDiff from './components/SimpleDiff'
 import AgentCanvas from './components/AgentCanvas'
 import { useSimpleData } from './lib/useSimpleData'
+import { useChatReading, WorktreeReaderContext } from './lib/useStageModel'
 import { simpleKey, useSimpleUi } from './lib/simpleUi'
 import ChatMode from './components/ChatMode'
 import { followNotifications } from './lib/notifications'
@@ -34,7 +35,7 @@ import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
 import { ReactFlowProvider } from '@xyflow/react'
-import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useContext, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useCollapsed } from './lib/useCollapsed'
 import {
   CHAT_LAYOUT,
@@ -216,9 +217,13 @@ function NavigationView() {
     if (chatPanel.collapsed && focusShowChat.current) showChatRef.current?.focus()
     focusShowChat.current = false
   }, [chatPanel.collapsed])
-  // Read artifacts only while Chat, Changes or Agents is visible.
+  // Chat, Changes and Agents need the shared reader while visible.
   const reading = simple && (!chatPanel.collapsed || !!chatPane)
-  const reader = useSimpleData(reading)
+  useEffect(() => {
+    useChatReading.setState({ reading })
+    return () => useChatReading.setState({ reading: false })
+  }, [reading])
+  const reader = useContext(WorktreeReaderContext)!
   const storyBoard = useStore((s) => s.storyBoard)
   const dockViews = useExtensionViews('dock').views.length > 0
   const dock = useStore(hasDockTabs) || dockViews
@@ -298,6 +303,21 @@ function NavigationView() {
       </SimpleWorktreeContext>
     </SimpleChanges>
   )
+}
+
+/**
+ * Reads the active worktree's artifacts once, while Chat, the Plan or Review view or the Auto
+ * panel shows them, for all of them (`useStageModel`).
+ */
+function WorktreeReader({ children }: { children: ReactNode }) {
+  const chat = useChatReading((s) => s.reading)
+  const views = useStore(
+    (s) =>
+      (!s.simpleMode && (s.view === 'plan' || s.view === 'review')) || s.utilityPanel === 'auto',
+  )
+  // Only Chat lists changes; the views need the stage artifacts alone.
+  const reader = useSimpleData(chat || views, chat)
+  return <WorktreeReaderContext value={reader}>{children}</WorktreeReaderContext>
 }
 
 function AppWorkspace() {
@@ -456,7 +476,9 @@ function AppWorkspace() {
 export default function App() {
   return (
     <ReactFlowProvider>
-      <AppWorkspace />
+      <WorktreeReader>
+        <AppWorkspace />
+      </WorktreeReader>
       <MergeCleanupDialog />
     </ReactFlowProvider>
   )

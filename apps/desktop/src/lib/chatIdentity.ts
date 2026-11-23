@@ -1,7 +1,14 @@
-import { MERGE_SCOPE, PLAN_SCOPE, REVIEW_SCOPE, type SessionRecord } from '../types'
+import {
+  MERGE_SCOPE,
+  PLAN_SCOPE,
+  REVIEW_SCOPE,
+  TASK_ROOT_SCOPE,
+  type SessionRecord,
+} from '../types'
 import { profileHookProvider } from './agentProfiles'
 import { useChatTeams, type ChatTeam } from './chatTeams'
 import type { ProviderRun } from './orchestration'
+import { sessionRole } from './sessionList'
 
 /** A provider as shown to people. */
 export function providerLabel(provider: string | null | undefined) {
@@ -44,7 +51,44 @@ export function leadsActiveTeam(sid: string, teams: Record<string, readonly Chat
   )
 }
 
-/** Roles come from durable membership, never the workflow stage or selected terminal. */
+/** Whether a Chat team adopted `record` or launched it as one of its provider run's jobs. */
+export function teamWorker(
+  record: SessionRecord | undefined,
+  teams: readonly ChatTeam[] = [],
+  runs: readonly ProviderRun[] = [],
+) {
+  return (
+    !!record &&
+    (teams.some((t) => Object.hasOwn(t.scopes ?? {}, record.id)) ||
+      runs.some(
+        (r) =>
+          teams.some((t) => t.id === r.chatTeam) && r.jobs.some((j) => j.sessionId === record.id),
+      ))
+  )
+}
+
+/**
+ * Whether a label names this agent as the Builder rather than its own role: a team's worker, or
+ * the worktree's root build agent. Component, Fix, Coordinator and Worker agents outside a team
+ * keep their own label.
+ */
+export function namedBuilder(
+  record: SessionRecord | undefined,
+  teams: readonly ChatTeam[] = [],
+  runs: readonly ProviderRun[] = [],
+) {
+  return (
+    teamWorker(record, teams, runs) ||
+    (record?.metadata.componentId === TASK_ROOT_SCOPE &&
+      record.spec.purpose !== 'chat' &&
+      sessionRole(record.metadata).role === 'Build')
+  )
+}
+
+/**
+ * Roles come from durable membership, else the launch scope, never the workflow stage or selected
+ * terminal, so an agent reads the same in Chat and the regular views.
+ */
 function chatRoleKey(
   record: SessionRecord | undefined,
   teams: readonly ChatTeam[] = [],
@@ -52,15 +96,17 @@ function chatRoleKey(
 ): ChatRoleKey {
   return teams.some((t) => t.lead.sessionId === record?.id)
     ? 'lead'
-    : record &&
-        (teams.some((t) => Object.hasOwn(t.scopes ?? {}, record.id)) ||
-          runs.some(
-            (r) =>
-              teams.some((t) => t.id === r.chatTeam) &&
-              r.jobs.some((j) => j.sessionId === record.id),
-          ))
+    : teamWorker(record, teams, runs)
       ? 'builder'
-      : (SCOPE_ROLES[record?.metadata.componentId ?? ''] ?? 'agent')
+      : record && Object.hasOwn(SCOPE_ROLES, record.metadata.componentId)
+        ? SCOPE_ROLES[record.metadata.componentId]
+        : // Build, Fix, Coordinator and Worker agents build, whichever flow launched them; a
+          // plain chat agent only talks.
+          record &&
+            record.spec.purpose !== 'chat' &&
+            sessionRole(record.metadata).tone === 'implement'
+          ? 'builder'
+          : 'agent'
 }
 
 export function chatRole(

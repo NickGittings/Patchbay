@@ -16,7 +16,6 @@ import {
   resumeAutoWithAgent,
   skipStage,
   stopAuto,
-  STAGE_LABELS,
 } from '../../lib/auto'
 import { revealTerminal } from '../../lib/attention'
 import { useClockNow } from '../../lib/clock'
@@ -33,6 +32,9 @@ import { useRunningReviewLanes } from '../../lib/reviewAgents'
 import { useReviewFindings } from '../../lib/useReviewFindings'
 import { activeTaskOf } from '../../lib/tasks'
 import { shortSha } from '../../lib/commitId'
+import { autoStepper } from '../../lib/stageModel'
+import { useStageModel } from '../../lib/useStageModel'
+import StageStrip from '../StageStrip'
 import './auto.css'
 
 function validationSummary(reports: ActionReport[]) {
@@ -92,6 +94,8 @@ export default function AutoPanel({
   const keepAwake = useStore((s) => s.workspaceSettings.autoKeepAwake === true)
   const power = useAutoPower()
   const run = useStore((s) => s.auto)
+  // The worktree's shared stage model, which also covers work after this run ended.
+  const stage = useStageModel()
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
   const draftVersion = useStore((s) => s.autoDraftVersion)
@@ -188,17 +192,9 @@ export default function AutoPanel({
         {powerSection}
       </PanelContent>
     )
-  const steps = [
-    ...(run.scanners?.length || run.scanRound ? ['scan' as const] : []),
-    'plan' as const,
-    'implement' as const,
-    'validate' as const,
-    'review' as const,
-    // A run in place ends after review.
-    ...(inPlace(run) ? [] : ['merge' as const]),
-  ]
-  const current = currentStep(run)
-  const currentIndex = steps.indexOf(current)
+  // A run that later work superseded shows that work, as Chat does; otherwise the run's stages.
+  const superseded = !!stage && !stage.autoCurrent
+  const stages = superseded ? stage.stepper : autoStepper(run)
   const tone = STATUS_TONES[run.status]
   const stoppable = !['done', 'stopped'].includes(run.status)
   const scheduleKey = JSON.stringify([projectId, task, run.runId, run.status, run.stage])
@@ -229,23 +225,12 @@ export default function AutoPanel({
             {run.goal}
           </p>
         </header>
-        <ol className="auto-stepper" aria-label="Run stages">
-          {steps.map((stage, i) => (
-            <li
-              key={stage}
-              aria-current={stage === current ? 'step' : undefined}
-              data-state={
-                i < currentIndex || (i === currentIndex && run.status === 'done')
-                  ? 'done'
-                  : i === currentIndex
-                    ? CURRENT_STEP_STATES[run.status]
-                    : 'upcoming'
-              }
-            >
-              {STAGE_LABELS[stage]}
-            </li>
-          ))}
-        </ol>
+        <StageStrip items={stages} label={superseded ? 'Current work stages' : 'Run stages'} />
+        {superseded && (
+          <p className="auto-hint" role="status">
+            Work continued after this run; the stages show the worktree’s current work.
+          </p>
+        )}
         {(run.autonomous || run.recovery) && (
           <div className="auto-meta">
             {run.autonomous && (
@@ -458,23 +443,6 @@ const STATUS_TONES: Record<AutoRun['status'], string> = {
   failed: 'bad',
   done: 'ok',
   stopped: '',
-}
-
-/** How the stepper marks the run's stage, so a paused, failed or stopped run doesn't look active. */
-const CURRENT_STEP_STATES: Record<AutoRun['status'], string> = {
-  running: 'current',
-  paused: 'attention',
-  waitingOnYou: 'attention',
-  failed: 'failed',
-  done: 'done',
-  stopped: 'stopped',
-}
-
-/** The stepper stage a run is on: fixing is implementing again, and the gate belongs to merge. */
-function currentStep(run: AutoRun) {
-  if (run.stage === 'fix') return 'implement'
-  if (run.stage === 'mergeGate' || run.stage === 'done') return inPlace(run) ? 'review' : 'merge'
-  return run.stage
 }
 
 /** The run's latest review verdict at a glance, with a way to read it in Review. */
