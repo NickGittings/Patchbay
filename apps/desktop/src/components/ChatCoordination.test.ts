@@ -33,7 +33,7 @@ function Flags({ team }: { team: ChatTeam; openTerminal?: unknown }) {
 }
 
 test.each([
-  ['failed', 'Worker exited', true],
+  ['failed', 'Sub-builder exited', true],
   ['launching', 'Launch unconfirmed; retry required', true],
   ['launching', null, false],
   ['running', null, false],
@@ -104,7 +104,7 @@ test('a dismissed failure clears the badge while a fresh attempt still flags it'
     id: 'reader',
     requestId: 'attempt-1',
     state: 'failed',
-    error: 'Worker exited',
+    error: 'Sub-builder exited',
     terminal: { name: 'Codex' },
   } as ProviderJob
   const team = {
@@ -114,7 +114,7 @@ test('a dismissed failure clears the badge while a fresh attempt still flags it'
     state: 'running',
     messages: [],
   } as unknown as ChatTeam
-  state.dismissed = [JSON.stringify(['attempt-1', 'failed', 'Worker exited'])]
+  state.dismissed = [JSON.stringify(['attempt-1', 'failed', 'Sub-builder exited'])]
   const render = () => renderToStaticMarkup(createElement(Flags, { team }))
   state.jobs = [failed]
   const html = render()

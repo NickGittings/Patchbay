@@ -29,6 +29,7 @@
   --task: var(--review);
   --role-lead: var(--accent);
   --role-builder: #2dd4bf;
+  --role-subBuilder: var(--role-builder);
   --role-planner: #f472b6;
   --role-reviewer: var(--review);
   /* Neutral, so a merge agent never reads as the amber 'needs attention' signal. */

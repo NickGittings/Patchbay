@@ -29,10 +29,11 @@ export default function TaskTerminals({ entries }: { entries: TaskTerminal[] }) 
     const record = records.find((r) => r.id === sid)
     const owner = record?.metadata.projectId ?? ''
     const identity = record && chatIdentity(record, teams[owner], runs[owner])
-    const onTeam =
-      identity?.roleKey === 'lead' ||
-      (identity?.roleKey === 'builder' && namedBuilder(record, teams[owner], runs[owner]))
-    const prefix = tileLabel(entry, record, onTeam ? identity.role : undefined)
+    const role =
+      identity && (identity.roleKey === 'lead' || namedBuilder(record, identity.roleKey))
+        ? identity.role
+        : undefined
+    const prefix = tileLabel(entry, record, role)
     return (
       <section
         className={`terminal-tile health-${status.health} ${focused === sid ? 'focused' : ''} ${maximized === sid ? 'maximized' : ''}`}

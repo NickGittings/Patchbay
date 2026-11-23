@@ -16,9 +16,9 @@ Prompt delivery uses hook-confirmed readiness and generation checks (`simpleComp
 
 A provider's own question tool (Claude `AskUserQuestion`, Codex `request_user_input` in Plan mode and `request_user_input_async` elsewhere, whose questions carry `title` and plain-string options; all reported as `AskUserQuestion`) carries every question, header and option to `AgentReport.questions` (↔ `types.ts` `UserQuestion`), and `ChatQuestion` shows them. Its `PreToolUse` hook journals the status first, then calls the bridge's `AskUser` (only the agent's own running conversation, once its conversation is reported) and waits up to `agent_hooks::ANSWER_WAIT`; the hook timeout for `PreToolUse` is `QUESTION_HOOK_TIMEOUT`, and an install with the older short timeout reads as not installed. The desktop offers it through `agent_questions::Questions` (`patchbay://agent-question`/`-closed`) only for sessions Chat shows (`agent_questions_watch`, from `ChatMode`); others return at once. A `ChatQuestion` card on screen claims its question (`lib/agentQuestions.ts`) within `CLAIM_WAIT`, else the hook returns nothing and the provider's menu asks in the terminal. Releases wait a tick so a remount keeps them. Send answer gives one answer per question (chosen labels joined, plus Other text); Answer in terminal, leaving Chat, a newer question from the session or the deadline hand it back to the menu. Claude receives the answers as the tool's `updatedInput.answers`; Codex accepts no replacement input, so its call is declined with the answers as the reason. An unanswered asynchronous Codex question stays queued in its terminal while the turn works on. Nothing is typed into the terminal. A call Chat can't show in full (more than `QUESTION_LIMIT` or blank questions) goes straight to the menu.
 
-Tool approvals use the same relay. The reporter journals a `PermissionRequest`, then offers it as `AskUser { permission: true }` with one question (tool as header; command, file, URL or description as text; `agent_hooks::ALLOW` / `DENY` ↔ `agentQuestions.ts` `PERMISSION_ALLOW` / `PERMISSION_DENY`). `ChatQuestion` shows Allow, Deny (with an optional reason) and Answer in terminal; the hook returns the provider's `decision.behavior`, any answer but Allow denying with the user's text as `message`. Once answered it journals `PermissionDecided`, which `status` reads as `working`, since no provider hook ends the wait before the tool finishes. `ExitPlanMode`, question tools and subagents are never offered, and Codex keeps its approvals when `config.toml` names an `approvals_reviewer` other than `user`: in the `profile` the file selects (its `<profile>.config.toml`, then its table), else at the top level, and in any profile table when the file selects none, since the command line may. `PermissionRequest` shares the long hook timeout, so installs with the short one read as not installed. `ChatMode` shows the lead's and running workers' requests (`withOfferedQuestions` adds a held question whose session reports no input wait, as Codex does through its review grace, unless its hooks confirm the turn was interrupted or the agent ended). A denial reaches the hook as `Deny` or `Deny: <reason>`, so no reason reads as approval.
+Tool approvals use the same relay. The reporter journals a `PermissionRequest`, then offers it as `AskUser { permission: true }` with one question (tool as header; command, file, URL or description as text; `agent_hooks::ALLOW` / `DENY` ↔ `agentQuestions.ts` `PERMISSION_ALLOW` / `PERMISSION_DENY`). `ChatQuestion` shows Allow, Deny (with an optional reason) and Answer in terminal; the hook returns the provider's `decision.behavior`, any answer but Allow denying with the user's text as `message`. Once answered it journals `PermissionDecided`, which `status` reads as `working`, since no provider hook ends the wait before the tool finishes. `ExitPlanMode`, question tools and subagents are never offered, and Codex keeps its approvals when `config.toml` names an `approvals_reviewer` other than `user`: in the `profile` the file selects (its `<profile>.config.toml`, then its table), else at the top level, and in any profile table when the file selects none, since the command line may. `PermissionRequest` shares the long hook timeout, so installs with the short one read as not installed. `ChatMode` shows the lead's and running sub-builders' requests (`withOfferedQuestions` adds a held question whose session reports no input wait, as Codex does through its review grace, unless its hooks confirm the turn was interrupted or the agent ended). A denial reaches the hook as `Deny` or `Deny: <reason>`, so no reason reads as approval.
 
-The `@` popup lists matching components first, then epics, features and stories in board order (`MentionCandidate`). A story pick inserts `storyToken` (`@` and a title slug) and a `Mention` with `kind: 'story'`; it never changes the highlight or scope, and `componentMentions` keeps story ids out of logged and scope mentions. `transmittedText` still strips component tokens, replaces each intact story token with `[<Kind> <id>: <title>]`, and appends one `Referenced from the story board:` block (ancestry, saved status, description and acceptance criteria), so planners and workers get the item too, not only the lead. Saved drafts without `kind` restore as component mentions. Full views have no composer, so story mentions are Chat-only.
+The `@` popup lists matching components first, then epics, features and stories in board order (`MentionCandidate`). A story pick inserts `storyToken` (`@` and a title slug) and a `Mention` with `kind: 'story'`; it never changes the highlight or scope, and `componentMentions` keeps story ids out of logged and scope mentions. `transmittedText` still strips component tokens, replaces each intact story token with `[<Kind> <id>: <title>]`, and appends one `Referenced from the story board:` block (ancestry, saved status, description and acceptance criteria), so planners and sub-builders get the item too, not only the lead. Saved drafts without `kind` restore as component mentions. Full views have no composer, so story mentions are Chat-only.
 
 The lead reads the board with `agent stories [--id]` (`Action::Stories`: items in board order, `next`, and with `id` the planner's Story section). Its instructions answer "what's next?" with `next` and offer Plan or Auto without starting either. `startPlan` takes `story` in place of `goal` (a `goal` beside it reaches the planner as its plan request), and `startAuto` an optional `story`; the id must exist when the request is made, only those two actions take one, and Auto takes one only in a worktree, which its story is linked to. The story's text is Auto's goal even beside a requested `goal`. Delivery confirmation (`sentFromDraft`) compares only the message before its story references, since the lead may change a story's status as soon as it is sent.
 
@@ -46,7 +46,7 @@ copy/open failures show actionable feedback.
 
 A finished reply keeps its turn's steps folded beneath its timestamp (`activity.ts` `replyTurn`: the reply's turn from the session's retained `replies` of the same generation, then that turn's retained steps) with the turn's length from the earlier of the prompt that started it and its first step (`turnLength`). Replies that window no longer holds, earlier runs and turnless providers show only the length, when a prompt dates it. A working agent's latest block adds the minutes since its turn began (`TurnTimer`, on the shared clock), counted from the earlier of the prompt and the turn's first retained step (`turnStartMs`), since answering a permission request resets the agent's state time.
 
-Pasting or dropping images into the composer saves each through `save_chat_attachment` (`attachments::save`: PNG, JPEG, GIF or WebP by their leading bytes, at most 10 MB, checked before the body is copied, written atomically under a fresh name in the plans folder's `attachments/`, where images older than 30 days are pruned on the next save) and inserts an `Image: <path>` line at the live caret, replacing any selection. A paste that also carries plain text (spreadsheets, documents) pastes the text instead. The main window turns off Tauri's native file drop (`dragDropEnabled: false`) so the page receives dropped files; `main.tsx` stops a file dropped elsewhere from replacing the app. Chat leads, planners and root agents are handed the plans folder and merge agents the repo's git directory, so they read the image by that path. Reviewers keep their minimal grants (their worktree and the reviews folder, which `resume_roots` re-derives), so a Claude reviewer or team worker asks to read the image, which Chat shows as an approval; Codex's sandboxes allow reading it. Send and Send anyway wait while an image is saving; a failed save shows an error and leaves the draft alone. The path is ordinary draft text, so queueing, restore and persistence need nothing extra.
+Pasting or dropping images into the composer saves each through `save_chat_attachment` (`attachments::save`: PNG, JPEG, GIF or WebP by their leading bytes, at most 10 MB, checked before the body is copied, written atomically under a fresh name in the plans folder's `attachments/`, where images older than 30 days are pruned on the next save) and inserts an `Image: <path>` line at the live caret, replacing any selection. A paste that also carries plain text (spreadsheets, documents) pastes the text instead. The main window turns off Tauri's native file drop (`dragDropEnabled: false`) so the page receives dropped files; `main.tsx` stops a file dropped elsewhere from replacing the app. Chat leads, planners and root agents are handed the plans folder and merge agents the repo's git directory, so they read the image by that path. Reviewers keep their minimal grants (their worktree and the reviews folder, which `resume_roots` re-derives), so a Claude reviewer or team sub-builder asks to read the image, which Chat shows as an approval; Codex's sandboxes allow reading it. Send and Send anyway wait while an image is saving; a failed save shows an error and leaves the draft alone. The path is ordinary draft text, so queueing, restore and persistence need nothing extra.
 
 Tool activity remains mirrored through `HookEvent.{tool,target,file_target}`, `status::Activity` and `types.ts::Activity`. Explicit file targets alone link to diffs or pulse map components; command previews and patch bodies are never paths. The newest 50 accepted tool events are retained per generation, merged by sequence in `activity.ts`, and scoped to the selected worktree. While its agent works, the latest block names the current step (`activity.ts` `activityLabel`: a verb and the command, file or query, files relative to the agent's folder) with a collapsed list of the turn's retained steps (`turnSteps`); Agents tab cards show each working agent's recent steps. Chat's Auto button keeps the existing Light settings, hook checks and ownership controls; Auto stages drive the flow and gates appear as chat prompts.
 
@@ -69,7 +69,7 @@ Deleting the work ends its chat. After **Delete worktree and branch**, **Return 
 feature branch**, or the worktree picker's **Remove worktree** and **Forget only** succeed,
 `chat::retire_task` removes the team with its checkpoint, saved context, messages and worktree lease,
 and stops its unfinished rounds. The desktop closes and forgets the team's agent terminals, including
-isolated workers, whose worktrees stay because they can hold unintegrated commits. `forgetTeamChat`
+isolated sub-builders, whose worktrees stay because they can hold unintegrated commits. `forgetTeamChat`
 resets the worktree's Chat log, workflow facts, draft and queued message. No replacement lead starts;
 the next message launches one. A cleanup that fails with the worktree still in place changes none of
 this, so it can be retried. Returning to `main` closes only the chat's stage agents; shared planners
@@ -135,11 +135,11 @@ it. The agent reads Idle, and lead replacement stays allowed. Coordination is he
 retries, so a brief rate limit does not stall a team. Held messages never hold the user's prompt, which
 can start the next turn at any time. A queued prompt waits for **Send now** or Send. `ChatLimitNotice`
 names the reset and offers **Continue with** each other preset. It and **Retry with…** disable presets
-whose own subscription is exhausted. Nothing switches automatically. A limited worker fails with that
+whose own subscription is exhausted. Nothing switches automatically. A limited sub-builder fails with that
 reason, and **Retry with…** reruns its assignment on another agent while keeping the lead's requested
 `preset` for idempotent delegation.
 
-### Persistent lead and coordinated workers
+### Persistent lead and coordinated sub-builders
 
 `reviewAgents::chatReviewBase` supplies Chat's review launches and changes reader with the same
 base. A valid saved review choice takes precedence; otherwise the default merge destination
@@ -158,7 +158,7 @@ resumes and conversation resets retain the launch purpose.
 The briefing ends with `## Lead role` (`chat::LEAD_ROLE_HEADING`): `chat::lead_instructions`, the
 same structured coordination instructions every handoff repeats. The lead coordinates agents and
 talks to the user; agents do every task (`startPlan`, `startBuild`, `startReview`, `startFix`,
-`startMerge`, report and code workers, `startAuto` for a whole pipeline). It never edits project
+`startMerge`, report and code sub-builders, `startAuto` for a whole pipeline). It never edits project
 files, and when delegation is impossible or an integration conflicts it explains the blocker to the
 user rather than doing the work. This is an instruction, not an enforced restriction. A new lead launched with that section, without an
 earlier goal and not adopted paused, starts with `recovery: false`, so the user's first message is
@@ -181,19 +181,20 @@ or reconstructs a conversation after missing history. Both paths run the same st
 ordinary session resumes keep their original purpose. A running legacy lead without readiness
 must be stopped once, then reconnected by sending again. Its saved history remains available.
 
-Chat identities use durable team membership: Lead for the team's lead, Builder for its workers
-and adopted scopes, otherwise Agent. Headers, the drawer and the composer show `chatIdentity`'s
+Chat identities use durable team membership and session scope. The team lead appears as Lead,
+assigned and adopted agents appear as Sub-builder, and root build agents and regular run
+coordinators appear as Builder. Headers, the drawer and the composer use `chatIdentity`'s
 `title` (role · provider · preset), omitting a preset named after its provider. Opening a
-Builder terminal changes the drawer identity while the composer continues to address its recipient.
-Build view terminal tiles use the same Lead and Builder roles for team members.
+Sub-builder terminal changes the drawer identity while the composer continues to address its recipient.
+Build view terminal tiles share those role labels and include the component name when available.
 
 Each worktree can have one persistent chat team. The saved `selectedAgent` becomes its lead when
 coordination is initialized; existing conversations migrate paused, preserving their history and
-recipient without launching workers. **Switch agent** queues an explicit durable provider-conversation
+recipient without launching sub-builders. **Switch agent** queues an explicit durable provider-conversation
 replacement that stops the current lead at once, even mid-turn (after an inline confirmation) or
 while work is paused; a queued prompt for that lead returns as a draft. **Clear lead context** confirms inline that provider context resets and visible
 history is replaced with a concise handoff. It uses the same durable replacement while retaining
-workers, assignments, results, inbox messages and checkpoints. Unless rounds or requests are active,
+sub-builders, assignments, results, inbox messages and checkpoints. Unless rounds or requests are active,
 the replacement's handoff is passive (`Team.quiet_recovery`): it travels with the user's next message
 and starts no turn. The confirmation belongs to one
 visit to a worktree and disappears after switching away; pending send/workflow actions and an
@@ -203,24 +204,24 @@ and plan-card boundaries; it leaves provider context and team state untouched.
 
 `orchestration::chat` stores teams alongside provider runs in the private task store, independently
 of `SimpleState`. A team owns a worktree, logical lead, session generation and observed provider
-conversation, checkpoint, worker presets, limit, rounds, message sequence and reset journal.
+conversation, checkpoint, sub-builder presets, limit, rounds, message sequence and reset journal.
 Chat-owned implementation rounds attach that lead as their coordinator; they never launch a second
-coordinator. Workers use the existing task worktree preparation and integration journal. Assignments
+coordinator. Sub-builders use the existing task worktree preparation and integration journal. Assignments
 explicitly choose `resultKind: report | code`. A report completes through `team-report`; code needs
 a clean committed HEAD submitted with `team-result`, serial integration and a fresh checkpoint
 before `team-finish`. A process exit or final reply alone is never success. Report worktrees inspect
 the recorded committed baseline even when the target contains local changes. Code delegation
 refuses dirty targets without committing or stashing user changes. Dependencies wait for submitted
-reports or integrated code, and launch reservations enforce the team-wide worker limit (default two,
+reports or integrated code, and launch reservations enforce the team-wide sub-builder limit (default two,
 excluding the lead).
 
 The authenticated `agent team*` CLI derives membership from persisted session and task identities,
-including isolated worker tasks. Session protocol 21 returns the authenticated process generation;
+including isolated sub-builder tasks. Session protocol 21 returns the authenticated process generation;
 reused command capabilities rotate on resume so a superseded process cannot act through a new
 incarnation in the same session slot. The current lead generation owns delegation, checkpointing,
-integration and finishing. Workers can submit only their assignment and message only their lead.
-The lead routes dependencies between workers. The desktop's typed team commands expose pause,
-resume, stop, retry, worker settings, new-lead selection, side messages and explicit delivery recovery.
+integration and finishing. Sub-builders can submit only their assignment and message only their lead.
+The lead routes dependencies between sub-builders. The desktop's typed team commands expose pause,
+resume, stop, retry, sub-builder settings, new-lead selection, side messages and explicit delivery recovery.
 Auto, chat and manual provider runs share exclusive target ownership; stopping a team releases its
 target without deleting results or worktrees.
 The Agents tab shows the team's work status. Pause and stop use the Chat menu; retry uses the failed assignment's inline action. Manual plan handoffs cannot
@@ -239,16 +240,16 @@ different worktree is selected. Core reserves each delivery before transport and
 messages in sequence at a hook-confirmed ready prompt. It checks session generation, approval state,
 authority and the last delivered ready turn. It never forces an automated message. A lost submission
 reply stays uncertain until explicitly marked delivered or retried. Explicit results, failures and native input
-waits notify the lead. Worker conversations remain available through Sessions; Chat shows one lead
-conversation. Failed and input-waiting workers, coordination errors and unconfirmed deliveries raise
-alert lines above the composer with their recovery actions (Retry work and Agent settings, View worker
+waits notify the lead. Sub-builder conversations remain available through Sessions; Chat shows one lead
+conversation. Failed and input-waiting sub-builders, coordination errors and unconfirmed deliveries raise
+alert lines above the composer with their recovery actions (Retry work and Agent settings, View sub-builder
 terminal, Mark delivered or Retry delivery).
 
 **Agents** sits beside Map / Stories / Changes, in Chat only (`AgentCanvas`, its own React Flow store, so
 the map's viewport is untouched). `chatAgents.ts` `chatAgentCards` lists the team's undismissed
 assignments and every other running agent of this chat, `agentSnippet` picks each card's line (input
 wait, failure, recent steps, summary, instructions, last reply) and `agentLayout` places the lead,
-workers, other agents and finished work in rows, wrapped at the column count `agentColumns` finds
+sub-builders, other agents and finished work in rows, wrapped at the column count `agentColumns` finds
 shows cards largest in the canvas. Cards subscribe to their own sessions; the graph rebuilds only
 when membership or job state changes and refits when the layout or canvas size does. The minimap and
 its toggle are `CanvasMinimap`, sharing the Map's saved preference. Cards and minimap nodes use the
@@ -261,23 +262,23 @@ assignment, from its card or details, hides its current result from the canvas, 
 focus), and lists it under Dismissed with Restore. The worktree's chat UI persists dismissals locally,
 pruned to the team's current results. Retried work appears again, and coordination retains its results.
 Chat-owned rounds appear here only;
-other provider runs remain in Plan or Build. **View worker terminal** opens the exact project session
+other provider runs remain in Plan or Build. **View sub-builder terminal** opens the exact project session
 without changing the composer recipient. Messages and queued prompts take their recipient's workflow
 stage, so messaging a build agent after a merge resumes the build flow. A team's lead has no stage:
 `thread` leaves its session and prompts out of stage selection (`SimpleSnapshot.lead`), unless that
 run was launched for a stage and then adopted as lead. The lead sets the status itself instead.
 Continue work resumes previously launched rounds and rounds paused by restart. Unlaunched queued
 rounds otherwise stay paused and are included in the lead's recovery handoff.
-Worker presets and concurrency
-settings live in Settings → Agent roles. Pause work, Continue work and Stop work live in the chat menu.
-Lead messaging and its inbox remain available while worker scheduling is paused or stopped.
+Chat teams choose presets and concurrency in **Sub-builders for this worktree** under
+Settings → Agent roles. The regular flow uses the global **Sub-builders** role default. Pause work, Continue work and Stop work live in the chat menu.
+Lead messaging and its inbox remain available while sub-builder scheduling is paused or stopped.
 
 The lead requests progress, findings, blockers and dependencies from existing agents with
 `agent team-ask --id <request-id> --to <assignment-or-session-id> --text <question>`.
 `team.informationRequests` tracks questions and responses durably. Busy recipients receive questions
 at their next ready prompt and answer with `agent team-reply --id <request-id> --text <response>`.
 Requests and replies deduplicate by ID and authenticate the recipient’s membership and generation.
-Exited or superseded recipients produce a durable failure notice without launching a replacement worker.
+Exited or superseded recipients produce a durable failure notice without launching a replacement sub-builder.
 The lead synthesizes reported results and validation for the user and follows up on outstanding requests.
 
 Provider-native compaction remains in control of context size. An observed compaction, provider
@@ -290,7 +291,7 @@ before continuing; complete checkpoint text, assignments and results remain in d
 
 Conversation replacement persists its request identity and launch template before stopping a ready
 superseded lead or starting the replacement. A busy lead queues the reset; new launches and lead
-delivery wait while running workers may still submit results. Reconciliation rebinds membership to
+delivery wait while running sub-builders may still submit results. Reconciliation rebinds membership to
 the replacement generation before delivery resumes. The visible transcript clears only after a
 confirmed replacement, and retains a concise handoff with an idempotent application marker. Failed
 or interrupted replacement preserves history and retries the same request identity after explicit
@@ -307,7 +308,7 @@ chat behavior. `node scripts/smoke-all.mjs chat-team chat-controls` exercises re
 with disposable fake providers, authenticated report/code results, existing-agent information requests,
 chat-menu controls, both clear actions, exact resume, forgotten sessions and missing provider history.
 The chat-team harness quits and relaunches the desktop to verify preserved drafts, history, responses,
-stop decisions and reconnection without a duplicate lead. Core regression tests also cover ownership, dependencies, worker
+stop decisions and reconnection without a duplicate lead. Core regression tests also cover ownership, dependencies, sub-builder
 limits, stale generations, duplicate commands, compaction and reset races.
 
 `chat_continue` resolves a worktree’s durable lead through core `continue_lead`, returning the session,
@@ -356,7 +357,7 @@ the regular review files, each launch is logged with `recordStageLaunch`, and th
 a passive note because the workflow result carries the verdict and an excerpt to the lead. A
 reviewer that ends its turn without findings for the round, exits, or disappears fails its member,
 and Settings can cancel the review. Only one plan, build, fix, review, council or merge can be active per team.
-`report` workers remain for investigation. These stages don't retire earlier stage agents, unlike
+`report` sub-builders remain for investigation. These stages don't retire earlier stage agents, unlike
 Chat's buttons.
 
 ### Lead review councils

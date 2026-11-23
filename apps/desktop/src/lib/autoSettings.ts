@@ -43,7 +43,7 @@ export const EFFORT: Record<AutoRun['effort'], EffortSettings & { note: string }
 export const STAGE_LABELS: Record<AutoStage, string> = {
   scan: 'Scan',
   plan: 'Plan',
-  implement: 'Implement',
+  implement: 'Build',
   validate: 'Validate',
   review: 'Review',
   fix: 'Fix',

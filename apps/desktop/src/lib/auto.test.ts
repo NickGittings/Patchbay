@@ -4476,7 +4476,7 @@ test('a failed coordinated launch saves its identity before handoff and recovers
       state: 'paused',
       jobs: [],
     } as unknown as import('./orchestration').ProviderRun
-    throw new Error('Coordinator launch unconfirmed')
+    throw new Error('Builder launch unconfirmed')
   })
   vi.mocked(providers.providerRuns).mockImplementation(async () => [building])
   vi.mocked(providers.driveProviderRuns).mockImplementation(async () => [building])

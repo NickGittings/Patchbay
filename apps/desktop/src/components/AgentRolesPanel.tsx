@@ -2,13 +2,12 @@ import CouncilSettings from './CouncilSettings'
 import ChatWorkerSettings from './ChatWorkerSettings'
 import { useRail } from '../lib/rail'
 import SettingsDialog, { SettingsSection } from './SettingsDialog'
-import { Fragment, useId } from 'react'
 import ReviewerPicker from './ReviewerPicker'
 import { ROLE_LABELS } from '../lib/agentRoles'
 import { defaultChatPreset } from '../lib/chatAgent'
 import { agentDevices } from '../lib/plan'
 import { useStore } from '../store'
-import { AGENT_ROLES, SUBAGENT_COUNTS, type AgentRole } from '../types'
+import { AGENT_ROLES, type AgentRole } from '../types'
 
 const DEFAULTS: Record<AgentRole, string> = {
   scan: 'Off',
@@ -22,12 +21,9 @@ const DEFAULTS: Record<AgentRole, string> = {
 
 /** Global agents per role; dialogs and Auto may override them per run. */
 export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
-  const subagentsId = useId()
   const devices = useStore((s) => s.devices)
   const roles = useStore((s) => s.agentRoles)
   const setRoles = useStore((s) => s.setAgentRoles)
-  const subagents = useStore((s) => s.implementSubagents)
-  const setSubagents = useStore((s) => s.setImplementSubagents)
   const agents = agentDevices(devices)
   const chatAgent = useStore((s) => s.workspaceSettings.chatAgent)
   const chatDefault = defaultChatPreset(devices, roles, chatAgent)
@@ -106,49 +102,25 @@ export default function AgentRolesPanel({ onClose }: { onClose: () => void }) {
           const id = roles[role]?.[0] ?? ''
           const missing = id && !agents.some((a) => a.id === id)
           return (
-            <Fragment key={role}>
-              <label className="settings-field">
-                {ROLE_LABELS[role]}
-                <select
-                  aria-label={ROLE_LABELS[role]}
-                  value={id}
-                  onChange={(e) => {
-                    const { [role]: _, ...rest } = roles
-                    setRoles(e.target.value ? { ...rest, [role]: [e.target.value] } : rest)
-                  }}
-                >
-                  <option value="">Default: {DEFAULTS[role]}</option>
-                  {missing && <option value={id}>{id} (not installed)</option>}
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {role === 'implement' && (
-                <div className="settings-field">
-                  <label
-                    title="Ask the implementation agent to split the plan across parallel subagents, if supported."
-                    htmlFor={subagentsId}
-                  >
-                    Subagents
-                  </label>
-                  <select
-                    disabled={!!roles.worker?.length}
-                    id={subagentsId}
-                    value={subagents}
-                    onChange={(e) => setSubagents(Number(e.target.value))}
-                  >
-                    {SUBAGENT_COUNTS.map((n) => (
-                      <option key={n} value={n}>
-                        {n || 'Off'}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </Fragment>
+            <label key={role} className="settings-field">
+              {ROLE_LABELS[role]}
+              <select
+                aria-label={ROLE_LABELS[role]}
+                value={id}
+                onChange={(e) => {
+                  const { [role]: _, ...rest } = roles
+                  setRoles(e.target.value ? { ...rest, [role]: [e.target.value] } : rest)
+                }}
+              >
+                <option value="">Default: {DEFAULTS[role]}</option>
+                {missing && <option value={id}>{id} (not installed)</option>}
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           )
         })}
       </SettingsSection>

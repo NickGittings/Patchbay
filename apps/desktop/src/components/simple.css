@@ -58,7 +58,7 @@
 :is(.simple-agent, .agent-card, .agent-role)[data-role='lead'] {
   --role: var(--role-lead);
 }
-:is(.simple-agent, .agent-card, .agent-role)[data-role='builder'] {
+:is(.simple-agent, .agent-card, .agent-role):is([data-role='builder'], [data-role='subBuilder']) {
   --role: var(--role-builder);
 }
 :is(.simple-agent, .agent-card, .agent-role)[data-role='planner'] {

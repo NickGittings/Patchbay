@@ -80,55 +80,52 @@ test('scanners and workers restore several presets and default to off', () => {
   expect(roleDevices(devices, { scan: ['missing'] }, 'scan')).toEqual([])
 })
 
-const legacyProject = (id: string, agentRoles: unknown, implementSubagents?: unknown) =>
+const legacyProject = (id: string, agentRoles: unknown) =>
   ({
     id,
     root: `/${id}`,
     name: id,
     savedFingerprint: '',
     draft: null,
-    layout: { agentRoles, implementSubagents },
+    layout: { agentRoles },
   }) satisfies WorkspaceDocument['projects'][number]
 
 test('legacy defaults prefer the active project and fill missing roles from other projects', () => {
   const projects = [
-    legacyProject('krilo', { plan: ['codex'], review: ['codex'] }, 3),
-    legacyProject('safari', {}, undefined),
-    legacyProject('other', { plan: ['claude'], fix: ['claude'] }, 5),
+    legacyProject('krilo', { plan: ['codex'], review: ['codex'] }),
+    legacyProject('safari', {}),
+    legacyProject('other', { plan: ['claude'], fix: ['claude'] }),
   ]
   expect(restoredAgentDefaults({ projects, activeProject: 'safari' })).toEqual({
     agentRoles: { plan: ['codex'], review: ['codex'], fix: ['claude'] },
-    implementSubagents: 3,
   })
   expect(restoredAgentDefaults({ projects, activeProject: 'other' })).toEqual({
     agentRoles: { plan: ['claude'], review: ['codex'], fix: ['claude'] },
-    implementSubagents: 5,
   })
 })
 
-test('saved global defaults including cleared roles and Off override legacy project settings', () => {
-  const projects = [legacyProject('p', { review: ['claude'], fix: ['claude'] }, 5)]
+test('saved global defaults including cleared roles override legacy project settings', () => {
+  const projects = [legacyProject('p', { review: ['claude'], fix: ['claude'] })]
   for (const agentRoles of [{}, { review: ['codex', 'codex'] }]) {
     expect(
       restoredAgentDefaults({
         projects,
         activeProject: 'p',
-        settings: { agentRoles, implementSubagents: 0 },
+        settings: { agentRoles },
       }),
-    ).toEqual({ agentRoles: restoredAgentRoles(agentRoles), implementSubagents: 0 })
+    ).toEqual({ agentRoles: restoredAgentRoles(agentRoles) })
   }
 })
 
 test('malformed global defaults are sanitized without resurrecting old project assignments', () => {
   expect(
     restoredAgentDefaults({
-      projects: [legacyProject('p', { review: ['claude'] }, 3)],
+      projects: [legacyProject('p', { review: ['claude'] })],
       activeProject: 'p',
-      settings: { agentRoles: 'bad', implementSubagents: 99 },
+      settings: { agentRoles: 'bad' },
     }),
-  ).toEqual({ agentRoles: {}, implementSubagents: 0 })
+  ).toEqual({ agentRoles: {} })
   expect(restoredAgentDefaults({ projects: [], activeProject: null })).toEqual({
     agentRoles: {},
-    implementSubagents: 0,
   })
 })

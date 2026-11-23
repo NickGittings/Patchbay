@@ -21,11 +21,11 @@ function WorkerSettings({ team }: { team: ChatTeam }) {
     (p, i, all) => all.findIndex((other) => other.id === p.id) === i,
   )
   return (
-    <SettingsSection title="Chat workers for this worktree">
+    <SettingsSection title="Sub-builders for this worktree">
       <label className="settings-field">
-        Concurrent workers
+        Concurrent sub-builders
         <input
-          aria-label="Concurrent workers"
+          aria-label="Concurrent sub-builders"
           type="number"
           min={1}
           max={8}
@@ -54,9 +54,9 @@ function WorkerSettings({ team }: { team: ChatTeam }) {
           setError('')
           try {
             const project = projectOf(team.projectId)
-            if (!project) throw new Error('Open this project before changing workers')
+            if (!project) throw new Error('Open this project before changing sub-builders')
             const workers = choices.filter((p) => presets.includes(p.id))
-            if (!workers.length) throw new Error('Choose at least one worker preset')
+            if (!workers.length) throw new Error('Choose at least one sub-builder preset')
             for (const worker of workers) await requireTeamPreset(worker, project, team.task)
             await controlTeam(team, { kind: 'settings', workers, limit })
           } catch (e) {
@@ -66,7 +66,7 @@ function WorkerSettings({ team }: { team: ChatTeam }) {
           }
         }}
       >
-        Save worker settings
+        Save sub-builder settings
       </button>
       {error && <p role="alert">{error}</p>}
     </SettingsSection>

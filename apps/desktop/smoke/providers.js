@@ -81,7 +81,7 @@
       (await smoke.planRead(opened.id, task.id)).text.includes('Provider plan'),
     )
     const build = await smoke.implementPlannerPlan('planner')
-    assert(build.implementationRun, 'Workers did not select a coordinator')
+    assert(build.implementationRun, 'Sub-builders did not select a Builder')
     const integrated = await until('isolated workers integrated', async () => {
       const r = (await smoke.driveProviderRuns(opened.id)).find(
         (r) => r.id === build.implementationRun,
@@ -93,7 +93,7 @@
       integrated.jobs.length === 2 && integrated.jobs.every((j) => j.state === 'integrated'),
       'Integration barrier was bypassed',
     )
-    assert(integrated.jobs[0].task !== integrated.jobs[1].task, 'Workers shared a worktree')
+    assert(integrated.jobs[0].task !== integrated.jobs[1].task, 'Sub-builders shared a worktree')
     const validation = await smoke.graphActionIn(opened.id, task.id, project, {
       kind: 'validateChanged',
       componentIds: ['app'],
@@ -112,8 +112,15 @@
       async () => (await smoke.reviewRead(opened.id, 'providers-feature'))?.verdict?.clean,
     )
     state().setView('implementation')
-    await until('assignments in Build', () =>
-      document.querySelector('[aria-label="Implementation assignments"] table'),
+    const table = await until('Sub-builders in Build', () =>
+      document.querySelector('[aria-label="Sub-builders"] table'),
+    )
+    const roles = Array.from(table.tBodies[0].rows, (row) =>
+      row.cells[0].firstChild?.textContent?.trim(),
+    )
+    assert(
+      roles.join(', ') === 'Builder, Sub-builder, Sub-builder',
+      `Unexpected Build assignment roles: ${roles.join(', ')}`,
     )
     await smoke.report(
       'PASS providers: two scans reached one planner; isolated workers integrated before validation and review',

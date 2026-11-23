@@ -20,7 +20,7 @@ import { distinctLabels } from './sessionList'
 import { shortTitle } from './shortTitle'
 import {
   agentProviderLabel,
-  chatRole,
+  chatIdentity,
   leadsActiveTeam,
   providerLabel,
   namedBuilder,
@@ -219,7 +219,7 @@ const PHRASES = {
 
 /**
  * Who the agent is (role, name, provider), where it works, and the one fact its event needs: why
- * it asks, or how it exited. Never its prompt, which for a Chat worker is the whole assignment.
+ * it asks, or how it exited. Never its prompt, which for a Chat Sub-builder is the whole assignment.
  */
 export function describe(
   s: Snapshot,
@@ -241,13 +241,8 @@ export function describe(
   const teams = useChatTeams.getState()
   const projectTeams = teams.teams[projectId ?? '']
   const projectRuns = teams.runs[projectId ?? '']
-  const role = chatRole(record, projectTeams, projectRuns)
-  // A team's builders read as their role, never their assignment; other agents read as their
-  // terminal tiles do (`namedBuilder`).
-  const owner =
-    role === 'Builder' && namedBuilder(record, projectTeams, projectRuns)
-      ? role
-      : sessionOwner(componentId, state?.nodes ?? [])
+  const { role, roleKey } = chatIdentity(record, projectTeams, projectRuns)
+  const owner = namedBuilder(record, roleKey) ? role : sessionOwner(componentId, state?.nodes ?? [])
   const worktree = taskTitle ? shortTitle(taskTitle) : task || 'Project folder'
   const session = s.sessions[sid]
   const provider = agentProviderLabel(record) ?? providerLabel(session?.status?.agent?.provider)

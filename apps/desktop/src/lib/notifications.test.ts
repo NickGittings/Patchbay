@@ -6,6 +6,8 @@ import {
   DEFAULT_NOTIFICATIONS,
   PLAN_SCOPE,
   TASK_ROOT_SCOPE,
+  COORDINATOR_SCOPE,
+  WORKER_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
   sessionId,
@@ -296,6 +298,8 @@ test('descriptions label special scopes and project folders without an active pr
     [PLAN_SCOPE, 'Planner'],
     // A root agent builds, whichever flow launched it.
     [TASK_ROOT_SCOPE, 'Builder'],
+    [COORDINATOR_SCOPE, 'Builder'],
+    [WORKER_SCOPE, 'Sub-builder'],
     [REVIEW_SCOPE, 'Review agent'],
     [MERGE_SCOPE, 'Merge agent'],
   ]) {
@@ -1383,20 +1387,24 @@ test('a lead identified only after queuing is dropped at flush', async () => {
   expect(mock.toast).not.toHaveBeenCalled()
 })
 
-test('a Chat worker names its role, name and provider, never its assignment', async () => {
+test('a Chat Sub-builder names its role, name and provider, never its assignment', async () => {
   mock.chat = {
     teams: { other: [{ id: 'team', lead: { sessionId: 'lead' }, scopes: { one: {} } }] },
     runs: {},
   }
-  mock.state.sessionRecords[0] = record('one', { name: 'Backend', adapter: 'codex' })
+  mock.state.sessionRecords[0] = record('one', {
+    componentId: 'web',
+    name: 'Backend',
+    adapter: 'codex',
+  })
   const plan = '## Plan\n1. Rewrite the auth module\n2. Add tests\n3. Update docs'
   const finished = report('review')
   finished.status!.agent!.prompt = plan
   mock.state.sessions.one = finished
   expect(describe(mock.state, 'one', 'finished')).toEqual({
-    owner: 'Builder',
-    title: 'Builder finished',
-    label: 'Builder · Backend · Codex · auth-refactor',
+    owner: 'Sub-builder',
+    title: 'Sub-builder finished',
+    label: 'Sub-builder · Backend · Codex · auth-refactor',
     toastBody: 'Backend · Codex · auth-refactor',
     body: 'Backend · Codex · auth-refactor · Patchbay',
   })
