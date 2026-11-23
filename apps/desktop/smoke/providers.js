@@ -112,12 +112,13 @@
       async () => (await smoke.reviewRead(opened.id, 'providers-feature'))?.verdict?.clean,
     )
     state().setView('implementation')
-    const table = await until('Sub-builders in Build', () =>
-      document.querySelector('[aria-label="Sub-builders"] table'),
-    )
-    const roles = Array.from(table.tBodies[0].rows, (row) =>
-      row.cells[0].firstChild?.textContent?.trim(),
-    )
+    // Build polls separately from the completed run checked above.
+    const rows = await until('Builder and both Sub-builder rows in Build', () => {
+      const table = document.querySelector('[aria-label="Sub-builders"] table')
+      const rows = table?.tBodies[0].rows
+      return rows && rows.length >= 3 && rows
+    })
+    const roles = Array.from(rows, (row) => row.cells[0].firstChild?.textContent?.trim())
     assert(
       roles.join(', ') === 'Builder, Sub-builder, Sub-builder',
       `Unexpected Build assignment roles: ${roles.join(', ')}`,
