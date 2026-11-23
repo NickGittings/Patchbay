@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use patchbay_core::agent_bridge::StoryEdit;
+use patchbay_core::stories::{StoryDraft, StoryKind, StoryStatus};
 use patchbay_core::{Project, context, detect, extensions::Registry};
 use std::path::{Path, PathBuf};
 
@@ -11,6 +13,10 @@ use std::path::{Path, PathBuf};
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+fn parse_story_value<T: serde::de::DeserializeOwned>(value: &str) -> serde_json::Result<T> {
+    serde_json::from_value(value.into())
 }
 
 #[derive(Subcommand)]
@@ -209,6 +215,56 @@ mod tests {
         assert_eq!(control_byte('c'), Some(0x03));
         assert_eq!(control_byte(' '), Some(0));
         assert_eq!(control_byte('é'), None);
+    }
+
+    #[test]
+    fn story_commands_parse_repeatable_fields_and_exclusive_status_options() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(
+                ["patchbay-cli", "agent"]
+                    .into_iter()
+                    .chain(args.iter().copied()),
+            )
+        };
+        let created = parse(&[
+            "story-create",
+            "--kind",
+            "story",
+            "--title",
+            "Add filters",
+            "--parent",
+            "f1",
+            "--acceptance",
+            "Filter epics",
+            "--acceptance",
+            "Filter stories",
+            "--component",
+            "ui",
+        ])
+        .unwrap();
+        assert!(matches!(created.cmd, Cmd::Agent {
+            command: AgentCmd::StoryCreate { kind: StoryKind::Story, acceptance, components, .. },
+        } if acceptance == ["Filter epics", "Filter stories"] && components == ["ui"]));
+        let updated = parse(&[
+            "story-update",
+            "s1",
+            "--status",
+            "merging",
+            "--acceptance",
+            "",
+        ])
+        .unwrap();
+        assert!(matches!(updated.cmd, Cmd::Agent {
+            command: AgentCmd::StoryUpdate { status: Some(StoryStatus::Merging), acceptance: Some(criteria), .. },
+        } if criteria == [""]));
+        for args in [
+            vec!["story-create", "--kind", "unknown", "--title", "Invalid"],
+            vec!["story-update", "s1", "--status", "active"],
+            vec!["story-update", "s1", "--close", "--reopen"],
+            vec!["story-update", "s1", "--reopen", "--status", "done"],
+        ] {
+            assert!(parse(&args).is_err());
+        }
     }
 
     #[test]
@@ -584,6 +640,44 @@ enum AgentCmd {
         #[arg(long)]
         id: Option<String>,
     },
+    /// Create an epic, feature or story on the board.
+    StoryCreate {
+        #[arg(long, value_name = "epic|feature|story", value_parser = parse_story_value::<StoryKind>)]
+        kind: StoryKind,
+        #[arg(long)]
+        parent: Option<String>,
+        #[arg(long)]
+        title: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        acceptance: Vec<String>,
+        #[arg(long = "component")]
+        components: Vec<String>,
+    },
+    /// Edit a board item. Use --close or --reopen to change an epic or feature's status.
+    StoryUpdate {
+        id: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// Replace the acceptance criteria. Pass an empty string to clear them.
+        #[arg(long)]
+        acceptance: Option<Vec<String>>,
+        /// Change the parent. Pass an empty string to unassign a story.
+        #[arg(long)]
+        parent: Option<String>,
+        #[arg(long, value_name = "backlog|planned|building|reviewing|merging|done", value_parser = parse_story_value::<StoryStatus>)]
+        status: Option<StoryStatus>,
+        #[arg(long, conflicts_with_all = ["status", "reopen"])]
+        close: bool,
+        #[arg(long, conflicts_with = "status")]
+        reopen: bool,
+        /// Set priority within siblings. Lower values appear first.
+        #[arg(long)]
+        order: Option<u32>,
+    },
     Environment {
         #[command(subcommand)]
         command: EnvironmentCmd,
@@ -730,6 +824,46 @@ fn agent(command: AgentCmd) -> Result<bool> {
             },
             AgentCmd::Context => Action::Context {},
             AgentCmd::Stories { id } => Action::Stories { id },
+            AgentCmd::StoryCreate {
+                kind,
+                parent,
+                title,
+                description,
+                acceptance,
+                components,
+            } => Action::StoryCreate {
+                draft: StoryDraft {
+                    kind,
+                    parent,
+                    title,
+                    description,
+                    acceptance,
+                    components,
+                },
+            },
+            AgentCmd::StoryUpdate {
+                id,
+                title,
+                description,
+                acceptance,
+                parent,
+                status,
+                close,
+                reopen,
+                order,
+            } => Action::StoryUpdate {
+                id,
+                edit: StoryEdit {
+                    title,
+                    description,
+                    acceptance,
+                    parent,
+                    status,
+                    close,
+                    reopen,
+                    order,
+                },
+            },
             AgentCmd::Status => Action::Status {},
             AgentCmd::Logs { session_id } => Action::Logs { session_id },
             AgentCmd::ValidateSelected { component_ids } => {

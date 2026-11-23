@@ -11,6 +11,7 @@ import { STAGE_LABELS, STATUS_LABELS, unfinished } from '../../lib/autoSettings'
 import {
   filterStories,
   moveStory,
+  PARENT_FILTERS,
   progressLabel,
   reorder,
   siblings,
@@ -202,7 +203,7 @@ export default function StoryBoard() {
                 setFilters((current) => ({ ...current, [kind]: e.target.value as StoryFilter }))
               }
             >
-              {STORY_FILTERS.map(({ value, label }) => (
+              {(kind === 'story' ? STORY_FILTERS : PARENT_FILTERS).map(({ value, label }) => (
                 <option key={value} value={value}>
                   {label}
                 </option>

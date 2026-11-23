@@ -8,6 +8,7 @@
 //! can write it. Services are recognised from their output: the first local URL
 //! they print, or the terminal's `readyWhen` text.
 
+use crate::agent_hooks::hook_event;
 use serde::{Deserialize, Serialize};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, SystemTime};
@@ -608,7 +609,7 @@ impl Tracker {
             })
             || event.sequence <= self.hook_sequence
             // Resuming an earlier conversation starts it again.
-            || (event.event != "SessionStart"
+            || (event.event != hook_event::SESSION_START
                 && self.retired_conversations.contains(&event.conversation))
         {
             return;
@@ -618,7 +619,7 @@ impl Tracker {
             // A fresh start in another conversation is a nested run (`claude -p`, `codex exec`
             // started from this terminal), which inherits the reporting environment.
             if self.hook_conversation.is_some()
-                && (event.event != "SessionStart"
+                && (event.event != hook_event::SESSION_START
                     || matches!(event.source.as_deref(), Some("startup" | "compact")))
             {
                 return;
@@ -638,13 +639,16 @@ impl Tracker {
 
             self.turn_closed = false;
         }
-        if event.event == "SessionStart"
+        if event.event == hook_event::SESSION_START
             && event.source.as_deref() == Some("startup")
             && self.report.is_some()
         {
             return;
         }
-        if matches!(event.event.as_str(), "PreCompact" | "PostCompact") {
+        if matches!(
+            event.event.as_str(),
+            hook_event::PRE_COMPACT | hook_event::POST_COMPACT
+        ) {
             if event.at_ms < self.conversation_boundary_ms
                 || event
                     .turn
@@ -653,7 +657,7 @@ impl Tracker {
             {
                 return;
             }
-            self.status.context.compaction = if event.event == "PreCompact" {
+            self.status.context.compaction = if event.event == hook_event::PRE_COMPACT {
                 crate::agent_context::Compaction::Compacting
             } else {
                 self.status.context.last_compaction_ms = Some(event.at_ms);
@@ -663,7 +667,7 @@ impl Tracker {
         }
         // A provider that reports prompts without turn identity cannot establish
         // reliable progress. Retain Active/Quiet instead of its startup Idle state.
-        if event.event == "UserPromptSubmit" && event.turn.is_none() {
+        if event.event == hook_event::USER_PROMPT_SUBMIT && event.turn.is_none() {
             self.report = None;
             self.approval_pending = None;
             self.turn_started_ms = None;
@@ -673,12 +677,15 @@ impl Tracker {
             return;
         }
         if let Some(turn) = &event.turn
-            && !matches!(event.event.as_str(), "SessionStart" | "SessionEnd")
+            && !matches!(
+                event.event.as_str(),
+                hook_event::SESSION_START | hook_event::SESSION_END
+            )
         {
             if self.retired_turns.contains(turn) {
                 return;
             }
-            if event.event == "UserPromptSubmit" {
+            if event.event == hook_event::USER_PROMPT_SUBMIT {
                 if self.hook_turn.as_ref() == Some(turn) {
                     return;
                 }
@@ -702,11 +709,11 @@ impl Tracker {
                 self.interrupted_ms = None;
                 self.resolved = None;
             }
-            if event.event != "UserPromptSubmit" {
+            if event.event != hook_event::USER_PROMPT_SUBMIT {
                 self.turn_progressed = true;
             }
         }
-        if event.event == "SessionStart" {
+        if event.event == hook_event::SESSION_START {
             match event.source.as_deref() {
                 Some("compact") => {
                     if event.at_ms < self.conversation_boundary_ms {
@@ -741,24 +748,27 @@ impl Tracker {
             }
         }
         let state = match event.event.as_str() {
-            "SessionStart" | "Interrupt" | "StopFailure" => AgentState::Idle,
-            "SessionEnd" => AgentState::Ended,
-            "PreToolUse" if event.tool.as_deref() == Some("AskUserQuestion") => {
+            hook_event::SESSION_START | hook_event::INTERRUPT | hook_event::STOP_FAILURE => {
+                AgentState::Idle
+            }
+            hook_event::SESSION_END => AgentState::Ended,
+            hook_event::PRE_TOOL_USE if event.tool.as_deref() == Some("AskUserQuestion") => {
                 AgentState::NeedsInput
             }
-            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
-                AgentState::Working
-            }
+            hook_event::USER_PROMPT_SUBMIT
+            | hook_event::PRE_TOOL_USE
+            | hook_event::POST_TOOL_USE
+            | hook_event::POST_TOOL_USE_FAILURE => AgentState::Working,
             // Chat answered the approval: the turn goes on, whichever way it was decided.
-            crate::agent_hooks::PERMISSION_DECIDED => AgentState::Working,
-            "PermissionRequest" | "Notification" => AgentState::NeedsInput,
-            "Stop" => AgentState::Review,
+            hook_event::PERMISSION_DECIDED => AgentState::Working,
+            hook_event::PERMISSION_REQUEST | hook_event::NOTIFICATION => AgentState::NeedsInput,
+            hook_event::STOP => AgentState::Review,
             _ => return,
         };
         if matches!(
             state,
             AgentState::Review | AgentState::Ended | AgentState::Idle
-        ) && event.event != "SessionStart"
+        ) && event.event != hook_event::SESSION_START
         {
             self.turn_closed = true;
         }
@@ -775,7 +785,7 @@ impl Tracker {
         } else {
             state
         };
-        if event.event == "PreToolUse"
+        if event.event == hook_event::PRE_TOOL_USE
             && state == AgentState::Working
             && let Some(tool) = &event.tool
         {
@@ -798,7 +808,7 @@ impl Tracker {
         // Keep this internal exchange in the terminal, out of chat reply history.
         let bootstrap = self.chat_startup == Some(ChatStartup::Pending);
         if bootstrap
-            && event.event == "Stop"
+            && event.event == hook_event::STOP
             && state == AgentState::Review
             && event.provider == crate::adapters::Adapter::Codex
             && event.turn.is_some()
@@ -806,7 +816,7 @@ impl Tracker {
             self.chat_startup = Some(ChatStartup::Ready);
         }
         if !bootstrap
-            && event.event == "Stop"
+            && event.event == hook_event::STOP
             && state == AgentState::Review
             && let Some(text) = &event.reply
         {
@@ -824,7 +834,7 @@ impl Tracker {
             self.pending_replies.push((previous, reply));
         }
         let previous = self.report.take();
-        let turn = if event.event == "SessionStart"
+        let turn = if event.event == hook_event::SESSION_START
             && matches!(event.source.as_deref(), Some("clear" | "resume"))
         {
             None
@@ -836,7 +846,7 @@ impl Tracker {
         });
         // Codex may hand a request to its automatic reviewer; Claude sends the hook
         // only for a dialog it shows.
-        let state = if event.event == "PermissionRequest"
+        let state = if event.event == hook_event::PERMISSION_REQUEST
             && state == AgentState::NeedsInput
             && event.provider == crate::adapters::Adapter::Codex
         {
@@ -863,7 +873,7 @@ impl Tracker {
             (None, None)
         };
         let limit_stopped_ms =
-            (event.event == "StopFailure" && event.usage_limit).then_some(event.at_ms);
+            (event.event == hook_event::STOP_FAILURE && event.usage_limit).then_some(event.at_ms);
         self.report = Some(AgentReport {
             state,
             since_ms,
@@ -949,8 +959,8 @@ impl Tracker {
     fn outlived_interrupt(&self, event: &crate::agent_hooks::HookEvent) -> bool {
         self.interrupted_ms.is_some_and(|at| {
             let grace = match event.event.as_str() {
-                "PermissionRequest" => 0,
-                "PreToolUse" => INTERRUPT_START_GRACE_MS,
+                hook_event::PERMISSION_REQUEST => 0,
+                hook_event::PRE_TOOL_USE => INTERRUPT_START_GRACE_MS,
                 _ => INTERRUPT_SETTLE_MS,
             };
             event.at_ms > at.saturating_add(grace)
@@ -1759,7 +1769,7 @@ mod tests {
             let mut tracker = Tracker::new("ready", true).with_identity("session", 42);
             tracker.on_hook(event("UserPromptSubmit", 1), 100);
             tracker.on_hook(event("PermissionRequest", 2), 200);
-            tracker.on_hook(event(crate::agent_hooks::PERMISSION_DECIDED, 3), 300);
+            tracker.on_hook(event("PermissionDecided", 3), 300);
             // Past Codex's automatic-review grace, nothing is left to ask.
             let agent = tracker.status(300 + APPROVAL_QUIET_MS).agent.unwrap();
             assert_eq!(agent.state, AgentState::Working);

@@ -54,6 +54,10 @@ export const GIT_DIRTY_EVENT = 'patchbay://git-dirty'
 export const BRANCHES_CHANGED_EVENT = 'patchbay://branches-changed'
 /** Mirrors `service::TERMINAL_EVENT`. */
 const TERMINAL_EVENT = 'patchbay://terminal'
+const FILE_ACCESS_EVENT = 'patchbay://file-access'
+const AGENT_QUESTION_EVENT = 'patchbay://agent-question'
+const AGENT_QUESTION_CLOSED_EVENT = 'patchbay://agent-question-closed'
+const VALIDATION_PROPOSALS_EVENT = 'patchbay://validation-proposals'
 
 /** Backend folder picker; may also ask whether external folders may be read. */
 export const openProject = () =>
@@ -149,8 +153,7 @@ export const pickComponentFolder = () => invoke<string | null>('pick_component_f
 /** Tell the backend which component folders are on the map; it can only narrow file access. */
 export const syncRoots = (paths: string[], projectId = useStore.getState().project?.id) =>
   invoke<void>('sync_roots', { paths, projectId })
-export const onFileAccessChanged = (handler: () => void) =>
-  listen('patchbay://file-access', handler)
+export const onFileAccessChanged = (handler: () => void) => listen(FILE_ACCESS_EVENT, handler)
 /** `task` reads the task's worktree instead of the project's own. */
 export const gitStatus = (
   components: { id: string; path: string }[],
@@ -611,13 +614,11 @@ export const onProposal = (
 export const onAgentQuestion = (
   handler: (question: import('../types').AgentQuestion) => void,
 ): Promise<UnlistenFn> =>
-  listen<import('../types').AgentQuestion>('patchbay://agent-question', (e) => handler(e.payload))
+  listen<import('../types').AgentQuestion>(AGENT_QUESTION_EVENT, (e) => handler(e.payload))
 export const onAgentQuestionClosed = (
   handler: (event: { id: string; answered: boolean }) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ id: string; answered: boolean }>('patchbay://agent-question-closed', (e) =>
-    handler(e.payload),
-  )
+  listen<{ id: string; answered: boolean }>(AGENT_QUESTION_CLOSED_EVENT, (e) => handler(e.payload))
 export const agentQuestions = () => invoke<import('../types').AgentQuestion[]>('agent_questions')
 export const agentQuestionsWatch = (sessionIds: string[]) =>
   invoke<void>('agent_questions_watch', { sessionIds })
@@ -850,7 +851,7 @@ export const enableWorktreeSetup = (projectId: string, command: string) =>
   invoke<void>('worktree_setup_enable', { projectId, command })
 
 export const onValidationProposals = (handler: (event: { projectId: string }) => void) =>
-  listen<{ projectId: string }>('patchbay://validation-proposals', (e) => handler(e.payload))
+  listen<{ projectId: string }>(VALIDATION_PROPOSALS_EVENT, (e) => handler(e.payload))
 export const validationProposalRead = (projectId: string) =>
   invoke<import('../types').PendingValidation | null>('validation_proposal_read', { projectId })
 export const validationProposalClear = (projectId: string, id: string) =>

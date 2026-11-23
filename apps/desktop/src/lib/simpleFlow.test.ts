@@ -17,8 +17,11 @@ import {
   thread,
   type SimpleState,
 } from './simple'
-import type { AutoRun, ReviewFindings, SessionRecord, SessionState } from '../types'
+import type { AutoRun, ReviewFindings, SessionRecord, SessionState, WorkflowState } from '../types'
 import type { FlowAction } from './simpleFlow'
+import type { ChatTeam } from './chatTeams'
+
+type Workflow = NonNullable<ChatTeam['requests']>[number]
 const worktree = { projectId: 'p', task: 't', path: '/t', branch: 'feature' }
 const record = (scope: string): SessionRecord =>
   ({
@@ -822,7 +825,7 @@ describe('lead-started stages', () => {
         lead: lead('idle'),
       }),
     ).toBe(false)
-    const request = (state: string, sessionId = '@task') => ({
+    const request = (state: WorkflowState, sessionId = '@task'): Workflow => ({
       id: 'r',
       action: 'startBuild',
       settings: {},
@@ -866,7 +869,7 @@ describe('lead-started stages', () => {
         lead: lead('idle'),
       }),
     ).toBe(false)
-    const other = {
+    const other: Workflow = {
       id: 'r',
       action: 'startBuild',
       settings: {},
@@ -897,7 +900,7 @@ describe('lead-started stages', () => {
         lead: lead('idle'),
       }),
     ).toBe(false)
-    const council = {
+    const council: Workflow = {
       id: 'c',
       action: 'startReview',
       settings: {},

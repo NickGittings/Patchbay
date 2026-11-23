@@ -1,5 +1,23 @@
 // Mirrors patchbay-core's serde types.
 
+/** Mirrors the reserved recipient in core's chat orchestration. */
+export const LEAD_RECIPIENT = 'lead'
+export type WorkflowAction =
+  | 'startAgent'
+  | 'startPlan'
+  | 'startBuild'
+  | 'startReview'
+  | 'startFix'
+  | 'startMerge'
+  | 'startCouncilReview'
+  | 'startAuto'
+  | 'pauseAuto'
+  | 'resumeAuto'
+  | 'stopAuto'
+export type WorkflowState =
+  'queued' | 'waiting' | 'starting' | 'running' | 'completed' | 'uncertain' | 'failed'
+export type OwnerKind = 'chat' | 'auto'
+
 export const SCAN_SCOPE = '@scan'
 export const COORDINATOR_SCOPE = '@coordinator'
 export const WORKER_SCOPE = '@worker'
@@ -1146,7 +1164,7 @@ export interface TaskActivity {
 
 /** Per-user board items, mirrored from `stories.rs`. */
 export type StoryKind = 'epic' | 'feature' | 'story'
-export type StoryStatus = 'backlog' | 'planned' | 'building' | 'done'
+export type StoryStatus = 'backlog' | 'planned' | 'building' | 'reviewing' | 'merging' | 'done'
 export interface Story {
   id: string
   kind: StoryKind
@@ -1179,6 +1197,13 @@ export interface StoryDraft {
 /** Use an empty string to clear a parent or task link. */
 export type StoryPatch = Partial<
   Pick<Story, 'title' | 'description' | 'acceptance' | 'components' | 'status' | 'order'>
-> & { parent?: string; task?: string; autoRunId?: string; reopen?: boolean }
+> & {
+  parent?: string
+  task?: string
+  autoRunId?: string
+  reopen?: boolean
+  /** Apply workflow progress only to the saved story and linkage that produced it. */
+  expectedProgress?: Pick<Story, 'status' | 'task' | 'autoRunId'>
+}
 
 export type MergeCleanup = 'ask' | 'keep' | 'delete'

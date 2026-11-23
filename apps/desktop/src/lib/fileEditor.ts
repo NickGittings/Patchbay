@@ -15,6 +15,8 @@ export interface FileRequest extends FileScope {
   target: EditorTarget
 }
 export const FILE_EDITOR_EVENT = 'patchbay:file-editor'
+export const EDITOR_CLOSE_REQUEST_EVENT = 'patchbay://editor-close-request'
+
 export const readTextFile = (scope: FileScope, path: string) =>
   invoke<TextFile>('text_file_read', { ...scope, path })
 export const saveTextFile = (scope: FileScope, file: TextFile, text: string) =>
@@ -49,7 +51,7 @@ export async function guardAllEditorWindows() {
       void listen<boolean>(reply, (event) => resolve(event.payload))
         .then((unlisten) => {
           cleanup = unlisten
-          void emitTo(window.label, 'patchbay://editor-close-request', {
+          void emitTo(window.label, EDITOR_CLOSE_REQUEST_EVENT, {
             reply,
             requester: getCurrentWindow().label,
           }).catch(() => resolve(false))

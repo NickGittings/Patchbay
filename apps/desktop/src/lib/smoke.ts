@@ -107,6 +107,10 @@ import type { NotificationDelivery } from './notifications'
 import { CHAT_LAYOUT, CHAT_PANEL } from './panelLayout'
 import * as agentQuestionsModule from './agentQuestions'
 import { MAIN_WINDOW_LABEL } from './mainWindow'
+import { MENU_ACTION_EVENT } from './nativeMenus'
+
+const SMOKE_REPORT_EVENT = 'patchbay://smoke-report'
+const SMOKE_ACK_EVENT = 'patchbay://smoke-ack'
 const agentQuestions = {
   store: agentQuestionsModule.useAgentQuestions,
   listen: agentQuestionsModule.listenAgentQuestions,
@@ -187,7 +191,7 @@ const hooks = {
   inspectNativeMenu,
   nativeMenuAction: (id: string) =>
     import('@tauri-apps/api/event').then(({ emitTo }) =>
-      emitTo(MAIN_WINDOW_LABEL, 'patchbay://menu-action', id),
+      emitTo(MAIN_WINDOW_LABEL, MENU_ACTION_EVENT, id),
     ),
   selectPanel,
   selectRailView,
@@ -339,7 +343,7 @@ const hooks = {
     await tasksSettled(projectId)
   },
   removeTask,
-  report: (message: string) => emit('patchbay://smoke-report', message),
+  report: (message: string) => emit(SMOKE_REPORT_EVENT, message),
   /**
    * Reports `message`, then resolves to the launcher's answer to it, a `<message>: <answer>` line
    * on the app's stdin (forwarded by `smoke.rs`).
@@ -348,7 +352,7 @@ const hooks = {
     const { listen } = await import('@tauri-apps/api/event')
     let answer: (value: string) => void = () => {}
     const answered = new Promise<string>((resolve) => (answer = resolve))
-    const unlisten = await listen<string>('patchbay://smoke-ack', ({ payload }) => {
+    const unlisten = await listen<string>(SMOKE_ACK_EVENT, ({ payload }) => {
       if (payload.startsWith(`${message}: `)) answer(payload.slice(message.length + 2))
     })
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -356,7 +360,7 @@ const hooks = {
       timer = setTimeout(() => reject(new Error(`no answer to ${message}`)), timeout)
     })
     try {
-      await emit('patchbay://smoke-report', message)
+      await emit(SMOKE_REPORT_EVENT, message)
       return await Promise.race([answered, expired])
     } finally {
       clearTimeout(timer)

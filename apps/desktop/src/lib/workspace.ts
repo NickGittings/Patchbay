@@ -19,6 +19,7 @@ import { reconcileSessions } from './sessions'
 import { flushMapSaves, initializeMapAutosave } from './mapSave'
 
 const RETIRED_IMPLEMENT_SETTING = 'implementSubagents'
+const QUIT_REQUEST_EVENT = 'patchbay://quit-request'
 
 let initialized: Promise<void> | undefined
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -265,7 +266,7 @@ export function initializeWorkspace() {
     let savedKeepAwake: unknown
     // Listen before restoring: the backend defers every quit to this listener, so a slow
     // restore must not swallow Cmd+Q. Flushing is a no-op until restore finishes.
-    await listen('patchbay://quit-request', async () => {
+    await listen(QUIT_REQUEST_EVENT, async () => {
       if (!(await guardAllEditorWindows())) return
       await flushMapSaves()
       await flushWorkspace()

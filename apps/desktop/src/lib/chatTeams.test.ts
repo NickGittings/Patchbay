@@ -36,8 +36,9 @@ import {
   sendWorkerMessage,
   useChatTeams,
   type ChatTeam,
+  type TeamControl,
 } from './chatTeams'
-import type { AutoRun, SessionRecord } from '../types'
+import type { AutoRun, SessionRecord, WorkflowAction } from '../types'
 const preset = {
   id: 'codex',
   name: 'Codex',
@@ -437,15 +438,14 @@ test('a side-message RPC with an uncertain reply retries the same durable identi
   expect(messages[0][1]).toEqual(messages[1][1])
 })
 
-function mockRequestDriver(action: string, settings = {}) {
+function mockRequestDriver(action: WorkflowAction, settings = {}) {
   const saved = team({
     requests: [{ id: 'request', action, settings, state: 'queued', result: null }],
   })
   vi.mocked(invoke).mockImplementation(async (cmd, args) => {
     if (cmd === 'chat_teams') return [saved] as never
     if (cmd === 'chat_team_control') {
-      const control = (args as { control: { kind: string; state: string; result: string | null } })
-        .control
+      const { control } = args as { control: TeamControl }
       if (control.kind === 'requestState') {
         const request = saved.requests![0]
         if (control.state === 'starting' && !['queued', 'waiting'].includes(request.state))
@@ -464,7 +464,7 @@ test('lead workflow controls claim requests once before applying the existing Au
   expect(pauseAuto).toHaveBeenCalledExactlyOnceWith('p', null)
   expect(saved.requests![0].state).toBe('completed')
 })
-test.each(['startPlan', 'startBuild', 'startFix', 'startMerge'])(
+test.each(['startPlan', 'startBuild', 'startFix', 'startMerge'] satisfies WorkflowAction[])(
   '%s runs its stage for the team once',
   async (action) => {
     const saved = mockRequestDriver(action)

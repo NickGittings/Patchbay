@@ -6,6 +6,7 @@ import { useCollapsed } from '../lib/useCollapsed'
 import { INSPECTOR_PANEL } from '../lib/panelLayout'
 import { listen, emitTo } from '@tauri-apps/api/event'
 import {
+  EDITOR_CLOSE_REQUEST_EVENT,
   FILE_EDITOR_EVENT,
   readTextFile,
   saveTextFile,
@@ -144,13 +145,10 @@ export default function FileEditor({
     let disposed = false
     let unlisten: (() => void) | undefined
     let stopRequests: (() => void) | undefined
-    void listen<{ reply: string; requester: string }>(
-      'patchbay://editor-close-request',
-      async (event) => {
-        const allowed = await guard()
-        await emitTo(event.payload.requester, event.payload.reply, allowed)
-      },
-    ).then((cleanup) => {
+    void listen<{ reply: string; requester: string }>(EDITOR_CLOSE_REQUEST_EVENT, async (event) => {
+      const allowed = await guard()
+      await emitTo(event.payload.requester, event.payload.reply, allowed)
+    }).then((cleanup) => {
       if (disposed) cleanup()
       else stopRequests = cleanup
     })

@@ -1,8 +1,15 @@
 vi.mock('./workspace', () => ({ flushWorkspace: vi.fn(async () => {}) }))
 import { beforeEach, expect, test, vi } from 'vitest'
 import { projectStateOf, useStore } from '../store'
-import { PLAN_SCOPE, plannerSessionId, type AutoRun, type Story, type Task } from '../types'
-import type { StoryFilter, StoryProgress } from './stories'
+import {
+  PLAN_SCOPE,
+  plannerSessionId,
+  type AutoRun,
+  type Story,
+  type StoryStatus,
+  type Task,
+} from '../types'
+import type { StoryFilter } from './stories'
 import { confirmAction } from './confirm'
 vi.mock('./ipc', () => ({
   storyList: vi.fn(),
@@ -21,8 +28,9 @@ const {
   storyStatuses,
   reopenStoryPatch,
   progressLabel,
-  PROGRESS,
-  rollup,
+  PARENT_FILTERS,
+  STORY_FILTERS,
+  STORY_STATUSES,
   storyGoal,
   planStory,
   autoStory,
@@ -114,7 +122,7 @@ test('tree orders each hierarchy level and keeps orphan stories under Unassigned
   expect(hierarchy.unassigned.map((s) => s.id)).toEqual(['free', 'orphan'])
   expect(tree([])).toEqual({ epics: [], unassigned: [] })
 })
-const filterItems: Story[] = PROGRESS.map((value) => ({
+const filterItems: Story[] = STORY_STATUSES.map((value) => ({
   ...story(value),
   status: value === 'reviewing' || value === 'merging' ? 'backlog' : value,
   task: value === 'reviewing' || value === 'merging' ? value : null,
@@ -128,7 +136,7 @@ const filterStatuses = storyStatuses(
   },
   'p',
 )
-test.each(PROGRESS)('column filter selects derived %s cards', (value) => {
+test.each(STORY_STATUSES)('column filter selects derived %s cards', (value) => {
   expect(filterStories(filterItems, filterStatuses, value).map((s) => s.id)).toEqual([value])
 })
 test('Active includes all four intermediate stages and excludes Backlog and Done', () => {
@@ -147,13 +155,27 @@ test('column filters use full-board rollups independently without adding context
     story('sibling', 'story', 'feature'),
   ]
   const statuses = storyStatuses(items, [], {}, 'p')
-  expect(statuses.get('feature')?.value).toBe('backlog')
+  expect(statuses.get('feature')?.value).toBe('active')
   const column = (kind: Story['kind']) => items.filter((s) => s.kind === kind)
-  expect(filterStories(column('epic'), statuses, 'done').map((s) => s.id)).toEqual(['epic'])
-  expect(filterStories(column('feature'), statuses, 'planned')).toEqual([])
+  expect(filterStories(column('epic'), statuses, 'closed').map((s) => s.id)).toEqual(['epic'])
+  expect(filterStories(column('feature'), statuses, 'active').map((s) => s.id)).toEqual(['feature'])
+  expect(filterStories(column('feature'), statuses, 'closed')).toEqual([])
   expect(filterStories(column('story'), statuses, 'planned').map((s) => s.id)).toEqual(['match'])
   expect(filterStories(column('feature'), statuses, 'all')).toEqual(column('feature'))
   expect(items.map((s) => s.status)).toEqual(['done', 'backlog', 'planned', 'backlog'])
+})
+test('parent columns offer All, Active and Closed while stories offer the workflow stages', () => {
+  expect(PARENT_FILTERS.map(({ value }) => value)).toEqual(['all', 'active', 'closed'])
+  expect(STORY_FILTERS.map(({ value }) => value)).toEqual([
+    'all',
+    'backlog',
+    'active',
+    'planned',
+    'building',
+    'reviewing',
+    'merging',
+    'done',
+  ])
 })
 test('column filtering preserves display order and includes matching orphan and unassigned stories', () => {
   const items = [
@@ -172,7 +194,7 @@ test('column filtering preserves display order and includes matching orphan and 
   ).toEqual(['s1', 's2', 'orphan', 'unassigned'])
   expect(hierarchy).toEqual(tree(items))
 })
-test.each<StoryFilter>(['all', 'active', ...PROGRESS])(
+test.each<StoryFilter>(['all', 'active', 'closed', ...STORY_STATUSES])(
   'column filter %s handles an empty board',
   (filter) => {
     expect(filterStories([], new Map(), filter)).toEqual([])
@@ -194,7 +216,7 @@ test('column filter follows live derived status changes without changing saved s
       { task: { runId: 'run', status: 'running', stage } },
       'p',
     )
-    for (const filter of ['building', 'reviewing', 'merging'] satisfies StoryProgress[]) {
+    for (const filter of ['building', 'reviewing', 'merging'] satisfies StoryStatus[]) {
       expect(filterStories(items, statuses, filter)).toEqual(filter === value ? items : [])
     }
   }
@@ -204,16 +226,17 @@ test('status ignores old Auto runs on reused tasks and preserves saved completio
   const item = { ...story('s'), task: 'task' }
   expect(statusOf(story('s'), [], {}, 'p')).toBe('backlog')
   expect(statusOf({ ...item, status: 'planned' }, [], {}, 'p')).toBe('planned')
-  expect(statusOf(item, [task], {}, 'p')).toBe('building')
+  expect(statusOf(item, [task], {}, 'p')).toBe('backlog')
+  expect(statusOf({ ...item, status: 'planned' }, [task], {}, 'p')).toBe('planned')
   expect(statusOf(item, [{ ...task, missing: true }], {}, 'p')).toBe('backlog')
   const done = { task: { runId: 'old', status: 'done' as const } }
-  expect(statusOf(item, [task], done, 'p')).toBe('building')
-  expect(statusOf({ ...item, autoRunId: 'new' }, [task], done, 'p')).toBe('building')
+  expect(statusOf(item, [task], done, 'p')).toBe('backlog')
+  expect(statusOf({ ...item, autoRunId: 'new' }, [task], done, 'p')).toBe('backlog')
   expect(statusOf({ ...item, autoRunId: 'old' }, [task], done, 'p')).toBe('done')
   expect(statusOf({ ...item, status: 'done' }, [], {}, 'p')).toBe('done')
 })
 test('progress labels match card wording for every stage', () => {
-  expect(PROGRESS.map(progressLabel)).toEqual([
+  expect(STORY_STATUSES.map(progressLabel)).toEqual([
     'backlog',
     'planned',
     'building',
@@ -222,29 +245,54 @@ test('progress labels match card wording for every stage', () => {
     'done',
   ])
 })
-test('parents follow children despite their own worktree or Auto, except explicit Done', () => {
+test('Active and Closed match the core parent status golden cases', () => {
+  // Paired with core `stories::tests::parent_status_matches_the_board_golden_cases`.
+  const board: Story[] = [
+    { ...story('empty', 'epic'), status: 'building' },
+    story('complete', 'epic'),
+    story('allDone', 'feature', 'complete'),
+    { ...story('done', 'story', 'allDone'), status: 'done' },
+    { ...story('manual', 'feature', 'complete'), status: 'done' },
+    { ...story('review', 'story', 'manual'), status: 'reviewing' },
+    story('partial', 'epic'),
+    story('emptyFeature', 'feature', 'partial'),
+    story('inProgress', 'feature', 'partial'),
+    { ...story('finished', 'story', 'inProgress'), status: 'done' },
+    { ...story('merge', 'story', 'inProgress'), status: 'merging' },
+    { ...story('closed', 'epic'), status: 'done' },
+    story('openFeature', 'feature', 'closed'),
+  ]
+  const expected = [
+    ['empty', 'active'],
+    ['complete', 'closed'],
+    ['allDone', 'closed'],
+    ['manual', 'closed'],
+    ['partial', 'active'],
+    ['emptyFeature', 'active'],
+    ['inProgress', 'active'],
+    ['closed', 'closed'],
+    ['openFeature', 'active'],
+  ]
+  const statuses = storyStatuses(board, [], {}, 'p')
+  expect(
+    board.filter((s) => s.kind !== 'story').map((s) => [s.id, statuses.get(s.id)?.value]),
+  ).toEqual(expected)
+})
+test('parent status ignores its own run and follows completed child runs', () => {
   const epic = story('e', 'epic')
   const feature = { ...story('f', 'feature', 'e'), task: task.id, autoRunId: 'run' }
-  for (const status of ['backlog', 'planned', 'building', 'done'] as const) {
-    const child = { ...story('s', 'story', 'f'), status }
-    for (const runs of [{}, { task: { runId: 'run', status: 'done' as const } }]) {
-      const resolved = storyStatuses([epic, feature, child], [task], runs, 'p')
-      expect(resolved.size).toBe(3)
-      expect(resolved.get('f')).toEqual({ value: status, source: 'children' })
-      expect(resolved.get('e')).toEqual({ value: status, source: 'children' })
-      expect(
-        storyStatuses([epic, { ...feature, status: 'done' }, child], [task], runs, 'p').get('f'),
-      ).toEqual({ value: 'done', source: 'saved' })
-    }
-  }
-  expect(storyStatuses([{ ...feature, parent: null }], [task], {}, 'p').get('f')).toEqual({
-    value: 'building',
-    source: 'worktree',
-    worktree: task,
-  })
-  expect(
-    storyStatuses([{ ...story('empty', 'epic'), status: 'building' }], [], {}, 'p').get('empty'),
-  ).toEqual({ value: 'building', source: 'saved' })
+  const child = story('s', 'story', 'f')
+  const runs = { task: { runId: 'run', status: 'done' as const } }
+  const ownRun = storyStatuses([epic, feature, child], [task], runs, 'p')
+  expect(ownRun.get('f')).toEqual({ value: 'active', source: 'children' })
+  const childRun = storyStatuses(
+    [epic, feature, { ...child, task: task.id, autoRunId: 'run' }],
+    [task],
+    runs,
+    'p',
+  )
+  expect(childRun.get('f')).toEqual({ value: 'closed', source: 'children' })
+  expect(childRun.get('e')).toEqual({ value: 'closed', source: 'children' })
 })
 test('saved Building agrees with the editor, including missing worktrees and Reopen', () => {
   const item = { ...story('s'), task: task.id, status: 'building' as const }
@@ -298,12 +346,6 @@ test('Reopen preserves the matching unfinished Auto run, including in a backgrou
   expect(ipc.storyCompleteAuto).toHaveBeenCalledWith('p', 'task', 'run')
   expect(useStore.getState().stories[0].status).toBe('done')
 })
-test('rollup picks the least advanced child and retains a childless parent', () => {
-  expect(rollup('planned', [])).toBe('planned')
-  expect(rollup('backlog', ['done', 'building'])).toBe('building')
-  expect(rollup('building', ['done', 'planned', 'backlog'])).toBe('backlog')
-  expect(rollup('planned', ['done', 'done'])).toBe('done')
-})
 test('goals include acceptance and descendants in hierarchy order', () => {
   const epic = story('Epic', 'epic')
   const items = [story('Story', 'story', 'Feature'), story('Feature', 'feature', 'Epic')]
@@ -337,7 +379,10 @@ test('Plan chooses the role, replaces highlights and marks Planned only after la
     highlighted: ['api'],
     dirty: false,
   })
-  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 's', { status: 'planned' })
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 's', {
+    status: 'planned',
+    expectedProgress: { status: 'backlog', task: null },
+  })
   vi.mocked(startTerminal).mockRejectedValueOnce(new Error('Failed'))
   vi.mocked(ipc.storyUpdate).mockClear()
   await expect(planStory('p', item)).rejects.toThrow('Failed')
@@ -355,8 +400,27 @@ test('Auto drafts carry story goals; linkage is recorded only once a run has a t
   expect(ipc.storyUpdate).not.toHaveBeenCalled()
   await linkAutoStory('p', null, 's')
   expect(ipc.storyUpdate).not.toHaveBeenCalled()
+  useStore.getState().patchTask('p', 'task', { auto: run({ stage: 'review' }) })
   await linkAutoStory('p', 'task', 's')
-  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 's', { task: 'task', autoRunId: '' })
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 's', {
+    task: 'task',
+    autoRunId: 'run',
+    status: 'reviewing',
+    expectedProgress: { status: 'backlog', task: null },
+  })
+  expect(useStore.getState().stories[0].status).toBe('reviewing')
+})
+test('Auto leaves completed stories alone and links parents without saving a stage', async () => {
+  useStore.setState({ stories: [{ ...story('s'), status: 'done' }, story('e', 'epic')] })
+  useStore.getState().patchTask('p', 'task', { auto: run({ stage: 'review' }) })
+  await linkAutoStory('p', 'task', 's')
+  expect(ipc.storyUpdate).not.toHaveBeenCalled()
+  await linkAutoStory('p', 'task', 'e')
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 'e', {
+    task: 'task',
+    autoRunId: 'run',
+    expectedProgress: { status: 'backlog', task: null },
+  })
 })
 test('an inactive project receives story updates and stale loads cannot overwrite them', async () => {
   const item = story('s')
@@ -477,7 +541,13 @@ test('latest review, merge or root record determines a live story stage', async 
   const record = (scope: string, startedMs: number) =>
     ({
       id: `${scope}:${startedMs}`,
-      metadata: { projectId: 'p', componentId: scope, task: task.id, branch: 'feature' },
+      metadata: {
+        projectId: 'p',
+        componentId: scope,
+        task: task.id,
+        branch: 'feature',
+        kind: 'agent',
+      },
       spec: { cwd: task.worktree, merge_source: task.worktree },
       snapshot: { startedMs },
     }) as unknown as import('../types').SessionRecord
@@ -486,7 +556,15 @@ test('latest review, merge or root record determines a live story stage', async 
   expect(worktreeStage(t, 'p', records.slice(0, 2))).toBe('reviewing')
   expect(worktreeStage(t, 'p', records)).toBe('merging')
   expect(worktreeStage(t, 'p', [...records, record('@task', 4)])).toBe('building')
-  expect(worktreeStage(t, 'other', records)).toBe('building')
+  expect(worktreeStage(t, 'p', [...records, record('@coordinator', 4)])).toBe('building')
+  expect(worktreeStage(t, 'other', records)).toBeNull()
+  expect(worktreeStage(t, 'p', [{ ...records[0], snapshot: null }])).toBeNull()
+  expect(
+    worktreeStage(t, 'p', [
+      { ...records[0], metadata: { ...records[0].metadata, kind: 'shell' } },
+      { ...records[0], spec: { ...records[0].spec, purpose: 'chat' } },
+    ]),
+  ).toBeNull()
   const unrelated = {
     ...record('@review', 20),
     metadata: { ...record('@review', 20).metadata, projectId: 'other' },
@@ -495,16 +573,20 @@ test('latest review, merge or root record determines a live story stage', async 
     'merging',
   )
   expect(statusOf({ ...story('s'), task: task.id }, [t], {}, 'p', records)).toBe('merging')
-  for (const [stage, expected] of [
-    ['review', 'reviewing'],
-    ['mergeGate', 'merging'],
-    ['merge', 'merging'],
-    ['fix', 'building'],
-  ] as const)
-    expect(statusOf({ ...story('s'), task: task.id }, [t], { task: run({ stage }) }, 'p')).toBe(
-      expected,
-    )
-  expect(rollup('done', ['reviewing', 'merging', 'done'])).toBe('reviewing')
+})
+test.each([
+  ['scan', 'planned'],
+  ['plan', 'planned'],
+  ['implement', 'building'],
+  ['validate', 'building'],
+  ['review', 'reviewing'],
+  ['mergeGate', 'merging'],
+  ['merge', 'merging'],
+  ['fix', 'building'],
+] as const)('Auto %s resolves to %s', (stage, expected) => {
+  expect(statusOf({ ...story('s'), task: task.id }, [task], { task: run({ stage }) }, 'p')).toBe(
+    expected,
+  )
 })
 test('worktree creation for a story scopes descendants and links in its follow-up', async () => {
   const { newWorktreeForStory } = await import('./stories')

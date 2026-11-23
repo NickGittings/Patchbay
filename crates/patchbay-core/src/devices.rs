@@ -1,7 +1,7 @@
 //! Devices are terminal presets you can add to any component. Built-ins use the
 //! same manifest format as user-defined devices in `~/.patchbay/devices/`.
 
-use crate::model::TerminalKind;
+use crate::model::{BUILTIN_SOURCE, TerminalKind};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -62,7 +62,7 @@ fn load_from(
         .iter()
         .filter_map(|s| serde_json::from_str::<DeviceManifest>(s).ok())
         .map(|mut d| {
-            d.source = "builtin".into();
+            d.source = BUILTIN_SOURCE.into();
             d
         })
         .collect();

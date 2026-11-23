@@ -30,6 +30,8 @@ import {
 } from './ipc'
 import { MAIN_WINDOW_LABEL } from './mainWindow'
 
+const TASK_ACTIVITY_EVENT = 'patchbay://task-activity'
+
 type Snapshot = Pick<ReturnType<typeof useStore.getState>, 'tasks' | 'activeTask'>
 
 /** The active task, if any. */
@@ -141,7 +143,7 @@ function activateTaskIn(projectId: string, task: string | null) {
  * not a task switch.
  */
 export function followActiveTask() {
-  const listener = listen<import('../types').TaskActivity>('patchbay://task-activity', (event) =>
+  const listener = listen<import('../types').TaskActivity>(TASK_ACTIVITY_EVENT, (event) =>
     applyTaskActivity(event.payload),
   )
   // The task last sent to each project's backend, so a slow earlier call can't leave the

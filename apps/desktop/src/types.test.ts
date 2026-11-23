@@ -1,5 +1,38 @@
-import { expect, test } from 'vitest'
-import { PLAN_SCOPE, PROJECT_SCOPE, parseSessionId, retask, sessionId, sessionTask } from './types'
+import { expect, expectTypeOf, test } from 'vitest'
+import type { ChatTeam } from './lib/chatTeams'
+import {
+  LEAD_RECIPIENT,
+  PLAN_SCOPE,
+  PROJECT_SCOPE,
+  parseSessionId,
+  retask,
+  sessionId,
+  sessionTask,
+  type OwnerKind,
+} from './types'
+
+// Mirrors persisted_chat_workflows_and_owners_round_trip_with_existing_wire_values in chat.rs.
+test('chat workflows use the persisted wire values', () => {
+  type Request = NonNullable<ChatTeam['requests']>[number]
+  expectTypeOf<Request['action']>().toEqualTypeOf<
+    | 'startAgent'
+    | 'startPlan'
+    | 'startBuild'
+    | 'startReview'
+    | 'startFix'
+    | 'startMerge'
+    | 'startCouncilReview'
+    | 'startAuto'
+    | 'pauseAuto'
+    | 'resumeAuto'
+    | 'stopAuto'
+  >()
+  expectTypeOf<Request['state']>().toEqualTypeOf<
+    'queued' | 'waiting' | 'starting' | 'running' | 'completed' | 'uncertain' | 'failed'
+  >()
+  expectTypeOf<OwnerKind>().toEqualTypeOf<'chat' | 'auto'>()
+  expect(LEAD_RECIPIENT).toBe('lead')
+})
 
 // Pinned in `crates/patchbay-core/src/workspace.rs` too (`session_ids_match_the_frontend`):
 // the frontend and the service must hash the same id for a session.

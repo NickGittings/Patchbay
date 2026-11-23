@@ -48,6 +48,8 @@ const FILE_ACCESS_EVENT: &str = "patchbay://file-access";
 const GIT_DIRTY_EVENT: &str = "patchbay://git-dirty";
 /// A watched `HEAD` or ref changed, so worktree branches may have moved.
 const BRANCHES_CHANGED_EVENT: &str = "patchbay://branches-changed";
+const MENU_ACTION_EVENT: &str = "patchbay://menu-action";
+const QUIT_REQUEST_EVENT: &str = "patchbay://quit-request";
 
 /// A component pop-out's window label. Must match `componentLabel` in `windows.ts`:
 /// the code points of `JSON.stringify([projectId, componentId])` in hex.
@@ -3225,10 +3227,10 @@ pub fn run() {
                 // Project and Settings always operate on the main workspace, even from a pop-out.
                 // Saving needs none of main's UI, so Cmd+S in a pop-out keeps its focus.
                 if let Some(main) = app.get_webview_window("main") {
-                    if action != "action:save" {
+                    if action != native_menu::SAVE_MENU_ACTION {
                         let _ = main.set_focus();
                     }
-                    let _ = main.emit("patchbay://menu-action", action);
+                    let _ = main.emit(MENU_ACTION_EVENT, action);
                 }
             }
         })
@@ -3463,7 +3465,7 @@ pub fn run() {
                     && app.get_webview_window("main").is_some()
                 {
                     api.prevent_exit();
-                    let _ = app.emit_to("main", "patchbay://quit-request", ());
+                    let _ = app.emit_to("main", QUIT_REQUEST_EVENT, ());
                 } else {
                     state
                         .quitting

@@ -150,6 +150,11 @@
       await import('/src/lib/ipc.ts')
     const { updateStory, refreshStories, completeAutoStories } = await import('/src/lib/stories.ts')
     const savedStory = () => state().stories.find((s) => s.id === story.id)
+    assert(
+      [...field('Status').options].map((o) => o.value).join() ===
+        'backlog,planned,building,reviewing,merging,done',
+      'story editor stage choices changed',
+    )
     // A saved intermediate status agrees on the card and in the editor.
     edit(field('Status'), 'building')
     click(button('.story-editor', 'Save'))
@@ -186,9 +191,12 @@
       'Reopen restores planned',
       () => savedStory().status === 'planned' && field('Status')?.value === 'planned',
     )
-    // An unsaved choice remains visible and survives a temporary child rollup.
+    // Child completion rolls up to Closed, and manual closure survives child cleanup.
     const statusEpic = await create('epic', 'Status regression epic')
-    edit(field('Status'), 'done')
+    assert(
+      [...field('Status').options].map((o) => o.text).join() === 'Active,Closed',
+      'parent editor status choices changed',
+    )
     const statusFeature = await storyCreate(projectId, {
       kind: 'feature',
       title: 'Status regression feature',
@@ -196,37 +204,28 @@
     })
     await refreshStories(projectId)
     await until(
-      'children take over status',
-      () => !field('Status') && query('.story-editor .story-status.backlog'),
+      'epic with active children',
+      () =>
+        field('Status')?.value === 'active' && query('.story-card.selected .story-status.active'),
     )
-    assert(
-      query('.story-status-draft')?.textContent.includes('Unsaved status: done'),
-      'child rollup silently discarded the unsaved status',
-    )
-    await saveSelected()
-    assert(
-      state().stories.find((s) => s.id === statusEpic.id).status === 'backlog',
-      'Save wrote a hidden dropdown choice after children took over',
-    )
-    await updateStory(projectId, statusFeature.id, { parent: epic.id })
-    await until('child rollup ends without losing choice', () => field('Status')?.value === 'done')
-    await updateStory(projectId, statusFeature.id, { parent: statusEpic.id })
     await updateStory(projectId, statusFeature.id, { status: 'done' })
     await until(
-      'done children allow explicit completion',
-      () => query('.story-editor .story-status.done') && button('.story-editor', 'Mark done'),
+      'closed children close the epic',
+      () =>
+        field('Status')?.value === 'active' && query('.story-card.selected .story-status.closed'),
     )
-    click(button('.story-editor', 'Mark done'))
-    await until(
-      'parent explicitly completed',
-      () => state().stories.find((s) => s.id === statusEpic.id).status === 'done',
-    )
+    edit(field('Status'), 'closed')
+    await saveSelected()
     await storyRemove(projectId, statusFeature.id, true)
     await refreshStories(projectId)
     await until(
       'parent completion survives child cleanup',
-      () => query('.story-editor .story-status.done') && button('.story-editor', 'Reopen'),
+      () =>
+        field('Status')?.value === 'closed' && query('.story-card.selected .story-status.closed'),
     )
+    edit(field('Status'), 'active')
+    await saveSelected()
+    await until('empty epic reopened', () => query('.story-card.selected .story-status.active'))
     await removeSelected(statusEpic)
     const temporaryFeature = await create('feature', 'Temporary feature', epic.id)
     await removeSelected(temporaryFeature)
@@ -245,7 +244,9 @@
       assert(select.closest('header')?.querySelector('h3'), `${title} filter is not beside title`)
       assert(
         [...select.options].map((o) => o.text).join() ===
-          'All,Backlog,Active,Planned,Building,Review,Merge,Done',
+          (title === 'Stories'
+            ? 'All,Backlog,Active,Planned,Building,Review,Merge,Done'
+            : 'All,Active,Closed'),
         `${title} filter choices changed`,
       )
     }
@@ -286,25 +287,25 @@
     edit(statusFilter(), 'planned')
     await until('Stories filtered independently', () => counts() === '2,3,3')
     assert(!card(filterSibling.title), 'Stories filter included a nonmatching sibling')
-    assert(card(filterEpic.title)?.querySelector('.story-status.done'), 'epic badge changed')
+    assert(card(filterEpic.title)?.querySelector('.story-status.closed'), 'epic badge changed')
     assert(
-      card(filterFeature.title)?.querySelector('.story-status.backlog'),
+      card(filterFeature.title)?.querySelector('.story-status.active'),
       'feature badge changed',
     )
     assert(button('.story-column', 'Unassigned stories · 1'), 'Unassigned count was not filtered')
-    edit(statusFilter('Epics'), 'done')
+    edit(statusFilter('Epics'), 'closed')
     await until('Epics filtered independently', () => counts() === '1,3,3')
-    edit(statusFilter('Features'), 'planned')
-    await until('Features filtered independently', () => counts() === '1,1,3')
+    edit(statusFilter('Features'), 'closed')
+    await until('Features filtered independently', () => counts() === '1,0,3')
     assert(!card(filterFeature.title) && card(filterStory.title), 'Features filter hid its story')
     edit(statusFilter('Features'), 'all')
     chooseCard(filterEpic.title)
     await until('epic navigation', () => counts() === '1,1,1')
     chooseCard(filterFeature.title)
-    edit(statusFilter('Epics'), 'backlog')
+    edit(statusFilter('Epics'), 'active')
     await until('hidden epic retains navigation', () => counts() === '1,1,1')
     assert(card(filterStory.title) && !card(story.title), 'filter reset hierarchy navigation')
-    edit(statusFilter('Features'), 'done')
+    edit(statusFilter('Features'), 'closed')
     await until('hidden feature retains navigation', () => counts() === '1,0,1')
     edit(statusFilter('Epics'), 'all')
     edit(statusFilter('Features'), 'all')
@@ -330,14 +331,16 @@
         field('Status').value === 'done',
       'status filter discarded the hidden editor or unsaved fields',
     )
-    for (const title of ['Epics', 'Features', 'Stories']) edit(statusFilter(title), 'merging')
+    edit(statusFilter('Epics'), 'closed')
+    edit(statusFilter('Features'), 'closed')
+    edit(statusFilter(), 'merging')
     await until(
       'filtered empty columns',
       () =>
-        counts() === '0,0,0' &&
+        counts() === '1,0,0' &&
         [...document.querySelectorAll('.story-column .story-hint')].filter(
           (el) => el.textContent === 'No matches for this status',
-        ).length === 3,
+        ).length === 2,
     )
     assert(state().dirty === filteredDirty, 'status filters dirtied the map')
     click(query('[aria-label="Close story editor"]'))
@@ -400,7 +403,9 @@
       'board mode was not saved in layout',
     )
     // Map toggles retain the mounted React Flow instance and viewport.
-    for (const title of ['Epics', 'Features', 'Stories']) edit(statusFilter(title), 'done')
+    edit(statusFilter('Epics'), 'closed')
+    edit(statusFilter('Features'), 'closed')
+    edit(statusFilter(), 'done')
     click(button('.story-board-header', 'Map'))
     await until('map visible', () => !state().storyBoard)
     await until('map component visible again', mapNodeVisible)
@@ -471,19 +476,15 @@
       components: [component.id],
     })
     state().setNewTask(null)
-    // A temporary worktree link retains a pending choice without saving it.
+    // An idle worktree link keeps the dropdown and the unsaved choice.
     chooseCard(unassigned.title)
     await until('unassigned editor before worktree linkage', () => field('Status'))
     edit(field('Status'), 'done')
     await updateStory(projectId, unassigned.id, { task: task.id })
     await until(
-      'worktree takes over status',
-      () => !field('Status') && query('.story-editor .story-status.building'),
-    )
-    await saveSelected()
-    assert(
-      state().stories.find((s) => s.id === unassigned.id).status === 'backlog',
-      'Save wrote a hidden dropdown choice after worktree linkage',
+      'idle worktree keeps saved status',
+      () =>
+        field('Status')?.value === 'done' && query('.story-card.selected .story-status.backlog'),
     )
     await updateStory(projectId, unassigned.id, { task: '' })
     await until('worktree removal restores choice', () => field('Status')?.value === 'done')
@@ -528,7 +529,7 @@
     click(await until('Reopen with unfinished Auto', () => button('.story-editor', 'Reopen')))
     await until('unfinished Auto link preserved', () => {
       const item = state().stories.find((s) => s.id === unassigned.id)
-      return item.status === 'planned' && item.autoRunId === pendingRun.runId
+      return item.status !== 'done' && item.autoRunId === pendingRun.runId
     })
     await completeAutoStories(projectId, task.id, pendingRun.runId)
     assert(
@@ -656,11 +657,9 @@
     )
     chooseCard(feature.title)
     await until(
-      'rolled-up editor progress',
+      'feature stays Active during story review',
       () =>
-        query('.story-editor .story-status.reviewing')?.textContent === 'review' &&
-        !field('Status') &&
-        query('.story-editor .story-hint')?.textContent.includes('Following child progress'),
+        query('.story-card.selected .story-status.active') && field('Status')?.value === 'active',
     )
     click(
       [...document.querySelectorAll('.story-card')].find((b) =>
@@ -763,7 +762,7 @@
       click(await until('Reopen merged story', () => button('.story-editor', 'Reopen')))
       await until(
         'merged story reopened',
-        () => state().stories.find((s) => s.id === mergeStory.id).status === 'planned',
+        () => state().stories.find((s) => s.id === mergeStory.id).status === 'merging',
       )
       for (let i = 0; i < 2; i++) {
         smoke.store.setState({ gitChanges: {} })
@@ -779,7 +778,7 @@
           'fixture branch is not integrated',
         )
         assert(
-          (await storyList(projectId)).find((s) => s.id === mergeStory.id).status === 'planned',
+          (await storyList(projectId)).find((s) => s.id === mergeStory.id).status === 'merging',
           'merge poll completed the reopened story again',
         )
       }

@@ -75,6 +75,8 @@ interface Cursor {
 }
 
 const lastSeq = new Map<string, Cursor>()
+const SERVICE_EVENT = 'patchbay://service'
+const SERVICE_RETIREMENT_EVENT = 'patchbay://service-retirement'
 
 const serviceStatus = () =>
   invoke<{ connected: boolean; instanceId: string; retirement?: ServiceRetirement }>(
@@ -186,9 +188,9 @@ export async function retireOlderService(): Promise<void> {
 export function listenForTerminals() {
   listening ??= Promise.all([
     onTerminalEvent(handleTerminalEvent),
-    listen<ServiceRetirement>('patchbay://service-retirement', (e) => applyRetirement(e.payload)),
+    listen<ServiceRetirement>(SERVICE_RETIREMENT_EVENT, (e) => applyRetirement(e.payload)),
     listen<{ connected: boolean; instanceId?: string; issue?: ServiceIssue | null }>(
-      'patchbay://service',
+      SERVICE_EVENT,
       (e) => {
         if (!e.payload.connected)
           useStore.setState({

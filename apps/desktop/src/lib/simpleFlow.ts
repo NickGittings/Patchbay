@@ -1,4 +1,10 @@
-import type { MergeOutcome, ReviewFindings, SessionRecord, SessionState } from '../types'
+import {
+  LEAD_RECIPIENT,
+  type MergeOutcome,
+  type ReviewFindings,
+  type SessionRecord,
+  type SessionState,
+} from '../types'
 import type { ChatTeam } from './chatTeams'
 import { savedStage } from './leadStageRun'
 import { reviewerBusy } from './review'
@@ -54,7 +60,7 @@ export interface SimpleFlow {
   step: SimpleStep
   prompt?: StepPrompt
   /** The lead started this stage and hasn't had its say on the result yet. */
-  waitingOn?: 'lead'
+  waitingOn?: typeof LEAD_RECIPIENT
   busyAgent?: SessionRecord
   agent?: SessionRecord
 }
@@ -439,7 +445,9 @@ export function leadDeciding({
     state === 'needsInput' ||
     (team.messages ?? []).some(
       (m) =>
-        m.recipient === 'lead' && !m.passive && (m.state === 'pending' || m.state === 'sending'),
+        m.recipient === LEAD_RECIPIENT &&
+        !m.passive &&
+        (m.state === 'pending' || m.state === 'sending'),
     ) ||
     (team.requests ?? []).some((r) => runsAgent(r, agentId))
   )
@@ -448,7 +456,7 @@ export function leadDeciding({
 /** While the lead decides, the step card offers nothing and the strip says who it waits on. */
 export function forLead(state: SimpleFlow, deciding: boolean): SimpleFlow {
   if (!deciding || !state.prompt?.actions.length) return state
-  return { ...state, prompt: undefined, waitingOn: 'lead' }
+  return { ...state, prompt: undefined, waitingOn: LEAD_RECIPIENT }
 }
 /**
  * The step Chat shows. The lead decides it, except that Auto runs its own stages, and a stage

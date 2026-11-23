@@ -164,13 +164,15 @@
 .story-status {
   text-transform: capitalize;
 }
-.story-status.planned {
+.story-status.planned,
+.story-status.active {
   color: var(--accent-text);
 }
 .story-status.building {
   color: var(--running);
 }
-.story-status.done {
+.story-status.done,
+.story-status.closed {
   color: var(--ok);
 }
 .story-worktree {

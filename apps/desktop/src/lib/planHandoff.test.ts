@@ -328,33 +328,69 @@ test('manual and Auto implementation send the same kickoff', async () => {
   }
 })
 
-test('Implement links the planner story to its worktree only after launch succeeds', async () => {
-  const item = {
-    id: 'story1',
-    kind: 'story' as const,
-    parent: null,
-    title: 'Story',
-    description: '',
-    acceptance: [],
-    components: [],
-    task: null,
-    status: 'planned' as const,
-    createdMs: 1,
-    order: 0,
-  }
+const plannedStory = {
+  id: 'story1',
+  kind: 'story' as const,
+  parent: null,
+  title: 'Story',
+  description: '',
+  acceptance: [],
+  components: [],
+  task: null,
+  status: 'planned' as const,
+  createdMs: 1,
+  order: 0,
+}
+test('Implement saves Building and links a worktree only after launch succeeds', async () => {
+  const item = plannedStory
   useStore.setState({
     stories: [item],
     activeTask: 'task1',
     planStory: 'story1',
     planStoryTerminal: 'claude',
   })
-  vi.mocked(ipc.storyUpdate).mockResolvedValue({ ...item, task: 'task1' })
+  vi.mocked(ipc.storyUpdate).mockResolvedValue({ ...item, task: 'task1', status: 'building' })
   vi.mocked(startTerminal).mockRejectedValueOnce(new Error('Failed'))
   await expect(implementPlannerPlan('claude')).rejects.toThrow('Failed')
   expect(ipc.storyUpdate).not.toHaveBeenCalled()
   await implementPlannerPlan('claude')
-  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 'story1', { task: 'task1' })
-  expect(useStore.getState().stories[0].task).toBe('task1')
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 'story1', {
+    task: 'task1',
+    status: 'building',
+    expectedProgress: { status: 'planned', task: null },
+  })
+  expect(useStore.getState().stories[0]).toMatchObject({ task: 'task1', status: 'building' })
+})
+
+test('Implement keeps the baseline for a story already linked to its worktree', async () => {
+  const item = { ...plannedStory, task: 'task1', taskHead: 'baseline' }
+  useStore.setState({
+    stories: [item],
+    activeTask: 'task1',
+    planStory: item.id,
+    planStoryTerminal: 'claude',
+  })
+  vi.mocked(ipc.storyUpdate).mockResolvedValueOnce({ ...item, status: 'building' })
+  await implementPlannerPlan('claude')
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', item.id, {
+    status: 'building',
+    expectedProgress: { status: 'planned', task: 'task1' },
+  })
+  expect(useStore.getState().stories[0].taskHead).toBe('baseline')
+})
+
+test('Implement leaves completed stories alone', async () => {
+  const item = { ...plannedStory, status: 'done' as const }
+  useStore.setState({
+    stories: [item],
+    activeTask: 'task1',
+    planStory: item.id,
+    planStoryTerminal: 'claude',
+  })
+  await implementPlannerPlan('claude')
+  expect(ipc.storyUpdate).not.toHaveBeenCalled()
+  expect(useStore.getState().stories).toEqual([item])
+  expect(useStore.getState().planStory).toBeNull()
 })
 
 test('a handoff preserves a pending story belonging to another planner', async () => {

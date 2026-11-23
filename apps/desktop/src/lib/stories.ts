@@ -1,12 +1,14 @@
 import { projectOf, projectStateOf, useStore } from '../store'
 import {
   PLAN_SCOPE,
+  COORDINATOR_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
   TASK_ROOT_SCOPE,
   type SessionRecord,
   plannerSessionId,
   type AutoRun,
+  type AutoStage,
   type Story,
   type StoryPatch,
   type StoryStatus,
@@ -121,13 +123,14 @@ export async function moveStory(projectId: string, id: string, before: string | 
 }
 const reorders = new Map<string, Promise<void>>()
 
-export type StoryProgress = StoryStatus | 'reviewing' | 'merging'
+type ParentStatus = 'active' | 'closed'
+type LiveStoryStatus = Exclude<StoryStatus, 'backlog' | 'done'>
 
-export function progressLabel(progress: StoryProgress) {
+export function progressLabel(progress: ResolvedStoryStatus['value']) {
   return progress === 'reviewing' ? 'review' : progress === 'merging' ? 'merge' : progress
 }
 
-export const PROGRESS: StoryProgress[] = [
+export const STORY_STATUSES: StoryStatus[] = [
   'backlog',
   'planned',
   'building',
@@ -141,29 +144,37 @@ export function worktreeStage(
   task: Task,
   projectId: string,
   records: readonly SessionRecord[],
-): StoryProgress {
+): LiveStoryStatus | null {
   const record = records
     .filter(
       (r) =>
+        r.snapshot &&
         r.metadata.projectId === projectId &&
-        ((r.metadata.componentId === REVIEW_SCOPE && r.metadata.branch === task.branch) ||
+        ((r.metadata.componentId === REVIEW_SCOPE &&
+          !!task.branch &&
+          r.metadata.branch === task.branch) ||
           (r.metadata.componentId === MERGE_SCOPE && r.spec.merge_source === task.worktree) ||
-          (r.metadata.componentId === TASK_ROOT_SCOPE && r.metadata.task === task.id)),
+          (r.metadata.task === task.id &&
+            (r.metadata.componentId === COORDINATOR_SCOPE ||
+              (r.metadata.componentId === TASK_ROOT_SCOPE &&
+                r.metadata.kind === 'agent' &&
+                r.spec.purpose !== 'chat')))),
     )
     .sort((a, b) => (a.snapshot?.startedMs ?? 0) - (b.snapshot?.startedMs ?? 0))
     .at(-1)
-  return record?.metadata.componentId === REVIEW_SCOPE
+  if (!record) return null
+  return record.metadata.componentId === REVIEW_SCOPE
     ? 'reviewing'
-    : record?.metadata.componentId === MERGE_SCOPE
+    : record.metadata.componentId === MERGE_SCOPE
       ? 'merging'
       : 'building'
 }
 
-export type ResolvedStoryStatus = {
-  value: StoryProgress
-} & ({ source: 'saved' | 'auto' | 'children' } | { source: 'worktree'; worktree: Task })
+export type ResolvedStoryStatus =
+  | { value: StoryStatus | ParentStatus; source: 'saved' | 'auto' | 'children' }
+  | { value: LiveStoryStatus; source: 'worktree'; worktree: Task }
 
-export type StoryFilter = 'all' | 'active' | StoryProgress
+export type StoryFilter = 'all' | ParentStatus | StoryStatus
 
 export const STORY_FILTERS: { value: StoryFilter; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -176,6 +187,12 @@ export const STORY_FILTERS: { value: StoryFilter; label: string }[] = [
   { value: 'done', label: 'Done' },
 ]
 
+export const PARENT_FILTERS: { value: StoryFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'active', label: 'Active' },
+  { value: 'closed', label: 'Closed' },
+]
+
 /** Filter one column by full-board derived status, preserving its display order. */
 export function filterStories(
   items: Story[],
@@ -185,7 +202,7 @@ export function filterStories(
   if (filter === 'all') return items
   return items.filter((item) => {
     const value = statuses.get(item.id)?.value
-    return filter === 'active'
+    return filter === 'active' && item.kind === 'story'
       ? value === 'planned' || value === 'building' || value === 'reviewing' || value === 'merging'
       : value === filter
   })
@@ -195,6 +212,18 @@ type StoryRuns = Record<
   string,
   (Pick<AutoRun, 'runId' | 'status'> & Partial<Pick<AutoRun, 'stage'>>) | null | undefined
 >
+
+const AUTO_STORY_STATUS: Record<AutoStage, LiveStoryStatus | null> = {
+  scan: 'planned',
+  plan: 'planned',
+  implement: 'building',
+  validate: 'building',
+  fix: 'building',
+  review: 'reviewing',
+  mergeGate: 'merging',
+  merge: 'merging',
+  done: null,
+}
 
 /** A worktree's live state takes precedence over a saved intermediate status. */
 function ownStatus(
@@ -215,17 +244,19 @@ function ownStatus(
     return { value: 'done', source: 'auto' }
   if (task && !task.missing) {
     const run = runs[task.id]
-    const value =
-      run && unfinished(run.status)
-        ? run.stage === 'review'
-          ? 'reviewing'
-          : run.stage === 'mergeGate' || run.stage === 'merge'
-            ? 'merging'
-            : 'building'
-        : worktreeStage(task, projectId, records)
-    return { value, source: 'worktree', worktree: task }
+    const autoStatus = run?.stage && unfinished(run.status) ? AUTO_STORY_STATUS[run.stage] : null
+    const value = autoStatus ?? worktreeStage(task, projectId, records)
+    if (value) return { value, source: 'worktree', worktree: task }
   }
   return { value: story.status, source: 'saved' }
+}
+
+/** Mirrors core `stories::parent_status`, using live progress when it is available. */
+function parentStatus(item: Story, children: ResolvedStoryStatus['value'][]): ParentStatus {
+  return item.status === 'done' ||
+    (children.length > 0 && children.every((value) => value === 'done' || value === 'closed'))
+    ? 'closed'
+    : 'active'
 }
 
 /** Resolve each item once, sharing both progress and its source with cards and editors. */
@@ -239,7 +270,7 @@ export function storyStatuses(
   const statuses = new Map<string, ResolvedStoryStatus>()
   const children = new Map<string, Story[]>()
   for (const story of stories) {
-    if (!story.parent) continue
+    if (!story.parent || story.kind === 'epic') continue
     const siblings = children.get(story.parent) ?? []
     siblings.push(story)
     children.set(story.parent, siblings)
@@ -247,18 +278,18 @@ export function storyStatuses(
   const resolve = (story: Story): ResolvedStoryStatus => {
     const cached = statuses.get(story.id)
     if (cached) return cached
-    const own = ownStatus(story, tasks, runs, projectId, records)
-    const childItems = story.kind === 'story' ? [] : (children.get(story.id) ?? [])
-    const status =
-      story.status !== 'done' && childItems.length
-        ? {
-            value: rollup(
-              own.value,
+    const childKind = story.kind === 'epic' ? 'feature' : 'story'
+    const childItems = (children.get(story.id) ?? []).filter((s) => s.kind === childKind)
+    const status: ResolvedStoryStatus =
+      story.kind === 'story'
+        ? ownStatus(story, tasks, runs, projectId, records)
+        : {
+            value: parentStatus(
+              story,
               childItems.map((s) => resolve(s).value),
             ),
-            source: 'children' as const,
+            source: story.status === 'done' || !childItems.length ? 'saved' : 'children',
           }
-        : own
     statuses.set(story.id, status)
     return status
   }
@@ -277,11 +308,16 @@ export function reopenStoryPatch(story: Story, run?: StoryRuns[string]): StoryPa
   }
 }
 
-export const STORY_STATUSES: StoryStatus[] = ['backlog', 'planned', 'building', 'done']
-
-/** Parents progress as far as their least advanced child; empty parents keep their own status. */
-export function rollup(parent: StoryProgress, children: StoryProgress[]): StoryProgress {
-  return children.length ? PROGRESS[Math.min(...children.map((s) => PROGRESS.indexOf(s)))] : parent
+/** Guard workflow writes against completion or relinking while a launch or poll was in flight. */
+export function startedStatus(
+  story: Story,
+  status?: LiveStoryStatus | null,
+): StoryPatch | undefined {
+  if (story.status === 'done') return
+  return {
+    expectedProgress: { status: story.status, task: story.task, autoRunId: story.autoRunId },
+    ...(story.kind === 'story' && status && story.status !== status ? { status } : {}),
+  }
 }
 
 export function descendants(stories: Story[], item: Story): Story[] {
@@ -420,7 +456,9 @@ export async function launchStoryPlanner(
   })
   // The planner is running either way, so its launch is still returned for logging.
   try {
-    await updateStory(projectId, story.id, { status: 'planned' })
+    const current = projectStateOf(projectId)?.stories.find((s) => s.id === story.id) ?? story
+    const patch = startedStatus(current, 'planned')
+    if (patch?.status) await updateStory(projectId, story.id, patch)
   } catch (e) {
     useStore
       .getState()
@@ -498,8 +536,11 @@ export function autoStory(projectId: string, story: Story) {
 export async function linkAutoStory(projectId: string, task: string | null, story?: string) {
   if (!story || !task) return
   try {
+    const item = await findStory(projectId, story)
     const run = autoWorkspace(projectStateOf(projectId), task)?.auto
-    await updateStory(projectId, story, { task, autoRunId: run?.runId ?? '' })
+    const patch = startedStatus(item, run?.stage && AUTO_STORY_STATUS[run.stage])
+    if (!patch) return
+    await updateStory(projectId, story, { ...patch, task, autoRunId: run?.runId ?? '' })
     if (run?.status === 'done') await completeAutoStories(projectId, task, run.runId)
   } catch (e) {
     useStore
@@ -517,7 +558,12 @@ export async function linkAutoStory(projectId: string, task: string | null, stor
 export async function completeAutoStories(projectId: string, task: string | null, runId: string) {
   if (!task) return
   const stories = projectStateOf(projectId)?.stories ?? []
-  if (!stories.some((s) => s.task === task && s.autoRunId === runId && s.status !== 'done')) return
+  if (
+    !stories.some(
+      (s) => s.kind === 'story' && s.task === task && s.autoRunId === runId && s.status !== 'done',
+    )
+  )
+    return
   const completed = await storyCompleteAuto(projectId, task, runId)
   requests.set(projectId, (requests.get(projectId) ?? 0) + 1)
   const state = projectStateOf(projectId)

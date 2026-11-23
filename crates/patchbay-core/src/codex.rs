@@ -3,6 +3,9 @@ use anyhow::{Context, Result, anyhow, ensure};
 use std::path::{Path, PathBuf};
 use toml::{Table, Value};
 
+pub(crate) const EVENT_MSG: &str = "event_msg";
+pub(crate) const TOKEN_COUNT: &str = "token_count";
+
 #[derive(Default)]
 struct Denies {
     features: Table,

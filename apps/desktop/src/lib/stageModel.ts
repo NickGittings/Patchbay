@@ -1,4 +1,4 @@
-import type { AutoRun, AutoStage } from '../types'
+import { LEAD_RECIPIENT, type AutoRun, type AutoStage } from '../types'
 import { chatAutoActive } from './chat'
 import type { ChatTeam } from './chatTeams'
 import { launchOrigin, thread, workflowLog, type SimpleState } from './simple'
@@ -126,12 +126,12 @@ export function stageModel({ snapshot, model, team }: StageModelInput) {
         // A worktree Auto ran in place has no Merge, even once later work follows the run.
         inPlace: !!auto && !['stopped', 'failed'].includes(auto.status) && runsInPlace(auto),
         halt: team?.state === 'paused' || team?.state === 'stopped' ? team.state : undefined,
-        note: status.note ?? (state.waitingOn === 'lead' ? 'Lead deciding' : undefined),
+        note: status.note ?? (state.waitingOn === LEAD_RECIPIENT ? 'Lead deciding' : undefined),
       })
   const driver: 'auto' | 'lead' | 'user' =
     autoActive || autoHalt === 'paused'
       ? 'auto'
-      : state.waitingOn === 'lead' || (team?.state === 'running' && !!team.status)
+      : state.waitingOn === LEAD_RECIPIENT || (team?.state === 'running' && !!team.status)
         ? 'lead'
         : 'user'
   return {

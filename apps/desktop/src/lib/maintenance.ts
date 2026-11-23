@@ -13,6 +13,8 @@ import {
 } from './ipc'
 import { syncProjectRoots } from './access'
 
+const BUILTIN_SOURCE = 'builtin'
+
 interface ReviewState {
   projectId: string
   draft: string
@@ -215,7 +217,7 @@ export function startMaintenanceChecks() {
   }
 }
 export const provenanceLabel = (detector?: string) =>
-  detector === 'builtin'
+  detector === BUILTIN_SOURCE
     ? 'Built-in detector'
     : detector === 'manual'
       ? 'Manual'

@@ -8,7 +8,14 @@ import { profileHookProvider } from './agentProfiles'
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
-import type { Project, SessionRecord, TerminalSpec } from '../types'
+import {
+  LEAD_RECIPIENT,
+  type Project,
+  type SessionRecord,
+  type TerminalSpec,
+  type WorkflowAction,
+  type WorkflowState,
+} from '../types'
 import type { ProviderRun } from './orchestration'
 import { LEAD_STAGE_ACTIONS } from './leadStageRun'
 import { clearedSimple } from './simple'
@@ -55,9 +62,9 @@ export interface ChatTeam {
   rounds: string[]
   requests?: {
     id: string
-    action: string
+    action: WorkflowAction
     settings: Record<string, unknown>
-    state: string
+    state: WorkflowState
     result: string | null
     councilRun?: import('./council').CouncilRun
     council?: [CouncilSettings, TerminalSpec[]]
@@ -111,7 +118,13 @@ export type TeamControl =
       roles: Record<string, string[]>
       council?: CouncilSettings
     }
-  | { kind: 'requestState'; id: string; state: string; result: string | null; passive?: boolean }
+  | {
+      kind: 'requestState'
+      id: string
+      state: Exclude<WorkflowState, 'queued' | 'uncertain'>
+      result: string | null
+      passive?: boolean
+    }
   | { kind: 'pause' | 'resume' | 'stop' | 'historyBoundary' }
   | { kind: 'block'; reason: string }
   | { kind: 'retry'; assignment: string; terminal?: TerminalSpec }
@@ -247,13 +260,13 @@ export function leadDeliveryPending(
     // A waiting passive message has no delivery coming, so it must not hold the user's prompt.
     (team.messages ?? []).some(
       (m) =>
-        m.recipient === 'lead' &&
+        m.recipient === LEAD_RECIPIENT &&
         m.state !== 'delivered' &&
         !((m.passive || held) && m.state === 'pending'),
     ) ||
     (team.deliveries ?? []).some(
       (d) =>
-        d.recipient === 'lead' &&
+        d.recipient === LEAD_RECIPIENT &&
         d.generation === generation &&
         d.readySince >= (session?.status?.agent?.sinceMs ?? 0),
     )
@@ -268,7 +281,7 @@ export function leadNotes(projectId: string, task: string | null, sid: string) {
   const waiting =
     team?.lead.sessionId === sid
       ? (team.messages ?? []).filter(
-          (m) => m.recipient === 'lead' && m.passive && m.state === 'pending',
+          (m) => m.recipient === LEAD_RECIPIENT && m.passive && m.state === 'pending',
         )
       : []
   const ids = waiting.map((m) => m.id)

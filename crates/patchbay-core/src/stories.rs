@@ -28,7 +28,16 @@ pub enum StoryStatus {
     Backlog,
     Planned,
     Building,
+    Reviewing,
+    Merging,
     Done,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ParentStatus {
+    Active,
+    Closed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,7 +88,7 @@ impl Story {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoryDraft {
     pub kind: StoryKind,
@@ -110,6 +119,16 @@ pub struct StoryPatch {
     #[serde(default)]
     pub reopen: bool,
     pub order: Option<u32>,
+    /// Workflow writes are conditional on the saved progress and worktree linkage.
+    pub expected_progress: Option<ExpectedProgress>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpectedProgress {
+    pub status: StoryStatus,
+    pub task: Option<String>,
+    pub auto_run_id: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -235,6 +254,13 @@ pub fn update(root: &Path, id: &str, patch: StoryPatch) -> Result<Story> {
             .position(|s| s.id == id)
             .ok_or_else(|| anyhow!("Unknown story {id}"))?;
         let mut item = stories[index].clone();
+        if patch.expected_progress.is_some_and(|expected| {
+            expected.status != item.status
+                || expected.task != item.task
+                || expected.auto_run_id != item.auto_run_id
+        }) {
+            return Ok(item);
+        }
         if let Some(v) = patch.title {
             item.title = v.trim().into();
         }
@@ -286,6 +312,30 @@ pub fn update(root: &Path, id: &str, patch: StoryPatch) -> Result<Story> {
         validate(&item, stories)?;
         stories[index] = item.clone();
         Ok(item)
+    })
+}
+
+/// Resolve a parent's status from saved child statuses, mirroring the board's `parentStatus`.
+#[must_use]
+pub fn parent_status(item: &Story, stories: &[Story]) -> Option<ParentStatus> {
+    let child_kind = match item.kind {
+        StoryKind::Epic => StoryKind::Feature,
+        StoryKind::Feature => StoryKind::Story,
+        StoryKind::Story => return None,
+    };
+    let children = stories
+        .iter()
+        .filter(|child| child.kind == child_kind && child.parent.as_ref() == Some(&item.id));
+    let closed = item.status == StoryStatus::Done
+        || (children.clone().next().is_some()
+            && children.into_iter().all(|child| match child.kind {
+                StoryKind::Story => child.status == StoryStatus::Done,
+                _ => parent_status(child, stories) == Some(ParentStatus::Closed),
+            }));
+    Some(if closed {
+        ParentStatus::Closed
+    } else {
+        ParentStatus::Active
     })
 }
 
@@ -398,7 +448,7 @@ pub fn complete_merge(root: &Path, source: &Path) -> Result<()> {
     modify(root, |stories| {
         for story in stories
             .iter_mut()
-            .filter(|s| s.task.as_deref() == Some(&task.id))
+            .filter(|s| s.kind == StoryKind::Story && s.task.as_deref() == Some(&task.id))
         {
             if story
                 .task_head
@@ -424,10 +474,11 @@ pub fn complete_auto(root: &Path, task: &str, run_id: &str) -> Result<Vec<Story>
         .and_then(|t| git::run(git::git(Path::new(&t.worktree)).args(["rev-parse", "HEAD"])).ok());
     modify(root, |stories| {
         let mut completed = vec![];
-        for story in stories
-            .iter_mut()
-            .filter(|s| s.task.as_deref() == Some(task) && s.auto_run_id.as_deref() == Some(run_id))
-        {
+        for story in stories.iter_mut().filter(|s| {
+            s.kind == StoryKind::Story
+                && s.task.as_deref() == Some(task)
+                && s.auto_run_id.as_deref() == Some(run_id)
+        }) {
             story.set_status(StoryStatus::Done);
             story.completed_head.clone_from(&head);
             completed.push(story.clone());
@@ -613,6 +664,83 @@ mod tests {
     }
 
     #[test]
+    fn parent_status_matches_the_board_golden_cases() {
+        // Paired with the parent status golden cases in `lib/stories.test.ts`.
+        use ParentStatus::{Active, Closed};
+        use StoryKind::{Epic, Feature, Story as S};
+        use StoryStatus::{Backlog, Building, Done, Merging, Reviewing};
+        let board: Vec<_> = [
+            ("empty", Epic, None, Building),
+            ("complete", Epic, None, Backlog),
+            ("allDone", Feature, Some("complete"), Backlog),
+            ("done", S, Some("allDone"), Done),
+            ("manual", Feature, Some("complete"), Done),
+            ("review", S, Some("manual"), Reviewing),
+            ("partial", Epic, None, Backlog),
+            ("emptyFeature", Feature, Some("partial"), Backlog),
+            ("inProgress", Feature, Some("partial"), Backlog),
+            ("finished", S, Some("inProgress"), Done),
+            ("merge", S, Some("inProgress"), Merging),
+            ("closed", Epic, None, Done),
+            ("openFeature", Feature, Some("closed"), Backlog),
+        ]
+        .into_iter()
+        .map(|(id, kind, parent, status)| Story {
+            status,
+            ..item(id, kind, parent, 0, 1)
+        })
+        .collect();
+        let statuses: Vec<_> = board
+            .iter()
+            .filter_map(|s| parent_status(s, &board).map(|status| (s.id.as_str(), status)))
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                ("empty", Active),
+                ("complete", Closed),
+                ("allDone", Closed),
+                ("manual", Closed),
+                ("partial", Active),
+                ("emptyFeature", Active),
+                ("inProgress", Active),
+                ("closed", Closed),
+                ("openFeature", Active),
+            ]
+        );
+    }
+
+    #[test]
+    fn saved_statuses_keep_their_wire_values_and_legacy_boards_load() {
+        use StoryStatus::*;
+        for (status, wire) in [
+            (Backlog, "backlog"),
+            (Planned, "planned"),
+            (Building, "building"),
+            (Reviewing, "reviewing"),
+            (Merging, "merging"),
+            (Done, "done"),
+        ] {
+            assert_eq!(serde_json::to_value(status).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<StoryStatus>(wire.into()).unwrap(),
+                status
+            );
+        }
+        let legacy: Store = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "stories": [{
+                "id": "s", "kind": "story", "title": "Legacy story",
+                "description": "", "acceptance": [], "components": [],
+                "status": "building", "createdMs": 1, "order": 1
+            }]
+        }))
+        .unwrap();
+        assert_eq!(legacy.stories[0].status, Building);
+        assert_eq!(legacy.stories[0].auto_run_id, None);
+    }
+
+    #[test]
     fn next_skips_started_done_and_linked_stories() {
         let mut board = golden_board();
         assert_eq!(next(&board).map(|s| s.id.as_str()), Some("a1"));
@@ -703,6 +831,8 @@ mod tests {
         for status in [
             StoryStatus::Planned,
             StoryStatus::Building,
+            StoryStatus::Reviewing,
+            StoryStatus::Merging,
             StoryStatus::Backlog,
         ] {
             for next in [status, StoryStatus::Done, StoryStatus::Done] {
@@ -738,6 +868,46 @@ mod tests {
         assert_eq!(legacy.reopened_status(), StoryStatus::Backlog);
         legacy.task = Some("task".into());
         assert_eq!(legacy.reopened_status(), StoryStatus::Planned);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_stale_workflow_write_preserves_manual_completion() {
+        let root = std::env::temp_dir().join(format!("patchbay-stories-{}", uuid::Uuid::new_v4()));
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .arg(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let item = create(&root, draft(StoryKind::Story, None, "Story")).unwrap();
+        let done = update(
+            &root,
+            &item.id,
+            StoryPatch {
+                status: Some(StoryStatus::Done),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let current = update(
+            &root,
+            &item.id,
+            StoryPatch {
+                status: Some(StoryStatus::Reviewing),
+                expected_progress: Some(ExpectedProgress {
+                    status: item.status,
+                    task: item.task,
+                    auto_run_id: item.auto_run_id,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(current, done);
+        assert_eq!(load(&root).unwrap(), [done]);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

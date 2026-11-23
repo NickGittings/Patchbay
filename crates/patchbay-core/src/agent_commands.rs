@@ -1,7 +1,8 @@
 //! Headless orchestration for authenticated agent commands and manual graph actions.
 use crate::actions::{ActionPlan, ActionReport, ActionRequest};
-use crate::agent_bridge::{Action, LaunchContext, Proposes, Role};
+use crate::agent_bridge::{Action, LaunchContext, Proposes, Role, StoryEdit};
 use crate::session::{Record, Request};
+use crate::stories::{self, StoryKind, StoryPatch, StoryStatus};
 use crate::{Project, access::AccessSnapshot, context, tasks};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -317,28 +318,87 @@ fn planner_root(
 /// The board in priority order for an agent: compact items, the next unstarted
 /// story, and with `id` the same briefing a story planner receives.
 fn stories_view(root: &Path, id: Option<&str>) -> Result<Value> {
-    let stories = crate::stories::load(root)?;
-    let item = |s: &crate::stories::Story| {
+    let stories = stories::load(root)?;
+    let item = |s: &stories::Story| {
+        let status = stories::parent_status(s, &stories)
+            .map_or_else(|| json!(s.status), |status| json!(status));
         json!({
             "id": s.id,
             "kind": s.kind,
             "title": s.title,
             "parent": s.parent,
-            "status": s.status,
+            "status": status,
+            "order": s.order,
             "task": s.task,
             "autoRunId": s.auto_run_id,
             "acceptance": s.acceptance,
         })
     };
     let section = id
-        .map(|id| crate::stories::section(&stories, id))
+        .map(|id| stories::section(&stories, id))
         .transpose()?
         .map(|s| s.body);
     Ok(json!({
-        "items": crate::stories::board_order(&stories).into_iter().map(item).collect::<Vec<_>>(),
-        "next": crate::stories::next(&stories).map(item),
+        "items": stories::board_order(&stories).into_iter().map(item).collect::<Vec<_>>(),
+        "next": stories::next(&stories).map(item),
         "section": section,
     }))
+}
+
+fn edit_story_board(
+    app: &impl Host,
+    root: &Path,
+    launch: &LaunchContext,
+    edit: impl FnOnce() -> Result<stories::Story>,
+) -> Result<Value> {
+    let saved = if launch.role == Role::Planner {
+        edit()?
+    } else {
+        let records: Vec<Record> = call(app, Request::List)?;
+        crate::orchestration::chat::with_lead(root, launch, &records, edit)?
+    };
+    Ok(serde_json::to_value(saved)?)
+}
+
+fn edit_story(root: &Path, id: &str, edit: StoryEdit) -> Result<stories::Story> {
+    anyhow::ensure!(
+        !(edit.close && edit.reopen || edit.status.is_some() && (edit.close || edit.reopen)),
+        "Choose one of --status, --close or --reopen"
+    );
+    if edit.status.is_some() {
+        let item = stories::load(root)?
+            .into_iter()
+            .find(|story| story.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown story {id}"))?;
+        anyhow::ensure!(
+            item.kind == StoryKind::Story,
+            "Use --close or --reopen for epics and features"
+        );
+    }
+    stories::update(
+        root,
+        id,
+        StoryPatch {
+            title: edit.title,
+            parent: edit.parent,
+            description: edit.description,
+            acceptance: edit.acceptance.map(|criteria| {
+                criteria
+                    .into_iter()
+                    .map(|criterion| criterion.trim().to_owned())
+                    .filter(|criterion| !criterion.is_empty())
+                    .collect()
+            }),
+            status: if edit.close {
+                Some(StoryStatus::Done)
+            } else {
+                edit.status
+            },
+            reopen: edit.reopen,
+            order: edit.order,
+            ..Default::default()
+        },
+    )
 }
 
 /// Execute an authenticated command in its fixed launch context.
@@ -426,6 +486,16 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
         Action::Stories { id } => {
             let project = scoped.project()?;
             stories_view(Path::new(&project.root), id.as_deref())
+        }
+        Action::StoryCreate { draft } => {
+            let project = scoped.project()?;
+            let root = Path::new(&project.root);
+            edit_story_board(app, root, launch, || stories::create(root, draft))
+        }
+        Action::StoryUpdate { id, edit } => {
+            let project = scoped.project()?;
+            let root = Path::new(&project.root);
+            edit_story_board(app, root, launch, || edit_story(root, &id, edit))
         }
         Action::Status {} => {
             let sessions = records(state, launch)?;
@@ -664,6 +734,8 @@ impl TryFrom<Action> for ActionRequest {
             | Action::ProviderRun { .. }
             | Action::Context {}
             | Action::Stories { .. }
+            | Action::StoryCreate { .. }
+            | Action::StoryUpdate { .. }
             | Action::Status {}
             | Action::Logs { .. }
             | Action::EnvironmentStop { .. }
@@ -1199,6 +1271,9 @@ mod tests {
             .map(|i| i["id"].as_str().unwrap())
             .collect();
         assert_eq!(ids, [&epic.id, &feature.id, &done.id, &top.id]);
+        assert_eq!(result["items"][0]["status"], "active");
+        assert_eq!(result["items"][1]["status"], "active");
+        assert_eq!(result["items"][2]["status"], "done");
         assert_eq!(result["next"]["id"], top.id.as_str());
         assert_eq!(result["next"]["acceptance"][0], "Top works");
         assert!(result["section"].is_null());
@@ -1222,6 +1297,190 @@ mod tests {
             )
             .is_err()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lead_and_planner_can_create_edit_close_and_reopen_board_items() {
+        use crate::orchestration::chat::{self, Checkpoint, Initialize};
+        let root =
+            std::env::temp_dir().join(format!("patchbay-story-commands-{}", uuid::Uuid::new_v4()));
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .arg(&root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let root = root.canonicalize().unwrap();
+        let mut lead_record = record("one", "task");
+        lead_record["snapshot"] = json!({
+            "data":"", "end":0, "generation":1, "running":true,
+            "startedMs":1, "status":crate::status::SessionStatus::default()
+        });
+        let mut worker = lead_record.clone();
+        worker["id"] = json!("worker");
+        let records = serde_json::from_value::<Vec<Record>>(json!([lead_record, worker])).unwrap();
+        chat::initialize(&root, "p", &root, Initialize {
+            task: Some("task".into()),
+            session_id: "one".into(),
+            preset: serde_json::from_value(json!({
+                "id":"codex", "name":"Codex", "kind":"agent", "command":"codex", "adapter":"codex"
+            })).unwrap(),
+            paused: false,
+            checkpoint: Checkpoint::default(),
+        }, &records).unwrap();
+        let host = Fixture {
+            calls: Mutex::default(),
+            saves: Mutex::default(),
+            sessions: Some(records),
+            project: Some(
+                serde_json::from_value(json!({
+                    "name":"P", "root":root, "schemaVersion":4, "components":[], "links":[]
+                }))
+                .unwrap(),
+            ),
+        };
+        let lead = LaunchContext {
+            generation: Some(1),
+            ..launch()
+        };
+        let planner = LaunchContext {
+            role: Role::Planner,
+            ..launch()
+        };
+        let create = |kind, parent: Option<&str>, title: &str| Action::StoryCreate {
+            draft: stories::StoryDraft {
+                kind,
+                parent: parent.map(str::to_owned),
+                title: title.into(),
+                description: "Details".into(),
+                acceptance: vec!["Works".into()],
+                components: vec!["api".into()],
+            },
+        };
+        let update = |id: &str, edit| Action::StoryUpdate {
+            id: id.into(),
+            edit,
+        };
+        let epic = dispatch(&host, &lead, create(StoryKind::Epic, None, "Epic")).unwrap();
+        let epic_id = epic["id"].as_str().unwrap();
+        assert!(dispatch(&host, &lead, create(StoryKind::Feature, None, "Invalid")).is_err());
+        let feature = dispatch(
+            &host,
+            &planner,
+            create(StoryKind::Feature, Some(epic_id), "Feature"),
+        )
+        .unwrap();
+        let feature_id = feature["id"].as_str().unwrap();
+        let story = dispatch(
+            &host,
+            &lead,
+            create(StoryKind::Story, Some(feature_id), "Story"),
+        )
+        .unwrap();
+        let story_id = story["id"].as_str().unwrap();
+        assert_eq!(story["parent"], feature_id);
+        assert_eq!(story["description"], "Details");
+        assert_eq!(story["components"], json!(["api"]));
+        for id in [epic_id, feature_id] {
+            let result = dispatch(
+                &host,
+                &lead,
+                update(
+                    id,
+                    StoryEdit {
+                        status: Some(StoryStatus::Done),
+                        ..Default::default()
+                    },
+                ),
+            )
+            .unwrap_err();
+            assert!(result.to_string().contains("Use --close or --reopen"));
+        }
+        let edited = dispatch(
+            &host,
+            &planner,
+            update(
+                story_id,
+                StoryEdit {
+                    title: Some("Edited".into()),
+                    order: Some(0),
+                    acceptance: Some(vec!["New criterion".into()]),
+                    status: Some(StoryStatus::Reviewing),
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(edited["title"], "Edited");
+        assert_eq!(edited["acceptance"], json!(["New criterion"]));
+        assert_eq!(edited["order"], 0);
+        assert_eq!(edited["status"], "reviewing");
+        let board =
+            || dispatch(&host, &lead, Action::Stories { id: None }).unwrap()["items"].clone();
+        for (edit, saved, shown) in [
+            (
+                StoryEdit {
+                    close: true,
+                    ..Default::default()
+                },
+                "done",
+                "closed",
+            ),
+            (
+                StoryEdit {
+                    reopen: true,
+                    ..Default::default()
+                },
+                "backlog",
+                "active",
+            ),
+        ] {
+            assert_eq!(
+                dispatch(&host, &lead, update(feature_id, edit)).unwrap()["status"],
+                saved
+            );
+            assert_eq!(board()[0]["status"], shown);
+            assert_eq!(board()[1]["status"], shown);
+        }
+        for denied in [
+            LaunchContext {
+                agent_session: "worker".into(),
+                ..lead.clone()
+            },
+            LaunchContext {
+                generation: Some(2),
+                ..lead.clone()
+            },
+            LaunchContext {
+                role: Role::Mapper(Proposes::Nothing),
+                ..lead.clone()
+            },
+            LaunchContext {
+                role: Role::Scanner,
+                ..lead.clone()
+            },
+        ] {
+            assert!(dispatch(&host, &denied, create(StoryKind::Story, None, "Denied")).is_err());
+            assert!(
+                dispatch(
+                    &host,
+                    &denied,
+                    update(
+                        story_id,
+                        StoryEdit {
+                            close: true,
+                            ..Default::default()
+                        }
+                    )
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(board().as_array().unwrap().len(), 3);
+        assert_eq!(board()[2]["status"], "reviewing");
         std::fs::remove_dir_all(root).unwrap();
     }
 
