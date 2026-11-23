@@ -344,7 +344,7 @@ export default function ReviewView() {
                           {stage.driver === 'lead'
                             ? 'The chat’s lead is deciding the next stage.'
                             : stage.autoHalt === 'paused'
-                              ? 'Auto is paused in this worktree; resume or stop it to continue.'
+                              ? 'Auto is paused here; work you do now is where Resume continues from.'
                               : 'Auto is running this worktree’s stages.'}
                         </p>
                       )}
