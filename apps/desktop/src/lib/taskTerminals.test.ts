@@ -54,15 +54,17 @@ test.each([
 
 test('a chat team role replaces the launch scope role', () => {
   expect(tileLabel(root(agent), metadata(TASK_ROOT_SCOPE), 'Lead')).toBe('Lead')
-  expect(tileLabel(retained(WORKER_SCOPE), metadata(WORKER_SCOPE), 'Builder')).toBe('Builder')
+  expect(tileLabel(retained(WORKER_SCOPE), metadata(WORKER_SCOPE), 'Sub-builder')).toBe(
+    'Sub-builder',
+  )
 })
 
 test('a worker outside a chat team keeps its launch scope role', () => {
-  expect(tileLabel(retained(WORKER_SCOPE), metadata(WORKER_SCOPE))).toBe('Worker')
+  expect(tileLabel(retained(WORKER_SCOPE), metadata(WORKER_SCOPE))).toBe('Sub-builder')
 })
 
-test('a component label still leads over a chat team role', () => {
-  expect(tileLabel(retained('api'), metadata('api'), 'Builder')).toBe('API')
+test('an adopted Sub-builder shows both its role and component name', () => {
+  expect(tileLabel(retained('api'), metadata('api'), 'Sub-builder')).toBe('Sub-builder · API')
 })
 
 test('terminals that are not agents get no role label', () => {

@@ -124,7 +124,7 @@
       try {
         await smoke.controlProviderRun(projectId, round.id, control)
       } catch (error) {
-        rejected = String(error).includes('Chat worker controls')
+        rejected = String(error).includes('Chat Sub-builder controls')
       }
       assert(rejected, `Manual provider ${control.kind} bypassed chat team ownership`)
     }
@@ -134,6 +134,10 @@
       const b = workers.querySelector('.agent-card[data-row="worker"] footer button')
       return b && !b.disabled && b
     })
+    assert(
+      workerButton.closest('.agent-card').textContent.includes('Sub-builder'),
+      'Chat team assignment is missing its Sub-builder label',
+    )
     workerButton.click()
     await until('worker drawer', () => document.querySelector('.simple-terminal-drawer'))
     assert(state().simple.selectedAgent === lead, 'opening worker changed composer recipient')
@@ -146,7 +150,7 @@
     const fresh = await until('fresh confirmation', () => confirmDialog('Clear lead context'))
     assert(
       fresh.textContent.includes('Its provider conversation resets') &&
-        fresh.textContent.includes('Workers and results are retained'),
+        fresh.textContent.includes('Sub-builders and results are retained'),
       'fresh confirmation missing consequences',
     )
     const unchangedGeneration = team().lead.generation
@@ -191,10 +195,7 @@
     state().setView('implementation')
     await until('worker results retained in background', () => jobs().every((j) => j.summary))
     await until('Build view mounted', () => document.querySelector('.implementation-view'))
-    assert(
-      !document.querySelector('[aria-label="Implementation assignments"]'),
-      'Build showed chat assignments',
-    )
+    assert(!document.querySelector('[aria-label="Sub-builders"]'), 'Build showed chat assignments')
     state().setSimpleMode(true)
     await until('chat restored', () => agentsTab())
     assert(state().simple.selectedAgent === team().lead.sessionId, 'lead selection lost')

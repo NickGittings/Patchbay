@@ -40,7 +40,7 @@ test('taskRootStart sends each kickoff field in its backend location only', asyn
   const terminal: TerminalSpec = { id: 'agent', name: 'Agent', kind: 'agent', command: 'codex' }
   const cases: [Kickoff | undefined, unknown, string | undefined][] = [
     [undefined, undefined, undefined],
-    [{ kind: 'implementPlan', subagents: 3 }, { kind: 'implementPlan', subagents: 3 }, undefined],
+    [{ kind: 'implementPlan' }, { kind: 'implementPlan' }, undefined],
     [{ kind: 'fixFindings', reviewSession: 'review-1' }, { kind: 'fixFindings' }, 'review-1'],
     [{ kind: 'fixFindings' }, { kind: 'fixFindings' }, undefined],
   ]

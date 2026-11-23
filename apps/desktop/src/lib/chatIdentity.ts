@@ -1,8 +1,10 @@
 import {
+  COORDINATOR_SCOPE,
   MERGE_SCOPE,
   PLAN_SCOPE,
   REVIEW_SCOPE,
   TASK_ROOT_SCOPE,
+  WORKER_SCOPE,
   type SessionRecord,
 } from '../types'
 import { profileHookProvider } from './agentProfiles'
@@ -22,11 +24,13 @@ export function agentProviderLabel(record: SessionRecord | undefined) {
   )
 }
 
-export type ChatRoleKey = 'lead' | 'builder' | 'planner' | 'reviewer' | 'merge' | 'agent'
+export type ChatRoleKey =
+  'lead' | 'builder' | 'subBuilder' | 'planner' | 'reviewer' | 'merge' | 'agent'
 
-const ROLE_LABELS: Record<ChatRoleKey, string> = {
+export const ROLE_LABELS: Record<ChatRoleKey, string> = {
   lead: 'Lead',
   builder: 'Builder',
+  subBuilder: 'Sub-builder',
   planner: 'Planner',
   reviewer: 'Reviewer',
   merge: 'Merge agent',
@@ -67,21 +71,15 @@ export function teamWorker(
   )
 }
 
-/**
- * Whether a label names this agent as the Builder rather than its own role: a team's worker, or
- * the worktree's root build agent. Component, Fix, Coordinator and Worker agents outside a team
- * keep their own label.
- */
-export function namedBuilder(
-  record: SessionRecord | undefined,
-  teams: readonly ChatTeam[] = [],
-  runs: readonly ProviderRun[] = [],
-) {
+/** Use the build role as the display name for a root Builder or a Sub-builder. */
+export function namedBuilder(record: SessionRecord | undefined, roleKey: ChatRoleKey) {
   return (
-    teamWorker(record, teams, runs) ||
-    (record?.metadata.componentId === TASK_ROOT_SCOPE &&
-      record.spec.purpose !== 'chat' &&
-      sessionRole(record.metadata).role === 'Build')
+    roleKey === 'subBuilder' ||
+    (roleKey === 'builder' &&
+      !!record &&
+      (record.metadata.componentId === COORDINATOR_SCOPE ||
+        (record.metadata.componentId === TASK_ROOT_SCOPE &&
+          sessionRole(record.metadata).role === 'Build')))
   )
 }
 
@@ -96,25 +94,16 @@ function chatRoleKey(
 ): ChatRoleKey {
   return teams.some((t) => t.lead.sessionId === record?.id)
     ? 'lead'
-    : teamWorker(record, teams, runs)
-      ? 'builder'
+    : teamWorker(record, teams, runs) || record?.metadata.componentId === WORKER_SCOPE
+      ? 'subBuilder'
       : record && Object.hasOwn(SCOPE_ROLES, record.metadata.componentId)
         ? SCOPE_ROLES[record.metadata.componentId]
-        : // Build, Fix, Coordinator and Worker agents build, whichever flow launched them; a
-          // plain chat agent only talks.
+        : // Build, Fix and coordinator sessions share the Builder role.
           record &&
             record.spec.purpose !== 'chat' &&
             sessionRole(record.metadata).tone === 'implement'
           ? 'builder'
           : 'agent'
-}
-
-export function chatRole(
-  record: SessionRecord | undefined,
-  teams: readonly ChatTeam[] = [],
-  runs: readonly ProviderRun[] = [],
-) {
-  return ROLE_LABELS[chatRoleKey(record, teams, runs)]
 }
 
 export function chatIdentity(

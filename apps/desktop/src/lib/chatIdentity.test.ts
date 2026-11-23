@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import type { SessionRecord } from '../types'
-import { chatIdentity } from './chatIdentity'
+import { COORDINATOR_SCOPE, TASK_ROOT_SCOPE, WORKER_SCOPE, type SessionRecord } from '../types'
+import { chatIdentity, namedBuilder } from './chatIdentity'
 import type { ChatTeam } from './chatTeams'
 import type { ProviderRun } from './orchestration'
 
@@ -44,7 +44,7 @@ test('role follows durable team membership; a preset named after its provider is
       team,
     ]).title,
   ).toBe('Lead · Codex')
-  expect(chatIdentity(record('worker'), [team], [run]).role).toBe('Builder')
+  expect(chatIdentity(record('worker'), [team], [run]).role).toBe('Sub-builder')
   expect(chatIdentity(record('unknown'), [team], [run]).role).toBe('Builder')
   const scoped = (componentId: string) => ({
     ...record('scoped'),
@@ -61,7 +61,7 @@ test('role follows durable team membership; a preset named after its provider is
     chatIdentity(record('adopted'), [
       { ...team, scopes: { adopted: { generation: 1, components: [] } } },
     ]).role,
-  ).toBe('Builder')
+  ).toBe('Sub-builder')
 })
 
 test('agents outside any team take their role from the launch scope', () => {
@@ -70,10 +70,26 @@ test('agents outside any team take their role from the launch scope', () => {
     metadata: { ...record('solo').metadata, componentId, kind },
   })
   expect(chatIdentity(scoped('@task')).roleKey).toBe('builder')
+  expect(chatIdentity(scoped(COORDINATOR_SCOPE)).role).toBe('Builder')
+  expect(chatIdentity(scoped(WORKER_SCOPE)).role).toBe('Sub-builder')
   expect(chatIdentity(scoped('web')).role).toBe('Builder')
   expect(chatIdentity(scoped('@review')).role).toBe('Reviewer')
   expect(chatIdentity(scoped('@map')).role).toBe('Agent')
   expect(chatIdentity(scoped('@task', 'shell')).role).toBe('Agent')
+})
+
+test('tiles use build role names for root Builders, coordinators and Sub-builders', () => {
+  const scoped = (componentId: string, branch?: string): SessionRecord => {
+    const session = record(componentId)
+    return { ...session, metadata: { ...session.metadata, componentId, branch } }
+  }
+  expect(namedBuilder(scoped(TASK_ROOT_SCOPE), 'builder')).toBe(true)
+  expect(namedBuilder(scoped(COORDINATOR_SCOPE), 'builder')).toBe(true)
+  expect(namedBuilder(scoped(WORKER_SCOPE), 'subBuilder')).toBe(true)
+  expect(namedBuilder(scoped('api'), 'subBuilder')).toBe(true)
+  expect(namedBuilder(scoped('api'), 'builder')).toBe(false)
+  expect(namedBuilder(scoped(TASK_ROOT_SCOPE, 'feature-x'), 'builder')).toBe(false)
+  expect(namedBuilder(scoped(TASK_ROOT_SCOPE), 'agent')).toBe(false)
 })
 
 test('a plain chat agent only talks, so it is no Builder', () => {

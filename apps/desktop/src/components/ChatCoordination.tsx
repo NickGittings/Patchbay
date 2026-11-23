@@ -94,7 +94,7 @@ export function ChatCoordinationAlerts({ team, openTerminal }: Props) {
           <p role="alert" key={job.id}>
             {job.terminal.name} · awaiting input{' '}
             <button disabled={!record} onClick={() => record && openTerminal(record)}>
-              View worker terminal
+              View Sub-builder terminal
             </button>
           </p>
         )

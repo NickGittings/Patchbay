@@ -89,29 +89,18 @@
     const rolesPanel = await until('Agent roles panel', () => query('[aria-label="Agent roles"]'))
     // Check label association rather than focus: WebKit on macOS doesn't focus a select
     // through its label, and smoke windows never have focus anyway.
-    for (const role of ['Plan', 'Implement', 'Fix', 'Merge']) {
+    for (const role of ['Plan', 'Builder', 'Fix', 'Merge']) {
       const select = rolesPanel.querySelector(`select[aria-label="${role}"]`)
       assert(select?.labels?.length === 1, `${role} select has no label`)
     }
-    const subagentsLabel = [...rolesPanel.querySelectorAll('label')].find(
-      (el) => el.textContent === 'Subagents',
-    )
-    const subagents = subagentsLabel?.control
-    assert(subagents?.tagName === 'SELECT', 'missing subagent control')
     assert(
-      [...subagents.options].map((o) => o.value).join() === '0,2,3,4,5,6,7,8',
-      'incorrect subagent choices',
+      rolesPanel.querySelector('[aria-label^="Sub-builders: "]'),
+      'missing Sub-builders picker',
     )
-    const beforeSubagents = JSON.stringify(state().toProject())
-    const wasDirty = state().dirty
-    choose(subagents, '3')
-    await until('subagents selected', () => state().implementSubagents === 3)
     assert(
-      state().dirty === wasDirty && JSON.stringify(state().toProject()) === beforeSubagents,
-      'subagent setting changed the project map',
+      !rolesPanel.textContent.includes('Subagents'),
+      'retired Subagents field is still visible',
     )
-    choose(subagents, '0')
-    await until('subagents disabled', () => state().implementSubagents === 0)
     click(rolesPanel.querySelector('[aria-label="Close Agent roles"]'))
     // Canvas first: the Inspector opens with a selection, the dock only while terminals run.
     // Hidden panels collapse but stay mounted, so check their panel's size (padding overflows it).

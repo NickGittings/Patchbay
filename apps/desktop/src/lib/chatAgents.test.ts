@@ -84,8 +84,8 @@ test('shows running agents of this chat and every undismissed assignment', () =>
     ['job:queued', 'worker'],
     ['job:done', 'finished'],
   ])
-  expect(result[1].role).toBe('Builder')
-  expect(result.map((c) => c.roleKey)).toEqual(['lead', 'builder', 'builder', 'builder'])
+  expect(result.slice(1).map((c) => c.role)).toEqual(['Sub-builder', 'Sub-builder', 'Sub-builder'])
+  expect(result.map((c) => c.roleKey)).toEqual(['lead', 'subBuilder', 'subBuilder', 'subBuilder'])
   expect(result[2].detail).toBe('Preset queued')
 })
 

@@ -92,7 +92,7 @@ async function handoffPlannerPlan(
   const workers = workerIds
     ? workerIds.map((id) => {
         const found = agentDevices(initial.devices).find((d) => d.id === id)
-        if (!found) throw new Error(`Worker preset ${id} is not installed`)
+        if (!found) throw new Error(`Sub-builder preset ${id} is not installed`)
         return found
       })
     : auto || target?.chatTeam
@@ -130,7 +130,7 @@ async function handoffPlannerPlan(
       ? run
       : await startProviderJob(project, run.id, run.coordinator!.id)
     if (!started.coordinator?.sessionId)
-      throw new Error(started.error ?? 'Coordinator launch unconfirmed')
+      throw new Error(started.error ?? 'Builder launch unconfirmed')
     launched = {
       sessionId: started.coordinator.sessionId,
       requestId: started.coordinator.requestId,
@@ -141,10 +141,7 @@ async function handoffPlannerPlan(
     let requestId: string | undefined
     try {
       requestId = await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
-        kickoff: {
-          kind: 'implementPlan',
-          subagents: useStore.getState().implementSubagents || undefined,
-        },
+        kickoff: { kind: 'implementPlan' },
         auto,
         chatTeam: target?.chatTeam,
       })

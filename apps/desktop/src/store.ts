@@ -60,7 +60,6 @@ import {
   DEFAULT_USAGE,
   TASK_ROOT_SCOPE,
   isReviewAgentScope,
-  isSubagentCount,
   showsInDock,
   sessionId,
   sessionTask,
@@ -370,10 +369,7 @@ interface State {
   planStartedWith: Record<string, string>
   /** Global agent presets per role, persisted in workspace settings. */
   agentRoles: AgentRoles
-  /** Global Implement subagent count; 0 disables it. */
-  implementSubagents: number
   setAgentRoles: (roles: AgentRoles) => void
-  setImplementSubagents: (subagents: number) => void
   /** Validator suggestions the user declined in this project (workspace layout only). */
   validatorDeclined: string[]
   /** Declines suggestions, dropping keys of terminals no longer on the map. */
@@ -873,8 +869,6 @@ const createState: StateCreator<State> = (set, get) => ({
   planStartedWith: {},
   agentRoles: {},
   setAgentRoles: (agentRoles) => set({ agentRoles }),
-  implementSubagents: 0,
-  setImplementSubagents: (n) => set({ implementSubagents: isSubagentCount(n) ? n : 0 }),
   validatorDeclined: [],
   declineValidators: (keys) =>
     set((s) => ({

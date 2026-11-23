@@ -219,7 +219,7 @@ export default function ChatMode({
               <MenuSeparator />
               <MenuItem
                 disabled={!!team.reset || !!ui.pendingAction || !!ui.pendingWorkflow}
-                title="Reset the lead’s provider context. Workers and a concise work handoff are retained."
+                title="Reset the lead’s provider context. Sub-builders and a concise work handoff are retained."
                 onClick={() => setConfirm({ kind: 'fresh', key })}
               >
                 Clear lead context
@@ -311,7 +311,7 @@ export default function ChatMode({
         >
           <p>
             Clear the lead’s context? Its provider conversation resets and the chat is replaced with
-            a concise handoff. Workers and results are retained.
+            a concise handoff. Sub-builders and results are retained.
           </p>
         </Dialog>
       )}
@@ -338,7 +338,7 @@ export default function ChatMode({
             </>
           }
         >
-          <p>Stop the lead and workers for this task? You can continue work later.</p>
+          <p>Stop the lead and sub-builders for this task? You can continue work later.</p>
         </Dialog>
       )}
       {(state.step !== 'idle' || autoActive || autoHalt) && (

@@ -1566,7 +1566,7 @@ pub(super) fn reserve_check(s: &Store, project: &str, run: &str, job: &str) -> R
             .flat_map(|r| &r.jobs)
             .filter(|j| j.id != job && matches!(j.state, JobState::Launching | JobState::Running))
             .count();
-        ensure!(occupied < t.limit, "Worker concurrency limit reached");
+        ensure!(occupied < t.limit, "Sub-builder concurrency limit reached");
         let candidate = r.jobs.iter().find(|j| j.id == job).unwrap();
         if candidate.shared_worktree && candidate.result_kind == ResultKind::Code {
             ensure!(
@@ -1826,7 +1826,7 @@ pub fn control(
                 {
                     ensure!(
                         !r.jobs.iter().any(|j| j.state == JobState::Failed),
-                        "Retry failed workers before resuming"
+                        "Retry failed sub-builders before resuming"
                     );
                     if r.error.as_deref() == Some(RESTART_NOTICE)
                         || r.jobs
@@ -1867,7 +1867,7 @@ pub fn control(
             } => {
                 ensure!(
                     terminal.as_ref().is_none_or(supported),
-                    "Choose a supported worker preset"
+                    "Choose a supported sub-builder preset"
                 );
                 let r = s
                     .runs
@@ -1914,10 +1914,13 @@ pub fn control(
                     (1..=8).contains(&limit)
                         && !workers.is_empty()
                         && workers.iter().all(supported),
-                    "Choose supported Claude/Codex presets and 1–8 workers"
+                    "Choose supported Claude/Codex presets and 1–8 sub-builders"
                 );
                 let ids: HashSet<_> = workers.iter().map(|w| &w.id).collect();
-                ensure!(ids.len() == workers.len(), "Worker presets must be unique");
+                ensure!(
+                    ids.len() == workers.len(),
+                    "Sub-builder presets must be unique"
+                );
                 t.workers = workers;
                 t.limit = limit;
             }
@@ -2032,7 +2035,7 @@ pub fn side_message(
         let t = team(s, project, id)?.clone();
         ensure!(
             member(s, &t, assignment).is_some(),
-            "Worker is outside this team"
+            "Sub-builder is outside this team"
         );
         let t = team(s, project, id)?;
         append(
@@ -2609,9 +2612,9 @@ pub fn reconcile(
                     (
                         format!("failed-{}", j.request_id),
                         j.id.clone(),
-                        j.error
-                            .clone()
-                            .unwrap_or_else(|| "Worker exited without an explicit result".into()),
+                        j.error.clone().unwrap_or_else(|| {
+                            "Sub-builder exited without an explicit result".into()
+                        }),
                     )
                 })
                 .collect();
@@ -3046,7 +3049,7 @@ pub fn replace_lead(
                 t.state = State::Paused;
             }
             t.error = Some(format!(
-                "Lead replacement unconfirmed: {e}. History and workers are preserved. Resume reconciles the same launch."
+                "Lead replacement unconfirmed: {e}. History and sub-builders are preserved. Resume reconciles the same launch."
             ));
         }
         Ok(())
@@ -4813,7 +4816,7 @@ mod tests {
             super::super::Control::ContinueScan,
         ] {
             let error = super::super::control(&f.dir, "p", "round1", control).unwrap_err();
-            assert!(error.to_string().contains("Chat worker controls"));
+            assert!(error.to_string().contains("Chat Sub-builder controls"));
             assert_eq!(
                 serde_json::to_value(super::super::list(&f.dir, "p").unwrap()).unwrap(),
                 before

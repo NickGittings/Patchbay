@@ -1,7 +1,7 @@
 import type { SessionRecord, SessionState } from '../types'
 import { activityLabel, turnSteps } from './activity'
 import { failedJob, workerSession, workerStatus } from './chatProgress'
-import { chatIdentity, type ChatRoleKey } from './chatIdentity'
+import { chatIdentity, ROLE_LABELS, type ChatRoleKey } from './chatIdentity'
 import type { ChatTeam } from './chatTeams'
 import type { ProviderJob, ProviderRun } from './orchestration'
 import { foreignPlanner, relatedSession, type SimpleState, type SimpleWorktree } from './simple'
@@ -52,7 +52,12 @@ export function chatAgentCards({
       id: `session:${record.id}`,
       sessionId: record.id,
       record,
-      row: roleKey === 'lead' ? 'lead' : roleKey === 'builder' ? 'worker' : 'other',
+      row:
+        roleKey === 'lead'
+          ? 'lead'
+          : roleKey === 'builder' || roleKey === 'subBuilder'
+            ? 'worker'
+            : 'other',
       role,
       roleKey,
       detail,
@@ -81,8 +86,8 @@ export function chatAgentCards({
       record,
       job,
       row: workerStatus(job, sessions) === 'complete' ? 'finished' : 'worker',
-      role: known?.role ?? 'Builder',
-      roleKey: known?.roleKey ?? 'builder',
+      role: known?.role ?? ROLE_LABELS.subBuilder,
+      roleKey: known?.roleKey ?? 'subBuilder',
       detail: known?.detail || job.terminal.name,
     }
   })

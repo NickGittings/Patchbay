@@ -48,7 +48,7 @@ fn rejected_presets_are_never_executed_by_configuration_inspection() {
             None,
             &Deny,
             &[],
-            Some(Kickoff::ImplementPlan { subagents: None }),
+            Some(Kickoff::ImplementPlan),
         ),
         context::merge_agent_spec(&project, terminal, "Merge", vec![], &Deny),
     ] {

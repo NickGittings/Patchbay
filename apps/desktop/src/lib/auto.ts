@@ -2032,7 +2032,7 @@ async function drive(projectId: string, task: string | null) {
           { ...track([]), ...nextStep(run), plannerTurn: run.stage === 'scan' },
           run.stage === 'scan'
             ? 'Completed scan reports handed to the planner'
-            : 'All worker assignments integrated',
+            : 'All Sub-builder assignments integrated',
         )
       }
       return

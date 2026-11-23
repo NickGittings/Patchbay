@@ -66,7 +66,7 @@ pub async fn provider_run_control(
     blocking(move || {
         let previous = orchestration::read(&root, &project_id, &id).map_err(err)?;
         if previous.chat_team.is_some() {
-            return Err("Use Chat worker controls for chat-owned rounds".into());
+            return Err("Use Chat Sub-builder controls for chat-owned rounds".into());
         }
         if let Control::ContinueJob { job, request_id } = &control {
             let owned = previous

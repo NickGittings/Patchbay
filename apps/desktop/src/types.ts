@@ -22,17 +22,6 @@ export const MAP_SCOPE = '@map'
 export const MAP_AGENT_TERMINAL = 'detect'
 /** Mirrors `stack_proposals::STACK_TERMINAL`: stack detection, beside it at `MAP_SCOPE`. */
 export const STACK_AGENT_TERMINAL = 'stack'
-/** Mirrors context::{MIN_SUBAGENTS, MAX_SUBAGENTS}. */
-export const MIN_SUBAGENTS = 2
-export const MAX_SUBAGENTS = 8
-/** Implement's subagent choices: 0 (Off), then MIN_SUBAGENTS..=MAX_SUBAGENTS. */
-export const SUBAGENT_COUNTS: readonly number[] = [
-  0,
-  ...Array.from({ length: MAX_SUBAGENTS - MIN_SUBAGENTS + 1 }, (_, i) => i + MIN_SUBAGENTS),
-]
-export const isSubagentCount = (n: unknown): n is number =>
-  typeof n === 'number' && SUBAGENT_COUNTS.includes(n)
-
 /**
  * A fresh agent's first task, `context::Kickoff`. A fix names the review session; the backend
  * reads its recorded worktree and branch, and refuses once that branch isn't checked out there.
@@ -40,7 +29,7 @@ export const isSubagentCount = (n: unknown): n is number =>
  * prompts an Auto planner; `planStory` plans the backend-owned Story section.
  */
 export type Kickoff =
-  | { kind: 'implementPlan'; subagents?: number }
+  | { kind: 'implementPlan' }
   | { kind: 'fixFindings'; reviewSession?: string }
   | { kind: 'plan' }
   | { kind: 'planStory' }
