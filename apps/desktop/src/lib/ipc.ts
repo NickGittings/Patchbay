@@ -773,6 +773,19 @@ export const mergeConflicts = (projectId: string, source: string, destination: s
     destination,
   })
 
+export const mergeBranchOutcome = (
+  projectId: string,
+  source: string,
+  sourceBranch: string,
+  destinationBranch: string,
+) =>
+  invoke<import('../types').MergeOutcome>('merge_branch_outcome', {
+    projectId,
+    source,
+    sourceBranch,
+    destinationBranch,
+  })
+
 export const mergeOutcome = (project: Project, request: import('../types').MergeRequest) =>
   invoke<import('../types').MergeOutcome>('merge_outcome', {
     projectId: project.projectId,

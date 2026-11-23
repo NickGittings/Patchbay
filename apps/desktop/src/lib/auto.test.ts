@@ -8,6 +8,9 @@ vi.mock('./providerAuth', () => ({
   requireDeviceAuth: vi.fn(async () => {}),
   ProviderSetupRequired: class extends Error {},
 }))
+vi.mock('@tauri-apps/api/webviewWindow', () => ({
+  getCurrentWebviewWindow: () => ({ label: 'main' }),
+}))
 import { beforeEach, afterEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import {
@@ -33,10 +36,13 @@ vi.mock('./ipc', () => ({
   gitReview: vi.fn(),
   gitWorktrees: vi.fn(),
   graphActionRun: vi.fn(),
+  mergeBranchOutcome: vi.fn(),
+  mergeDestinationResolve: vi.fn(),
   mergeOutcome: vi.fn(),
   planRead: vi.fn(),
   proposalRead: vi.fn(),
   reviewRead: vi.fn(),
+  taskList: vi.fn(),
   terminalStop: vi.fn(),
   terminalSnapshot: vi.fn(),
   terminalPrompt: vi.fn(),
@@ -164,6 +170,7 @@ const snapshot = (
 ): import('./auto').AutoSnapshot => ({
   source: tree,
   worktrees: [tree],
+  branches: ['feature', 'main'],
   base: 'main',
   goal: 'Goal',
   plan: '',
@@ -356,6 +363,16 @@ function load() {
   vi.mocked(ipc.planRead).mockResolvedValue({ text: '', cut: false })
   vi.mocked(ipc.proposalRead).mockResolvedValue(null)
   vi.mocked(ipc.reviewRead).mockResolvedValue(null)
+  vi.mocked(ipc.taskList).mockImplementation(async () => useStore.getState().tasks)
+  vi.mocked(ipc.mergeBranchOutcome).mockResolvedValue('notMerged')
+  vi.mocked(ipc.mergeDestinationResolve).mockImplementation(
+    async (_project, source, sourceBranch, destinationBranch) => ({
+      source,
+      sourceBranch,
+      destination: '/p',
+      destinationBranch,
+    }),
+  )
   vi.mocked(ipc.mergeOutcome).mockResolvedValue('notMerged')
 }
 function mockScopePlannerLaunch() {
@@ -1289,6 +1306,146 @@ const inPlaceSettings = {
   device: 'codex',
   merge: { mode: 'ask' as const, destinationBranch: '' },
 }
+
+test.each(['ask', 'auto'] as const)(
+  'Auto fills the default branch and resolves its checkout at merge time (%s)',
+  async (mode) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2000)
+    load()
+    useStore.getState().setActiveTask(null, true)
+    const source = { ...tree, path: '/p', current: true, main: true }
+    const destination = { ...tree, path: '/main-worktree', branch: 'main' }
+    const request = {
+      source: source.path,
+      sourceBranch: source.branch!,
+      destination: destination.path,
+      destinationBranch: destination.branch,
+    }
+    vi.mocked(ipc.gitWorktrees).mockResolvedValue([source])
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    vi.mocked(ipc.mergeDestinationResolve).mockImplementation(async () => {
+      vi.mocked(ipc.gitWorktrees).mockResolvedValue([source, destination])
+      return request
+    })
+    vi.mocked(jobs.startMerge).mockImplementation(async (options) => ({
+      ...started('merge-s'),
+      request: 'request' in options ? options.request : request,
+    }))
+
+    await startAuto('p', null, {
+      ...inPlaceSettings,
+      merge: { mode, destinationBranch: '', cleanup: 'delete' },
+    })
+    expect(autoRun('p', null)).toMatchObject({
+      branch: 'feature',
+      stage: 'mergeGate',
+      merge: { mode, destinationBranch: 'main', cleanup: 'delete' },
+    })
+    expect(ipc.mergeOutcome).not.toHaveBeenCalled()
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+
+    await withFollower(async () => {
+      await flush()
+      if (mode === 'ask') {
+        expect(autoRun('p', null)).toMatchObject({
+          stage: 'mergeGate',
+          status: 'waitingOnYou',
+          gateError: undefined,
+        })
+        expect(ipc.mergeOutcome).not.toHaveBeenCalled()
+        expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+        mergeNow('p', null)
+        await flush()
+      }
+      expect(ipc.mergeDestinationResolve).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ root: '/p' }),
+        '/p',
+        'feature',
+        'main',
+      )
+      const pinned = mode === 'auto' ? { ...request, expectedSourceHead: 'abc' } : request
+      expect(jobs.startMerge).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          request: pinned,
+          auto: expect.objectContaining({ cleanup: 'delete' }),
+        }),
+      )
+      expect(recordStageLaunch).toHaveBeenCalledWith(expect.objectContaining({ request: pinned }))
+    })
+  },
+)
+
+test('checkout creation failure pauses the merge so it can be retried', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  vi.mocked(ipc.mergeDestinationResolve).mockRejectedValueOnce(
+    new Error('Uncommitted source changes'),
+  )
+  setRun({ stage: 'merge', effort: 'light' })
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
+    expect(autoRun('p', 't')?.reason).toContain('Uncommitted source changes')
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+    await resumeAuto('p', 't')
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+    mergeNow('p', 't')
+    await flush()
+    expect(jobs.startMerge).toHaveBeenCalledOnce()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'running' })
+  })
+})
+
+test('Auto pauses a merge when it cannot refresh destination task ownership', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  vi.mocked(ipc.mergeDestinationResolve).mockResolvedValue({
+    source: tree.path,
+    sourceBranch: 'feature',
+    destination: '/p/main',
+    destinationBranch: 'main',
+  })
+  vi.mocked(ipc.taskList).mockRejectedValue(new Error('Task storage is unreadable'))
+  setRun({ stage: 'merge' })
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
+    expect(autoRun('p', 't')?.reason).toContain('Task storage is unreadable')
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+  })
+})
+
+test('Auto recognizes merged work when the destination branch has no checkout', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Finished work', cut: false })
+  vi.mocked(ipc.mergeBranchOutcome).mockResolvedValue('alreadyIntegrated')
+  const settings = { ...inPlaceSettings, goal: '' }
+  expect((await autoSnapshot('p', 't', run({ ...settings, stage: 'plan' }), true)).outcome).toBe(
+    'alreadyIntegrated',
+  )
+  await expect(startAuto('p', 't', settings)).rejects.toThrow('describe the new goal')
+  expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+})
+
+test.each(['deleted', 'feature'])(
+  'Auto refuses %s as a destination before starting',
+  async (destinationBranch) => {
+    load()
+    await expect(
+      startAuto('p', 't', {
+        ...inPlaceSettings,
+        merge: { mode: 'ask', destinationBranch },
+      }),
+    ).rejects.toThrow('Choose a different local destination branch')
+    expect(autoRun('p', 't')).toBeNull()
+  },
+)
 
 test('the default branch in the project folder runs in place against its HEAD', async () => {
   loadInPlace()
@@ -2316,7 +2473,9 @@ test('approval polling refreshes its request after a changed destination worktre
     expect(autoRun('p', 't')?.gateError).toContain('destination changed')
     vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
     await vi.advanceTimersByTimeAsync(5000)
-    expect(autoRun('p', 't')?.gateError).toContain('existing worktree')
+    expect(autoRun('p', 't')).toMatchObject({ status: 'waitingOnYou', gateError: undefined })
+    expect(ipc.mergeOutcome).toHaveBeenCalledTimes(2)
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
     const moved = { ...destination, path: '/p/main' }
     vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, moved])
     vi.mocked(ipc.mergeOutcome).mockImplementation(async (_project, request) =>

@@ -45,6 +45,12 @@ function validationSummary(reports: ActionReport[]) {
   return `${checks.length} ${checks.length === 1 ? 'check' : 'checks'} passed`
 }
 
+const POWER_PROBLEMS: Partial<Record<string, string>> = {
+  onBattery: 'On battery: scheduled work may wait until the device wakes.',
+  powerUnknown: 'Power source unknown: sleep prevention is inactive.',
+  unavailable: 'Sleep prevention unavailable.',
+}
+
 /** After a usage pause: continue now on a preset whose subscription still has usage. */
 function ResumeOnAgent({
   disabled,
@@ -153,29 +159,21 @@ export default function AutoPanel({
     (['onBattery', 'powerUnknown', 'unavailable'].includes(power.status) || !!power.error)
   const powerSection = (
     <PanelDetails title="Power" reveal={powerProblem}>
-      <label className="auto-check auto-toggle">
+      <label className="auto-check auto-toggle" data-power={keepAwake ? power.status : undefined}>
         <input
           type="checkbox"
+          role="switch"
           checked={keepAwake}
           onChange={(e) => setAutoKeepAwake(e.target.checked)}
         />
-        Keep device awake for Auto work
+        Keep awake while plugged in
       </label>
-      <small className="auto-hint">
-        While plugged in, prevent idle sleep during Auto work and scheduled waits. Keep Patchbay
-        open. The screen can turn off. This does not wake a sleeping device.
-      </small>
-      {keepAwake && (
+      <p className="auto-hint">
+        Keep Patchbay open. The screen can turn off. This setting cannot wake a sleeping device.
+      </p>
+      {powerProblem && (
         <p role="status" className="auto-hint">
-          {
-            {
-              inactive: 'Sleep prevention is idle.',
-              active: 'Keeping device awake while plugged in.',
-              onBattery: 'On battery: scheduled work may wait until the device wakes.',
-              powerUnknown: 'Power source unknown: sleep prevention is inactive.',
-              unavailable: 'Sleep prevention unavailable.',
-            }[power.status]
-          }
+          {POWER_PROBLEMS[power.status] ?? 'Sleep prevention error.'}
           {power.error && ` ${power.error}`}
         </p>
       )}
@@ -336,6 +334,7 @@ export default function AutoPanel({
               <label className="auto-toggle">
                 <input
                   type="checkbox"
+                  role="switch"
                   checked={run.resumeOnUsageReset === true}
                   onChange={(e) =>
                     projectId && setAutoUsageResume(projectId, task, e.target.checked)

@@ -50,7 +50,7 @@ export function activeWorktree(s: Snapshot): string | undefined {
 /** Each project's latest task list request, and the newest one whose list was applied. */
 const requested = new Map<string, number>()
 const applied = new Map<string, number>()
-const pending = new Map<string, Promise<void>>()
+const pending = new Map<string, Promise<{ error: unknown } | undefined>>()
 
 /**
  * Reload a project's task list from the backend (main window only; pop-outs get it broadcast). A
@@ -58,11 +58,12 @@ const pending = new Map<string, Promise<void>>()
  * than one already applied may miss a worktree created since, which would drop it as the active
  * task and prune its draft, so it is ignored; callers return once the newest request settles.
  * `quiet` refreshes (background watcher signals) keep a failure to themselves instead of
- * repeating the error with every signal.
+ * repeating the error with every signal. `requireSuccess` propagates a failed refresh to callers
+ * that need a fresh list before acting.
  */
 export async function refreshTasks(
   projectId = useStore.getState().project?.id,
-  { quiet = false }: { quiet?: boolean } = {},
+  { quiet = false, requireSuccess = false }: { quiet?: boolean; requireSuccess?: boolean } = {},
 ) {
   if (getCurrentWebviewWindow().label !== MAIN_WINDOW_LABEL || !projectId) return
   const seq = (requested.get(projectId) ?? 0) + 1
@@ -82,15 +83,17 @@ export async function refreshTasks(
         s.tasks.length
       )
         s.setMessage(String(e), undefined, undefined, 'error')
+      return { error: e }
     }
   })()
   pending.set(projectId, request)
   let settled = request
-  await settled
+  let failure = await settled
   while (pending.get(projectId) !== settled) {
     settled = pending.get(projectId)!
-    await settled
+    failure = await settled
   }
+  if (requireSuccess && failure) throw failure.error
 }
 
 /** Resolves once `projectId`'s task list requests, including any started meanwhile, settle. */

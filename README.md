@@ -302,18 +302,18 @@ configured actions, worktree isolation and switching while commands finish.
 
 Open **Auto mode** in the left rail to coordinate a task from planning through implementation,
 validation, review, fixes, and merge. It detects a starting stage from existing work; you can
-choose another stage before starting. Supply a task goal, an agent preset, and a destination
-branch checked out in another worktree.
+choose another stage before starting. Supply a task goal, an agent preset, and a local destination
+branch. Auto creates a destination worktree at merge time if the branch needs one.
 
 Auto requires Claude or Codex status hooks installed through **Settings → Agent providers**.
 For Codex, review and trust the hook definitions through `/hooks`. Auto uses native agent status
 to advance between stages and waits when an agent needs input. See
 [agent status setup](docs/agent-status-validation.md).
 
-Choose **Light**, **Standard**, or **Thorough** effort for up to 1, 3, or 5 fix rounds.
-Standard is the default and enables validation after implementation and fixes; Light disables
-that validation by default. **Advanced** lets you adjust the round limit, lowest severity to
-fix, and validation setting. Validation uses the map's configured validation terminals.
+Set **Fix rounds** to cap how many review-and-fix rounds Auto runs (3 by default in Full mode, 1 in
+Simple mode). Validation after implementation and fixes defaults to on in Full mode and off in
+Simple mode. In Full mode, **Advanced** lets you adjust the lowest severity to fix and the
+validation setting. Validation uses the map's configured validation terminals.
 
 **Ask before merging** is the default: Auto waits at merge approval until you choose
 **Merge now**. Select **Merge automatically** to let Auto proceed when the reviewed branch has
@@ -328,7 +328,7 @@ agent owned by that run and cancels its active validation. **Resume** reassesses
 Auto can pause between stages when its worktree is inactive; switch back and resume to continue.
 Unfinished runs restore paused after reopening Patchbay. `npm run smoke:auto` exercises the flow.
 
-Enable **Keep device awake for Auto work** in the Auto panel to prevent idle sleep while
+Enable **Keep awake while plugged in** under **Power** in the Auto panel to prevent idle sleep while
 plugged in during active Auto work or scheduled resume waits. The setting applies across
 projects, defaults off, and allows the screen to turn off and lock. Patchbay must stay open;
 this does not wake an already sleeping device or override manual sleep or closing a laptop lid.

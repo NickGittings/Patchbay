@@ -2256,6 +2256,24 @@ async fn merge_conflicts(
 }
 
 #[tauri::command]
+async fn merge_branch_outcome(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    source: String,
+    source_branch: String,
+    destination_branch: String,
+) -> CmdResult<patchbay_core::merges::MergeOutcome> {
+    main_only(&window)?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || {
+        patchbay_core::merges::branch_outcome(&root, &source, &source_branch, &destination_branch)
+            .map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn merge_outcome(
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -3365,6 +3383,7 @@ pub fn run() {
                 merge_agent_start,
                 map_agent_start,
                 stack_agent_start,
+                merge_branch_outcome,
                 merge_outcome,
                 merge_cleanup,
                 merge_cleanup_preview,

@@ -2,12 +2,14 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 import type { ReviewFindings } from '../../types'
+import type { PowerStatus } from '../../lib/autoPower'
 import AutoPanel from './AutoPanel'
 
 type Snapshot = ReturnType<typeof import('../../store').useStore.getState>
 const mock = vi.hoisted(() => ({
   state: {} as Snapshot,
   findings: null as ReviewFindings | null,
+  power: { status: 'inactive' } as { status: PowerStatus; error?: string },
   stage: null as null | { autoCurrent: boolean; stepper: unknown[] },
 }))
 vi.mock('../../store', () => ({
@@ -17,6 +19,10 @@ vi.mock('../../lib/auto', () => ({
   STAGE_LABELS: { review: 'Review' },
   effortSettings: () => ({ maxRounds: 2 }),
   inPlace: (run: { baseCommit?: string }) => !!run.baseCommit,
+}))
+vi.mock('../../lib/autoPower', () => ({
+  useAutoPower: () => mock.power,
+  setAutoKeepAwake: vi.fn(),
 }))
 vi.mock('../../lib/simpleActions', () => ({ logSimple: vi.fn() }))
 vi.mock('../../lib/attention', () => ({ revealTerminal: vi.fn() }))
@@ -34,6 +40,7 @@ vi.mock('../../lib/plan', () => ({ agentDevices: () => [] }))
 vi.mock('../../lib/usage', () => ({ presetExhausted: () => [], useUsage: () => null }))
 
 beforeEach(() => {
+  mock.power = { status: 'inactive' }
   mock.stage = null
   mock.state = {
     workspaceSettings: {},
@@ -50,6 +57,15 @@ beforeEach(() => {
       merge: { destinationBranch: 'main' },
     },
   } as unknown as Snapshot
+})
+
+test('Power labels errors even when sleep prevention reports an active state', () => {
+  mock.state.workspaceSettings = { autoKeepAwake: true }
+  mock.power = { status: 'active', error: 'Permission denied' }
+  const html = renderToStaticMarkup(createElement(AutoPanel, { onIntegrations: () => {} }))
+  expect(html).toContain('Sleep prevention error. Permission denied')
+  expect(html).toContain('Keep Patchbay open.')
+  expect(html).toContain('This setting cannot wake a sleeping device.')
 })
 
 test.each(['writing', 'unreadable', 'failed'])(

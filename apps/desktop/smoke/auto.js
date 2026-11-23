@@ -191,7 +191,7 @@
       () => smoke.workspaceDocument().settings.autoKeepAwake === true,
     )
     await until('idle power status', () =>
-      document.body.textContent.includes('Sleep prevention is idle.'),
+      document.querySelector('.auto-check[data-power="inactive"]'),
     )
     awakeToggle.click()
     await until(
@@ -384,22 +384,17 @@
     })
     if (!document.querySelector('.auto-check input'))
       document.querySelector('.workspace-rail [aria-label="Auto mode"]').click()
-    const powerText = await until('scheduled power status', () => {
-      const text = document.body.textContent
-      return (
-        /Keeping device awake while plugged in|On battery:|Power source unknown:|Sleep prevention unavailable/.test(
-          text,
-        ) && text
-      )
+    const powerStatus = await until('scheduled power status', () => {
+      const status = document.querySelector('.auto-check')?.dataset.power
+      return status && status !== 'inactive' && status
     })
-    if (powerText.includes('Sleep prevention unavailable'))
-      throw new Error('Native sleep prevention unavailable')
+    if (powerStatus === 'unavailable') throw new Error('Native sleep prevention unavailable')
     console.log(
-      `Power smoke: ${powerText.includes('Keeping device awake') ? 'active on AC' : 'inactive on battery/unknown power'}`,
+      `Power smoke: ${powerStatus === 'active' ? 'active on AC' : 'inactive on battery/unknown power'}`,
     )
     smoke.store.setState({ auto: completedAuto })
     await until('power released after completed run', () =>
-      document.body.textContent.includes('Sleep prevention is idle.'),
+      document.querySelector('.auto-check[data-power="inactive"]'),
     )
     smoke.store.setState({
       workspaceSettings: { ...state().workspaceSettings, autoKeepAwake: false },

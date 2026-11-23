@@ -35,6 +35,7 @@ import {
   type AutoRun,
   type AutoStage,
   type MergeRequest,
+  type Project,
   type EffortSettings,
   type Severity,
   type ReviewFindings,
@@ -50,6 +51,8 @@ import {
   gitBranches,
   gitReview,
   gitWorktrees,
+  mergeBranchOutcome,
+  mergeDestinationResolve,
   mergeOutcome,
   planRead,
   proposalRead,
@@ -66,6 +69,7 @@ import { refreshTasks } from './tasks'
 import { fixReviewFindings } from './reviewHandoff'
 import {
   DEFAULT_BRANCHES,
+  defaultMergeDestination,
   defaultReviewBase,
   reviewBaseInputs,
   reviewState,
@@ -120,6 +124,7 @@ export interface AutoSnapshot {
   goal: string
   source: Worktree
   worktrees: Worktree[]
+  branches: string[]
   base: string
   changedComponents: string[]
   hasChanges: boolean
@@ -427,24 +432,51 @@ const AUTO_LAUNCHES = {
   fix: 'fix',
   merge: 'merge',
 } as const satisfies Partial<Record<AutoStage, StageAction>>
-function mergeRequest(snapshot: Pick<AutoSnapshot, 'source' | 'worktrees'>, run: AutoRun) {
-  const destination = snapshot.worktrees.find((w) => w.branch === run.merge.destinationBranch)
-  if (!destination || destination.path === snapshot.source.path)
-    throw new AutoConfigurationError(
-      'Choose a different destination branch with an existing worktree',
-    )
+function checkedOutMergeRequest(
+  { source, worktrees }: Pick<AutoSnapshot, 'source' | 'worktrees'>,
+  destinationBranch: string,
+): MergeRequest | null {
+  const destination = worktrees.find(
+    (w) => w.branch === destinationBranch && w.path !== source.path,
+  )
+  if (!destination) return null
   return {
-    ...(run.merge.mode === 'auto' && run.reviewedHead
-      ? { expectedSourceHead: run.reviewedHead }
-      : {}),
-    source: snapshot.source.path,
-    sourceBranch: snapshot.source.branch!,
+    source: source.path,
+    sourceBranch: source.branch!,
     destination: destination.path,
-    destinationBranch: run.merge.destinationBranch,
+    destinationBranch,
   }
+}
+
+async function resolveAutoMergeRequest(
+  project: Project,
+  snapshot: AutoSnapshot,
+  run: AutoRun,
+): Promise<MergeRequest> {
+  const { source } = snapshot
+  const { destinationBranch, mode } = run.merge
+  let request: MergeRequest
+  try {
+    request = await mergeDestinationResolve(project, source.path, source.branch!, destinationBranch)
+  } catch (e) {
+    // Resolution can create a checkout before refusing the merge.
+    await refreshTasks(project.projectId).catch(() => {})
+    throw e
+  }
+  await refreshTasks(project.projectId, { quiet: true, requireSuccess: true })
+  return mode === 'auto' && run.reviewedHead
+    ? { ...request, expectedSourceHead: run.reviewedHead }
+    : request
 }
 /** A setup problem that only an explicit user change can resolve. */
 class AutoConfigurationError extends Error {}
+const validDestination = (destination: string, source: Worktree, branches: string[]) =>
+  destination !== source.branch && branches.includes(destination)
+
+function assertMergeDestination(destination: string, source: Worktree, branches: string[]) {
+  if (!validDestination(destination, source, branches))
+    throw new AutoConfigurationError('Choose a different local destination branch')
+}
 /** The run's worktree no longer has the run's branch checked out. */
 export class BranchMoved extends Error {}
 /** The worktree's `branch` has nothing to review against, such as `main` in the project folder. */
@@ -575,11 +607,13 @@ export async function autoSnapshot(
   const path = source.path
   // Review what the merge will bring in: the destination when it is a branch, else the default. A
   // run in place reviews against its Start commit; one not started yet, against the current HEAD.
-  const destination = run.merge.destinationBranch
+  const destination =
+    run.merge.destinationBranch ||
+    (inferring && !run.branch ? defaultMergeDestination(source, worktrees, branches) : '')
   const baseInputs = reviewBaseInputs(source, tasks, worktrees, branches)
   const branchBase = run.baseCommit
     ? ''
-    : destination && destination !== source.branch && branches.includes(destination)
+    : validDestination(destination, source, branches)
       ? destination
       : defaultReviewBase(source, tasks, worktrees, branches)
   const inPlaceBase =
@@ -661,6 +695,7 @@ export async function autoSnapshot(
     ),
     source,
     worktrees,
+    branches,
     base,
     changedComponents: Object.keys(review.changes).filter(
       (id) => review.changes[id].length > 0 && project.components.some((c) => c.id === id),
@@ -695,12 +730,18 @@ export async function autoSnapshot(
           records.some(
             (r) => r.metadata.componentId === MERGE_SCOPE && r.spec.merge_source === path,
           )))) &&
-    run.merge.destinationBranch &&
-    snapshot.worktrees.some(
-      (w) => w.branch === run.merge.destinationBranch && w.path !== source.path,
-    )
-  )
-    snapshot.outcome = await mergeOutcome(project, mergeRequest(snapshot, run))
+    validDestination(destination, source, branches)
+  ) {
+    const request = checkedOutMergeRequest(snapshot, destination)
+    if (request) snapshot.outcome = await mergeOutcome(project, request)
+    else if (inferring)
+      snapshot.outcome = await mergeBranchOutcome(
+        projectId,
+        source.path,
+        source.branch,
+        destination,
+      )
+  }
   return snapshot
 }
 export type AutoSettings = Pick<
@@ -779,7 +820,7 @@ interface AutoController {
   validating: boolean
   gatePoll?: { runId: string; atMs: number }
   completionPoll?: { turn: string; atMs: number }
-  gateRequest?: { key: string; request: ReturnType<typeof mergeRequest> }
+  gateRequest?: { key: string; request: MergeRequest }
 }
 const controllers = new Map<string, AutoController>()
 /** The worktree's controller, if it has one; checks never create one. */
@@ -848,11 +889,19 @@ export async function startAuto(projectId: string, task: string | null, settings
       log: [],
     }
     const snapshot = await autoSnapshot(projectId, task, run, true)
+    const { source, worktrees, branches } = snapshot
+    if (run.merge.destinationBranch)
+      assertMergeDestination(run.merge.destinationBranch, source, branches)
     if (snapshot.inPlace) {
       if (settings.stage === 'merge' || settings.stage === 'mergeGate')
         throw new Error('Auto runs in place here, with no merge; choose another starting stage')
       run.baseCommit = snapshot.base
       run.merge = IN_PLACE_MERGE
+    } else if (!run.merge.destinationBranch) {
+      run.merge = {
+        ...run.merge,
+        destinationBranch: defaultMergeDestination(source, worktrees, branches),
+      }
     }
     const decision = inferStage(snapshot, run, true)
     let stage =
@@ -1934,7 +1983,9 @@ async function approvalOutcome(
   if (controller.gateRequest?.key !== key) {
     const worktrees = await gitWorktrees(projectId)
     const { source } = await sourceWorktree(projectId, task, worktrees, run.branch)
-    controller.gateRequest = { key, request: mergeRequest({ source, worktrees }, run) }
+    const request = checkedOutMergeRequest({ source, worktrees }, run.merge.destinationBranch)
+    if (!request) return 'notMerged'
+    controller.gateRequest = { key, request }
   }
   return mergeOutcome(project, controller.gateRequest.request)
 }
@@ -2486,7 +2537,8 @@ async function drive(projectId: string, task: string | null) {
       pause('The review no longer permits automatic merging; Resume to review again')
       return
     }
-    if (run.stage === 'merge') mergeRequest(snapshot, run)
+    if (run.stage === 'merge')
+      assertMergeDestination(run.merge.destinationBranch, snapshot.source, snapshot.branches)
     if (
       (run.stage === 'mergeGate' || run.stage === 'merge') &&
       run.merge.mode === 'auto' &&
@@ -2771,35 +2823,36 @@ async function drive(projectId: string, task: string | null) {
         if (sid && autoRun(projectId, task)?.runId === runId)
           patch(projectId, task, { round: run.round + 1 })
         break
-      case 'merge':
-        launching = true
-        {
-          const request = mergeRequest(snapshot, run)
-          // Another Auto run may own the destination; waiting on it is a setup problem to resolve.
-          const destination = snapshot.worktrees.find((w) => w.path === request.destination)
-          if (destination)
-            try {
-              refuseWhileAutoRuns(projectId, taskOfWorktree(destination, projectId))
-            } catch (e) {
-              throw new AutoConfigurationError(String(e instanceof Error ? e.message : e))
-            }
-          const started = await startMerge({
-            project,
-            device,
-            request,
-            auto: {
-              brief,
-              cleanup: run.merge.cleanup ?? 'keep',
-              ownershipId: run.ownershipId ?? run.runId,
-            },
-          })
-          // A pinned request skips the checks that could stop short of launching.
-          if (started.kind !== 'started') throw new Error('The merge agent did not start')
-          sid = started.sessionId
-          launchRequest = started.requestId
-          launchedMerge = started.request
+      case 'merge': {
+        const request = await resolveAutoMergeRequest(project, snapshot, run)
+        if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
+        // Another Auto run may own the destination; waiting on it is a setup problem to resolve.
+        const destination = snapshot.worktrees.find((w) => w.path === request.destination) ?? {
+          path: request.destination,
         }
+        try {
+          refuseWhileAutoRuns(projectId, taskOfWorktree(destination, projectId))
+        } catch (e) {
+          throw new AutoConfigurationError(String(e instanceof Error ? e.message : e))
+        }
+        launching = true
+        const started = await startMerge({
+          project,
+          device,
+          request,
+          auto: {
+            brief,
+            cleanup: run.merge.cleanup ?? 'keep',
+            ownershipId: run.ownershipId ?? run.runId,
+          },
+        })
+        // A pinned request skips the checks that could stop short of launching.
+        if (started.kind !== 'started') throw new Error('The merge agent did not start')
+        sid = started.sessionId
+        launchRequest = started.requestId
+        launchedMerge = started.request
         break
+      }
       default:
         throw new Error(`Unsupported Auto stage ${run.stage}`)
     }

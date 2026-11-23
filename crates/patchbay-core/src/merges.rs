@@ -371,22 +371,57 @@ pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome
             return Ok(MergeOutcome::Dirty);
         }
     }
-    let root = Path::new(&destination.path);
+    commit_outcome(
+        Path::new(&destination.path),
+        &source.head,
+        &destination.head,
+    )
+}
+
+/// Check integration against a local branch without needing a destination checkout.
+/// The source must still be on its expected branch and free of uncommitted work.
+///
+/// # Errors
+/// Fails for a foreign or changed source worktree, an invalid destination branch, or Git errors.
+pub fn branch_outcome(
+    root: &Path,
+    source_path: &str,
+    source_branch: &str,
+    destination_branch: &str,
+) -> Result<MergeOutcome> {
+    ensure!(
+        source_branch != destination_branch,
+        "Choose a different destination branch"
+    );
+    crate::tasks::check_branch(root, destination_branch)?;
+    let destination_head = branch_head(root, destination_branch)?;
+    let mut source = checked_tree(&git::worktrees(root), source_path, "source")?;
+    let common = git::common_dir(root)?.canonicalize()?;
+    let (_, busy) = read_tree(&mut source, &common)?;
+    if busy {
+        return Ok(MergeOutcome::InProgress);
+    }
+    ensure!(
+        source.branch.as_deref() == Some(source_branch),
+        "The merge source branch changed"
+    );
+    if !status_entries(Path::new(&source.path))?.is_empty() {
+        return Ok(MergeOutcome::Dirty);
+    }
+    commit_outcome(root, &source.head, &destination_head)
+}
+
+fn commit_outcome(root: &Path, source_head: &str, destination_head: &str) -> Result<MergeOutcome> {
     let ancestor = git::git(root)
-        .args([
-            "merge-base",
-            "--is-ancestor",
-            &source.head,
-            &destination.head,
-        ])
+        .args(["merge-base", "--is-ancestor", source_head, destination_head])
         .status()?;
     if !ancestor.success() {
         ensure!(ancestor.code() == Some(1), "Couldn't check merge ancestry");
         return Ok(MergeOutcome::NotMerged);
     }
-    let parents = git::run(git::git(root).args(["rev-list", "--parents", "-1", "HEAD"]))?;
+    let parents = git::run(git::git(root).args(["rev-list", "--parents", "-1", destination_head]))?;
     Ok(
-        if parents.split_whitespace().skip(2).any(|p| p == source.head) {
+        if parents.split_whitespace().skip(2).any(|p| p == source_head) {
             MergeOutcome::Merged
         } else {
             MergeOutcome::AlreadyIntegrated
@@ -1348,6 +1383,35 @@ mod tests {
             outcome(&f.project, &f.request).unwrap(),
             MergeOutcome::Merged
         );
+    }
+
+    #[test]
+    fn branch_outcome_detects_a_merge_without_a_destination_checkout() {
+        let f = Fixture::new();
+        let root = Path::new(&f.project.root);
+        let source = Path::new(&f.request.source);
+        let read = || branch_outcome(root, &f.request.source, "feature", "main").unwrap();
+        fs::write(source.join("feature.txt"), "feature\n").unwrap();
+        git::run(git::git(source).args(["add", "."])).unwrap();
+        git::run(git::git(source).args(["commit", "-qm", "feature"])).unwrap();
+        git::run(git::git(root).args(["switch", "-c", "other"])).unwrap();
+        assert_eq!(read(), MergeOutcome::NotMerged);
+
+        git::run(git::git(root).args(["switch", "main"])).unwrap();
+        git::run(git::git(root).args(["merge", "--no-ff", "-qm", "merge feature", "feature"]))
+            .unwrap();
+        git::run(git::git(root).args(["switch", "other"])).unwrap();
+        let trees = git::worktrees(root);
+        assert!(
+            !trees
+                .iter()
+                .any(|tree| tree.branch.as_deref() == Some("main"))
+        );
+        assert_eq!(read(), MergeOutcome::Merged);
+        assert_eq!(git::worktrees(root).len(), trees.len());
+
+        fs::write(source.join("uncommitted.txt"), "new work").unwrap();
+        assert_eq!(read(), MergeOutcome::Dirty);
     }
 
     #[test]

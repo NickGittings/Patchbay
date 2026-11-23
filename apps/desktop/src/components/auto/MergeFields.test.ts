@@ -11,7 +11,7 @@ const mergeFields = (inPlaceBase: { branch: string; head: string } | null) =>
       onMode: () => {},
       cleanup: 'keep',
       destination: 'main',
-      destinations: ['main'],
+      destinations: [{ branch: 'main', worktree: undefined }],
       onDestination: () => {},
     }),
   )
@@ -29,5 +29,6 @@ test('a worktree with a review base keeps its merge choices', () => {
   expect(html).not.toContain('Runs in place')
   expect(html).toContain('Merge automatically after review')
   expect(html).toContain('After merge')
+  expect(html).toContain('Remembered for new Auto runs in all projects.')
   expect(html).toContain('Destination branch')
 })
