@@ -463,8 +463,8 @@ Development and Tauri packaging build and copy the helper automatically. Standal
 installations need `patchbay-sessiond` beside `patchbay-cli`. `PATCHBAY_STATE_DIR` selects isolated
 local state for tests; it must be an absolute path. `npm run smoke:workspace` accepts a second
 fixture through `PATCHBAY_SMOKE_ROOT_2`. `npm run smoke:lifecycle` creates isolated fixtures,
-quits and relaunches the desktop, and verifies the same process and recovered workspace.
-`PATCHBAY_SMOKE_PORT` can select a free port for that harness.
+quits and relaunches the desktop, and verifies the same process and recovered workspace. It
+serves the frontend on a free port (1420 when free) passed as `PATCHBAY_DEV_PORT`.
 
 ## Graph actions
 

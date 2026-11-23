@@ -68,7 +68,7 @@ const env = {
   CLAUDE_CONFIG_DIR: providerConfig,
 }
 const interrupted = deferSignals()
-const app = launchApp(env, undefined, ['pipe', 'inherit', 'pipe'])
+const app = launchApp(env, ['pipe', 'inherit', 'pipe'])
 
 /** `pid` and its descendants: under `tauri dev` the app is a grandchild of the launched CLI. */
 const family = (pid) => {

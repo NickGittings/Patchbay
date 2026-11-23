@@ -2,7 +2,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { deferSignals, desktop, launchApp, prebuilt, stopService } from './smoke-lib.mjs'
+import { deferSignals, desktop, launchApp, stopService } from './smoke-lib.mjs'
 const fixture = mkdtempSync(join(tmpdir(), 'patchbay-desktop-lifecycle-'))
 const localState = join(fixture, 'state')
 // Exercise launch maximization even when the previous session saved normal bounds.
@@ -87,22 +87,6 @@ writeFileSync(
   }).ready
 }`,
 )
-// Run on its own, `tauri dev` gets a Vite port that can't clash with a running dev server;
-// under smoke-all.mjs the prebuilt app uses that runner's Vite on 1420.
-let config
-if (!prebuilt) {
-  const port = Number(process.env.PATCHBAY_SMOKE_PORT || 1432)
-  config = join(fixture, 'tauri.json')
-  writeFileSync(
-    config,
-    JSON.stringify({
-      build: {
-        devUrl: `http://localhost:${port}`,
-        beforeDevCommand: `npm run prepare:sessiond && npm run dev -- --port ${port}`,
-      },
-    }),
-  )
-}
 const env = {
   ...process.env,
   PATCHBAY_STATE_DIR: localState,
@@ -115,7 +99,7 @@ const interrupted = deferSignals()
 const run = () =>
   new Promise((resolveRun, reject) => {
     if (interrupted()) return reject(new Error('Interrupted'))
-    const child = launchApp(env, config)
+    const child = launchApp(env)
     child.on('error', reject)
     child.on('exit', (code) =>
       code === 0 ? resolveRun() : reject(new Error(`Desktop exited ${code}`)),

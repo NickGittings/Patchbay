@@ -38,6 +38,8 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowE
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 #[cfg(debug_assertions)]
+mod dev_server;
+#[cfg(debug_assertions)]
 mod smoke;
 
 /// Emitted with a window's label when it closes, so the others can pick a new active window.
@@ -3173,6 +3175,10 @@ async fn terminal_reset(state: State<'_, AppState>) -> CmdResult<u64> {
 /// Panics if the Tauri runtime fails to start.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+    let mut context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    dev_server::apply(&mut context);
     let builder = tauri::Builder::default();
     #[cfg(debug_assertions)]
     let builder = smoke::install(builder);
@@ -3447,7 +3453,7 @@ pub fn run() {
             ];
             handler(invoke)
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Patchbay")
         .run(|app, event| {
             if let RunEvent::ExitRequested { api, code, .. } = &event {

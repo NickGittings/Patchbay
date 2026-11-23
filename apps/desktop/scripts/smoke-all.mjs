@@ -12,6 +12,7 @@ import { resolve, join, dirname } from 'node:path'
 import { createRequire } from 'node:module'
 import { closeSync, mkdtempSync, openSync, readFileSync } from 'node:fs'
 import { Script } from 'node:vm'
+import { DEV_PORT_ENV, devPort } from './dev-port.mjs'
 import { desktop, root } from './smoke-lib.mjs'
 import { copySmokeProject } from './smoke-fixtures.mjs'
 const require = createRequire(import.meta.url)
@@ -233,18 +234,14 @@ execFileSync('cargo', ['build', '-p', 'patchbay-desktop', '-p', 'patchbay-cli'],
   stdio: 'inherit',
 })
 
-// The debug binary loads `devUrl`, so one Vite server serves every run. Something else answering
-// there (a running `tauri dev`) would serve the wrong frontend, so refuse to start.
-const port = 1420
+// One Vite server serves every run, on a free port so a running `tauri dev` (in this worktree or
+// another) doesn't matter; the debug app reads it from `PATCHBAY_DEV_PORT`.
+const port = await devPort()
 const answers = () =>
   fetch(`http://localhost:${port}/`).then(
     (r) => r.ok,
     () => false,
   )
-if (await answers()) {
-  console.error(`Port ${port} is in use; stop \`tauri dev\` before running smoke scripts.`)
-  process.exit(1)
-}
 const vite = spawn(
   process.execPath,
   [
@@ -306,7 +303,13 @@ let halted = false
 async function runOne(name) {
   const entry = SCRIPTS[name]
   const runTmp = mkdtempSync(join(tmpdir(), 'pb-run-'))
-  const env = { ...process.env, ...entry.env, PATCHBAY_SMOKE_PREBUILT: '1', TMPDIR: runTmp }
+  const env = {
+    ...process.env,
+    ...entry.env,
+    PATCHBAY_SMOKE_PREBUILT: '1',
+    [DEV_PORT_ENV]: String(port),
+    TMPDIR: runTmp,
+  }
   for (const key of Object.keys(entry.env ?? {})) env[key] = resolveTmp(env[key], runTmp)
   // Every in-checkout project is a read-only template. Both workspace roots get their own
   // writable Git repositories; explicit temporary fixtures already provide their own isolation.
