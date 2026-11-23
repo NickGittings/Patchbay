@@ -22,8 +22,11 @@ The `@` popup lists matching components first, then epics, features and stories 
 
 The lead reads the board with `agent stories [--id]` (`Action::Stories`: items in board order, `next`, and with `id` the planner's Story section). Its instructions answer "what's next?" with `next` and offer Plan or Auto without starting either. `startPlan` takes `story` in place of `goal` (a `goal` beside it reaches the planner as its plan request), and `startAuto` an optional `story`; the id must exist when the request is made, only those two actions take one, and Auto takes one only in a worktree, which its story is linked to. The story's text is Auto's goal even beside a requested `goal`. Delivery confirmation (`sentFromDraft`) compares only the message before its story references, since the lead may change a story's status as soon as it is sent.
 
-The component mention popup keeps focus in the textarea and exposes its selected option through
-combobox/listbox semantics. Up and Down wrap the selection, Escape dismisses the current query,
+The component mention popup floats over the line holding the `@`, anchored at that character
+rather than the moving caret (`caretPoint.ts`: a mirror measures the position; `placeMention`
+puts it above the line, else below, else on the roomier side with its height capped, inside the
+composer). It keeps focus in the textarea and exposes its selected option through
+combobox/listbox semantics; moving the pointer over an option selects it. Up and Down wrap the selection, Escape dismisses the current query,
 and changing the query reopens it. Shift+Enter and IME composition retain their input behavior.
 
 `useChatFollow` accepts typed reply markers and owns layout-change detection. On mount, remount,

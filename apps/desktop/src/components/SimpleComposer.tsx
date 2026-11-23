@@ -23,7 +23,15 @@ import {
 } from '../lib/chatTeams'
 import { selectPanel, useRail } from '../lib/rail'
 import { persistReplies } from '../lib/simpleReplies'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import {
+  caretPoint,
+  clippingAncestor,
+  MENTION_MAX_HEIGHT,
+  placeMention,
+  samePlacement,
+  type MentionPlacement,
+} from '../lib/caretPoint'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import type { SessionRecord } from '../types'
@@ -248,6 +256,73 @@ export default function SimpleComposer({
         ]
       : []
   const selectedIndex = Math.min(selection.index, Math.max(0, candidates.length - 1))
+  const mentionList = useRef<HTMLDivElement>(null)
+  // Hover selects only when the pointer itself moves, not when the list opens or scrolls under it.
+  const pointer = useRef({ x: NaN, y: NaN })
+  const [placement, setPlacement] = useState<MentionPlacement>()
+  const listOpen = candidates.length > 0
+  // The popover hugs the `@`, not the moving caret, so it holds still while the query is typed.
+  const anchor = query ? caret - query[1].length - 1 : -1
+  const placeMentions = useRef(() => {})
+  const placeList = () => {
+    const area = input.current,
+      list = mentionList.current,
+      box = area?.parentElement
+    if (!listOpen || !area || !list || !box) return
+    const point = caretPoint(area, anchor)
+    const rect = box.getBoundingClientRect()
+    const clip = clippingAncestor(box).getBoundingClientRect()
+    const padding = list.offsetHeight - list.clientHeight
+    // A line scrolled out of the textarea anchors at its visible edge instead of over other controls.
+    const top = Math.min(Math.max(point.top, 0), Math.max(0, area.clientHeight - point.lineHeight))
+    const next = placeMention({
+      caret: {
+        left: area.offsetLeft + area.clientLeft + point.left,
+        top: area.offsetTop + area.clientTop + top,
+      },
+      lineHeight: point.lineHeight,
+      popover: { width: list.offsetWidth, height: list.scrollHeight + padding },
+      bounds: {
+        width: rect.width,
+        top: Math.max(0, clip.top) - rect.top,
+        bottom: Math.min(window.innerHeight, clip.bottom) - rect.top,
+      },
+    })
+    setPlacement((current) => (samePlacement(current, next) ? current : next))
+  }
+  useLayoutEffect(() => {
+    placeMentions.current = placeList
+  })
+  // Observers live as long as the list is open; typing only re-measures.
+  useLayoutEffect(() => {
+    const area = input.current,
+      list = mentionList.current,
+      box = area?.parentElement
+    if (!listOpen || !area || !list || !box) return
+    // Hover waits for the pointer to move over the open list before it selects.
+    pointer.current = { x: NaN, y: NaN }
+    const remeasure = () => placeMentions.current()
+    // The composer also moves when the window or the panel around it changes size.
+    const resize = new ResizeObserver(remeasure)
+    for (const element of [area, list, box, clippingAncestor(box)]) resize.observe(element)
+    area.addEventListener('scroll', remeasure)
+    window.addEventListener('resize', remeasure)
+    return () => {
+      resize.disconnect()
+      area.removeEventListener('scroll', remeasure)
+      window.removeEventListener('resize', remeasure)
+    }
+  }, [listOpen])
+  useLayoutEffect(() => placeList(), [listOpen, anchor, ui.draft, candidates.length])
+  // Scroll only the list: scrollIntoView would also scroll the clipped panels around it.
+  useLayoutEffect(() => {
+    const list = mentionList.current
+    const option = list?.querySelector<HTMLElement>('[aria-selected="true"]')
+    if (!list || !option) return
+    if (option.offsetTop < list.scrollTop) list.scrollTop = option.offsetTop - 4
+    else if (option.offsetTop + option.offsetHeight > list.scrollTop + list.clientHeight)
+      list.scrollTop = option.offsetTop + option.offsetHeight - list.clientHeight + 4
+  }, [selectedIndex, queryKey, listOpen])
   // The service applies the same provider, turn and approval checks.
   const canForce = !autoActive && running && !ready && s.serviceConnected && forceable(state)
   const asking = running && state?.status?.agent?.state === 'needsInput'
@@ -560,84 +635,114 @@ export default function SimpleComposer({
           </button>
         ))}
       </div>
-      <textarea
-        ref={input}
-        aria-label="Message agent"
-        role="combobox"
-        aria-autocomplete="list"
-        aria-expanded={candidates.length > 0}
-        aria-controls={candidates.length > 0 ? mentionListId : undefined}
-        aria-activedescendant={
-          candidates.length > 0
-            ? `${mentionListId}-${candidates[selectedIndex].story ? 'story-' : ''}${candidates[selectedIndex].id}`
-            : undefined
-        }
-        value={ui.draft}
-        placeholder="Message the agent… @component to scope, @story to reference · paste images · Shift+Enter for a newline"
-        onSelect={(e) => {
-          setCaret(e.currentTarget.selectionStart)
-        }}
-        onChange={(e) => {
-          setCaret(e.target.selectionStart)
-          patch({
-            draft: e.target.value,
-            mentions: editedMentions(ui.draft, e.target.value, ui.mentions),
-          })
-        }}
-        onPaste={(e) => {
-          const files = imageFiles(e.clipboardData.files)
-          // Apps that copy text with a picture of it (spreadsheets, documents) paste the text.
-          if (!files.length || e.clipboardData.getData('text/plain')) return
-          e.preventDefault()
-          void attach(files, e.currentTarget)
-        }}
-        onDragOver={(e) => {
-          if (Array.from(e.dataTransfer.items).some((i) => i.type.startsWith('image/')))
-            e.preventDefault()
-        }}
-        onDrop={(e) => {
-          const files = imageFiles(e.dataTransfer.files)
-          if (!files.length) return
-          e.preventDefault()
-          void attach(files, e.currentTarget)
-        }}
-        onKeyDown={(e) => {
-          if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
-          const navigation = mentionKey(e.key, selectedIndex, candidates.length)
-          if (navigation) {
-            e.preventDefault()
-            setSelection({ key: queryKey, ...navigation })
-            return
+      <div className="simple-input">
+        <textarea
+          ref={input}
+          aria-label="Message agent"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={candidates.length > 0}
+          aria-controls={candidates.length > 0 ? mentionListId : undefined}
+          aria-activedescendant={
+            candidates.length > 0
+              ? `${mentionListId}-${candidates[selectedIndex].story ? 'story-' : ''}${candidates[selectedIndex].id}`
+              : undefined
           }
-          if (e.key !== 'Enter') return
-          if (candidates.length && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+          value={ui.draft}
+          placeholder="Message the agent… @component to scope, @story to reference · paste images · Shift+Enter for a newline"
+          onSelect={(e) => {
+            setCaret(e.currentTarget.selectionStart)
+          }}
+          onChange={(e) => {
+            setCaret(e.target.selectionStart)
+            patch({
+              draft: e.target.value,
+              mentions: editedMentions(ui.draft, e.target.value, ui.mentions),
+            })
+          }}
+          onPaste={(e) => {
+            const files = imageFiles(e.clipboardData.files)
+            // Apps that copy text with a picture of it (spreadsheets, documents) paste the text.
+            if (!files.length || e.clipboardData.getData('text/plain')) return
             e.preventDefault()
-            mention(candidates[selectedIndex])
-          } else if (!e.shiftKey || e.metaKey || e.ctrlKey) {
+            void attach(files, e.currentTarget)
+          }}
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer.items).some((i) => i.type.startsWith('image/')))
+              e.preventDefault()
+          }}
+          onDrop={(e) => {
+            const files = imageFiles(e.dataTransfer.files)
+            if (!files.length) return
             e.preventDefault()
-            if (status.sendable && !attaching) void send()
-          }
-        }}
-      />
-      {candidates.length > 0 && (
-        <div id={mentionListId} role="listbox" aria-label="Mention component or story">
-          {candidates.map((n, index) => (
-            <button
-              role="option"
-              tabIndex={-1}
-              id={`${mentionListId}-${n.story ? 'story-' : ''}${n.id}`}
-              aria-selected={index === selectedIndex}
-              aria-label={n.story ? `${n.story} ${n.label}` : undefined}
-              key={`${n.story ?? 'component'}:${n.id}`}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => mention(n)}
-            >
-              {n.story && <i className={`story-dot ${n.story}`} />}
-              {n.label}
-            </button>
-          ))}
-        </div>
-      )}
+            void attach(files, e.currentTarget)
+          }}
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
+            const navigation = mentionKey(e.key, selectedIndex, candidates.length)
+            if (navigation) {
+              e.preventDefault()
+              setSelection({ key: queryKey, ...navigation })
+              return
+            }
+            if (e.key !== 'Enter') return
+            if (candidates.length && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+              e.preventDefault()
+              mention(candidates[selectedIndex])
+            } else if (!e.shiftKey || e.metaKey || e.ctrlKey) {
+              e.preventDefault()
+              if (status.sendable && !attaching) void send()
+            }
+          }}
+        />
+        {listOpen && (
+          <div
+            ref={mentionList}
+            id={mentionListId}
+            role="listbox"
+            aria-label="Mention component or story"
+            className="simple-mention-list"
+            data-placement={placement?.placement ?? 'above'}
+            style={{
+              left: placement?.left ?? 0,
+              top: placement?.top ?? 0,
+              maxHeight: placement?.maxHeight ?? MENTION_MAX_HEIGHT,
+              visibility: placement ? undefined : 'hidden',
+            }}
+          >
+            {candidates.map((n, index) => (
+              <button
+                role="option"
+                tabIndex={-1}
+                id={`${mentionListId}-${n.story ? 'story-' : ''}${n.id}`}
+                aria-selected={index === selectedIndex}
+                aria-label={n.story ? `${n.story} ${n.label}` : undefined}
+                key={`${n.story ?? 'component'}:${n.id}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseMove={(event) => {
+                  const last = pointer.current
+                  const moved =
+                    !Number.isNaN(last.x) && (event.clientX !== last.x || event.clientY !== last.y)
+                  pointer.current = { x: event.clientX, y: event.clientY }
+                  if (moved && index !== selectedIndex)
+                    setSelection({ key: queryKey, index, dismissed: false })
+                }}
+                onClick={() => mention(n)}
+              >
+                {n.story ? (
+                  <i className={`story-dot ${n.story}`} />
+                ) : (
+                  <i className="mention-glyph" />
+                )}
+                <span className="mention-label">{n.label}</span>
+                {(n.story || n.id !== n.label) && (
+                  <span className="mention-detail">{n.story ?? n.id}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="simple-composer-controls">
         <span className="chat-recipient" role="status">
           {recipient
