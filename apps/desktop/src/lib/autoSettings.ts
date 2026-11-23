@@ -40,6 +40,8 @@ export const EFFORT: Record<AutoRun['effort'], EffortSettings & { note: string }
     note: 'Fix root causes and add tests.',
   },
 }
+
+export const defaultAutoEffort = (simple: boolean) => (simple ? 'light' : 'standard')
 export const STAGE_LABELS: Record<AutoStage, string> = {
   scan: 'Scan',
   plan: 'Plan',

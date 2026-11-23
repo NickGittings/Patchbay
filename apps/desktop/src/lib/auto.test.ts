@@ -121,7 +121,7 @@ const {
 const ipc = await import('./ipc')
 const jobs = await import('./reviewAgents')
 const awaitSessions = await import('./sessions')
-const { recordStageLaunch } = await import('./stageRecord')
+const { recordStageLaunch, refuseWhileAutoRuns } = await import('./stageRecord')
 const started = (sessionId: string) => ({
   kind: 'started' as const,
   sessionId,
@@ -1414,6 +1414,40 @@ test('Auto pauses a merge when it cannot refresh destination task ownership', as
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
     expect(autoRun('p', 't')?.reason).toContain('Task storage is unreadable')
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+  })
+})
+
+test('Auto checks destination ownership before resolving a checkout', async () => {
+  load()
+  vi.mocked(refuseWhileAutoRuns).mockImplementationOnce(() => {
+    throw new Error('Auto is running this worktree')
+  })
+  setRun({ stage: 'merge' })
+  await withFollower(async () => {
+    await flush()
+    expect(refuseWhileAutoRuns).toHaveBeenCalledWith('p', null)
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+  })
+})
+
+test('stopping during merge preflight does not resolve a destination checkout', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  let finish!: (tasks: ReturnType<typeof useStore.getState>['tasks']) => void
+  vi.mocked(ipc.taskList).mockReturnValueOnce(new Promise((resolve) => (finish = resolve)))
+  setRun({ stage: 'merge' })
+  await withFollower(async () => {
+    await flush()
+    expect(ipc.taskList).toHaveBeenCalledOnce()
+    stopAuto('p', 't')
+    finish(useStore.getState().tasks)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('stopped')
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
     expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
@@ -1429,6 +1463,12 @@ test('Auto recognizes merged work when the destination branch has no checkout', 
   expect((await autoSnapshot('p', 't', run({ ...settings, stage: 'plan' }), true)).outcome).toBe(
     'alreadyIntegrated',
   )
+  const merging = run({
+    ...settings,
+    stage: 'merge',
+    merge: { mode: 'ask', destinationBranch: 'main' },
+  })
+  expect((await autoSnapshot('p', 't', merging)).outcome).toBe('alreadyIntegrated')
   await expect(startAuto('p', 't', settings)).rejects.toThrow('describe the new goal')
   expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
 })
@@ -2105,6 +2145,23 @@ test.each(['merged', 'alreadyIntegrated'] as const)(
     })
   },
 )
+
+test('a waiting merge gate notices a hand merge into a branch without a checkout', async () => {
+  vi.useFakeTimers()
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  setRun({ stage: 'mergeGate', status: 'waitingOnYou', branch: 'feature' })
+  await withFollower(async () => {
+    await flush()
+    expect(ipc.mergeBranchOutcome).toHaveBeenCalledWith('p', tree.path, 'feature', 'main')
+    expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
+    vi.mocked(ipc.mergeBranchOutcome).mockResolvedValue('alreadyIntegrated')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+  })
+})
 
 test.each(['validate', 'mergeGate', 'done'] as const)(
   '%s refuses to start without an agent preset before reading Git',

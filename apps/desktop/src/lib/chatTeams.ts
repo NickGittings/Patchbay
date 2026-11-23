@@ -8,6 +8,7 @@ import { profileHookProvider } from './agentProfiles'
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
+import { defaultAutoEffort } from './autoSettings'
 import {
   LEAD_RECIPIENT,
   type Project,
@@ -717,7 +718,7 @@ async function driveLeadRequests(team: ChatTeam) {
             : undefined
         const settings = {
           goal: team.checkpoint.goal,
-          effort: previous?.effort ?? 'standard',
+          effort: defaultAutoEffort(state.simpleMode),
           merge: previous?.merge ?? { mode: 'ask', destinationBranch: '' },
           overrides: previous?.overrides,
           agents: previous?.agents,

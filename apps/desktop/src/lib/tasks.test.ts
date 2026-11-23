@@ -389,11 +389,13 @@ test("a later request's failure still lets an earlier list land", async () => {
   removalProject()
   let answer!: (tasks: Task[]) => void
   vi.mocked(taskList).mockReturnValueOnce(new Promise((resolve) => (answer = resolve)))
-  const earlier = refreshTasks('p')
+  const earlier = refreshTasks('p', { requireSuccess: true })
   vi.mocked(taskList).mockRejectedValueOnce(new Error('transient'))
-  const later = refreshTasks('p')
+  const later = refreshTasks('p', { requireSuccess: true, quiet: true })
+  const failed = expect(later).rejects.toThrow('transient')
+  await failed
   answer([fresh])
-  await Promise.all([earlier, later])
+  await earlier
   expect(useStore.getState().tasks.map((t) => t.id)).toEqual(['n'])
 })
 

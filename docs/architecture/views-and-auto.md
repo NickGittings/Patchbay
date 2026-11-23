@@ -8,7 +8,9 @@ Auto launch controls in Full and Simple mode expose two independent, default-off
 while another worktree is selected as long as their project remains open. Their briefing tells
 agents to make reasonable decisions, resolve routine problems and save required artifacts while
 preserving command permissions. Full mode uses Standard effort with Advanced overrides. Simple mode
-uses Light effort with a configurable fix budget. Both modes can select either merge setting.
+uses Light effort with a configurable fix budget. Clearing Fix rounds while editing keeps the last
+valid value. Both modes can select either merge setting. A Chat lead's `startAuto` uses the same
+mode default unless the request explicitly sets an effort.
 
 The existing controller serializes autonomous recovery with launching and scheduling. It recovers
 missing plans, unreadable review artifacts, incomplete stages and interrupted owned sessions.
@@ -38,12 +40,12 @@ With automatic merge disabled, execution waits at Ready to merge for approval.
 Auto offers every other local branch as a merge destination. The dialog and the Chat lead's
 `startAuto` request default to the open checkout's branch when eligible, then local `main` or
 `master`. Start rejects an explicit destination that is missing or is the source branch. When
-inferring the next stage of previously reviewed or merged work, Auto checks commit ancestry
-directly if the destination has no checkout, so the dialog can leave an already integrated goal
-blank. The approval wait checks for a destination checkout on each poll until one is available.
-At the merge stage Auto resolves the checkout through the same path as manual merges and refreshes
-task ownership before launching. A failure during either check pauses the run for Resume (see
-[Worktrees](worktrees.md)).
+inferring the next stage of previously reviewed or merged work, Auto checks integration even if
+the destination has no checkout, so the dialog can leave an already integrated goal blank. The
+merge stage and approval wait use the same fallback to recognize a merge done by hand. Before
+resolving the destination checkout, Auto refreshes task ownership and checks that the run can
+still launch and no other Auto run holds the checkout. Resolution uses the same path as manual
+merges, and Auto publishes task changes once it returns (see [Worktrees](worktrees.md)).
 
 A worktree with no branch to review against, the project folder on its default (`main`/`master`)
 or only branch (not a detached HEAD), runs Auto in place: plan → implement → validate → review ⇄

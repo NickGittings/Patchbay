@@ -2267,8 +2267,14 @@ async fn merge_branch_outcome(
     main_only(&window)?;
     let (root, _) = task_repo(&state, &project_id)?;
     blocking(move || {
-        patchbay_core::merges::branch_outcome(&root, &source, &source_branch, &destination_branch)
-            .map_err(err)
+        let outcome = patchbay_core::merges::branch_outcome(
+            &root,
+            &source,
+            &source_branch,
+            &destination_branch,
+        )
+        .map_err(err)?;
+        record_merge_outcome(&root, &source, outcome)
     })
     .await
 }
@@ -2286,17 +2292,24 @@ async fn merge_outcome(
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
         let outcome = patchbay_core::merges::outcome(&project, &request).map_err(err)?;
-        if matches!(
-            outcome,
-            patchbay_core::merges::MergeOutcome::Merged
-                | patchbay_core::merges::MergeOutcome::AlreadyIntegrated
-        ) {
-            stories::complete_merge(Path::new(&project.root), Path::new(&request.source))
-                .map_err(err)?;
-        }
-        Ok(outcome)
+        record_merge_outcome(Path::new(&project.root), &request.source, outcome)
     })
     .await
+}
+
+fn record_merge_outcome(
+    root: &Path,
+    source: &str,
+    outcome: patchbay_core::merges::MergeOutcome,
+) -> CmdResult<patchbay_core::merges::MergeOutcome> {
+    use patchbay_core::merges::MergeOutcome;
+    if matches!(
+        outcome,
+        MergeOutcome::Merged | MergeOutcome::AlreadyIntegrated
+    ) {
+        stories::complete_merge(root, Path::new(source)).map_err(err)?;
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]

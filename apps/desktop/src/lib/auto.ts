@@ -450,20 +450,17 @@ function checkedOutMergeRequest(
 
 async function resolveAutoMergeRequest(
   project: Project,
-  snapshot: AutoSnapshot,
+  source: AutoSnapshot['source'],
   run: AutoRun,
 ): Promise<MergeRequest> {
-  const { source } = snapshot
   const { destinationBranch, mode } = run.merge
   let request: MergeRequest
   try {
     request = await mergeDestinationResolve(project, source.path, source.branch!, destinationBranch)
-  } catch (e) {
-    // Resolution can create a checkout before refusing the merge.
-    await refreshTasks(project.projectId).catch(() => {})
-    throw e
+  } finally {
+    // Publish a newly registered checkout, including when validation failed after creation.
+    void refreshTasks(project.projectId).catch(() => {})
   }
-  await refreshTasks(project.projectId, { quiet: true, requireSuccess: true })
   return mode === 'auto' && run.reviewedHead
     ? { ...request, expectedSourceHead: run.reviewedHead }
     : request
@@ -733,14 +730,9 @@ export async function autoSnapshot(
     validDestination(destination, source, branches)
   ) {
     const request = checkedOutMergeRequest(snapshot, destination)
-    if (request) snapshot.outcome = await mergeOutcome(project, request)
-    else if (inferring)
-      snapshot.outcome = await mergeBranchOutcome(
-        projectId,
-        source.path,
-        source.branch,
-        destination,
-      )
+    snapshot.outcome = request
+      ? await mergeOutcome(project, request)
+      : await mergeBranchOutcome(projectId, source.path, source.branch, destination)
   }
   return snapshot
 }
@@ -1984,7 +1976,8 @@ async function approvalOutcome(
     const worktrees = await gitWorktrees(projectId)
     const { source } = await sourceWorktree(projectId, task, worktrees, run.branch)
     const request = checkedOutMergeRequest({ source, worktrees }, run.merge.destinationBranch)
-    if (!request) return 'notMerged'
+    if (!request)
+      return mergeBranchOutcome(projectId, source.path, source.branch, run.merge.destinationBranch)
     controller.gateRequest = { key, request }
   }
   return mergeOutcome(project, controller.gateRequest.request)
@@ -2824,17 +2817,26 @@ async function drive(projectId: string, task: string | null) {
           patch(projectId, task, { round: run.round + 1 })
         break
       case 'merge': {
-        const request = await resolveAutoMergeRequest(project, snapshot, run)
+        const [worktrees] = await Promise.all([
+          gitWorktrees(projectId),
+          refreshTasks(projectId, { quiet: true, requireSuccess: true }),
+        ])
         if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
-        // Another Auto run may own the destination; waiting on it is a setup problem to resolve.
-        const destination = snapshot.worktrees.find((w) => w.path === request.destination) ?? {
-          path: request.destination,
+        const destination = worktrees.find((w) => w.branch === run.merge.destinationBranch)
+        const checkOwner = (worktree: Pick<Worktree, 'path'> & Partial<Pick<Worktree, 'main'>>) => {
+          try {
+            refuseWhileAutoRuns(projectId, taskOfWorktree(worktree, projectId))
+          } catch (e) {
+            throw new AutoConfigurationError(String(e instanceof Error ? e.message : e))
+          }
         }
-        try {
-          refuseWhileAutoRuns(projectId, taskOfWorktree(destination, projectId))
-        } catch (e) {
-          throw new AutoConfigurationError(String(e instanceof Error ? e.message : e))
-        }
+        if (destination) checkOwner(destination)
+        // Resolution may create a checkout. Treat it as part of the in-flight launch once
+        // preflight passes, so Pause can track the launch and Stop can retire its late reply.
+        const request = await resolveAutoMergeRequest(project, snapshot.source, run)
+        checkOwner(
+          worktrees.find((w) => w.path === request.destination) ?? { path: request.destination },
+        )
         launching = true
         const started = await startMerge({
           project,

@@ -512,9 +512,13 @@ test('an overlapping Auto start remains waiting and can be retried after scope r
   )
 })
 
-test.each([undefined, 'implement'] as const)(
-  'lead Auto starts reuse configuration without carrying previous runtime state (stage %s)',
-  async (stage) => {
+test.each([
+  [false, undefined, undefined, 'standard'],
+  [true, undefined, undefined, 'light'],
+  [false, 'implement', 'light', 'light'],
+] as const)(
+  'lead Auto starts use matching defaults and honor explicit settings (Simple %s, stage %s, effort %s)',
+  async (simpleMode, stage, effort, expectedEffort) => {
     const previous: AutoRun = {
       goal: 'Old task',
       effort: 'thorough',
@@ -540,16 +544,17 @@ test.each([undefined, 'implement'] as const)(
       scanRound: 'old-scan',
       log: [{ atMs: 1, text: 'Old log' }],
     }
+    useStore.setState({ simpleMode })
     useStore.getState().patchTask('p', null, { auto: previous })
     const saved = mockRequestDriver('startAuto', {
-      effort: 'light',
+      ...(effort ? { effort } : {}),
       ...(stage ? { stage } : {}),
     })
     await refreshChatTeams('p')
     expect(saved.requests![0].state).toBe('completed')
     expect(startAuto).toHaveBeenCalledExactlyOnceWith('p', null, {
       goal: 'Goal',
-      effort: 'light',
+      effort: expectedEffort,
       device: 'codex',
       merge: previous.merge,
       agents: previous.agents,

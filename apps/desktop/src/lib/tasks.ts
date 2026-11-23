@@ -59,7 +59,7 @@ const pending = new Map<string, Promise<{ error: unknown } | undefined>>()
  * task and prune its draft, so it is ignored; callers return once the newest request settles.
  * `quiet` refreshes (background watcher signals) keep a failure to themselves instead of
  * repeating the error with every signal. `requireSuccess` propagates a failed refresh to callers
- * that need a fresh list before acting.
+ * that need this request or a later one to have applied a fresh list before acting.
  */
 export async function refreshTasks(
   projectId = useStore.getState().project?.id,
@@ -72,8 +72,8 @@ export async function refreshTasks(
     try {
       const tasks = await taskList(projectId)
       if (seq <= (applied.get(projectId) ?? 0)) return
-      applied.set(projectId, seq)
       applyTasks(projectId, tasks)
+      applied.set(projectId, seq)
     } catch (e) {
       const s = useStore.getState()
       if (
@@ -87,13 +87,9 @@ export async function refreshTasks(
     }
   })()
   pending.set(projectId, request)
-  let settled = request
-  let failure = await settled
-  while (pending.get(projectId) !== settled) {
-    settled = pending.get(projectId)!
-    failure = await settled
-  }
-  if (requireSuccess && failure) throw failure.error
+  const failure = await request
+  await tasksSettled(projectId)
+  if (requireSuccess && failure && (applied.get(projectId) ?? 0) < seq) throw failure.error
 }
 
 /** Resolves once `projectId`'s task list requests, including any started meanwhile, settle. */

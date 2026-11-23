@@ -30,7 +30,7 @@ import {
 } from '../../lib/auto'
 import { ROLE_LABELS, roleDevice, roleDevices } from '../../lib/agentRoles'
 import { agentDevices } from '../../lib/plan'
-import { integrated, MAX_ROUNDS } from '../../lib/autoSettings'
+import { defaultAutoEffort, integrated, MAX_ROUNDS } from '../../lib/autoSettings'
 import { defaultMergeDestination, mergeDestinations } from '../../lib/reviewAgents'
 import { SEVERITIES } from '../../types'
 import {
@@ -82,7 +82,8 @@ export default function AutoDialog({
     changeDraft(draftKey, setDraft, (d) => ({ ...d, ...patch }), draft)
   // This run's choices; unpicked stages follow the global agent roles.
   const { picked, reviewers: pickedReviewers, overrides, mode, stage } = draft
-  const effort = simple ? 'light' : 'standard'
+  const effort = defaultAutoEffort(simple)
+  const [roundsEmpty, setRoundsEmpty] = useState(false)
   const reviewers = useMemo(() => {
     const kept = pickedReviewers && agents.filter((a) => pickedReviewers.includes(a.id))
     // Picks whose presets were all removed since give way to the role, as unpicked agents do.
@@ -203,7 +204,7 @@ export default function AutoDialog({
       status: 'running',
       stage: 'plan',
       goal: '',
-      effort: 'standard',
+      effort,
       merge: { mode: 'ask', destinationBranch: destination },
       device: '',
       round: 0,
@@ -242,7 +243,7 @@ export default function AutoDialog({
     return () => {
       cancelled = true
     }
-  }, [projectId, task, destination, draftKey, requestKey, recheck])
+  }, [projectId, task, destination, draftKey, requestKey, recheck, effort])
   useEffect(() => {
     let cancelled = false
     void Promise.all(distinct.map(checkAutoHooks))
@@ -347,18 +348,19 @@ export default function AutoDialog({
               type="number"
               min={0}
               max={MAX_ROUNDS}
-              value={settings.maxRounds}
-              onChange={(e) =>
+              value={roundsEmpty ? '' : settings.maxRounds}
+              onBlur={() => setRoundsEmpty(false)}
+              onChange={(e) => {
+                const rounds = e.target.valueAsNumber
+                setRoundsEmpty(!Number.isFinite(rounds))
+                if (!Number.isFinite(rounds)) return
                 edit({
                   overrides: {
                     ...overrides,
-                    maxRounds: Math.max(
-                      0,
-                      Math.min(MAX_ROUNDS, Math.round(Number(e.target.value) || 0)),
-                    ),
+                    maxRounds: Math.max(0, Math.min(MAX_ROUNDS, Math.round(rounds))),
                   },
                 })
-              }
+              }}
             />
           </label>
         </div>
