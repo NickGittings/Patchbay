@@ -607,6 +607,7 @@
         (r) => r.metadata.task === task.id && r.metadata.componentId === '@task',
       )
     })
+    await until('Build after implementation handoff', () => state().view === 'implementation')
     state().setView('navigation')
     await until('board after Plan', () => query('.story-board'))
     await until('Building card', () =>
