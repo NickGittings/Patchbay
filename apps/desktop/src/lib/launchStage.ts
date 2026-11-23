@@ -1,5 +1,6 @@
 import { useStore } from '../store'
-import type { DeviceManifest, Project, ReviewRequest, SessionRecord } from '../types'
+import type { DeviceManifest, Project, ReviewRequest, SessionRecord, Worktree } from '../types'
+import { gitWorktrees, reviewFixTask } from './ipc'
 import { implementPlannerPlan, type HandoffTarget } from './planHandoff'
 import { startMerge, type MergeOptions } from './reviewAgents'
 import { fixReviewFindings } from './reviewHandoff'
@@ -31,9 +32,10 @@ export async function launchFix(
   presentation: 'stay' | 'follow',
   target?: HandoffTarget,
 ) {
+  // The backend names the reviewed worktree's task, whatever form its path takes.
   refuseWhileAutoRuns(
     reviewer.metadata.projectId,
-    target?.task ?? taskOfWorktree(reviewer.spec.cwd),
+    target ? target.task : await reviewFixTask(reviewer.id, reviewer.metadata.projectId),
   )
   const fixing = await fixReviewFindings(reviewer, undefined, undefined, presentation, target)
   await recordQuietly({
@@ -82,7 +84,13 @@ export async function launchMerge(
   task: string | null | undefined,
   options: Extract<MergeOptions, { source: unknown }>,
 ) {
-  refuseWhileAutoRuns(options.project.projectId!, task)
+  const projectId = options.project.projectId!
+  refuseWhileAutoRuns(projectId, task)
+  // The merge agent works in the destination, which Auto may own too.
+  const destination = (await gitWorktrees(projectId)).find(
+    (w) => w.branch === options.destinationBranch,
+  )
+  if (destination) refuseWhileAutoRuns(projectId, taskOfWorktree(destination))
   const started = await startMerge(options)
   if (started.kind === 'started' && task !== undefined)
     await recordQuietly({
@@ -98,13 +106,15 @@ export async function launchMerge(
 }
 
 /**
- * The task whose worktree is `path`: `null` for the project folder, `undefined` for a worktree
- * Patchbay doesn't know (one created outside it), which has no chat to record in.
+ * The task whose worktree this is: `null` for the project folder (git's main worktree), and
+ * `undefined` for a worktree Patchbay doesn't know (one created outside it), which has no chat.
  */
-export function taskOfWorktree(path: string): string | null | undefined {
+export function taskOfWorktree(
+  worktree: Pick<Worktree, 'path'> & Partial<Pick<Worktree, 'main'>>,
+): string | null | undefined {
   const s = useStore.getState()
   // The project folder may itself be attached as a task, whose chat is then the task's.
-  const task = s.tasks.find((t) => !t.missing && t.worktree === path)
+  const task = s.tasks.find((t) => !t.missing && t.worktree === worktree.path)
   if (task) return task.id
-  return path === s.project?.root ? null : undefined
+  return worktree.main || worktree.path === s.project?.root ? null : undefined
 }

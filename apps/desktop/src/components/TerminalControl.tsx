@@ -106,9 +106,10 @@ export default function TerminalControl({
             const now = useStore.getState()
             const owner = projectId ?? now.project?.id
             const scope = task === undefined ? now.activeTask : task
+            const origin = now.simpleMode ? 'chat' : 'manual'
             void startTerminal(componentId, terminalId, task, projectId).then((requestId) => {
               if (requestId && componentId === PLAN_SCOPE)
-                recordPlannerStart(owner, scope, terminalId, requestId)
+                recordPlannerStart(owner, scope, terminalId, requestId, { origin })
             })
           }}
         >

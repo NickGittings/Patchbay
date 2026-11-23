@@ -341,9 +341,11 @@ export default function ReviewView() {
                       <StageStrip items={stage.stepper} className="view-stepper" />
                       {stage.driver !== 'user' && (
                         <p className="view-stepper-hint">
-                          {stage.driver === 'auto'
-                            ? 'Auto is running this worktree’s stages.'
-                            : 'The chat’s lead is deciding the next stage.'}
+                          {stage.driver === 'lead'
+                            ? 'The chat’s lead is deciding the next stage.'
+                            : stage.autoHalt === 'paused'
+                              ? 'Auto is paused in this worktree; resume or stop it to continue.'
+                              : 'Auto is running this worktree’s stages.'}
                         </p>
                       )}
                     </>

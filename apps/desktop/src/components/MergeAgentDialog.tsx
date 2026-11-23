@@ -100,7 +100,7 @@ export default function MergeAgentDialog({
         const requestId = crypto.randomUUID()
         try {
           const sourceTask =
-            source!.path === active.path && task !== undefined ? task : taskOfWorktree(source!.path)
+            source!.path === active.path && task !== undefined ? task : taskOfWorktree(source!)
           const started = await launchMerge(origin, sourceTask, {
             project,
             source: source!,

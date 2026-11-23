@@ -522,6 +522,8 @@ test('worktree creation for a story scopes descendants and links in its follow-u
 })
 test('planning a story in Chat retains the board, view and mode and logs the story name', async () => {
   planner()
+  // Only a planner that started is recorded.
+  vi.mocked(startTerminal).mockResolvedValueOnce('request')
   useStore.getState().setSimpleMode(true)
   useStore.getState().setStoryBoard(true)
   // A chat the user hid opens for the new planner.
@@ -533,11 +535,15 @@ test('planning a story in Chat retains the board, view and mode and logs the sto
     storyBoard: true,
     chatReveal: { projectId: 'p', task: null },
   })
-  expect(useStore.getState().simple?.log.at(-1)).toMatchObject({
-    kind: 'action',
-    action: 'plan',
-    text: 'Feature name',
-  })
+  // Recorded in the background, once its run is looked up.
+  await vi.waitFor(() =>
+    expect(useStore.getState().simple?.log.at(-1)).toMatchObject({
+      kind: 'action',
+      action: 'plan',
+      text: 'Feature name',
+      origin: 'chat',
+    }),
+  )
 })
 test('a replacing story planner logs its new run, and a worktree switch while stopping refuses', async () => {
   planner()

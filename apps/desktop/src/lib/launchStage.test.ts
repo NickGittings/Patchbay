@@ -12,6 +12,10 @@ vi.mock('./stageRecord', async () => ({
   recordStageLaunch: vi.fn(async () => {}),
 }))
 vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
+vi.mock('./ipc', () => ({
+  gitWorktrees: vi.fn(async () => []),
+  reviewFixTask: vi.fn(async () => null),
+}))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
 import { useStore } from '../store'
 import type { AutoRun, Project, Task } from '../types'
@@ -33,14 +37,18 @@ beforeEach(() => {
 })
 
 test('the project folder is no task, and a worktree Patchbay doesn’t know has no chat', () => {
-  expect(taskOfWorktree('/p')).toBeNull()
-  expect(taskOfWorktree('/p/w')).toBe('t')
-  expect(taskOfWorktree('/elsewhere')).toBeUndefined()
+  expect(taskOfWorktree({ path: '/p' })).toBeNull()
+  expect(taskOfWorktree({ path: '/p/w' })).toBe('t')
+  expect(taskOfWorktree({ path: '/elsewhere' })).toBeUndefined()
+})
+
+test('git’s main worktree is the project folder even when its path differs from the root', () => {
+  expect(taskOfWorktree({ path: '/repo', main: true })).toBeNull()
 })
 
 test('a project folder attached as a task records in that task’s chat', () => {
   useStore.setState({ tasks: [{ id: 'root-task', worktree: '/p', current: true } as Task] })
-  expect(taskOfWorktree('/p')).toBe('root-task')
+  expect(taskOfWorktree({ path: '/p' })).toBe('root-task')
 })
 
 test('a review or merge of a worktree without a chat runs but is recorded nowhere', async () => {
@@ -92,5 +100,23 @@ test('fixes and merges also wait for a running Auto run, which says how it holds
       device: {} as never,
     }),
   ).rejects.toThrow('Stop Auto or let it finish first')
+  expect(startMerge).not.toHaveBeenCalled()
+})
+
+test('a merge also waits for an Auto run that owns its destination', async () => {
+  const { gitWorktrees } = await import('./ipc')
+  vi.mocked(gitWorktrees).mockResolvedValueOnce([
+    { path: '/p/w', branch: 'feature', head: 'f', main: false, current: false },
+    { path: '/p', branch: 'main', head: 'm', main: true, current: true },
+  ])
+  useStore.setState({ auto: { status: 'running' } as AutoRun, activeTask: null })
+  await expect(
+    launchMerge('manual', 't', {
+      project,
+      source: { path: '/p/w', branch: 'feature', head: 'f', main: false, current: false },
+      destinationBranch: 'main',
+      device: {} as never,
+    }),
+  ).rejects.toThrow('Auto is running')
   expect(startMerge).not.toHaveBeenCalled()
 })

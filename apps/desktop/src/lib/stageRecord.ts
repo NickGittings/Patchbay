@@ -127,7 +127,7 @@ export function recordPlannerStart(
   task: string | null | undefined,
   terminalId: string,
   requestId?: string,
-  details: Pick<StageLaunch, 'text' | 'atMs'> = {},
+  details: Pick<StageLaunch, 'text' | 'atMs'> & { origin?: 'chat' | 'manual' } = {},
 ) {
   const state = useStore.getState()
   const project = projectId ?? state.project?.id
@@ -138,11 +138,13 @@ export function recordPlannerStart(
   return recordStageLaunch({
     projectId: project,
     task: worktree,
-    origin: state.simpleMode ? 'chat' : 'manual',
+    // Where the user clicked, which callers capture before the launch's awaits.
+    origin: details.origin ?? (state.simpleMode ? 'chat' : 'manual'),
     action: 'plan',
     launched: [{ sessionId: plannerSessionId(terminalId, project, worktree), requestId }],
     from: 'by starting a planner',
-    ...details,
+    text: details.text,
+    atMs: details.atMs,
   }).catch(() => {})
 }
 
@@ -151,8 +153,10 @@ const AUTO_HOLDS: Record<string, string> = {
   waitingOnYou: 'Auto is waiting on you in this worktree',
   paused: 'Auto is paused in this worktree',
 }
-/** Auto's agents in its worktree are its own while its run goes on; competing stages break it. */
-/** Every flow's Build, Fix, Review and Merge, the lead's included, waits for Auto. */
+/**
+ * Auto's agents in its worktree are its own while its run goes on (paused included, since Resume
+ * continues with them), so every flow's Build, Fix, Review and Merge, the lead's too, waits.
+ */
 export function refuseWhileAutoRuns(projectId: string, task: string | null | undefined) {
   const state = projectStateOf(projectId)
   if (!state || task === undefined) return

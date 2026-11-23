@@ -85,7 +85,7 @@ export default function ReviewAgentDialog({
         const { started, errors } = await launchReview(
           origin,
           project,
-          task !== undefined ? task : taskOfWorktree(source.path),
+          task !== undefined ? task : taskOfWorktree(source),
           { worktree: source.path, branch: source.branch!, base },
           devices,
         )

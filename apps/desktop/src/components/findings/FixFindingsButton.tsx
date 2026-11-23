@@ -31,7 +31,8 @@ export default function FixFindingsButton({
       }
       onClick={() => {
         setStarting(true)
-        void launchFix('manual', record, 'follow')
+        // In Chat mode the agent panel shows this button too.
+        void launchFix(useStore.getState().simpleMode ? 'chat' : 'manual', record, 'follow')
           .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
           .finally(() => setStarting(false))
       }}

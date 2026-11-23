@@ -56,7 +56,9 @@ function roleLabel(record: SessionRecord) {
   const { teams, runs } = useChatTeams.getState()
   const { projectId } = record.metadata
   const chat = chatRole(record, teams[projectId], runs[projectId])
-  return chat !== 'Agent' ? chat : sessionRole(record.metadata).role
+  // A plain chat agent reads as an Agent here too, not its scope's Build.
+  if (chat !== 'Agent' || record.spec.purpose === 'chat') return chat
+  return sessionRole(record.metadata).role
 }
 
 function describe(s: Snapshot, record: SessionRecord) {

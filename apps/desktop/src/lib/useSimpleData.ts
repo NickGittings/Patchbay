@@ -202,7 +202,11 @@ export function useSimpleData(visible: boolean, diff = true) {
       document.removeEventListener('visibilitychange', focus)
     }
   }, [visible, diff, projectId, task, worktree, key, savedBase, selectionKey, retryVersion])
-  const current = data?.key === key && error?.key !== key ? data : undefined
+  // Data read without the diff isn't Chat's yet: its Changes show loading, never an empty list.
+  const current =
+    data?.key === key && error?.key !== key && (!diff || data.review !== undefined)
+      ? data
+      : undefined
   const scope = useMemo(
     () => ({
       projectId: projectId ?? '',

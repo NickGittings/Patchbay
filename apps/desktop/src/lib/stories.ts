@@ -383,13 +383,11 @@ export async function planStory(projectId: string, story: Story) {
   const requestId = await launchStoryPlanner(projectId, s.activeTask, device.id, story)
   // Recorded the same way in Chat and the regular views, in the background, so a run lookup
   // never delays the story's status. Chat also shows the story's title from the click.
-  void recordPlannerStart(
-    projectId,
-    task,
-    device.id,
-    requestId,
-    chat ? { text: story.title, atMs: planningAtMs } : {},
-  )
+  if (requestId)
+    void recordPlannerStart(projectId, task, device.id, requestId, {
+      origin: chat ? 'chat' : 'manual',
+      ...(chat ? { text: story.title, atMs: planningAtMs } : {}),
+    })
 }
 
 /** Components a story's planner or Auto run covers: its own and its descendants'. */
