@@ -1,0 +1,48 @@
+{
+  "name": "linear",
+  "publisher": "patchbay",
+  "version": "0.1.0",
+  "license": "MIT",
+  "displayName": "Linear",
+  "engines": {
+    "patchbay": "^0.1.0"
+  },
+  "main": "extension.js",
+  "activationEvents": [
+    "onView:patchbay.linear.panel",
+    "onCommand:patchbay.linear.import"
+  ],
+  "permissions": [
+    "project:read",
+    "stories:write",
+    "network",
+    "secrets"
+  ],
+  "network": [
+    "https://api.linear.app"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "patchbay.linear.import",
+        "title": "Import from Linear"
+      }
+    ],
+    "menus": {
+      "stories/toolbar": [
+        {
+          "command": "patchbay.linear.import"
+        }
+      ]
+    },
+    "views": [
+      {
+        "id": "patchbay.linear.panel",
+        "title": "Linear",
+        "location": "rail",
+        "icon": "plan"
+      }
+    ]
+  },
+  "type": "module"
+}

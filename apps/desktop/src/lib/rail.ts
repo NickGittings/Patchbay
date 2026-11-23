@@ -3,6 +3,12 @@ import { useStore, type UtilityPanel } from '../store'
 import type { View } from '../types'
 
 export type { UtilityPanel }
+/** Prefix of an extension rail view's panel id (`ext:<viewId>`). */
+export const EXTENSION_PANEL_PREFIX = 'ext:'
+export const extensionPanel = (viewId: string): UtilityPanel => `${EXTENSION_PANEL_PREFIX}${viewId}`
+/** The view an extension panel id shows, or null for a built-in panel. */
+export const extensionPanelView = (panel: UtilityPanel | null) =>
+  panel?.startsWith(EXTENSION_PANEL_PREFIX) ? panel.slice(EXTENSION_PANEL_PREFIX.length) : null
 export const railViews: { id: View; label: string }[] = [
   { id: 'navigation', label: 'Navigation' },
   { id: 'plan', label: 'Plan' },

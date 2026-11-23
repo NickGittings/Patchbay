@@ -9,11 +9,13 @@ import {
   progressLabel,
   refreshStories,
   reopenStoryPatch,
+  sourceName,
   STORY_STATUSES,
   updateStory,
   type ResolvedStoryStatus,
 } from '../../lib/stories'
-import { storyCreate, storyRemove } from '../../lib/ipc'
+import { storyCreate, storyRemove, storySourceOpen } from '../../lib/ipc'
+import ExtensionMenu from '../../extensions/ExtensionMenu'
 import { shortTitle } from '../../lib/shortTitle'
 
 export default function StoryEditor({
@@ -33,6 +35,7 @@ export default function StoryEditor({
 }) {
   const stories = useStore((s) => s.stories)
   const nodes = useStore((s) => s.nodes)
+  const extensions = useStore((s) => s.extensions)
   const seed = item ?? draft!
   const kind = seed.kind
   const [title, setTitle] = useState(seed.title)
@@ -130,6 +133,32 @@ export default function StoryEditor({
           ×
         </button>
       </header>
+      {item?.source && (
+        <div className="story-source" role="group" aria-label="Tracker source">
+          <p className="story-hint">
+            Imported from {sourceName(item.source, extensions)}. Importing again replaces the title,
+            description, criteria and parent; status, components and worktree links stay here.
+          </p>
+          <div className="row">
+            {item.source.url && (
+              <button
+                type="button"
+                onClick={() =>
+                  void storySourceOpen(projectId, item.id).catch((e) => setError(String(e)))
+                }
+              >
+                Open in tracker ↗
+              </button>
+            )}
+            <ExtensionMenu slot="stories/item" story={item} args={[item]} />
+          </div>
+        </div>
+      )}
+      {item && !item.source && (
+        <div className="story-source-actions row">
+          <ExtensionMenu slot="stories/item" story={item} args={[item]} />
+        </div>
+      )}
       <form
         onSubmit={(e) => {
           e.preventDefault()

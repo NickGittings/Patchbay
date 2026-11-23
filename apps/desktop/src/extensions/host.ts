@@ -6,12 +6,23 @@ import { projectFrom, useStore } from '../store'
 import type { Component, ContextSection, Extension, ExtensionBadge, Project } from '../types'
 import { serveContextRequests, setContextCollector } from './context'
 import { MAIN_WINDOW_LABEL } from '../lib/mainWindow'
+import { promptSecret } from './secretPrompt'
 
 const TIMEOUT = 10000
 /** Commands may legitimately wait on slow tools (docker, builds). */
 const COMMAND_TIMEOUT = 60000
 /** API calls such as `terminals.run` poll for up to 8s after spawning. */
 const API_TIMEOUT = 30000
+/** Calls that wait on the person (a file dialog, a credential prompt). */
+const INTERACTIVE_TIMEOUT = 10 * 60000
+/** The native broker gives up on a request after 25 seconds. */
+const NETWORK_TIMEOUT = 40000
+/** How long the host waits on `method` before failing the call. Mirrored in `bootstrap.js`. */
+export function apiTimeout(method: string) {
+  if (method === 'files.pick' || method === 'secrets.prompt') return INTERACTIVE_TIMEOUT
+  if (method === 'http.fetch') return NETWORK_TIMEOUT
+  return API_TIMEOUT
+}
 /** Consecutive request timeouts before an unresponsive host is stopped. */
 const MAX_TIMEOUTS = 3
 /** Distinct `terminals.run` sessions one extension may keep. */
@@ -166,6 +177,17 @@ function retireStale() {
     runtimes.delete(runtimeKey(runtime.projectId, runtime.taskId, runtime.extension.id))
     void deactivate(runtime)
   }
+}
+/** Tell current hosts that may read the board about its latest state. */
+function notifyStories() {
+  const { stories } = useStore.getState()
+  for (const runtime of runtimes.values())
+    if (
+      isCurrent(runtime) &&
+      !runtime.disposed &&
+      runtime.extension.manifest.permissions.includes('stories:read')
+    )
+      send(runtime, { method: 'event', event: 'stories', value: stories })
 }
 function notify(runtime: Runtime, events = { project: true, selection: true }) {
   if (!runtime.extension.manifest.permissions.includes('project:read')) return
@@ -498,6 +520,56 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
       viewFrames.get(view)?.contentWindow?.postMessage({ patchbay: 1, value: args[1] }, '*')
       return null
     }
+    case 'stories.list':
+      permission(runtime, 'stories:read')
+      if (!runtime.projectId) throw new Error('Open a project first')
+      return ipc.extensionStoriesList(id, runtime.projectId)
+    case 'stories.upsert': {
+      permission(runtime, 'stories:write')
+      if (!runtime.projectId) throw new Error('Open a project first')
+      if (!Array.isArray(args[0])) throw new Error('Invalid argument')
+      const report = await ipc.extensionStoriesUpsert(
+        id,
+        runtime.projectId,
+        args[0] as import('../types').ExternalStoryItem[],
+      )
+      // Loaded lazily: the board's module graph is large, and the host is imported early.
+      void import('../lib/stories').then((m) => m.refreshStories(runtime.projectId))
+      return report
+    }
+    case 'files.pick': {
+      permission(runtime, 'files:pick')
+      const options = (args[0] ?? {}) as { title?: unknown; extensions?: unknown }
+      const title = typeof options.title === 'string' ? options.title.slice(0, 120) : null
+      const extensions = Array.isArray(options.extensions)
+        ? options.extensions.filter((e): e is string => typeof e === 'string').slice(0, 16)
+        : []
+      return ipc.extensionFilePick(id, title, extensions)
+    }
+    case 'http.fetch': {
+      permission(runtime, 'network')
+      const request = args[0]
+      if (!request || typeof request !== 'object' || Array.isArray(request))
+        throw new Error('Invalid argument')
+      return ipc.extensionHttpFetch(id, request as ipc.ExtensionHttpRequest)
+    }
+    case 'secrets.prompt': {
+      permission(runtime, 'secrets')
+      const options = (args[1] ?? {}) as { label?: unknown; description?: unknown }
+      return promptSecret({
+        extensionId: id,
+        extensionName: runtime.extension.manifest.displayName ?? id,
+        name: text(0, 64),
+        label: typeof options.label === 'string' && options.label.trim() ? options.label : text(0),
+        description: typeof options.description === 'string' ? options.description : undefined,
+      })
+    }
+    case 'secrets.has':
+      permission(runtime, 'secrets')
+      return ipc.extensionSecretHas(id, text(0, 64))
+    case 'secrets.delete':
+      permission(runtime, 'secrets')
+      return ipc.extensionSecretDelete(id, text(0, 64))
     case 'window.showMessage':
       if (isCurrent(runtime)) s.setMessage(text(0, 2048))
       return null
@@ -610,7 +682,10 @@ async function onMessage(event: MessageEvent) {
     const result = await Promise.race([
       api(runtime, message.method, message.args),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('API call timed out')), API_TIMEOUT)
+        timer = setTimeout(
+          () => reject(new Error('API call timed out')),
+          apiTimeout(message.method),
+        )
       }),
     ])
     if (!runtime.disposed) send(runtime, { reply: message.id, result: result ?? null })
@@ -770,6 +845,7 @@ export function startExtensionHost() {
     return collectContext(projectFromState(entry.state), ids, undefined, task)
   })
   const unsubscribe = useStore.subscribe((s, previous) => {
+    if (s.stories !== previous.stories) notifyStories()
     if (
       s.project !== previous.project ||
       s.activeTask !== previous.activeTask ||

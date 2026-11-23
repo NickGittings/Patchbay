@@ -1,0 +1,34 @@
+{
+  "name": "story-import",
+  "publisher": "patchbay",
+  "version": "0.1.0",
+  "license": "MIT",
+  "displayName": "Story import",
+  "engines": {
+    "patchbay": "^0.1.0"
+  },
+  "main": "extension.js",
+  "activationEvents": [
+    "onCommand:patchbay.story-import.import"
+  ],
+  "permissions": [
+    "files:pick",
+    "stories:write"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "patchbay.story-import.import",
+        "title": "Import from file…"
+      }
+    ],
+    "menus": {
+      "stories/toolbar": [
+        {
+          "command": "patchbay.story-import.import"
+        }
+      ]
+    }
+  },
+  "type": "module"
+}

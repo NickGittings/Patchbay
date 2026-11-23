@@ -33,6 +33,21 @@
   assets canonically inside their folders. The IPC boundary is Tauri's invoke key, injected into
   top frames only (frames can reach `window.webkit.messageHandlers.ipc`; the smoke probe forges
   it); the null-Origin rejection is defense in depth. Keep capability remote origins absent. Visible views use separate sandboxed, CSP-restricted frames.
+- Integrations: core `stories::upsert_external` imports `ExternalItem`s matched on
+  `Story.source` (`extension`, `external_id`), parent-first, all or nothing, replacing only
+  tracker text. Core `net` holds `HostPattern` (manifest `network` plus the user's
+  `approved_hosts` in `extensions.json`, through `Registry::network_hosts`) and `fetch`
+  (`ureq`, platform roots, manual redirects re-checked against the allowlist, credentials only
+  for the original origin, no cookies). Core `secrets` keeps values in the keychain under
+  `app.patchbay.extensions`; only `net::fetch` reads them. Adapter commands
+  `extension_stories_list`/`_upsert`, `extension_file_pick`, `extension_http_fetch`,
+  `extension_secret_set`/`_has`/`_delete`, `set_extension_hosts` and `story_source_open`
+  ↔ `lib/ipc.ts`. `extension_secret_set` is called only by `SecretPromptHost`, never with an
+  extension-supplied value. Host `apiTimeout` (mirrored in `bootstrap.js`) gives interactive
+  calls ten minutes and network calls 40 seconds. Rail views are utility panels
+  `ext:<viewId>` (`lib/rail.ts` `extensionPanel`); `WorkspaceRail` closes one whose view
+  disappears. `stories/toolbar` and `stories/item` render in `StoryBoard`/`StoryEditor`,
+  shared by Chat and the regular views.
 - `when.ts` parses declarative clauses without eval. `whenContext.ts` fetches filename sets through
   `list_dir`. Runtime extension terminals, badges, and rendered view HTML live only in UI state.
   Ad-hoc commands never mutate `patchbay.json`. Reload/disable/project switch disposes code hosts.

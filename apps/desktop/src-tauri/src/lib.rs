@@ -199,6 +199,17 @@ impl Extensions {
         registry
     }
 
+    fn set_hosts(&self, id: &str, hosts: Vec<String>) -> CmdResult<Registry> {
+        let mut slot = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        let mut registry = slot
+            .get_or_insert_with(|| Arc::new(Registry::load()))
+            .as_ref()
+            .clone();
+        registry.set_hosts(id, hosts).map_err(err)?;
+        *slot = Some(Arc::new(registry.clone()));
+        Ok(registry)
+    }
+
     fn set_enabled(&self, id: &str, enabled: bool) -> CmdResult<Registry> {
         let mut slot = self.0.write().unwrap_or_else(PoisonError::into_inner);
         let mut registry = slot
@@ -1606,6 +1617,28 @@ async fn story_remove(
 ) -> CmdResult<()> {
     let (root, _) = task_repo(&state, &project_id)?;
     blocking(move || stories::remove(&root, &id, cascade).map_err(err)).await
+}
+
+/// Open an imported item's tracker link, read from the saved board and validated again.
+#[tauri::command]
+async fn story_source_open(
+    project_id: String,
+    state: State<'_, AppState>,
+    id: String,
+) -> CmdResult<()> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || {
+        let url = stories::load(&root)
+            .map_err(err)?
+            .into_iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.source)
+            .and_then(|s| s.url)
+            .ok_or("This item has no tracker link")?;
+        let url = extensions::preview_url(&url).map_err(err)?;
+        tauri_plugin_opener::open_url(url, None::<&str>).map_err(err)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3359,6 +3392,7 @@ pub fn run() {
                 story_reorder,
                 story_remove,
                 story_complete_auto,
+                story_source_open,
                 task_create,
                 worktree_setup,
                 worktree_setup_enable,
@@ -3484,6 +3518,14 @@ pub fn run() {
                 extension_file_read,
                 extension_sessions_list,
                 extension_url_open,
+                extension_stories_list,
+                extension_stories_upsert,
+                extension_file_pick,
+                extension_http_fetch,
+                extension_secret_set,
+                extension_secret_has,
+                extension_secret_delete,
+                set_extension_hosts,
             ];
             handler(invoke)
         })
@@ -4398,6 +4440,217 @@ async fn extension_url_open(
         tauri_plugin_opener::open_url(url, None::<&str>).map_err(err)
     })
     .await
+}
+
+/// The board, for an extension with `stories:read`.
+#[tauri::command]
+async fn extension_stories_list(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    project_id: String,
+) -> CmdResult<Vec<stories::Story>> {
+    main_only(&window)?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("stories:read"))
+            .map_err(err)?;
+        stories::load(&root).map_err(err)
+    })
+    .await
+}
+
+/// Create or update tracker items for an extension with `stories:write`. Items are matched
+/// on the extension's own source ids, so it can't overwrite anything it didn't import.
+#[tauri::command]
+async fn extension_stories_upsert(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    project_id: String,
+    items: Vec<stories::ExternalItem>,
+) -> CmdResult<stories::ImportReport> {
+    main_only(&window)?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("stories:write"))
+            .map_err(err)?;
+        stories::upsert_external(&root, &extension_id, items).map_err(err)
+    })
+    .await
+}
+
+/// Largest file `files.pick` returns.
+const PICKED_FILE_LIMIT: u64 = 1024 * 1024;
+
+#[derive(serde::Serialize)]
+struct PickedFile {
+    name: String,
+    text: String,
+}
+
+/// A file the user chooses in a native dialog, for an extension with `files:pick`.
+/// The user's choice is the grant: nothing else outside the project becomes readable.
+#[tauri::command]
+async fn extension_file_pick(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    title: Option<String>,
+    extensions: Vec<String>,
+) -> CmdResult<Option<PickedFile>> {
+    main_only(&window)?;
+    let registry = state.extensions.clone();
+    blocking(move || {
+        let extension = registry
+            .get()
+            .allowed(&extension_id, Some("files:pick"))
+            .map_err(err)?
+            .clone();
+        let name = extension
+            .manifest
+            .display_name
+            .clone()
+            .unwrap_or_else(|| extension.id.clone());
+        let title: String = title
+            .unwrap_or_else(|| format!("Choose a file for {name}"))
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(120)
+            .collect();
+        let filters: Vec<String> = extensions
+            .into_iter()
+            .filter(|e| {
+                !e.is_empty() && e.len() <= 16 && e.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
+            .take(16)
+            .collect();
+        let mut dialog = window.dialog().file().set_parent(&window).set_title(title);
+        if !filters.is_empty() {
+            let filters: Vec<&str> = filters.iter().map(String::as_str).collect();
+            dialog = dialog.add_filter("Supported files", &filters);
+        }
+        let Some(path) = dialog.blocking_pick_file() else {
+            return Ok(None);
+        };
+        let path = path.into_path().map_err(err)?;
+        let mut bytes = vec![];
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(
+                std::fs::File::open(&path).map_err(err)?,
+                PICKED_FILE_LIMIT + 1,
+            ),
+            &mut bytes,
+        )
+        .map_err(err)?;
+        if bytes.len() as u64 > PICKED_FILE_LIMIT {
+            return Err("Choose a file of at most 1 MiB".into());
+        }
+        Ok(Some(PickedFile {
+            name: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            text: String::from_utf8_lossy(&bytes).into_owned(),
+        }))
+    })
+    .await
+}
+
+/// An HTTP request through the native broker, for an extension with `network`, limited to
+/// its manifest's and the user's approved origins.
+#[tauri::command]
+async fn extension_http_fetch(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    request: patchbay_core::net::HttpRequest,
+) -> CmdResult<patchbay_core::net::HttpResponse> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        let hosts = extensions.get().network_hosts(&extension_id).map_err(err)?;
+        patchbay_core::net::fetch(&extension_id, &hosts, &request).map_err(|e| format!("{e:#}"))
+    })
+    .await
+}
+
+/// Save a credential the user typed into Patchbay's own prompt (never the extension's).
+#[tauri::command]
+async fn extension_secret_set(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    name: String,
+    value: String,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("secrets"))
+            .map_err(err)?;
+        patchbay_core::secrets::set(&extension_id, &name, &value).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn extension_secret_has(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    name: String,
+) -> CmdResult<bool> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("secrets"))
+            .map_err(err)?;
+        patchbay_core::secrets::has(&extension_id, &name).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn extension_secret_delete(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    name: String,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("secrets"))
+            .map_err(err)?;
+        patchbay_core::secrets::delete(&extension_id, &name).map_err(err)
+    })
+    .await
+}
+
+/// Replace the network origins the user approved for an extension, then reload.
+#[tauri::command]
+async fn set_extension_hosts(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+    hosts: Vec<String>,
+) -> CmdResult<Registry> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || extensions.set_hosts(&id, hosts)).await
 }
 
 #[cfg(test)]

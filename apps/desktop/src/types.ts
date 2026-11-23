@@ -1017,10 +1017,13 @@ export interface MenuContribution {
   command: string
   when?: string | null
 }
+export type ViewLocation = 'inspector' | 'dock' | 'rail'
 export interface ViewContribution {
   id: string
   title: string
-  location: 'inspector' | 'dock'
+  location: ViewLocation
+  /** A built-in rail icon for `rail` views, from `extensions::RAIL_ICONS`. */
+  icon?: string | null
 }
 export interface ExtensionManifest {
   name: string
@@ -1031,6 +1034,8 @@ export interface ExtensionManifest {
   main?: string | null
   activationEvents: string[]
   permissions: string[]
+  /** Origins the `network` permission reaches. */
+  network: string[]
   contributes: {
     devices: DeviceManifest[]
     detectors: DetectorContribution[]
@@ -1046,6 +1051,8 @@ export interface Extension {
   manifest: ExtensionManifest
   enabled: boolean
   errors: string[]
+  /** Extra origins the user approved for `network`, such as an on-premises server. */
+  approvedHosts: string[]
 }
 export interface ExtensionRegistry {
   extensions: Extension[]
@@ -1189,6 +1196,31 @@ export interface Story {
   completedHead?: string | null
   createdMs: number
   order: number
+  /** The tracker item an extension imported this from. */
+  source?: StorySource | null
+}
+/** `stories::StorySource`: matched on extension and external id when re-importing. */
+export interface StorySource {
+  extension: string
+  externalId: string
+  url?: string | null
+}
+/** `stories::ExternalItem`: one tracker item an extension imports. */
+export interface ExternalStoryItem {
+  externalId: string
+  kind: StoryKind
+  title: string
+  /** Another item's `externalId`, in this batch or imported earlier. */
+  parent?: string | null
+  description?: string
+  acceptance?: string[]
+  url?: string | null
+}
+/** `stories::ImportReport` */
+export interface StoryImportReport {
+  created: number
+  updated: number
+  unchanged: number
 }
 export interface StoryDraft {
   kind: StoryKind

@@ -15,6 +15,7 @@ import {
   progressLabel,
   reorder,
   siblings,
+  sourceName,
   STORY_FILTERS,
   storyStatuses,
   tree,
@@ -22,6 +23,7 @@ import {
 } from '../../lib/stories'
 import { shortTitle } from '../../lib/shortTitle'
 import StoryEditor from './StoryEditor'
+import ExtensionMenu from '../../extensions/ExtensionMenu'
 import './stories.css'
 
 /** Chat's Agents tab; a component of its own so Full view never follows sessions for it. */
@@ -96,6 +98,7 @@ export function StoryViewTabs() {
 }
 
 export default function StoryBoard() {
+  const registry = useStore((s) => s.extensions)
   const { project, stories, tasks, taskWorkspaces, activeTask, auto, sessionRecords } = useStore(
     useShallow((s) => ({
       project: s.project,
@@ -298,6 +301,17 @@ export default function StoryBoard() {
                 <span className="story-card-meta">
                   <span className={`chip story-status ${value}`}>{progressLabel(value)}</span>
                   <span>{item.components.length} components</span>
+                  {item.source && (
+                    <span
+                      className="chip story-imported"
+                      title={`Imported from ${sourceName(item.source, registry)}`}
+                    >
+                      {/* Tracker ids end in the distinctive part, such as owner/repo#12. */}
+                      {item.source.externalId.length > 18
+                        ? `…${item.source.externalId.slice(-17)}`
+                        : item.source.externalId}
+                    </span>
+                  )}
                 </span>
                 {worktree && (
                   <span className="story-worktree" title={worktree.worktree}>
@@ -343,6 +357,9 @@ export default function StoryBoard() {
     <div className="story-board" aria-label="Story board">
       <header className="story-board-header view-tabs-header">
         <StoryViewTabs />
+        <div className="story-board-actions" role="group" aria-label="Story board actions">
+          <ExtensionMenu slot="stories/toolbar" />
+        </div>
       </header>
       <div className="story-board-body">
         <div className="story-board-content">

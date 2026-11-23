@@ -1,7 +1,9 @@
-import type { Component, View } from '../types'
+import type { Component, Story, View } from '../types'
 export interface WhenContext {
   component?: Component | null
   files?: Set<string>
+  /** The board item a `stories/item` placement is shown for. */
+  story?: Story | null
   view: View
 }
 /** A bounded parser, never eval. Unknown keys and malformed expressions are false. */
@@ -37,6 +39,9 @@ export function evaluateWhen(expression: string | null | undefined, context: Whe
     if (key === 'component.kind') return context.component?.kind
     if (key === 'component.id') return context.component?.id
     if (key === 'view') return context.view
+    if (key === 'story.kind') return context.story?.kind
+    if (key === 'story.source') return context.story?.source?.extension
+    if (key === 'story.imported') return !!context.story?.source
     if (key === 'true') return true
     if (key === 'false') return false
     if (key?.startsWith("'") || key?.startsWith('"')) return literal(key)

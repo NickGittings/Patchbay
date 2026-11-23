@@ -6,13 +6,20 @@
   const listeners = new Map()
   const providers = new Map()
   const views = new Map()
+  // Longer than the host's own deadlines (`apiTimeout` in host.ts), so its error arrives first.
+  const timeout = (method) =>
+    method === 'files.pick' || method === 'secrets.prompt'
+      ? 10 * 60000 + 5000
+      : method === 'http.fetch'
+        ? 45000
+        : 35000
   const call = (method, ...args) =>
     new Promise((resolve, reject) => {
       const id = ++next
       const timer = setTimeout(() => {
         pending.delete(id)
         reject(new Error('Patchbay API timeout'))
-      }, 15000)
+      }, timeout(method))
       pending.set(id, { resolve, reject, timer })
       parent.postMessage({ patchbay: 1, id, method, args }, '*')
     })
@@ -65,7 +72,43 @@
       set: (key, value) => call('storage.set', key, value),
     },
     git: { status: () => call('git.status') },
-    files: { read: (path) => call('files.read', path) },
+    files: {
+      read: (path) => call('files.read', path),
+      pick: (options) => call('files.pick', options ?? {}),
+    },
+    stories: {
+      list: () => call('stories.list'),
+      // Messages to Patchbay are capped at 1 MiB, so large imports go in parent-first batches.
+      upsert: async (items) => {
+        const rank = { epic: 0, feature: 1, story: 2 }
+        const sorted = [...items].sort((a, b) => (rank[a?.kind] ?? 3) - (rank[b?.kind] ?? 3))
+        const total = { created: 0, updated: 0, unchanged: 0 }
+        let batch = []
+        let size = 0
+        const flush = async () => {
+          if (!batch.length) return
+          const report = await call('stories.upsert', batch)
+          for (const key of Object.keys(total)) total[key] += report?.[key] ?? 0
+          batch = []
+          size = 0
+        }
+        for (const item of sorted) {
+          const length = JSON.stringify(item).length
+          if (batch.length && (size + length > 512 * 1024 || batch.length >= 500)) await flush()
+          batch.push(item)
+          size += length
+        }
+        await flush()
+        return total
+      },
+      onDidChange: (fn) => on('stories', fn),
+    },
+    http: { fetch: (request) => call('http.fetch', request) },
+    secrets: {
+      prompt: (name, options) => call('secrets.prompt', name, options ?? {}),
+      has: (name) => call('secrets.has', name),
+      delete: (name) => call('secrets.delete', name),
+    },
   }
   window.patchbay = api
   addEventListener('message', async (event) => {

@@ -1,0 +1,48 @@
+{
+  "name": "github-issues",
+  "publisher": "patchbay",
+  "version": "0.1.0",
+  "license": "MIT",
+  "displayName": "GitHub Issues",
+  "engines": {
+    "patchbay": "^0.1.0"
+  },
+  "main": "extension.js",
+  "activationEvents": [
+    "onView:patchbay.github-issues.panel",
+    "onCommand:patchbay.github-issues.import"
+  ],
+  "permissions": [
+    "project:read",
+    "stories:write",
+    "network",
+    "secrets"
+  ],
+  "network": [
+    "https://api.github.com"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "patchbay.github-issues.import",
+        "title": "Import from GitHub"
+      }
+    ],
+    "menus": {
+      "stories/toolbar": [
+        {
+          "command": "patchbay.github-issues.import"
+        }
+      ]
+    },
+    "views": [
+      {
+        "id": "patchbay.github-issues.panel",
+        "title": "GitHub Issues",
+        "location": "rail",
+        "icon": "issues"
+      }
+    ]
+  },
+  "type": "module"
+}

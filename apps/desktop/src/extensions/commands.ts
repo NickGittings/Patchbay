@@ -1,4 +1,5 @@
 import { useStore } from '../store'
+import type { Story } from '../types'
 import { executeExtensionCommand } from './host'
 import { evaluateWhen } from './when'
 import { commandEnabled, useWhenContext } from './whenContext'
@@ -8,10 +9,12 @@ export function useExtensionCommands(
   slot: string,
   componentId?: string | null,
   refreshKey?: unknown,
+  story?: Story | null,
+  args: unknown[] = [],
 ) {
   const menus = useStore((s) => s.menus)
   const commands = useStore((s) => s.commands)
-  const context = useWhenContext(componentId, refreshKey)
+  const context = { ...useWhenContext(componentId, refreshKey), story }
   const entries = (menus[slot] ?? []).flatMap((entry) => {
     if (!evaluateWhen(entry.when, context)) return []
     const command = commands.find((c) => c.id === entry.command)
@@ -19,7 +22,7 @@ export function useExtensionCommands(
     return [{ id: entry.command, title: command.title }]
   })
   const run = (id: string) =>
-    void executeExtensionCommand(id, [], context.component?.id).catch((e) =>
+    void executeExtensionCommand(id, args, context.component?.id).catch((e) =>
       useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
     )
   return { entries, run }
