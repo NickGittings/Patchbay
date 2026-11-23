@@ -310,7 +310,8 @@
       !fixRecord.spec.dirs?.some((dir) => dir.endsWith('/patchbay/reviews')),
       'fix agent was granted the reviews folder',
     )
-    state().setActiveTask(null)
+    // Review docks only the shown worktree's agents, so show the reviewed task's.
+    state().setActiveTask(task.id)
     state().setView('review')
     await until('Review returns after fix launch', () => visible('.review-refresh'))
     click(

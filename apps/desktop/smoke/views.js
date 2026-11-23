@@ -328,7 +328,7 @@
     const agentSid = smoke.sessionId('@task', agent.id)
     const agentHeader = query(`.terminal-tile[data-session="${agentSid}"] .terminal-tile-header`)
     assert(
-      agentHeader?.querySelector('.hint')?.textContent === 'Build ›',
+      agentHeader?.querySelector('.hint')?.textContent === 'Builder ›',
       'root agent tile does not name its role',
     )
     assert(!agentHeader.textContent.includes('Task root'), 'root agent tile says Task root')
