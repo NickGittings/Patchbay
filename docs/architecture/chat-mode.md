@@ -84,9 +84,10 @@ and anything else without one as `chat`), plus the merge request and Auto run id
 launches in the shown worktree become the Review view's current agent. Chat and regular-view launches also retire the
 stage before and tell the worktree's lead; the lead's own stages and Auto's do neither, and
 retiring never stops an agent Auto launched, even after its run ended. Build, Fix, Review and Merge
-launches, the lead's stages and councils included, refuse while the worktree's Auto run is running,
-waiting or paused (`refuseWhileAutoRuns`; stop Auto or let it finish), since competing stages would
-break it. A merge checks both its source and its destination worktree. Worktrees map to chats by
+launches, the lead's stages and councils included, refuse while the worktree's Auto run is running
+or waiting on you (`refuseWhileAutoRuns`; stop Auto or let it finish), since competing stages would
+break it. A paused run hands the worktree back: Resume infers its stage from what was done meanwhile.
+Planning, which touches no code, is never refused. A merge checks both its source and its destination worktree. Worktrees map to chats by
 task, and git's main worktree is the project folder whatever its path. A restart records planning only when its planner actually started, and story planning
 records the same way in Chat and Full mode. A recording failure never reports a started launch as
 failed. The Review view never offers Auto's merge gate as its own Merge. A

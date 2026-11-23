@@ -280,9 +280,13 @@ export async function startMerge(options: MergeOptions): Promise<MergeStart> {
     const paths = await mergeConflicts(projectId, source.head, destinationHead)
     if (paths.length) return { kind: 'conflicts', paths, sourceHead: source.head, destinationHead }
   }
-  if (commitSource === 'report') {
+  // An approved list applies only while changes remain: committed or cleaned meanwhile, the
+  // source merges without a commit grant.
+  let approved = Array.isArray(commitSource) ? commitSource : undefined
+  if (commitSource !== undefined) {
     const changes = await mergeSourceChanges(project, source.path, sourceBranch)
-    if (changes.length) return { kind: 'uncommitted', changes }
+    if (commitSource === 'report' && changes.length) return { kind: 'uncommitted', changes }
+    if (!changes.length) approved = undefined
   }
   let request: MergeRequest
   try {
@@ -291,7 +295,7 @@ export async function startMerge(options: MergeOptions): Promise<MergeStart> {
       source.path,
       sourceBranch,
       destinationBranch,
-      ...(Array.isArray(commitSource) ? [commitSource] : []),
+      ...(approved ? [approved] : []),
     )
   } finally {
     await refreshTasks(project.projectId).catch(() => {})

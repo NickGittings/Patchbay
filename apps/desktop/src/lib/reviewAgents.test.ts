@@ -640,6 +640,7 @@ test('branch merge forwards the source changes the user agreed to commit', async
   }
   vi.mocked(mergeDestinationResolve).mockResolvedValue(request)
   vi.mocked(mergeAgentStart).mockResolvedValue('sid')
+  vi.mocked(mergeSourceChanges).mockResolvedValueOnce(commitSource)
   await startMerge({
     project,
     source: open,
@@ -775,4 +776,25 @@ test('a pinned request skips resolving and keeps its head, cleanup and ownership
     auto: true,
     autoOwnershipId: 'owner',
   })
+})
+
+test('an approved list is dropped once the source was committed or cleaned meanwhile', async () => {
+  const project = { projectId: 'p' } as Project
+  const open = tree('/project', 'feature', true)
+  vi.mocked(mergeSourceChanges).mockResolvedValueOnce([])
+  vi.mocked(mergeDestinationResolve).mockResolvedValue({
+    source: open.path,
+    sourceBranch: 'feature',
+    destination: '/main',
+    destinationBranch: 'main',
+  })
+  vi.mocked(mergeAgentStart).mockResolvedValue('sid')
+  await startMerge({
+    project,
+    source: open,
+    destinationBranch: 'main',
+    device: {} as DeviceManifest,
+    commitSource: [' M a.ts'],
+  })
+  expect(mergeDestinationResolve).toHaveBeenCalledWith(project, open.path, 'feature', 'main')
 })

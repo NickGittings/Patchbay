@@ -883,7 +883,8 @@ export function restartTerminal(
   }
   if (isClosing(launch)) return Promise.resolve(undefined)
   const existing = restarting.get(launch.sid)
-  if (existing) return existing
+  // A caller joining a restart already under way didn't start it, so gets no request of its own.
+  if (existing) return existing.then(() => undefined)
   const request = (async () => {
     try {
       await checkLaunchAuth(launch)

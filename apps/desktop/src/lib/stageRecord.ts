@@ -151,11 +151,11 @@ export function recordPlannerStart(
 const AUTO_HOLDS: Record<string, string> = {
   running: 'Auto is running this worktree',
   waitingOnYou: 'Auto is waiting on you in this worktree',
-  paused: 'Auto is paused in this worktree',
 }
 /**
- * Auto's agents in its worktree are its own while its run goes on (paused included, since Resume
- * continues with them), so every flow's Build, Fix, Review and Merge, the lead's too, waits.
+ * Auto's agents in its worktree are its own while its run goes on, so every flow's Build, Fix,
+ * Review and Merge, the lead's too, waits. A paused run hands the worktree back: Resume infers its
+ * stage from whatever was done meanwhile, as its pause messages ask.
  */
 export function refuseWhileAutoRuns(projectId: string, task: string | null | undefined) {
   const state = projectStateOf(projectId)

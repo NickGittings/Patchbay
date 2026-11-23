@@ -1,4 +1,4 @@
-import { useStore } from '../store'
+import { projectStateOf, useStore } from '../store'
 import type { DeviceManifest, Project, ReviewRequest, SessionRecord, Worktree } from '../types'
 import { gitWorktrees, reviewFixTask } from './ipc'
 import { implementPlannerPlan, type HandoffTarget } from './planHandoff'
@@ -90,7 +90,7 @@ export async function launchMerge(
   const destination = (await gitWorktrees(projectId)).find(
     (w) => w.branch === options.destinationBranch,
   )
-  if (destination) refuseWhileAutoRuns(projectId, taskOfWorktree(destination))
+  if (destination) refuseWhileAutoRuns(projectId, taskOfWorktree(destination, projectId))
   const started = await startMerge(options)
   if (started.kind === 'started' && task !== undefined)
     await recordQuietly({
@@ -111,10 +111,12 @@ export async function launchMerge(
  */
 export function taskOfWorktree(
   worktree: Pick<Worktree, 'path'> & Partial<Pick<Worktree, 'main'>>,
+  projectId = useStore.getState().project?.id,
 ): string | null | undefined {
-  const s = useStore.getState()
+  // The launching project's tasks, even if another project's tab is now shown.
+  const state = projectId ? projectStateOf(projectId) : undefined
   // The project folder may itself be attached as a task, whose chat is then the task's.
-  const task = s.tasks.find((t) => !t.missing && t.worktree === worktree.path)
+  const task = state?.tasks.find((t) => !t.missing && t.worktree === worktree.path)
   if (task) return task.id
-  return worktree.main || worktree.path === s.project?.root ? null : undefined
+  return worktree.main || worktree.path === state?.project?.root ? null : undefined
 }

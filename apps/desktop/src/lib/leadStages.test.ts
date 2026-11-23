@@ -261,3 +261,12 @@ test('the lead’s stages wait for an Auto run that owns the worktree', async ()
   expect(implementPlannerPlan).not.toHaveBeenCalled()
   expect(recordStageLaunch).not.toHaveBeenCalled()
 })
+
+test('the lead may still plan while Auto runs, as Chat and the Plan view may', async () => {
+  vi.mocked(refuseWhileAutoRuns).mockImplementation(() => {
+    throw new Error('Auto is running this worktree. Stop Auto or let it finish first.')
+  })
+  await startLeadStage(team, request('startPlan', 'starting', null, { goal: 'Next' }))
+  expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
+  vi.mocked(refuseWhileAutoRuns).mockReset()
+})

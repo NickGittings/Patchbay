@@ -70,7 +70,7 @@ test('a review or merge of a worktree without a chat runs but is recorded nowher
   expect(recordStageLaunch).not.toHaveBeenCalled()
 })
 
-test.each(['running', 'waitingOnYou', 'paused'] as const)(
+test.each(['running', 'waitingOnYou'] as const)(
   'a review never replaces the reviewers of an Auto run that is %s',
   async (status) => {
     useStore.setState({ auto: { status } as AutoRun, activeTask: null })
@@ -88,9 +88,9 @@ test('a review after Auto finished starts and is recorded', async () => {
 })
 
 test('fixes and merges also wait for a running Auto run, which says how it holds the worktree', async () => {
-  useStore.setState({ auto: { status: 'paused' } as AutoRun, activeTask: null })
+  useStore.setState({ auto: { status: 'waitingOnYou' } as AutoRun, activeTask: null })
   const reviewer = { metadata: { projectId: 'p' }, spec: { cwd: '/p' } } as never
-  await expect(launchFix('manual', reviewer, 'follow')).rejects.toThrow('Auto is paused')
+  await expect(launchFix('manual', reviewer, 'follow')).rejects.toThrow('Auto is waiting on you')
   expect(fixReviewFindings).not.toHaveBeenCalled()
   await expect(
     launchMerge('manual', null, {
@@ -119,4 +119,10 @@ test('a merge also waits for an Auto run that owns its destination', async () =>
     }),
   ).rejects.toThrow('Auto is running')
   expect(startMerge).not.toHaveBeenCalled()
+})
+
+test('a paused Auto run hands the worktree back, as its pause messages ask', async () => {
+  useStore.setState({ auto: { status: 'paused' } as AutoRun, activeTask: null })
+  await launchReview('manual', project, null, request, [])
+  expect(startSimpleReview).toHaveBeenCalledOnce()
 })
