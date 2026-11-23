@@ -123,6 +123,8 @@ export function stageModel({ snapshot, model, team }: StageModelInput) {
     ? autoStepper(auto)
     : chatStepper(state.step, {
         issues: verdict ? Object.values(verdict.counts).reduce((sum, n) => sum + n, 0) : undefined,
+        // A worktree Auto ran in place has no Merge, even once later work follows the run.
+        inPlace: !!auto && !['stopped', 'failed'].includes(auto.status) && runsInPlace(auto),
         halt: team?.state === 'paused' || team?.state === 'stopped' ? team.state : undefined,
         note: status.note ?? (state.waitingOn === 'lead' ? 'Lead deciding' : undefined),
       })

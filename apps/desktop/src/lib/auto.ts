@@ -84,7 +84,8 @@ import {
 import { fnv1a } from './hash'
 import { checkHooks, hooksUsable, type HookProvider } from './agentHooks'
 import { autoRuns, autoWorkspace } from './autoState'
-import { recordStageLaunch, type StageAction } from './stageRecord'
+import { recordStageLaunch, refuseWhileAutoRuns, type StageAction } from './stageRecord'
+import { taskOfWorktree } from './launchStage'
 import { completeAutoStories } from './stories'
 export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
 
@@ -2772,10 +2773,19 @@ async function drive(projectId: string, task: string | null) {
       case 'merge':
         launching = true
         {
+          const request = mergeRequest(snapshot, run)
+          // Another Auto run may own the destination; waiting on it is a setup problem to resolve.
+          const destination = snapshot.worktrees.find((w) => w.path === request.destination)
+          if (destination)
+            try {
+              refuseWhileAutoRuns(projectId, taskOfWorktree(destination, projectId))
+            } catch (e) {
+              throw new AutoConfigurationError(String(e instanceof Error ? e.message : e))
+            }
           const started = await startMerge({
             project,
             device,
-            request: mergeRequest(snapshot, run),
+            request,
             auto: {
               brief,
               cleanup: run.merge.cleanup ?? 'keep',

@@ -133,7 +133,9 @@ export default function ReviewView() {
   // Auto's own gate is approved in Chat or the Auto panel; the dialog here can't merge for it.
   const nextMerge = next.has('checkMerge') || next.has('merge')
   const nextFix = next.has('fix')
-  const agentsHidden = agentSelection?.sid === currentAgent?.id && !!agentSelection?.hidden
+  // Hiding the dock sticks, also for the shown worktree's own agent when the hidden selection was
+  // another worktree's; Show agents (or a launch here) brings it back.
+  const agentsHidden = !!currentAgent && !!agentSelection?.hidden
   const showAgents = !!currentAgent && !agentsHidden
   const hideAgents = () => {
     if (currentAgent) useStore.getState().hideReviewAgent(currentAgent.id)

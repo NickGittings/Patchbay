@@ -98,7 +98,7 @@ function chatRoleKey(
     ? 'lead'
     : teamWorker(record, teams, runs)
       ? 'builder'
-      : record && SCOPE_ROLES[record.metadata.componentId]
+      : record && Object.hasOwn(SCOPE_ROLES, record.metadata.componentId)
         ? SCOPE_ROLES[record.metadata.componentId]
         : // Build, Fix, Coordinator and Worker agents build, whichever flow launched them; a
           // plain chat agent only talks.

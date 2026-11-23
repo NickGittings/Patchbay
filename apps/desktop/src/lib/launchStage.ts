@@ -91,6 +91,8 @@ export async function launchMerge(
     (w) => w.branch === options.destinationBranch,
   )
   if (destination) refuseWhileAutoRuns(projectId, taskOfWorktree(destination, projectId))
+  // Checked again after the worktree read, in case Auto started or resumed meanwhile.
+  refuseWhileAutoRuns(projectId, task)
   const started = await startMerge(options)
   if (started.kind === 'started' && task !== undefined)
     await recordQuietly({

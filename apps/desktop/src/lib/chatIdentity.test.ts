@@ -80,3 +80,11 @@ test('a plain chat agent only talks, so it is no Builder', () => {
   const chatAgent = { ...record('solo'), spec: { command: 'codex', cwd: '/p', purpose: 'chat' } }
   expect(chatIdentity(chatAgent as SessionRecord).role).toBe('Agent')
 })
+
+test('a component named like an object key is no special scope', () => {
+  const odd = {
+    ...record('odd'),
+    metadata: { ...record('odd').metadata, componentId: 'constructor' },
+  }
+  expect(chatIdentity(odd).roleKey).toBe('builder')
+})

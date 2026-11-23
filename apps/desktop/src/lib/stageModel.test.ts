@@ -169,6 +169,11 @@ describe('stageModel', () => {
     expect(later).toMatchObject({ autoHalt: undefined, autoCurrent: false, driver: 'user' })
     expect(later.stepper.find((i) => i.stage === 'review')?.state).toBe('current')
   })
+  test('work after a finished in-place run keeps the strip without Merge', () => {
+    const done = run({ status: 'done', stage: 'done', baseCommit: 'abc' })
+    const later = stageModel({ snapshot: snapshot(done, [launch('manual')]) })
+    expect(later.stepper.map((i) => i.stage)).toEqual(['plan', 'build', 'review'])
+  })
   test('Auto drives while it runs or is paused', () => {
     expect(stageModel({ snapshot: snapshot(run()) }).driver).toBe('auto')
     expect(stageModel({ snapshot: snapshot(run({ status: 'paused' })) }).driver).toBe('auto')
