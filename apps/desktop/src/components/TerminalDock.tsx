@@ -5,21 +5,49 @@ import { describeTerminal, statusTitle, terminalStatus } from '../lib/display'
 import { useClockTick } from '../lib/clock'
 import { useDockTabs } from '../lib/panels'
 import { useStore } from '../store'
+import type { SessionRecord } from '../types'
 import StatusLabel from './status/StatusLabel'
 import TerminalPane from './TerminalPane'
 import TerminalControl from './TerminalControl'
 
 /** `collapsed`: the dock's panel is dragged shut, so no terminal is fitted to it. */
-export default function TerminalDock({ collapsed }: { collapsed: boolean }) {
+export default function TerminalDock({
+  collapsed,
+  agentTerminal,
+  onCloseAgent,
+}: {
+  collapsed: boolean
+  agentTerminal?: SessionRecord
+  onCloseAgent: () => void
+}) {
   const revealed = useStore((s) => s.dockReveal)
   const extensionViews = useExtensionViews('dock', revealed)
-  const tabs = useDockTabs()
+  const dockTabs = useDockTabs()
+  // Agent cards can open any recorded session, including agents launched in another view.
+  const tabs = agentTerminal
+    ? [
+        ...dockTabs.filter((t) => t.sid !== agentTerminal.id),
+        {
+          sid: agentTerminal.id,
+          componentId: agentTerminal.metadata.componentId,
+          terminal: {
+            id: agentTerminal.metadata.terminalId,
+            name: agentTerminal.metadata.name,
+            kind: agentTerminal.metadata.kind,
+            command: agentTerminal.spec.command,
+          },
+          label: agentTerminal.metadata.name,
+          task: agentTerminal.metadata.task ?? null,
+        },
+      ]
+    : dockTabs
   const sessions = useStore((s) => s.sessions)
   useClockTick()
   const activeSession = useStore((s) => s.activeSession)
   const setActiveSession = useStore((s) => s.setActiveSession)
   const dropFromDock = useStore((s) => s.dropFromDock)
   const active = tabs.find((t) => t.sid === activeSession) ?? tabs[0] ?? null
+  const openedAgent = !!active && active.sid === agentTerminal?.id
   const session = active ? sessions[active.sid] : undefined
   // With no terminal to show, show an extension's view rather than an empty terminal.
   const view = extensionViews.selected ?? (active ? null : (extensionViews.views[0]?.id ?? null))
@@ -84,12 +112,16 @@ export default function TerminalDock({ collapsed }: { collapsed: boolean }) {
               sid={active.sid}
               session={session}
               task={active.task}
+              existingOnly={openedAgent}
             />
-            {!session?.running && (
+            {(openedAgent || !session?.running) && (
               <button
                 className="dock-close"
-                title="Close this exited terminal"
-                onClick={() => dropFromDock(active.sid)}
+                title={openedAgent ? 'Close this agent terminal' : 'Close this exited terminal'}
+                onClick={() => {
+                  dropFromDock(active.sid)
+                  if (openedAgent) onCloseAgent()
+                }}
               >
                 Close
               </button>
@@ -105,6 +137,7 @@ export default function TerminalDock({ collapsed }: { collapsed: boolean }) {
           componentId={active.componentId}
           terminal={active.terminal}
           task={active.task}
+          existingSessionId={openedAgent ? active.sid : undefined}
         />
       ) : (
         <div className="terminal-area" />

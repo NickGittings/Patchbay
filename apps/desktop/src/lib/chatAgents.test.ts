@@ -96,6 +96,29 @@ test("a dismissed job's session does not come back as a separate agent", () => {
   ).toEqual([])
 })
 
+test('Navigation includes shared planners from its project', () => {
+  const records = [
+    record('shared', { componentId: PLAN_SCOPE, task: undefined }),
+    record('other-task', { componentId: PLAN_SCOPE, task: 'elsewhere' }),
+    record('other-project', { componentId: PLAN_SCOPE, projectId: 'elsewhere', task: undefined }),
+  ]
+  const sessions = Object.fromEntries(records.map(({ id }) => [id, running()]))
+  expect(
+    chatAgentCards({
+      records,
+      sessions,
+      simple: null,
+      worktree,
+      team: undefined,
+      teams: [],
+      runs: [],
+      jobs: [],
+      allJobs: [],
+      includeSharedPlanners: true,
+    }).map((c) => c.id),
+  ).toEqual(['session:shared'])
+})
+
 const card = (extra: Partial<AgentCard>) => extra as AgentCard
 
 test('the snippet leads with what most needs saying', () => {

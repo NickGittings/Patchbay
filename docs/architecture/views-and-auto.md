@@ -100,6 +100,12 @@ Utility-panel width bounds account for the actual rail width, and pointer resizi
 from the rail's rendered right edge. Rail tooltips wait 350ms on pointer entry and appear
 immediately on keyboard focus; exit, blur, click, Escape and unmount cancel pending tooltips.
 
+Navigation offers **Map**, **Stories** and **Agents**. Agents uses the same canvas as Chat,
+including the active worktree's running agents, team assignments and shared planners from Plan.
+The map stays mounted with its viewport and selection and is inert while Agents is open.
+An agent card's Terminal button opens the exact recorded session in Navigation's dock without
+switching views or worktrees. Closing that dock tab leaves the agent running.
+
 Review groups task/branch and comparison context with verdict and findings above its file list;
 the full worktree path is disclosed on demand. Review and component Changes use `PanelStatus`
 for loading and retryable failures, with technical details collapsed. Validation remains scoped

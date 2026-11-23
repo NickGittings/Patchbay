@@ -261,6 +261,37 @@
     )
     assert(!textOf(sid).includes('unrelated notes'), 'planner includes unrelated components')
     assert(state().planStartedWith[sid] === 'alpha,beta', 'planner launch scope was not recorded')
+    click(viewButton('Navigation'))
+    const agentsTab = () => query('.navigation-shell .view-tabs button[aria-label^="Agents,"]')
+    click(
+      await until(
+        'Navigation Agents count',
+        () => agentsTab()?.textContent === 'Agents 1' && agentsTab(),
+      ),
+    )
+    const plannerCard = await until('planner on the Agents canvas', () =>
+      query(`.agent-canvas [data-session="${CSS.escape(sid)}"][data-role="planner"]`),
+    )
+    assert(agentsTab().getAttribute('aria-pressed') === 'true', 'Agents tab is not active')
+    assert(query('.navigation-map').inert, 'map is interactive behind the Agents canvas')
+    click(plannerCard.querySelector('[aria-label^="View "]'))
+    await until(
+      'planner terminal active in the Navigation dock',
+      () =>
+        query(`.terminal-dock [data-dock-session="${CSS.escape(sid)}"].active`) &&
+        query('.terminal-dock .terminal-host .xterm'),
+    )
+    assert(!state().simpleMode && state().view === 'navigation', 'Terminal left Navigation')
+    click(query('.terminal-dock .dock-close'))
+    await until('planner terminal closed', () => !query('.terminal-dock .tab.active'))
+    assert(state().sessions[sid]?.running, 'closing the dock stopped the planner')
+    click([...query('.agent-canvas .view-tabs').children].find((b) => b.textContent === 'Map'))
+    await until(
+      'original map restored',
+      () => !query('.agent-canvas') && !query('.navigation-map').inert,
+    )
+    click(viewButton('Plan'))
+    await until('planner view restored', () => query('.planner-terminal'))
     state().toggleHighlight('beta')
     await until('stale hint', () => query('.planner-stale'))
     const restartFetch = window.fetch

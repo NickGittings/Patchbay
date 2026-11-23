@@ -22,7 +22,7 @@ export interface AgentCard {
 
 /**
  * Who the Agents tab shows: the team's undismissed assignments, whatever their state, and every
- * other running agent this chat counts as its own. A job's session appears only through its job.
+ * other running agent in scope. A job's session appears only through its job.
  */
 export function chatAgentCards({
   records,
@@ -34,6 +34,7 @@ export function chatAgentCards({
   runs,
   jobs,
   allJobs,
+  includeSharedPlanners = false,
 }: {
   records: readonly SessionRecord[]
   sessions: Record<string, SessionState>
@@ -44,6 +45,7 @@ export function chatAgentCards({
   runs: readonly ProviderRun[] | undefined
   jobs: readonly ProviderJob[]
   allJobs: readonly ProviderJob[]
+  includeSharedPlanners?: boolean
 }): AgentCard[] {
   const identity = (record: SessionRecord | undefined) => chatIdentity(record, teams, runs)
   const sessionCard = (record: SessionRecord): AgentCard => {
@@ -73,7 +75,7 @@ export function chatAgentCards({
         !jobSessions.has(record.id) &&
         (record.id === team?.lead.sessionId ||
           (relatedSession(record, worktree, sessions[record.id]?.generation, simple) &&
-            !foreignPlanner(record, sessions, simple))),
+            (includeSharedPlanners || !foreignPlanner(record, sessions, simple)))),
     )
     .toSorted((a, b) => started(a) - started(b) || a.id.localeCompare(b.id))
     .map(sessionCard)

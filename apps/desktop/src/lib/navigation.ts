@@ -3,6 +3,7 @@ import { editorOpen, editorPreferences, editorResolveTarget, terminalOpenReferen
 import { FILE_EDITOR_EVENT, type FileRequest } from './fileEditor'
 import { useStore } from '../store'
 import { sessionMetadata, type EditorTarget } from '../types'
+import { simpleKey, useSimpleUi } from './simpleUi'
 
 export const EDITOR_SETTINGS_EVENT = 'patchbay:editor-settings'
 export const FILE_SEARCH_EVENT = 'patchbay:file-search'
@@ -20,9 +21,20 @@ export function showFileSearch() {
 }
 export const FOCUS_COMPONENT_EVENT = 'patchbay:focus-component'
 let pendingFocus: string | null = null
+/** Select the map or story board from a tab or a workspace action. */
+export function showNavigationCanvas(stories: boolean) {
+  const s = useStore.getState()
+  const key = simpleKey(s.project?.id, s.activeTask)
+  const ui = useSimpleUi.getState()
+  if (ui.worktrees[key]?.changes || ui.worktrees[key]?.agents)
+    ui.patch(key, { changes: false, agents: false })
+  s.setStoryBoard(stories)
+}
+
 /** Shows a component on the map, opening Navigation unless Chat's map is already shown. */
 export function focusComponent(id: string) {
   const s = useStore.getState()
+  showNavigationCanvas(false)
   if (!s.simpleMode) {
     if (s.view !== 'navigation') s.setView('navigation')
     s.select(id)

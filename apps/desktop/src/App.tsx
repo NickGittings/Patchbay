@@ -18,7 +18,7 @@ import SimpleDiff from './components/SimpleDiff'
 import AgentCanvas from './components/AgentCanvas'
 import { useSimpleData } from './lib/useSimpleData'
 import { useChatReading, WorktreeReaderContext } from './lib/useStageModel'
-import { simpleKey, useSimpleUi } from './lib/simpleUi'
+import { pinChatTerminal, simpleKey, useSimpleUi } from './lib/simpleUi'
 import ChatMode from './components/ChatMode'
 import { followNotifications } from './lib/notifications'
 import { followUsage } from './lib/usage'
@@ -35,7 +35,7 @@ import { startMaintenanceChecks } from './lib/maintenance'
 import ExtensionsPanel from './components/ExtensionsPanel'
 import { startExtensionHost, refreshExtensions } from './extensions/host'
 import { ReactFlowProvider } from '@xyflow/react'
-import { useContext, useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useCollapsed } from './lib/useCollapsed'
 import {
   CHAT_LAYOUT,
@@ -72,6 +72,7 @@ import { followQueuedPrompts } from './lib/simpleQueue'
 import { followActiveTask, refreshTasks } from './lib/tasks'
 import { syncComponentWindows } from './lib/windows'
 import { projectOf, projectStateOf, useStore } from './store'
+import type { SessionRecord } from './types'
 
 /** Refresh on project changes, file mutations and focus in any app window. */
 function useGitRefresh() {
@@ -180,10 +181,8 @@ function NavigationView() {
   const simple = useStore((s) => s.simpleMode)
   const scopeKey = useStore((s) => simpleKey(s.project?.id, s.activeTask))
   const diff = useSimpleUi((s) => s.worktrees[scopeKey]?.diff)
-  const changes = useSimpleUi((s) => s.worktrees[scopeKey]?.changes)
-  const agents = useSimpleUi((s) => s.worktrees[scopeKey]?.agents)
-  // Either covers the map and story board, which stay mounted beneath.
-  const chatPane = simple && (changes || agents)
+  const changes = useSimpleUi((s) => simple && !!s.worktrees[scopeKey]?.changes)
+  const agents = useSimpleUi((s) => !!s.worktrees[scopeKey]?.agents && !changes)
   useMapActivityFeedback()
   useEffect(
     () => () => {
@@ -218,15 +217,33 @@ function NavigationView() {
     focusShowChat.current = false
   }, [chatPanel.collapsed])
   // Chat, Changes and Agents need the shared reader while visible.
-  const reading = simple && (!chatPanel.collapsed || !!chatPane)
+  const reading = simple && (!chatPanel.collapsed || changes || agents)
   useEffect(() => {
     useChatReading.setState({ reading })
     return () => useChatReading.setState({ reading: false })
   }, [reading])
   const reader = useContext(WorktreeReaderContext)!
   const storyBoard = useStore((s) => s.storyBoard)
+  const covered = storyBoard || changes || agents
+  const [openedAgent, setOpenedAgent] = useState<{ scopeKey: string; sid: string }>()
+  const agentTerminal = useStore((s) =>
+    !simple && openedAgent?.scopeKey === scopeKey
+      ? s.sessionRecords.find((r) => r.id === openedAgent.sid)
+      : undefined,
+  )
+  const openAgentTerminal = (record: SessionRecord) => {
+    const s = useStore.getState()
+    if (simple) {
+      pinChatTerminal(scopeKey, record.id, s.sessions[record.id]?.generation)
+      if (chatPanel.collapsed) chatPanel.expand()
+      return
+    }
+    setOpenedAgent({ scopeKey, sid: record.id })
+    s.setActiveSession(record.id)
+    s.revealDock(record.id)
+  }
   const dockViews = useExtensionViews('dock').views.length > 0
-  const dock = useStore(hasDockTabs) || dockViews
+  const dock = useStore(hasDockTabs) || dockViews || !!agentTerminal
   const activeSession = useStore((s) =>
     s.simpleMode &&
     s.sessionRecords.some((r) => r.id === s.activeSession && r.metadata.kind === 'agent')
@@ -255,16 +272,14 @@ function NavigationView() {
               <Panel id="App-pane-3" defaultSize="58" minSize="20">
                 <div className="simple-canvas">
                   <div
-                    className={`navigation-map ${storyBoard || chatPane ? 'story-map-hidden' : ''}`}
-                    aria-hidden={storyBoard || !!chatPane}
-                    inert={storyBoard || !!chatPane}
+                    className={`navigation-map ${covered ? 'story-map-hidden' : ''}`}
+                    aria-hidden={covered}
+                    inert={covered}
                   >
-                    <Canvas />
+                    <Canvas covered={covered} />
                   </div>
-                  {storyBoard && !chatPane && <StoryBoard />}
-                  {simple && agents && !changes && (
-                    <AgentCanvas onShowChat={chatPanel.collapsed ? chatPanel.expand : undefined} />
-                  )}
+                  {storyBoard && !changes && !agents && <StoryBoard />}
+                  {agents && <AgentCanvas key={scopeKey} onOpenTerminal={openAgentTerminal} />}
                   {simple && chatPanel.collapsed && (
                     <button
                       ref={showChatRef}
@@ -274,9 +289,7 @@ function NavigationView() {
                       Show chat
                     </button>
                   )}
-                  {simple && changes && (
-                    <SimpleDiff scopeKey={scopeKey} selection={diff} reader={reader} />
-                  )}
+                  {changes && <SimpleDiff scopeKey={scopeKey} selection={diff} reader={reader} />}
                 </div>
               </Panel>
               <Separator
@@ -284,7 +297,11 @@ function NavigationView() {
                 disabled={!dock}
               />
               <Panel id="App-pane-4" defaultSize="42" minSize="10" {...dockPanel.props}>
-                <TerminalDock collapsed={dockPanel.collapsed} />
+                <TerminalDock
+                  collapsed={dockPanel.collapsed}
+                  agentTerminal={agentTerminal}
+                  onCloseAgent={() => setOpenedAgent(undefined)}
+                />
               </Panel>
             </PersistedGroup>
           </Panel>

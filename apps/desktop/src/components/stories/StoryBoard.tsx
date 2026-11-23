@@ -2,6 +2,7 @@ import { useContext, useMemo, useState } from 'react'
 import { simpleKey, useSimpleUi } from '../../lib/simpleUi'
 import { SimpleChangesContext, SimpleWorktreeContext } from './simpleChanges'
 import { useChatAgents } from '../../lib/useChatAgents'
+import { showNavigationCanvas } from '../../lib/navigation'
 import { teamFlags } from '../../lib/useTeamWork'
 import type { ChangeRef } from '../../lib/changeNav'
 import { useShallow } from 'zustand/react/shallow'
@@ -24,7 +25,7 @@ import { shortTitle } from '../../lib/shortTitle'
 import StoryEditor from './StoryEditor'
 import './stories.css'
 
-/** Chat's Agents tab; a component of its own so Full view never follows sessions for it. */
+/** The Agents tab counts work for the selected worktree. */
 function AgentsTab({ scopeKey, active }: { scopeKey: string; active: boolean }) {
   const { cards, team, work } = useChatAgents(useContext(SimpleWorktreeContext))
   const count = cards.filter((card) => card.row !== 'finished').length
@@ -44,33 +45,28 @@ function AgentsTab({ scopeKey, active }: { scopeKey: string; active: boolean }) 
 
 export function StoryViewTabs() {
   const shown = useStore((s) => s.storyBoard)
-  const setShown = useStore((s) => s.setStoryBoard)
   const simple = useStore((s) => s.simpleMode)
   const key = useStore((s) => simpleKey(s.project?.id, s.activeTask))
   const ui = useSimpleUi((s) => s.worktrees[key])
   const changes = simple && !!ui?.changes
-  const agents = simple && !!ui?.agents && !changes
+  const agents = !!ui?.agents && !changes
   const covered = changes || agents
   const { files, newest } = useContext(SimpleChangesContext)
   const listed = (diff: ChangeRef | null | undefined) =>
     !!diff && files.some((f) => f.componentId === diff.componentId && f.path === diff.path)
-  const show = (stories: boolean) => {
-    useSimpleUi.getState().patch(key, { changes: false, agents: false })
-    setShown(stories)
-  }
   return (
     <div className="view-tabs" role="group" aria-label="Navigation canvas">
       <button
         className={!shown && !covered ? 'active' : ''}
         aria-pressed={!shown && !covered}
-        onClick={() => show(false)}
+        onClick={() => showNavigationCanvas(false)}
       >
         Map
       </button>
       <button
         className={shown && !covered ? 'active' : ''}
         aria-pressed={shown && !covered}
-        onClick={() => show(true)}
+        onClick={() => showNavigationCanvas(true)}
       >
         Stories
       </button>
@@ -90,7 +86,7 @@ export function StoryViewTabs() {
           Changes {files.length}
         </button>
       )}
-      {simple && <AgentsTab scopeKey={key} active={agents} />}
+      <AgentsTab scopeKey={key} active={agents} />
     </div>
   )
 }

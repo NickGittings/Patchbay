@@ -762,7 +762,7 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* Chat's Agents tab: below Show chat, so a hidden chat can still be brought back. */
+/* The Agents canvas sits below Show chat, so a hidden chat can still be brought back. */
 .simple-canvas > .agent-canvas {
   position: absolute;
   inset: 0;

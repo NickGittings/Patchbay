@@ -8,7 +8,7 @@ import {
   useOpenProject,
   useRescanProject,
 } from './project'
-import { configureEditor, showFileSearch } from './navigation'
+import { configureEditor, showFileSearch, showNavigationCanvas } from './navigation'
 import { mapEditsBlocked } from './mapSave'
 import { offerDependencies } from './dependencies'
 import { arrangeNow } from './arrange'
@@ -136,7 +136,7 @@ export function useWorkspaceActions(): WorkspaceAction[] {
       title: 'Toggle story board',
       group: 'workspace',
       enabled: available,
-      run: () => useStore.getState().setStoryBoard(!useStore.getState().storyBoard),
+      run: () => showNavigationCanvas(!useStore.getState().storyBoard),
     },
     { id: 'files', title: 'Search files…', group: 'workspace', enabled: true, run: showFileSearch },
     ...railViews.map((v): WorkspaceAction => ({

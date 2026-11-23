@@ -35,6 +35,11 @@
   font-size: var(--text-base);
   color: var(--text);
 }
+.auto-content select,
+.auto-content input[type='number'] {
+  block-size: 2em;
+  padding-block: 4px;
+}
 .auto-content textarea {
   resize: vertical;
   line-height: 1.45;

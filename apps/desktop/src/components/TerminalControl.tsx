@@ -22,6 +22,7 @@ export default function TerminalControl({
   task,
   projectId,
   disabled = false,
+  existingOnly = false,
   restarting = false,
   onRestart,
 }: {
@@ -33,6 +34,8 @@ export default function TerminalControl({
   task: string | null
   projectId?: string
   disabled?: boolean
+  /** A session opened outside its launch view only offers controls for the existing run. */
+  existingOnly?: boolean
   restarting?: boolean
   /** The planner also offers a restart while running to apply changed context. */
   onRestart?: () => Promise<void>
@@ -85,7 +88,7 @@ export default function TerminalControl({
   return (
     <>
       {kind === 'agent' && <ContextIndicator session={session} connected={connected} />}
-      {interactive && (
+      {interactive && !existingOnly && (
         <button
           disabled={disabled || busy || auto || !connected}
           title={auto ? 'Stop Auto before starting a new conversation' : undefined}
@@ -98,7 +101,7 @@ export default function TerminalControl({
         <button disabled={disabled || busy} onClick={() => stopTerminal(sid)}>
           ■ Stop
         </button>
-      ) : !isReviewAgentScope(componentId) ? (
+      ) : !existingOnly && !isReviewAgentScope(componentId) ? (
         <button
           disabled={disabled || busy}
           onClick={() => {

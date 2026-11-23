@@ -23,7 +23,7 @@ import {
   useState,
 } from 'react'
 import { useStore } from '../store'
-import type { SessionState } from '../types'
+import type { SessionRecord, SessionState } from '../types'
 import { activityLabel, turnSteps } from '../lib/activity'
 import {
   AGENT_CANVAS_INSET,
@@ -39,7 +39,6 @@ import { failedJob, workerCounts, workerStatus } from '../lib/chatProgress'
 import { RESTART_NOTICE, type ChatTeam } from '../lib/chatTeams'
 import type { Health } from '../lib/display'
 import type { ProviderJob } from '../lib/orchestration'
-import { pinChatTerminal, simpleKey } from '../lib/simpleUi'
 import { useChatAgents } from '../lib/useChatAgents'
 import { useReducedMotion } from '../lib/useReducedMotion'
 import { useTeamAction, type TeamWork } from '../lib/useTeamWork'
@@ -362,10 +361,9 @@ const graphKey = (cards: AgentCard[]) =>
     ]),
   )
 
-function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
+function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord) => void }) {
   const worktree = useContext(SimpleWorktreeContext)
   const { cards, team, work } = useChatAgents(worktree)
-  const scopeKey = useStore((s) => simpleKey(s.project?.id, s.activeTask))
   const [selected, setSelected] = useState<string>()
   const [undo, setUndo] = useState<ProviderJob>()
   const key = graphKey(cards)
@@ -437,14 +435,12 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
         if (shift > 0)
           void setViewport({ x: x - shift, y, zoom }, { duration: reducedMotion ? 0 : 200 })
       },
-      openTerminal: ({ sessionId }: AgentCard) => {
-        if (!sessionId) return
-        pinChatTerminal(scopeKey, sessionId, useStore.getState().sessions[sessionId]?.generation)
-        onShowChat?.()
+      openTerminal: ({ record }: AgentCard) => {
+        if (record) onOpenTerminal(record)
       },
       dismiss,
     }),
-    [scopeKey, onShowChat, positions, getViewport, setViewport, reducedMotion, dismiss],
+    [onOpenTerminal, positions, getViewport, setViewport, reducedMotion, dismiss],
   )
   const details = cards.find((card) => card.id === selected)
   const closeDetails = () => {
@@ -489,7 +485,7 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
           {cards.length === 0 && (
             <Panel position="top-center" className="canvas-empty">
               <EmptyState icon="◇" title="No active agents">
-                Agents this chat starts appear here.
+                Agents working in this worktree appear here.
               </EmptyState>
             </Panel>
           )}
@@ -522,11 +518,15 @@ function AgentGraph({ onShowChat }: { onShowChat?: () => void }) {
   )
 }
 
-/** Chat's Agents tab. Its own flow store, so the map's viewport and selection stay untouched. */
-export default function AgentCanvas({ onShowChat }: { onShowChat?: () => void }) {
+/** The Agents tab has its own flow store and preserves the map's viewport and selection. */
+export default function AgentCanvas({
+  onOpenTerminal,
+}: {
+  onOpenTerminal: (record: SessionRecord) => void
+}) {
   return (
     <ReactFlowProvider>
-      <AgentGraph onShowChat={onShowChat} />
+      <AgentGraph onOpenTerminal={onOpenTerminal} />
     </ReactFlowProvider>
   )
 }

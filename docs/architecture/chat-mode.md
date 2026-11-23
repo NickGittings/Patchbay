@@ -245,8 +245,9 @@ conversation. Failed and input-waiting sub-builders, coordination errors and unc
 alert lines above the composer with their recovery actions (Retry work and Agent settings, View sub-builder
 terminal, Mark delivered or Retry delivery).
 
-**Agents** sits beside Map / Stories / Changes, in Chat only (`AgentCanvas`, its own React Flow store, so
-the map's viewport is untouched). `chatAgents.ts` `chatAgentCards` lists the team's undismissed
+**Agents** sits beside Map / Stories in Navigation and beside Map / Stories / Changes in Chat
+(`AgentCanvas` has its own React Flow store and preserves the map's viewport).
+`chatAgents.ts` `chatAgentCards` lists the team's undismissed
 assignments and every other running agent of this chat, `agentSnippet` picks each card's line (input
 wait, failure, recent steps, summary, instructions, last reply) and `agentLayout` places the lead,
 sub-builders, other agents and finished work in rows, wrapped at the column count `agentColumns` finds
@@ -255,14 +256,15 @@ when membership or job state changes and refits when the layout or canvas size d
 its toggle are `CanvasMinimap`, sharing the Map's saved preference. Cards and minimap nodes use the
 role colors of Chat's agent headers. The tab's label
 counts unfinished agents and flagged items, with the breakdown in its accessible name. Terminal
-opens the session in Chat's drawer, expanding a hidden chat. Selecting a card opens details: steps or
+opens the session in Chat's drawer, expanding a hidden chat. Outside Chat, it opens in Navigation's
+dock. Selecting a card opens details: steps or
 the last reply, and for assignments the instructions, summary, report, retry and settings actions.
 Under the tabs, the team's status line offers Open Sessions. Dismissing a failed or completed
 assignment, from its card or details, hides its current result from the canvas, count and alerts, offers Undo (which takes
 focus), and lists it under Dismissed with Restore. The worktree's chat UI persists dismissals locally,
 pruned to the team's current results. Retried work appears again, and coordination retains its results.
-Chat-owned rounds appear here only;
-other provider runs remain in Plan or Build. **View sub-builder terminal** opens the exact project session
+Chat-owned round results appear on the Agents canvas. Other provider run controls stay in Plan
+or Build. **View sub-builder terminal** opens the exact project session
 without changing the composer recipient. Messages and queued prompts take their recipient's workflow
 stage, so messaging a build agent after a merge resumes the build flow. A team's lead has no stage:
 `thread` leaves its session and prompts out of stage selection (`SimpleSnapshot.lead`), unless that
