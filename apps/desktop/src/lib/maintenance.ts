@@ -1,7 +1,13 @@
 import type { NoticeKind } from './notificationHistory'
 import { create } from 'zustand'
 import { projectOf, useStore } from '../store'
-import type { MapEdit, MapIssue, Project, ReconciliationPreview } from '../types'
+import {
+  BUILTIN_SOURCE,
+  type MapEdit,
+  type MapIssue,
+  type Project,
+  type ReconciliationPreview,
+} from '../types'
 import {
   applyReconciliation,
   cleanupComponentScopes,
@@ -12,8 +18,6 @@ import {
   rescanProject,
 } from './ipc'
 import { syncProjectRoots } from './access'
-
-const BUILTIN_SOURCE = 'builtin'
 
 interface ReviewState {
   projectId: string

@@ -1,5 +1,7 @@
 // Mirrors patchbay-core's serde types.
 
+/** Built-in detector and preset provenance; mirrors core `model::BUILTIN_SOURCE`. */
+export const BUILTIN_SOURCE = 'builtin'
 /** Mirrors the reserved recipient in core's chat orchestration. */
 export const LEAD_RECIPIENT = 'lead'
 export type WorkflowAction =
@@ -14,9 +16,11 @@ export type WorkflowAction =
   | 'pauseAuto'
   | 'resumeAuto'
   | 'stopAuto'
+  /** Saved by another Patchbay build (core's `#[serde(other)]` fallback); never run. */
+  | 'unknown'
 export type WorkflowState =
-  'queued' | 'waiting' | 'starting' | 'running' | 'completed' | 'uncertain' | 'failed'
-export type OwnerKind = 'chat' | 'auto'
+  'queued' | 'waiting' | 'starting' | 'running' | 'completed' | 'uncertain' | 'failed' | 'unknown'
+export type OwnerKind = 'chat' | 'auto' | 'unknown'
 
 export const SCAN_SCOPE = '@scan'
 export const COORDINATOR_SCOPE = '@coordinator'

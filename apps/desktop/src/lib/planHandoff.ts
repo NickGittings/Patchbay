@@ -160,7 +160,7 @@ async function handoffPlannerPlan(
       const item = await findStory(projectId, story)
       const patch = startedStatus(item, 'building')
       const link = task && item.task !== task
-      if (patch && (link || patch.status))
+      if (link || patch.status)
         await updateStory(projectId, story, { ...patch, ...(link ? { task } : {}) })
       const state = projectStateOf(projectId)
       const planned = state && workspaceOf(state, task)

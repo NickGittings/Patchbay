@@ -750,6 +750,14 @@
         'merged story saved Done',
         () => state().stories.find((s) => s.id === mergeStory.id).status === 'done',
       )
+      // The merge has finished, so its session no longer supplies a live stage.
+      smoke.store.setState({
+        sessionRecords: state().sessionRecords.map((r) =>
+          r.id === 'story-reopen-merge-record'
+            ? { ...r, snapshot: { ...r.snapshot, running: false } }
+            : r,
+        ),
+      })
       // Clear the board filters so the new unassigned story is selectable.
       click(button('.story-column', 'All epics'))
       click(
@@ -762,7 +770,7 @@
       click(await until('Reopen merged story', () => button('.story-editor', 'Reopen')))
       await until(
         'merged story reopened',
-        () => state().stories.find((s) => s.id === mergeStory.id).status === 'merging',
+        () => state().stories.find((s) => s.id === mergeStory.id).status === 'planned',
       )
       for (let i = 0; i < 2; i++) {
         smoke.store.setState({ gitChanges: {} })
@@ -778,7 +786,7 @@
           'fixture branch is not integrated',
         )
         assert(
-          (await storyList(projectId)).find((s) => s.id === mergeStory.id).status === 'merging',
+          (await storyList(projectId)).find((s) => s.id === mergeStory.id).status === 'planned',
           'merge poll completed the reopened story again',
         )
       }

@@ -77,6 +77,16 @@ impl Story {
         self.status = status;
     }
 
+    /// Integrated work completed the story. Reopening it means more work on that link, so it
+    /// resumes as Planned rather than at the stage (such as Merge) that was last seen.
+    fn complete(&mut self, head: Option<String>) {
+        if self.status != StoryStatus::Done {
+            self.set_status(StoryStatus::Done);
+            self.previous_status = Some(StoryStatus::Planned);
+        }
+        self.completed_head = head;
+    }
+
     /// Before `previous_status` was saved, linked work had at least been planned.
     fn reopened_status(&self) -> StoryStatus {
         self.previous_status
@@ -119,7 +129,8 @@ pub struct StoryPatch {
     #[serde(default)]
     pub reopen: bool,
     pub order: Option<u32>,
-    /// Workflow writes are conditional on the saved progress and worktree linkage.
+    /// A workflow's status write applies only while the saved progress and worktree linkage
+    /// still match. Linkage and other fields in the same patch apply either way.
     pub expected_progress: Option<ExpectedProgress>,
 }
 
@@ -206,6 +217,15 @@ fn validate(item: &Story, stories: &[Story]) -> Result<()> {
     Ok(())
 }
 
+/// Criteria are trimmed and blank ones dropped, whichever command saves them.
+fn clean_acceptance(acceptance: Vec<String>) -> Vec<String> {
+    acceptance
+        .into_iter()
+        .map(|a| a.trim().to_owned())
+        .filter(|a| !a.is_empty())
+        .collect()
+}
+
 /// Create a board item.
 /// # Errors
 /// Fails for an invalid title, parent, or store write.
@@ -222,7 +242,7 @@ pub fn create(root: &Path, draft: StoryDraft) -> Result<Story> {
             parent: draft.parent,
             title: draft.title.trim().into(),
             description: draft.description,
-            acceptance: draft.acceptance,
+            acceptance: clean_acceptance(draft.acceptance),
             components: draft.components,
             task: None,
             task_head: None,
@@ -254,13 +274,11 @@ pub fn update(root: &Path, id: &str, patch: StoryPatch) -> Result<Story> {
             .position(|s| s.id == id)
             .ok_or_else(|| anyhow!("Unknown story {id}"))?;
         let mut item = stories[index].clone();
-        if patch.expected_progress.is_some_and(|expected| {
+        let stale = patch.expected_progress.is_some_and(|expected| {
             expected.status != item.status
                 || expected.task != item.task
                 || expected.auto_run_id != item.auto_run_id
-        }) {
-            return Ok(item);
-        }
+        });
         if let Some(v) = patch.title {
             item.title = v.trim().into();
         }
@@ -271,7 +289,7 @@ pub fn update(root: &Path, id: &str, patch: StoryPatch) -> Result<Story> {
             item.description = v;
         }
         if let Some(v) = patch.acceptance {
-            item.acceptance = v;
+            item.acceptance = clean_acceptance(v);
         }
         if let Some(v) = patch.components {
             item.components = v;
@@ -293,7 +311,7 @@ pub fn update(root: &Path, id: &str, patch: StoryPatch) -> Result<Story> {
         if let Some(v) = patch.auto_run_id {
             item.auto_run_id = (!v.is_empty()).then_some(v);
         }
-        if let Some(v) = patch.status {
+        if let Some(v) = patch.status.filter(|_| !stale) {
             item.set_status(v);
         }
         if patch.reopen && item.status == StoryStatus::Done {
@@ -315,7 +333,8 @@ pub fn update(root: &Path, id: &str, patch: StoryPatch) -> Result<Story> {
     })
 }
 
-/// Resolve a parent's status from saved child statuses, mirroring the board's `parentStatus`.
+/// Resolve a parent's status from saved child statuses. The board's `parentStatus` also counts
+/// a story its matching Auto run completed before Done is saved, so the two can briefly differ.
 #[must_use]
 pub fn parent_status(item: &Story, stories: &[Story]) -> Option<ParentStatus> {
     let child_kind = match item.kind {
@@ -455,8 +474,7 @@ pub fn complete_merge(root: &Path, source: &Path) -> Result<()> {
                 .as_ref()
                 .is_some_and(|baseline| baseline != &head)
             {
-                story.set_status(StoryStatus::Done);
-                story.completed_head = Some(head.clone());
+                story.complete(Some(head.clone()));
             }
         }
         Ok(())
@@ -479,8 +497,7 @@ pub fn complete_auto(root: &Path, task: &str, run_id: &str) -> Result<Vec<Story>
                 && s.task.as_deref() == Some(task)
                 && s.auto_run_id.as_deref() == Some(run_id)
         }) {
-            story.set_status(StoryStatus::Done);
-            story.completed_head.clone_from(&head);
+            story.complete(head.clone());
             completed.push(story.clone());
         }
         Ok(completed)
@@ -907,7 +924,55 @@ mod tests {
         )
         .unwrap();
         assert_eq!(current, done);
-        assert_eq!(load(&root).unwrap(), [done]);
+        assert_eq!(load(&root).unwrap(), std::slice::from_ref(&done));
+        // Linkage sent with a stale status still applies; only the status is skipped.
+        let linked = update(
+            &root,
+            &item.id,
+            StoryPatch {
+                auto_run_id: Some("run".into()),
+                status: Some(StoryStatus::Reviewing),
+                expected_progress: Some(ExpectedProgress {
+                    status: StoryStatus::Backlog,
+                    task: None,
+                    auto_run_id: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(linked.status, StoryStatus::Done);
+        assert_eq!(linked.auto_run_id.as_deref(), Some("run"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn acceptance_criteria_are_trimmed_on_create_and_update() {
+        let root = std::env::temp_dir().join(format!("patchbay-stories-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("init")
+                .arg(&root)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let mut story = draft(StoryKind::Story, None, "Story");
+        story.acceptance = vec![" Works ".into(), String::new(), "  ".into()];
+        let item = create(&root, story).unwrap();
+        assert_eq!(item.acceptance, ["Works"]);
+        let edited = update(
+            &root,
+            &item.id,
+            StoryPatch {
+                acceptance: Some(vec!["".into(), " Fast ".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(edited.acceptance, ["Fast"]);
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -1115,6 +1180,16 @@ mod tests {
         assert_eq!(load(&root).unwrap()[0].status, StoryStatus::Planned);
         git(&worktree, &["commit", "--allow-empty", "-qm", "new work"]);
         git(&root, &["merge", "--ff-only", "story"]);
+        // The last stage seen was Merge, but reopening merged work resumes it as Planned.
+        update(
+            &root,
+            &item.id,
+            StoryPatch {
+                status: Some(StoryStatus::Merging),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         complete_merge(&root, &worktree).unwrap();
         assert_eq!(load(&root).unwrap()[0].status, StoryStatus::Done);
         assert_eq!(

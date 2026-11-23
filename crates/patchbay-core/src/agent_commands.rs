@@ -382,13 +382,7 @@ fn edit_story(root: &Path, id: &str, edit: StoryEdit) -> Result<stories::Story> 
             title: edit.title,
             parent: edit.parent,
             description: edit.description,
-            acceptance: edit.acceptance.map(|criteria| {
-                criteria
-                    .into_iter()
-                    .map(|criterion| criterion.trim().to_owned())
-                    .filter(|criterion| !criterion.is_empty())
-                    .collect()
-            }),
+            acceptance: edit.acceptance,
             status: if edit.close {
                 Some(StoryStatus::Done)
             } else {

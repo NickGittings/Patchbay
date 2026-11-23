@@ -263,9 +263,16 @@ export default function StoryEditor({
             </p>
           )}
           {kind !== 'story' ? (
-            progress?.source === 'children' &&
-            progress.value === 'closed' && (
+            progress?.source === 'children' && progress.value === 'closed' ? (
               <p className="story-hint">All children are complete, so the board shows Closed.</p>
+            ) : (
+              progress?.value !== 'closed' && (
+                <p className="story-hint">
+                  Merging this {kind}’s own worktree or Auto run doesn’t close it. It closes when
+                  all its {kind === 'epic' ? 'features' : 'stories'} are done, or when you set
+                  Closed.
+                </p>
+              )
             )
           ) : (
             <p className="story-hint">

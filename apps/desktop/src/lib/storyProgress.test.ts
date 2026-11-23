@@ -123,7 +123,7 @@ test('saves Building, Review, Merge and a later fix, skipping Done stories and p
             kind: 'agent',
           },
           spec: { cwd: '/p', merge_source: '/task' },
-          snapshot: { startedMs },
+          snapshot: { startedMs, running: true },
         } as SessionRecord,
       ]
       useStore.setState({ sessionRecords: records })
@@ -163,4 +163,26 @@ test('does not apply stale Git results after the watcher is disposed', async () 
   resolve([])
   await pending
   expect(ipc.mergeOutcome).not.toHaveBeenCalled()
+})
+test('a failed stage save still checks merges for the rest of the board', async () => {
+  useStore.setState({
+    sessionRecords: [
+      ...useStore.getState().sessionRecords,
+      {
+        id: 'build',
+        metadata: { projectId: 'p', componentId: TASK_ROOT_SCOPE, task: 't', kind: 'agent' },
+        spec: { cwd: '/task' },
+        snapshot: { startedMs: 1, running: true },
+      } as SessionRecord,
+    ],
+  })
+  vi.mocked(ipc.storyUpdate).mockRejectedValueOnce(new Error('Unknown story s'))
+  const progress = storyProgressPoll('p')
+  try {
+    await progress.poll()
+    expect(ipc.storyUpdate).toHaveBeenCalledOnce()
+    expect(ipc.mergeOutcome).toHaveBeenCalledOnce()
+  } finally {
+    progress.dispose()
+  }
 })

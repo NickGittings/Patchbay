@@ -26,11 +26,12 @@ test('chat workflows use the persisted wire values', () => {
     | 'pauseAuto'
     | 'resumeAuto'
     | 'stopAuto'
+    | 'unknown'
   >()
   expectTypeOf<Request['state']>().toEqualTypeOf<
-    'queued' | 'waiting' | 'starting' | 'running' | 'completed' | 'uncertain' | 'failed'
+    'queued' | 'waiting' | 'starting' | 'running' | 'completed' | 'uncertain' | 'failed' | 'unknown'
   >()
-  expectTypeOf<OwnerKind>().toEqualTypeOf<'chat' | 'auto'>()
+  expectTypeOf<OwnerKind>().toEqualTypeOf<'chat' | 'auto' | 'unknown'>()
   expect(LEAD_RECIPIENT).toBe('lead')
 })
 

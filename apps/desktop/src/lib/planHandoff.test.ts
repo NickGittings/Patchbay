@@ -13,6 +13,7 @@ vi.mock('./ipc', () => ({
   proposalRead: vi.fn(),
   proposalApply: vi.fn(),
   terminalStop: vi.fn(),
+  storyList: vi.fn(),
   storyUpdate: vi.fn(),
 }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
@@ -38,6 +39,7 @@ const claude: DeviceManifest = {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  vi.mocked(ipc.storyList).mockImplementation(async () => useStore.getState().stories)
   planDrafts.clear()
   useStore.setState(useStore.getInitialState())
   useStore.getState().loadProject({
@@ -379,7 +381,7 @@ test('Implement keeps the baseline for a story already linked to its worktree', 
   expect(useStore.getState().stories[0].taskHead).toBe('baseline')
 })
 
-test('Implement leaves completed stories alone', async () => {
+test('Implement links a completed story to its worktree without reopening it', async () => {
   const item = { ...plannedStory, status: 'done' as const }
   useStore.setState({
     stories: [item],
@@ -387,9 +389,10 @@ test('Implement leaves completed stories alone', async () => {
     planStory: item.id,
     planStoryTerminal: 'claude',
   })
+  vi.mocked(ipc.storyUpdate).mockResolvedValueOnce({ ...item, task: 'task1' })
   await implementPlannerPlan('claude')
-  expect(ipc.storyUpdate).not.toHaveBeenCalled()
-  expect(useStore.getState().stories).toEqual([item])
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', item.id, { task: 'task1' })
+  expect(useStore.getState().stories[0]).toMatchObject({ task: 'task1', status: 'done' })
   expect(useStore.getState().planStory).toBeNull()
 })
 

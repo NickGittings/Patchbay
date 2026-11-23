@@ -139,7 +139,10 @@ export const STORY_STATUSES: StoryStatus[] = [
   'done',
 ]
 
-/** Most recently started role wins; a later fix returns a story to Building. */
+/**
+ * Most recently started running role wins; a later fix returns a story to Building. Finished
+ * sessions leave the saved status in place, so an old merge or review never reappears as live.
+ */
 export function worktreeStage(
   task: Task,
   projectId: string,
@@ -148,7 +151,7 @@ export function worktreeStage(
   const record = records
     .filter(
       (r) =>
-        r.snapshot &&
+        r.snapshot?.running &&
         r.metadata.projectId === projectId &&
         ((r.metadata.componentId === REVIEW_SCOPE &&
           !!task.branch &&
@@ -308,15 +311,17 @@ export function reopenStoryPatch(story: Story, run?: StoryRuns[string]): StoryPa
   }
 }
 
-/** Guard workflow writes against completion or relinking while a launch or poll was in flight. */
-export function startedStatus(
-  story: Story,
-  status?: LiveStoryStatus | null,
-): StoryPatch | undefined {
-  if (story.status === 'done') return
+/**
+ * A workflow's status write, empty when there is nothing to save. Saved Done stays Done. Core
+ * skips the status if completion or relinking landed while a launch or poll was in flight, but
+ * still applies any linkage sent with it.
+ */
+export function startedStatus(story: Story, status?: LiveStoryStatus | null): StoryPatch {
+  if (story.status === 'done' || story.kind !== 'story' || !status || story.status === status)
+    return {}
   return {
+    status,
     expectedProgress: { status: story.status, task: story.task, autoRunId: story.autoRunId },
-    ...(story.kind === 'story' && status && story.status !== status ? { status } : {}),
   }
 }
 
@@ -456,9 +461,8 @@ export async function launchStoryPlanner(
   })
   // The planner is running either way, so its launch is still returned for logging.
   try {
-    const current = projectStateOf(projectId)?.stories.find((s) => s.id === story.id) ?? story
-    const patch = startedStatus(current, 'planned')
-    if (patch?.status) await updateStory(projectId, story.id, patch)
+    const patch = startedStatus(await findStory(projectId, story.id), 'planned')
+    if (patch.status) await updateStory(projectId, story.id, patch)
   } catch (e) {
     useStore
       .getState()
@@ -472,11 +476,12 @@ export async function launchStoryPlanner(
   return requestId
 }
 
-/** A story by id, loading the board first when this project's isn't loaded or lacks it. */
+/**
+ * A story by id as saved. Agent commands write the file directly, so the shown board can lag it
+ * by a poll, and workflow guards must compare against the file. Read it directly rather than
+ * through refreshStories, whose result a concurrent refresh or move can discard.
+ */
 export async function findStory(projectId: string, id: string) {
-  const known = projectStateOf(projectId)?.stories.find((s) => s.id === id)
-  if (known) return known
-  // Read the file directly: a concurrent refresh or move can discard refreshStories' result.
   const story = (await storyList(projectId)).find((s) => s.id === id)
   if (!story) throw new Error(`Unknown story ${id}. Run \`agent stories\` for the board's ids.`)
   return story
@@ -539,7 +544,6 @@ export async function linkAutoStory(projectId: string, task: string | null, stor
     const item = await findStory(projectId, story)
     const run = autoWorkspace(projectStateOf(projectId), task)?.auto
     const patch = startedStatus(item, run?.stage && AUTO_STORY_STATUS[run.stage])
-    if (!patch) return
     await updateStory(projectId, story, { ...patch, task, autoRunId: run?.runId ?? '' })
     if (run?.status === 'done') await completeAutoStories(projectId, task, run.runId)
   } catch (e) {

@@ -44,7 +44,9 @@ export function storyProgressPoll(projectId: string) {
           const resolved = statuses.get(story.id)
           if (story.kind !== 'story' || resolved?.source !== 'worktree') continue
           const patch = startedStatus(story, resolved.value)
-          if (patch?.status) await updateStory(projectId, story.id, patch)
+          if (!patch.status) continue
+          // One story's failed save must not stop the others or merge detection below.
+          await updateStory(projectId, story.id, patch).catch(() => {})
         }
         if (disposed) return
         const state = projectStateOf(projectId)

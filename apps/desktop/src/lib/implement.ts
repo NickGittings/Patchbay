@@ -1,6 +1,12 @@
 import { requireDeviceAuth } from './providerAuth'
 import { useStore } from '../store'
-import { TASK_ROOT_SCOPE, sessionId, type DeviceManifest, type TerminalSpec } from '../types'
+import {
+  BUILTIN_SOURCE,
+  TASK_ROOT_SCOPE,
+  sessionId,
+  type DeviceManifest,
+  type TerminalSpec,
+} from '../types'
 import { startTerminal } from './sessions'
 
 /** A blank command, typed in the terminal's own editor. */
@@ -10,7 +16,7 @@ export const CUSTOM: DeviceManifest = {
   kind: 'task',
   command: '',
   category: 'terminal',
-  source: 'builtin',
+  source: BUILTIN_SOURCE,
 }
 
 /** What the Add terminal dialog adds: a preset (`null` for a custom command) or a saved terminal. */

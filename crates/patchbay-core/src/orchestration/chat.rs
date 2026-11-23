@@ -147,6 +147,9 @@ pub enum WorkflowAction {
     PauseAuto,
     ResumeAuto,
     StopAuto,
+    /// Saved by another Patchbay build; kept so the shared store still loads.
+    #[serde(other)]
+    Unknown,
 }
 
 impl WorkflowAction {
@@ -174,6 +177,9 @@ pub enum WorkflowState {
     Completed,
     Uncertain,
     Failed,
+    /// Saved by another Patchbay build; kept so the shared store still loads.
+    #[serde(other)]
+    Unknown,
 }
 
 impl WorkflowState {
@@ -349,6 +355,9 @@ pub struct Team {
 pub enum OwnerKind {
     Chat,
     Auto,
+    /// Saved by another Patchbay build; kept so the shared store still loads.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1085,7 +1094,9 @@ pub fn command(
                 ensure!(lead, "Only the lead can control workflows");
                 valid_id(&id)?;
                 let action = WorkflowAction::deserialize(serde_json::Value::String(action))
-                    .map_err(|_| anyhow!("Unknown workflow action"))?;
+                    .ok()
+                    .filter(|a| *a != WorkflowAction::Unknown)
+                    .ok_or_else(|| anyhow!("Unknown workflow action"))?;
                 ensure!(
                     serde_json::to_vec(&settings)?.len() <= MESSAGE_LIMIT,
                     "Settings too large"
@@ -1782,7 +1793,10 @@ pub fn control(
                 passive,
             } => {
                 ensure!(
-                    !matches!(state, WorkflowState::Queued | WorkflowState::Uncertain),
+                    !matches!(
+                        state,
+                        WorkflowState::Queued | WorkflowState::Uncertain | WorkflowState::Unknown
+                    ),
                     "Invalid request state"
                 );
                 let request = t
@@ -1799,7 +1813,8 @@ pub fn control(
                         }
                         WorkflowState::Completed
                         | WorkflowState::Failed
-                        | WorkflowState::Uncertain => false,
+                        | WorkflowState::Uncertain
+                        | WorkflowState::Unknown => false,
                     },
                     "Request already claimed or finished"
                 );
@@ -3428,6 +3443,15 @@ mod tests {
             saved["teams"][0]["requests"]
         );
         assert_eq!(resaved["owners"], saved["owners"]);
+        // Another build's values still load instead of making the whole store unreadable.
+        let mut newer = saved;
+        newer["teams"][0]["requests"][0]["action"] = "startSomethingNew".into();
+        newer["teams"][0]["requests"][1]["state"] = "somethingNew".into();
+        newer["owners"][0]["kind"] = "somethingNew".into();
+        let store: Store = serde_json::from_value(newer).unwrap();
+        assert_eq!(store.teams[0].requests[0].action, WorkflowAction::Unknown);
+        assert_eq!(store.teams[0].requests[1].state, WorkflowState::Unknown);
+        assert_eq!(store.owners[0].kind, OwnerKind::Unknown);
     }
 
     struct Fixture {

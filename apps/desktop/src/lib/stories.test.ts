@@ -105,6 +105,8 @@ beforeEach(() => {
   vi.mocked(ipc.storyUpdate).mockImplementation(
     async (_project, id, patch) => ({ ...story(id), ...patch }) as Story,
   )
+  // Workflow guards read the saved board; by default it matches the shown one.
+  vi.mocked(ipc.storyList).mockImplementation(async () => useStore.getState().stories)
 })
 test('tree orders each hierarchy level and keeps orphan stories under Unassigned', () => {
   const items = [
@@ -410,16 +412,24 @@ test('Auto drafts carry story goals; linkage is recorded only once a run has a t
   })
   expect(useStore.getState().stories[0].status).toBe('reviewing')
 })
-test('Auto leaves completed stories alone and links parents without saving a stage', async () => {
+test('Auto links completed stories and parents without saving a stage', async () => {
   useStore.setState({ stories: [{ ...story('s'), status: 'done' }, story('e', 'epic')] })
   useStore.getState().patchTask('p', 'task', { auto: run({ stage: 'review' }) })
   await linkAutoStory('p', 'task', 's')
-  expect(ipc.storyUpdate).not.toHaveBeenCalled()
+  expect(ipc.storyUpdate).toHaveBeenLastCalledWith('p', 's', { task: 'task', autoRunId: 'run' })
   await linkAutoStory('p', 'task', 'e')
-  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 'e', {
+  expect(ipc.storyUpdate).toHaveBeenLastCalledWith('p', 'e', { task: 'task', autoRunId: 'run' })
+})
+test('Auto guards its stage with the saved board, which an agent may have advanced', async () => {
+  useStore.setState({ stories: [story('s')] })
+  vi.mocked(ipc.storyList).mockResolvedValueOnce([{ ...story('s'), status: 'planned' }])
+  useStore.getState().patchTask('p', 'task', { auto: run({ stage: 'review' }) })
+  await linkAutoStory('p', 'task', 's')
+  expect(ipc.storyUpdate).toHaveBeenCalledWith('p', 's', {
     task: 'task',
     autoRunId: 'run',
-    expectedProgress: { status: 'backlog', task: null },
+    status: 'reviewing',
+    expectedProgress: { status: 'planned', task: null },
   })
 })
 test('an inactive project receives story updates and stale loads cannot overwrite them', async () => {
@@ -536,7 +546,7 @@ test('completion persists only the linked Auto run and stays Done when its workt
   expect(statusOf(useStore.getState().stories[0], [], {}, 'p')).toBe('done')
 })
 
-test('latest review, merge or root record determines a live story stage', async () => {
+test('latest running review, merge or root record determines a live story stage', async () => {
   const { worktreeStage } = await import('./stories')
   const record = (scope: string, startedMs: number) =>
     ({
@@ -549,7 +559,7 @@ test('latest review, merge or root record determines a live story stage', async 
         kind: 'agent',
       },
       spec: { cwd: task.worktree, merge_source: task.worktree },
-      snapshot: { startedMs },
+      snapshot: { startedMs, running: true },
     }) as unknown as import('../types').SessionRecord
   const t = { ...task, branch: 'feature' }
   const records = [record('@task', 1), record('@review', 2), record('@merge', 3)]
@@ -559,6 +569,13 @@ test('latest review, merge or root record determines a live story stage', async 
   expect(worktreeStage(t, 'p', [...records, record('@coordinator', 4)])).toBe('building')
   expect(worktreeStage(t, 'other', records)).toBeNull()
   expect(worktreeStage(t, 'p', [{ ...records[0], snapshot: null }])).toBeNull()
+  // A finished merge leaves the saved status alone instead of reading as still merging.
+  const finished = (r: (typeof records)[number]) => ({
+    ...r,
+    snapshot: { ...r.snapshot!, running: false },
+  })
+  expect(worktreeStage(t, 'p', [records[0], records[1], finished(records[2])])).toBe('reviewing')
+  expect(worktreeStage(t, 'p', records.map(finished))).toBeNull()
   expect(
     worktreeStage(t, 'p', [
       { ...records[0], metadata: { ...records[0].metadata, kind: 'shell' } },

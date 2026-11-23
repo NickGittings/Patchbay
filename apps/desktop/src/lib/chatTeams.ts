@@ -632,6 +632,8 @@ export function autoOwnership(
 async function driveLeadRequests(team: ChatTeam) {
   if (team.state !== 'running' || team.reset) return
   for (const request of team.requests ?? []) {
+    // Another Patchbay build's action: leave it for that build instead of claiming it.
+    if (request.action === 'unknown') continue
     const reviewRound = ['startCouncilReview', 'startReview'].includes(request.action)
     const leadStage = LEAD_STAGE_ACTIONS.includes(request.action)
     if (leadStage && request.state === 'running') {
