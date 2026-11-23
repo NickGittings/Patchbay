@@ -86,7 +86,8 @@ stage before and tell the worktree's lead; the lead's own stages and Auto's do n
 retiring never stops an agent Auto launched, even after its run ended. Build, Fix, Review and Merge
 launches, the lead's stages and councils included, refuse while the worktree's Auto run is running,
 waiting or paused (`refuseWhileAutoRuns`; stop Auto or let it finish), since competing stages would
-break it. A restart records planning only when its planner actually started, and story planning
+break it. A merge checks both its source and its destination worktree. Worktrees map to chats by
+task, and git's main worktree is the project folder whatever its path. A restart records planning only when its planner actually started, and story planning
 records the same way in Chat and Full mode. A recording failure never reports a started launch as
 failed. The Review view never offers Auto's merge gate as its own Merge. A
 worktree Patchbay has no task for (one created outside it) has no chat, so its reviews and merges run
