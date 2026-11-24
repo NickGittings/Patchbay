@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -87,7 +87,8 @@ pub fn sync_status(repo: &Path) -> Result<SyncStatus> {
             .ok()
         })
         .filter(|u| !u.is_empty());
-    let (ahead, behind) = if upstream.is_some() {
+    let born = has_commits(repo);
+    let (ahead, behind) = if born && upstream.is_some() {
         counts(repo, "@{upstream}")?
     } else {
         (0, 0)
@@ -114,7 +115,7 @@ pub fn sync_status(repo: &Path) -> Result<SyncStatus> {
         Ok(plan) => {
             let branch = status.branch.as_deref().unwrap_or_default();
             let target = format!("refs/remotes/{}/{branch}", plan.remote);
-            if run(git(repo).args(["rev-parse", "--verify", "-q", &target])).is_ok() {
+            if born && run(git(repo).args(["rev-parse", "--verify", "-q", &target])).is_ok() {
                 let (unpushed, behind) = counts(repo, &target)?;
                 status.unpushed = Some(unpushed);
                 status.push_behind = behind;
@@ -145,6 +146,15 @@ fn push_plan(repo: &Path, status: &SyncStatus) -> std::result::Result<PushPlan, 
         return Err(format!(
             "{branch} tracks {missing}, which no longer exists. Fetch, or push it from a terminal."
         ));
+    }
+    if let Some(local) = local_upstream(repo, branch) {
+        return Err(format!(
+            "{branch} tracks the local branch {local}, so Push won't replace that upstream. \
+             Push from a terminal to choose the remote branch."
+        ));
+    }
+    if !has_commits(repo) {
+        return Err(format!("{branch} has no commits to push yet"));
     }
     let remote = push_remote(repo, branch)
         .or_else(|| status.remote.clone())
@@ -184,24 +194,34 @@ pub fn sync(repo: &Path, action: SyncAction) -> Result<SyncStatus> {
                 .as_deref()
                 .context("No remote is configured")?;
             fetch(repo, remote)?;
+            if let Some(push) = separate_push_remote(repo, &status) {
+                fetch(repo, &push)?;
+            }
         }
         SyncAction::Pull => {
             let branch = status
                 .branch
                 .as_deref()
                 .context("Check out a branch before pulling")?;
-            let upstream =
-                status
-                    .upstream
-                    .as_deref()
-                    .with_context(|| match &status.missing_upstream {
-                        Some(missing) => {
-                            format!("{branch} tracks {missing}, which no longer exists")
-                        }
+            let upstream = status.upstream.as_deref().with_context(|| {
+                match &status.missing_upstream {
+                    Some(missing) => {
+                        format!("{branch} tracks {missing}, which no longer exists")
+                    }
+                    None => match local_upstream(repo, branch) {
+                        Some(local) => format!(
+                            "{branch} tracks the local branch {local}; pull only follows a remote"
+                        ),
                         None => format!("{branch} has no upstream to pull from"),
-                    })?;
+                    },
+                }
+            })?;
             ensure_no_operation(repo)?;
             fetch(repo, status.remote.as_deref().unwrap_or("origin"))?;
+            // Refreshes the push counts; Pull itself doesn't depend on it.
+            if let Some(push) = separate_push_remote(repo, &status) {
+                let _ = fetch(repo, &push);
+            }
             // Checkout filters (Git LFS) and hooks can reach the network too.
             network(
                 repo,
@@ -241,6 +261,35 @@ pub fn sync(repo: &Path, action: SyncAction) -> Result<SyncStatus> {
 fn fetch(repo: &Path, remote: &str) -> Result<()> {
     network(repo, &["fetch", "--", remote], FETCH_TIMEOUT)?;
     Ok(())
+}
+
+/// The push remote, when it differs from the remote fetch uses.
+fn separate_push_remote(repo: &Path, status: &SyncStatus) -> Option<String> {
+    push_plan(repo, status)
+        .ok()
+        .map(|plan| plan.remote)
+        .filter(|remote| status.remote.as_deref() != Some(remote.as_str()))
+}
+
+/// Whether HEAD points at a commit; a new repository's branch has none until its first commit.
+fn has_commits(repo: &Path) -> bool {
+    run(git(repo).args(["rev-parse", "--verify", "-q", "HEAD"])).is_ok()
+}
+
+/// The local branch a branch tracks (`branch.<name>.remote = .`), such as `main`.
+fn local_upstream(repo: &Path, branch: &str) -> Option<String> {
+    let remote =
+        run(git(repo).args(["config", "--get", &format!("branch.{branch}.remote")])).ok()?;
+    if remote != "." {
+        return None;
+    }
+    let merge = merge_ref(repo, branch)?;
+    Some(
+        merge
+            .strip_prefix("refs/heads/")
+            .unwrap_or(&merge)
+            .to_string(),
+    )
 }
 
 /// The remote a branch tracks, when it tracks a remote rather than a local branch.
@@ -327,27 +376,56 @@ fn network(repo: &Path, args: &[&str], timeout: Duration) -> Result<String> {
     let stderr = drain(child.stderr.take());
     let success = wait(&mut child, timeout)?;
     let deadline = Instant::now() + DRAIN_GRACE;
-    let left = || deadline.saturating_duration_since(Instant::now());
-    let stdout = stdout.recv_timeout(left()).unwrap_or_default();
-    let stderr = stderr.recv_timeout(left()).unwrap_or_default();
+    let stdout = stdout.collect(deadline);
+    let stderr = stderr.collect(deadline);
     if !success {
         bail!(network_error(stderr.trim()));
     }
     Ok(stdout.trim().to_string())
 }
 
-/// Read a pipe to its end on another thread. The caller stops waiting after
-/// Git exits, since a helper may keep the pipe open.
-fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<String> {
-    let (send, receive) = mpsc::channel();
+/// A pipe read on another thread, keeping what has arrived so far.
+struct Drain {
+    text: Arc<Mutex<Vec<u8>>>,
+    done: mpsc::Receiver<()>,
+}
+
+impl Drain {
+    /// Everything read by the time the pipe closes or `deadline` passes. A
+    /// helper Git started may keep the pipe open, so this never waits for
+    /// the end past the deadline, and keeps the output that came before.
+    fn collect(self, deadline: Instant) -> String {
+        let _ = self
+            .done
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        let bytes = self.text.lock().map(|t| t.clone()).unwrap_or_default();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+fn drain(pipe: Option<impl Read + Send + 'static>) -> Drain {
+    let text = Arc::new(Mutex::new(Vec::new()));
+    let (send, done) = mpsc::channel();
+    let shared = Arc::clone(&text);
     thread::spawn(move || {
-        let mut text = String::new();
         if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_string(&mut text);
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(mut text) = shared.lock() {
+                            text.extend_from_slice(&chunk[..n]);
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
         }
-        let _ = send.send(text);
+        let _ = send.send(());
     });
-    receive
+    Drain { text, done }
 }
 
 fn wait(child: &mut Child, timeout: Duration) -> Result<bool> {
@@ -655,6 +733,84 @@ mod tests {
         let start = Instant::now();
         sync(&f.path("a"), SyncAction::Push).unwrap();
         assert!(start.elapsed() < Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_holding_the_output_open_keeps_the_rejection_message() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let f = Fixture::new();
+        f.clone_b();
+        f.commit("a", "two");
+        sync(&f.path("a"), SyncAction::Push).unwrap();
+        f.commit("b", "other");
+        let hooks = f
+            .path("b")
+            .join(f.git("b", &["rev-parse", "--git-path", "hooks"]));
+        fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-push");
+        fs::write(&hook, "#!/bin/sh\nsleep 30 &\nexit 0\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let start = Instant::now();
+        let error = sync(&f.path("b"), SyncAction::Push)
+            .unwrap_err()
+            .to_string();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(error.contains("pull first"), "{error}");
+    }
+
+    #[test]
+    fn an_unborn_branch_reports_status_and_refuses_push() {
+        let f = Fixture::new();
+        f.git(".", &["init", "-q", "-b", "main", "fresh"]);
+        let origin = f.path("origin.git");
+        f.git(
+            "fresh",
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        f.git("fresh", &["fetch", "-q", "origin"]);
+        f.git("fresh", &["config", "branch.main.remote", "origin"]);
+        f.git("fresh", &["config", "branch.main.merge", "refs/heads/main"]);
+        let status = sync_status(&f.path("fresh")).unwrap();
+        assert_eq!(status.branch.as_deref(), Some("main"));
+        assert_eq!((status.ahead, status.behind), (0, 0));
+        assert!(status.push_refused.unwrap().contains("no commits"));
+        sync(&f.path("fresh"), SyncAction::Fetch).unwrap();
+    }
+
+    #[test]
+    fn a_branch_tracking_a_local_branch_keeps_its_upstream() {
+        let f = Fixture::new();
+        f.git("a", &["switch", "-q", "-c", "feat", "--track", "main"]);
+        f.commit("a", "feature");
+        let status = sync_status(&f.path("a")).unwrap();
+        assert!(status.push_refused.unwrap().contains("local branch main"));
+        let error = sync(&f.path("a"), SyncAction::Push)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("local branch"), "{error}");
+        assert_eq!(f.git("a", &["config", "branch.feat.remote"]), ".");
+        let error = sync(&f.path("a"), SyncAction::Pull)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("local branch"), "{error}");
+    }
+
+    #[test]
+    fn fetch_also_refreshes_a_separate_push_remote() {
+        let f = Fixture::new();
+        f.git(".", &["init", "-q", "--bare", "-b", "main", "fork.git"]);
+        let fork = f.path("fork.git");
+        f.git("a", &["remote", "add", "fork", fork.to_str().unwrap()]);
+        f.git("a", &["config", "remote.pushDefault", "fork"]);
+        sync(&f.path("a"), SyncAction::Push).unwrap();
+        // Another machine updates the fork.
+        f.git(".", &["clone", "-q", fork.to_str().unwrap(), "elsewhere"]);
+        f.commit("elsewhere", "remote");
+        f.git("elsewhere", &["push", "-q", "origin", "main"]);
+        assert_eq!(sync_status(&f.path("a")).unwrap().push_behind, 0);
+        let fetched = sync(&f.path("a"), SyncAction::Fetch).unwrap();
+        assert_eq!(fetched.push_behind, 1);
     }
 
     #[test]

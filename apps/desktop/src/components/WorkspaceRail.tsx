@@ -91,7 +91,8 @@ export default function WorkspaceRail() {
   useSyncTracking()
   const sync = useSyncEntry().entry
   const syncError = sync.error ?? sync.statusError
-  const ahead = sync.status?.ahead ?? 0
+  // Push sends to the push target, which can differ from the upstream (a fork).
+  const ahead = sync.status?.unpushed ?? sync.status?.ahead ?? 0
   const behind = sync.status?.behind ?? 0
   const syncCounts = [ahead && `↑${ahead}`, behind && `↓${behind}`].filter(Boolean).join(' ')
   const panel = useStore((s) => s.utilityPanel)

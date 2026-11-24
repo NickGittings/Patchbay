@@ -10,6 +10,7 @@ import { BRANCHES_CHANGED_EVENT, gitSync, gitSyncStatus } from './ipc'
 import { simpleKey, useSimpleUi } from './simpleUi'
 import { sessionLive } from './sessionList'
 import { activeWorktree, refreshTasks } from './tasks'
+import { absolutePath } from './windows'
 
 /** Fetch on opening the Git panel at most this often. */
 export const AUTO_FETCH_MS = 60_000
@@ -88,6 +89,36 @@ export function runningInWorktree(projectId: string, worktree: string | undefine
   }).length
 }
 
+const within = (path: string, dir: string) =>
+  path === dir || path.startsWith(`${dir.replace(/[\\/]$/, '')}/`)
+
+/** Whether `scope` is a repository on the map other than the worktree's own (listed first). */
+const otherRepo = (scope: SyncScope) => {
+  const { repos } = useSyncScope.getState()
+  return !!repos?.length && repos[0] !== scope.repo
+}
+
+/**
+ * Running sessions that a pull of `scope` can change files under. The worktree's own repository
+ * counts the sessions in that worktree; another repository on the map (an external folder, which
+ * every worktree shares) counts the sessions of components inside it, whichever task runs them.
+ */
+export function runningInScope(scope: SyncScope) {
+  const { project, nodes, sessionRecords, sessions } = useStore.getState()
+  if (!project?.root || !otherRepo(scope)) return runningInWorktree(scope.projectId, scope.worktree)
+  const inside = new Set(
+    nodes
+      .filter((n) => within(absolutePath(project.root, n.data.path), scope.repo))
+      .map((n) => n.id),
+  )
+  return sessionRecords.filter(
+    (r) =>
+      r.metadata.projectId === scope.projectId &&
+      inside.has(r.metadata.componentId) &&
+      (sessions[r.id]?.running ?? sessionLive(r)),
+  ).length
+}
+
 const DONE: Record<SyncAction, string> = {
   fetch: 'Fetched',
   pull: 'Pulled',
@@ -107,12 +138,12 @@ export async function runSync(
   const busy = () => !!useGitSync.getState()[key]?.busy
   if (busy() || !isOpen(scope)) return false
   if (action === 'pull') {
-    const running = runningInWorktree(scope.projectId, scope.worktree)
+    const running = runningInScope(scope)
     if (
       running > 0 &&
       !(await confirmAction({
         title: 'Pull while agents run',
-        message: `${running} terminal${running === 1 ? ' is' : 's are'} running in this worktree. Pulling can change files under ${running === 1 ? 'it' : 'them'}. Pull anyway?`,
+        message: `${running} terminal${running === 1 ? ' is' : 's are'} running in this ${otherRepo(scope) ? 'repository' : 'worktree'}. Pulling can change files under ${running === 1 ? 'it' : 'them'}. Pull anyway?`,
         detail: scope.worktree ?? scope.repo,
         confirmLabel: 'Pull',
         destructive: false,
@@ -262,7 +293,10 @@ export function useSyncTracking() {
   const repos = useSyncScope((s) => (s.reposFor === context ? s.repos : null))
   const chosen = useSyncScope((s) => (context ? s.chosen[context] : undefined))
   useEffect(() => {
-    useSyncScope.setState({ repos: null, reposFor: null, reposError: null, scope: null })
+    // A new project or worktree starts over; listing the same one again (the map's folders
+    // changed, or a retry) keeps the panel and its history until the new listing arrives.
+    if (useSyncScope.getState().reposFor !== context)
+      useSyncScope.setState({ repos: null, reposFor: null, reposError: null, scope: null })
     if (!projectId || !context) return
     let alive = true
     const listed = (result: string[], error: string | null = null) => {

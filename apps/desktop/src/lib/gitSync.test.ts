@@ -4,7 +4,7 @@ import type { SyncStatus, View } from '../types'
 
 vi.mock('../store', () => ({
   useStore: create(() => ({
-    project: { id: 'one' },
+    project: { id: 'one', root: '/repo' },
     activeTask: null as string | null,
     tasks: [
       { id: 'task', current: false, worktree: '/wt' },
@@ -22,14 +22,24 @@ vi.mock('../store', () => ({
 vi.mock('./ipc', () => ({ gitSync: vi.fn(), gitSyncStatus: vi.fn(), gitHistory: vi.fn() }))
 vi.mock('./confirm', () => ({ confirmAction: vi.fn() }))
 vi.mock('./git', () => ({ componentPaths: () => [], requestGitRefresh: vi.fn() }))
+vi.mock('./windows', () => ({
+  absolutePath: (root: string, path: string) => (path.startsWith('/') ? path : `${root}/${path}`),
+}))
 vi.mock('./tasks', () => ({ activeWorktree: () => undefined, refreshTasks: vi.fn() }))
 
 const { useStore: store } = await import('../store')
 const { gitSync, gitSyncStatus } = await import('./ipc')
 const { confirmAction } = await import('./confirm')
 const { requestGitRefresh } = await import('./git')
-const { refreshSyncStatus, runSync, showCommit, syncKey, useCommitChoice, useGitSync } =
-  await import('./gitSync')
+const {
+  refreshSyncStatus,
+  runSync,
+  showCommit,
+  syncKey,
+  useCommitChoice,
+  useGitSync,
+  useSyncScope,
+} = await import('./gitSync')
 const { useSimpleUi, simpleKey } = await import('./simpleUi')
 
 const scope = { projectId: 'one', repo: '/repo' }
@@ -51,9 +61,9 @@ function deferred<T>() {
   const promise = new Promise<T>((r) => (resolve = r))
   return { promise, resolve }
 }
-const record = (task: string | null) => ({
-  id: `s-${task}`,
-  metadata: { projectId: 'one', task },
+const record = (task: string | null, componentId = 'app') => ({
+  id: `s-${task}-${componentId}`,
+  metadata: { projectId: 'one', task, componentId },
   snapshot: { running: true },
 })
 
@@ -61,6 +71,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   useGitSync.setState({}, true)
   useCommitChoice.setState({ choice: null })
+  useSyncScope.setState({ repos: null })
   store.setState({ sessionRecords: [], sessions: {}, simpleMode: false, view: 'plan' } as never)
   vi.mocked(confirmAction).mockResolvedValue(true)
 })
@@ -147,4 +158,27 @@ test('a chosen commit opens in Review, or in Chat when Chat mode is on', () => {
   showCommit(selection)
   expect(store.getState().view).toBe('navigation')
   expect(useSimpleUi.getState().worktrees[simpleKey('one', null)]?.changes).toBe(true)
+})
+
+test('pulling another repository on the map counts the terminals inside it, from any task', async () => {
+  const external = { projectId: 'one', repo: '/ext' }
+  useSyncScope.setState({ repos: ['/repo', '/ext'] })
+  store.setState({
+    nodes: [
+      { id: 'app', data: { path: '.' } },
+      { id: 'lib', data: { path: '/ext/lib' } },
+    ],
+    sessionRecords: [record(null), record('task', 'lib')],
+  } as never)
+  vi.mocked(confirmAction).mockResolvedValue(false)
+  expect(await runSync(external, 'pull')).toBe(false)
+  expect(confirmAction).toHaveBeenCalledWith(
+    expect.objectContaining({
+      message: expect.stringContaining('1 terminal is running in this repository'),
+    }),
+  )
+  store.setState({ sessionRecords: [record(null)] } as never)
+  vi.mocked(gitSync).mockResolvedValue(status(0, 0))
+  expect(await runSync(external, 'pull', { quiet: true })).toBe(true)
+  expect(confirmAction).toHaveBeenCalledTimes(1)
 })

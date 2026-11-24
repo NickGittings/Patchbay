@@ -146,13 +146,14 @@ export default function GitPanel() {
             {busy === 'fetch' ? BUSY.fetch : 'Fetch'}
           </button>
           <button
-            disabled={!!busy || !upstream || !status?.behind || diverged}
+            // Pull fetches first, so it can find commits a stale count doesn't show yet.
+            disabled={!!busy || !upstream || diverged}
             title={
               !upstream
                 ? 'The branch has no upstream to pull from'
                 : diverged
                   ? 'The branch has diverged; pull only fast-forwards'
-                  : `Fast-forward to ${upstream}`
+                  : `Fetch and fast-forward to ${upstream}`
             }
             onClick={() => run('pull')}
           >
