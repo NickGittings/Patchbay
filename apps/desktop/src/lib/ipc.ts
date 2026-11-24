@@ -32,6 +32,8 @@ import type {
   FileSearchResult,
   FileDiff,
   GitStatus,
+  SyncAction,
+  SyncStatus,
   AutoBrief,
   Kickoff,
   Project,
@@ -960,6 +962,22 @@ export const gitHistory = <T>(
   commit?: string,
   path?: string,
 ) => invoke<T>('git_history', { components, query: { worktree, repo, limit, commit, path } })
+
+/** The current branch of a `gitHistory` repository compared with its upstream. */
+export const gitSyncStatus = (
+  components: { id: string; path: string }[],
+  repo: string,
+  worktree?: string,
+  projectId = useStore.getState().project?.id,
+) => invoke<SyncStatus>('git_sync_status', { components, worktree, repo, projectId })
+/** Fetch, fast-forward pull, or push a `gitHistory` repository's current branch. */
+export const gitSync = (
+  components: { id: string; path: string }[],
+  repo: string,
+  action: SyncAction,
+  worktree?: string,
+  projectId = useStore.getState().project?.id,
+) => invoke<SyncStatus>('git_sync', { components, worktree, repo, action, projectId })
 
 export const mergeCleanup = (project: Project, request: import('../types').MergeRequest) =>
   invoke<void>('merge_cleanup', { projectId: project.projectId, project, request })

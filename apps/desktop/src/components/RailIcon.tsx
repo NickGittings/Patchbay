@@ -10,6 +10,7 @@ const paths: Record<string, string> = {
   warning: 'm12 3 10 18H2Z M12 9v5 M12 17h.01',
   info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M12 11v6 M12 7h.01',
   project: 'M3 7V5h6l2 2h10v13H3Z',
+  git: 'M8 20V4 m-4 4 4-4 4 4 M16 4v16 m-4-4 4 4 4-4',
   worktree: 'M6 6v12m0-6h7a5 5 0 0 0 5-5V6 M4 3h4v4H4Z M4 17h4v4H4Z M16 3h4v4h-4Z',
   navigation: 'M4 4h6v6H4Z M14 14h6v6h-6Z M7 10v7h7 M10 7h7v7',
   plan: 'M8 5h12 M8 12h12 M8 19h12 M3 5h1 M3 12h1 M3 19h1',

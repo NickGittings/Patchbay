@@ -35,6 +35,8 @@ import AgentProfilesPanel from './AgentProfilesPanel'
 import AgentRolesPanel from './AgentRolesPanel'
 import NotificationsPanel from './NotificationsPanel'
 import PanelContent from './PanelContent'
+import GitPanel from './git/GitPanel'
+import { useSyncEntry, useSyncTracking } from '../lib/gitSync'
 import { ExtensionView } from '../extensions/views'
 import { useExtensionViews } from '../extensions/useExtensionViews'
 import type { ViewContribution } from '../types'
@@ -43,6 +45,7 @@ type BuiltInPanel = Exclude<UtilityPanel, `ext:${string}`>
 const utilities: Record<BuiltInPanel, { label: string }> = {
   project: { label: 'Project' },
   worktree: { label: 'Worktree' },
+  git: { label: 'Git' },
   auto: { label: 'Auto mode' },
   activity: { label: 'Activity' },
   stack: { label: 'Stack' },
@@ -85,6 +88,13 @@ export default function WorkspaceRail() {
   // oxlint-disable-next-line react/purity
   const usageWarning = usageWarnings(usage, usageSettings, Date.now()).length > 0
   useTaskActivities()
+  useSyncTracking()
+  const sync = useSyncEntry().entry
+  const syncError = sync.error ?? sync.statusError
+  // Push sends to the push target, which can differ from the upstream (a fork).
+  const ahead = sync.status?.unpushed ?? sync.status?.ahead ?? 0
+  const behind = sync.status?.behind ?? 0
+  const syncCounts = [ahead && `↑${ahead}`, behind && `↓${behind}`].filter(Boolean).join(' ')
   const panel = useStore((s) => s.utilityPanel)
   const settings = useRail((s) => s.settings)
   const project = useStore((s) => s.project)
@@ -163,11 +173,13 @@ export default function WorkspaceRail() {
         ? 'Map save failed'
         : id === 'auto' && auto
           ? `${STAGE_LABELS[auto.stage]} · ${STATUS_LABELS[auto.status]}`
-          : busy && id === (action?.kind === 'startGroup' ? 'stack' : 'activity')
-            ? action?.kind === 'startGroup'
-              ? 'Starting stack…'
-              : 'Validating…'
-            : undefined
+          : id === 'git' && sync.busy
+            ? `${sync.busy === 'fetch' ? 'Fetching' : sync.busy === 'pull' ? 'Pulling' : 'Pushing'}…`
+            : busy && id === (action?.kind === 'startGroup' ? 'stack' : 'activity')
+              ? action?.kind === 'startGroup'
+                ? 'Starting stack…'
+                : 'Validating…'
+              : undefined
     const name = panelSubtitle(id)
     const warning =
       id === 'project' &&
@@ -182,7 +194,7 @@ export default function WorkspaceRail() {
         aria-label={label}
         aria-description={status}
         aria-pressed={panel === id}
-        tooltip={`${label}: ${name}${status ? ` · ${status}` : ''}${id === 'activity' && count ? ` · ${count} need attention` : ''}${id === 'usage' && usageWarning ? ' · Usage limit warning' : ''}`}
+        tooltip={`${label}: ${name}${status ? ` · ${status}` : ''}${id === 'activity' && count ? ` · ${count} need attention` : ''}${id === 'usage' && usageWarning ? ' · Usage limit warning' : ''}${id === 'git' && syncCounts ? ` · ${syncCounts}` : ''}${id === 'git' && syncError ? ` · ${syncError}` : ''}`}
         disabled={!project && id !== 'project' && id !== 'sessions' && id !== 'usage'}
         onClick={() => togglePanel(id)}
       >
@@ -209,6 +221,18 @@ export default function WorkspaceRail() {
         {id === 'activity' && count > 0 && (
           <sup aria-label={`${count} need attention`}>{count}</sup>
         )}
+        {id === 'git' &&
+          (syncError ? (
+            <sup aria-label="Last Git sync failed" data-status="error">
+              !
+            </sup>
+          ) : (
+            syncCounts && (
+              <sup aria-label={`${ahead} to push, ${behind} to pull`} className="rail-sync-counts">
+                {syncCounts}
+              </sup>
+            )
+          ))}
       </RailTooltip>
     )
   }
@@ -246,6 +270,7 @@ export default function WorkspaceRail() {
         </RailTooltip>
         <hr />
         <span className="rail-group-label">Tools</span>
+        {utility('git')}
         {utility('auto')}
         {utility('activity')}
         {utility('stack')}
@@ -339,6 +364,7 @@ export default function WorkspaceRail() {
                     <TaskActivityPanel />
                   </>
                 )}
+                {panel === 'git' && project && <GitPanel />}
                 {panel === 'stack' && project && <StackPanel key={project.id} />}
                 {panel === 'usage' && <UsagePanel />}
                 {openView !== null && project && (

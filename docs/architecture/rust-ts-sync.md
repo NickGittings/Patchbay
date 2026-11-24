@@ -28,6 +28,7 @@ Types are mirrored by hand — there is no codegen:
 - `merge_branch_outcome` ↔ `mergeBranchOutcome` resolves destination state from live Git, checks for a saved restoration, and compares the clean source HEAD with the local destination branch tip if it has no checkout. Auto uses it for stage inference and merge monitoring. Both outcome commands record completion for eligible linked stories.
 - `context::AutoBrief` ↔ `AutoBrief`; `plan_start`, `task_root_start`, `review_agent_start`, `merge_agent_start` accept optional `auto` (`startTerminal`'s `{ kickoff, auto }` options). Auto sections are backend-owned and precede extension context. Manual launches omit them.
 - `git::Review.ahead` ↔ `Review.ahead`; optional `git_review.base` includes committed branch files for Auto inference and validation.
+- `remote::{SyncStatus, SyncAction}` ↔ `types.ts::{SyncStatus, SyncAction}`; `git_sync_status`/`git_sync` ↔ `gitSyncStatus`/`gitSync` in `ipc.ts`, called only from `lib/gitSync.ts`. Both take a repository `git_history` lists for the worktree. See [Worktrees](worktrees.md).
 
 Additional topic interfaces belong to this same mirror contract:
 

@@ -521,6 +521,33 @@ export interface GitStatus {
   repos: Record<string, string>
 }
 
+/** How the current branch compares with its upstream (`remote::SyncStatus`). */
+export interface SyncStatus {
+  /** `null` when HEAD is detached. */
+  branch: string | null
+  /** The remote-tracking branch, such as `origin/main`. */
+  upstream: string | null
+  /** The configured upstream when its remote-tracking branch is gone (pruned or never fetched). */
+  missingUpstream: string | null
+  /** The remote fetch uses. */
+  remote: string | null
+  ahead: number
+  behind: number
+  /** Unix milliseconds of this checkout's last fetch. */
+  lastFetchMs: number | null
+  /** Where Push sends the branch, such as `fork/feature`; `null` when it can't. */
+  pushTo: string | null
+  /** Why Push would be refused. */
+  pushRefused: string | null
+  /** Commits the push target lacks; `null` when it doesn't exist yet, so Push publishes. */
+  unpushed: number | null
+  /** Commits on the push target the branch lacks, so a push would be rejected. */
+  pushBehind: number
+}
+
+/** `remote::SyncAction`. */
+export type SyncAction = 'fetch' | 'pull' | 'push'
+
 /** How a file differs from `HEAD` (`git::ChangeKind`). */
 export type ChangeKind =
   'modified' | 'added' | 'deleted' | 'renamed' | 'typeChanged' | 'conflicted' | 'untracked'

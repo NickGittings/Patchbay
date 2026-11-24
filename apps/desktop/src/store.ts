@@ -82,7 +82,15 @@ function sessionScope(s: Pick<State, 'runtimeTerminals' | 'sessionRecords'>, id:
 
 /** The rail's utility panels, one open at a time. `ext:<viewId>` is an extension's rail view. */
 export type UtilityPanel =
-  'project' | 'worktree' | 'auto' | 'activity' | 'stack' | 'sessions' | 'usage' | ExtensionPanel
+  | 'project'
+  | 'worktree'
+  | 'git'
+  | 'auto'
+  | 'activity'
+  | 'stack'
+  | 'sessions'
+  | 'usage'
+  | ExtensionPanel
 export type ExtensionPanel = `ext:${string}`
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
