@@ -18,7 +18,6 @@ import {
   MAP_AGENT_TERMINAL,
   MAP_SCOPE,
   STACK_AGENT_TERMINAL,
-  VALIDATION_AGENT_TERMINAL,
   PLAN_SCOPE,
   showsInDock,
   isReservedScope,
@@ -39,7 +38,6 @@ import {
 import {
   mapAgentStart,
   stackAgentStart,
-  validationAgentStart,
   onTerminalEvent,
   taskRootStart,
   planStart,
@@ -235,8 +233,11 @@ interface Launch {
   /** The chat team that owns this worktree and asked for this stage. */
   chatTeam?: string
   restart?: boolean
-  /** An explicit detection request; ordinary starts recover the retained target. */
-  stackDetection?: { stackId?: string }
+  /**
+   * An explicit run & test detection request: a stack to replace, the components whose checks
+   * it considers, and whether an agent triggered it. Ordinary starts recover the retained ones.
+   */
+  stackDetection?: StackDetection
   freshConversation?: boolean
   /** Set once this launch's session is known to have started (also after a lost reply). */
   started?: boolean
@@ -410,18 +411,21 @@ export const launching = (sid: string) => starting.has(sid) || restarting.has(si
  * preset `preset`. Resolves whether it started; failures are shown as a message. A launch already
  * on its way keeps its own preset, so this one starts nothing.
  */
-const validationSelections = new Map<string, string[]>()
+/** What run & test detection is asked to do (`stack_proposals::Launch`). */
+export interface StackDetection {
+  stackId?: string
+  componentIds?: string[]
+  auto?: boolean
+}
 export async function startMapAgent(
   projectId: string,
   preset: TerminalSpec,
   terminalId = MAP_AGENT_TERMINAL,
-  componentIds?: string[],
-  stackId?: string,
+  detection: StackDetection = {},
 ): Promise<boolean> {
   const launch = captureLaunch(MAP_SCOPE, terminalId, null, projectId)
   if (launching(launch.sid)) return false
-  if (componentIds) validationSelections.set(launch.sid, componentIds)
-  if (terminalId === STACK_AGENT_TERMINAL) launch.stackDetection = { stackId }
+  if (terminalId === STACK_AGENT_TERMINAL) launch.stackDetection = detection
   const previous = mapPresets.get(launch.sid)
   mapPresets.set(launch.sid, preset.id)
   try {
@@ -599,22 +603,13 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           runtime.key,
           task,
         )
-      else if (componentId === MAP_SCOPE && terminalId === VALIDATION_AGENT_TERMINAL)
-        await validationAgentStart(
-          project,
-          mapPreset(sid),
-          requestId,
-          !!launch.restart,
-          validationSelections.get(sid) ?? [],
-        )
       else if (componentId === MAP_SCOPE && terminalId === STACK_AGENT_TERMINAL)
         await stackAgentStart(
           project,
           mapPreset(sid),
           requestId,
           !!launch.restart,
-          launch.stackDetection?.stackId,
-          !!launch.stackDetection,
+          launch.stackDetection,
         )
       else if (componentId === MAP_SCOPE)
         await mapAgentStart(project, mapPreset(sid), requestId, !!launch.restart)

@@ -2773,6 +2773,7 @@ mod tests {
 
         let project = Project {
             worktree_setup: None,
+            instances: None,
             schema_version: crate::model::SCHEMA_VERSION,
             name: "p".into(),
             root: f.0.to_string_lossy().into_owned(),

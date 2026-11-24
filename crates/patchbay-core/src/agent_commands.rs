@@ -28,7 +28,18 @@ pub trait Host {
     fn proposal_submitted(&self, launch: &LaunchContext);
     fn links_proposed(&self, launch: &LaunchContext);
     fn stack_proposed(&self, launch: &LaunchContext);
-    fn validation_proposed(&self, _launch: &LaunchContext) {}
+    /// Whether agents may set up run & test for the project themselves (`auto_setup`).
+    fn auto_setup_enabled(&self, _project_id: &str) -> bool {
+        false
+    }
+    /// Ask the desktop to start run & test detection for the launch's project, applied
+    /// without review; it reports back through `auto_setup::finish`.
+    ///
+    /// # Errors
+    /// Fails when the desktop can't start one.
+    fn request_setup(&self, _launch: &LaunchContext) -> Result<()> {
+        anyhow::bail!("Automatic run & test setup is unavailable")
+    }
     /// Offer an agent's questions to the user in Chat and wait for answers, one per
     /// question, until `wait` ends. `None` when Chat doesn't take the question, the
     /// user skips it, or no answer arrives in time.
@@ -603,38 +614,35 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                 json!({"submitted":pending.links.len(),"alreadyOnMap":pending.skipped.len(),"applied":false}),
             )
         }
-        Action::ProposeValidation { proposal } => {
-            anyhow::ensure!(
-                launch.role == Role::Mapper(Proposes::Validation),
-                "Only validation discovery sessions can propose checks"
-            );
-            let selected: Vec<String> = call(
-                state,
-                Request::ValidationSelection {
-                    id: launch.agent_session.clone(),
-                },
-            )?;
-            let readable = scoped.access.restrict(scoped.project()?, &selected)?;
-            let pending = crate::validation_proposals::submit(
-                &readable,
-                &launch.agent_session,
-                &selected,
-                &proposal,
-            )?;
-            app.validation_proposed(launch);
-            Ok(json!({"submitted":pending.terminals.len(),"applied":false}))
+        Action::ProposeValidation { .. } => {
+            anyhow::bail!(crate::validation_proposals::RETIRED)
         }
         Action::ProposeStack { proposal } => {
             anyhow::ensure!(
                 launch.role == Role::Mapper(Proposes::Stack),
                 "Only stack detection sessions can propose a stack"
             );
+            let options: crate::stack_proposals::Launch = call(
+                state,
+                Request::DetectionLaunch {
+                    id: launch.agent_session.clone(),
+                },
+            )?;
             // Locked components are unknown ids to the agent.
             let readable = scoped.access.restrict(scoped.project()?, &[])?;
-            let pending =
-                crate::stack_proposals::submit(&readable, &launch.agent_session, &proposal)?;
+            let pending = crate::stack_proposals::submit(
+                &readable,
+                &launch.agent_session,
+                &proposal,
+                &options,
+            )?;
             app.stack_proposed(launch);
-            Ok(json!({"submitted":pending.terminals.len(),"applied":false}))
+            Ok(json!({
+                "submitted":pending.terminals.len(),
+                "checks":pending.checks.len(),
+                "applied":false,
+                "autoApply":pending.auto,
+            }))
         }
         Action::Propose { proposal } => {
             let project = scoped.project()?;
@@ -677,21 +685,53 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                     }
                 );
             }
+            let mut project = scoped.project()?;
+            let mut setup = Vec::new();
+            let mut hint = None;
+            if crate::auto_setup::needed(
+                &project,
+                &launch.project_id,
+                &request,
+                launch.task.as_deref(),
+            ) {
+                if app.auto_setup_enabled(&launch.project_id) {
+                    match crate::auto_setup::run(app, launch, &project) {
+                        Ok(lines) => {
+                            setup = lines;
+                            project = crate::auto_setup::reload(app, &launch.project_id)?;
+                        }
+                        Err(e) => {
+                            setup.push(format!("{e:#}. Continuing with the current configuration."))
+                        }
+                    }
+                } else {
+                    hint = Some(crate::auto_setup::DISABLED_HINT);
+                }
+            }
             let (report, urls) = run_action(
                 app,
                 &launch.project_id,
-                scoped.project()?,
+                project,
                 request,
                 launch.task.as_deref(),
                 &launch.agent_session,
-            )?;
-            if validation {
-                Ok(
-                    json!({"passed":report.succeeded(),"missingValidators":report.plan.skipped,"sessionIds":report.session_ids(),"report":report,"previewUrls":urls}),
-                )
+            )
+            .map_err(|e| match hint {
+                Some(hint) => e.context(hint),
+                None => e,
+            })?;
+            let mut result = if validation {
+                json!({"passed":report.succeeded(),"missingValidators":report.plan.skipped,"sessionIds":report.session_ids(),"report":report,"previewUrls":urls})
             } else {
-                Ok(json!({"report":report,"sessionIds":report.session_ids(),"previewUrls":urls}))
+                json!({"report":report,"sessionIds":report.session_ids(),"previewUrls":urls})
+            };
+            if !setup.is_empty() {
+                result["setup"] = json!(setup);
             }
+            if let Some(hint) = hint {
+                result["hint"] = json!(hint);
+            }
+            Ok(result)
         }
     }
 }
@@ -815,6 +855,7 @@ mod tests {
                     assert_eq!(id, "one");
                     Value::Null
                 }
+                Request::DetectionLaunch { .. } => json!({}),
                 _ => panic!("unexpected service request"),
             };
             self.calls.lock().unwrap().push(request);
@@ -1096,6 +1137,7 @@ mod tests {
             sessions: None,
             project: Some(Project {
                 worktree_setup: None,
+                instances: None,
                 schema_version: crate::model::SCHEMA_VERSION,
                 name: "Map fixture".into(),
                 root: std::env::temp_dir().display().to_string(),
@@ -1119,19 +1161,18 @@ mod tests {
         assert!(err.contains("Only dependency detection"), "{err}");
         let err = dispatch(&host, &session, stack()).unwrap_err().to_string();
         assert!(err.contains("Only stack detection"), "{err}");
-        let validation = Action::ProposeValidation {
-            proposal: crate::validation_proposals::ValidationProposal {
-                version: 1,
-                terminals: vec![],
-                missing: vec![],
-            },
-        };
-        assert!(
-            dispatch(&host, &session, validation)
+        // Retired for every role, pointing to the combined proposal.
+        for role in [Role::Component, Role::Mapper(Proposes::Stack)] {
+            session.role = role;
+            let validation = Action::ProposeValidation {
+                proposal: json!({"version":1,"terminals":[],"missing":[]}),
+            };
+            let err = dispatch(&host, &session, validation)
                 .unwrap_err()
-                .to_string()
-                .contains("Only validation discovery")
-        );
+                .to_string();
+            assert!(err.contains("propose-stack"), "{err}");
+        }
+        session.role = Role::Component;
         // Each detection agent submits only what its own terminal detects.
         session.role = Role::Mapper(Proposes::Stack);
         let err = dispatch(&host, &session, propose())
@@ -1152,12 +1193,7 @@ mod tests {
         session.role = Role::Mapper(Proposes::Stack);
         let err = dispatch(&host, &session, stack()).unwrap_err().to_string();
         assert!(err.contains("needs terminals"), "{err}");
-        for role in [
-            Proposes::Links,
-            Proposes::Stack,
-            Proposes::Validation,
-            Proposes::Nothing,
-        ] {
+        for role in [Proposes::Links, Proposes::Stack, Proposes::Nothing] {
             session.role = Role::Mapper(role);
             for action in [
                 Action::Validate {
@@ -1181,7 +1217,14 @@ mod tests {
             }
         }
         assert_eq!(*host.saves.lock().unwrap(), 0);
-        assert!(host.calls.lock().unwrap().is_empty());
+        // Only stack detection's launch options were read.
+        assert!(
+            host.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|r| matches!(r, Request::DetectionLaunch { .. }))
+        );
     }
 
     #[test]
@@ -1197,6 +1240,11 @@ mod tests {
         );
         assert_eq!(
             Role::of(MAP_SCOPE, "shell"),
+            Role::Mapper(Proposes::Nothing)
+        );
+        // The retired discovery terminal may submit nothing.
+        assert_eq!(
+            Role::of(MAP_SCOPE, crate::validation_proposals::VALIDATION_TERMINAL),
             Role::Mapper(Proposes::Nothing)
         );
         assert_eq!(Role::of(PLAN_SCOPE, "claude"), Role::Planner);
@@ -1255,6 +1303,7 @@ mod tests {
                 components: vec![],
                 links: vec![],
                 groups: vec![],
+                instances: None,
             }),
         };
         let result = dispatch(&host, &launch(), Action::Stories { id: None }).unwrap();
@@ -1499,6 +1548,7 @@ mod tests {
             sessions: None,
             project: Some(Project {
                 worktree_setup: None,
+                instances: None,
                 schema_version: crate::model::SCHEMA_VERSION,
                 name: "Plan fixture".into(),
                 root: root.display().to_string(),

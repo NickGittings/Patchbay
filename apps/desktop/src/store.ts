@@ -47,6 +47,7 @@ import type {
   GitStatus,
   Link,
   DetectionProvenance,
+  Instances,
   Project,
   ServiceIssue,
   SessionState,
@@ -99,6 +100,8 @@ export interface MessageAction {
    * a layout change must not take its Undo away), until the toast hides or is dismissed.
    */
   persist?: boolean
+  /** A second button beside it, under the same project condition (Review beside Undo). */
+  also?: { label: string; run: () => void }
 }
 
 export interface ImplementationComponent {
@@ -192,7 +195,13 @@ export interface ProjectState {
   componentTerminals: TaskComponentTerminal[]
   maximizedTerminal: string | null
 
-  project: { id: string; name: string; root: string; worktreeSetup?: { command: string } } | null
+  project: {
+    id: string
+    name: string
+    root: string
+    worktreeSetup?: { command: string }
+    instances?: Instances
+  } | null
   nodes: FlowNode[]
   edges: FlowEdge[]
   selectedId: string | null
@@ -216,6 +225,8 @@ export interface ProjectState {
   stackDeclined: string[]
   /** "Not now" on the offer to detect dependencies (workspace layout only). */
   dependencyPromptDismissed: boolean
+  /** "Let agents set up run & test automatically" is off (workspace layout only). */
+  autoSetupOff: boolean
   planActive: string | null
   dirty: boolean
   gitChanges: Record<string, number>
@@ -271,7 +282,13 @@ interface State {
   componentTerminals: TaskComponentTerminal[]
   maximizedTerminal: string | null
 
-  project: { id: string; name: string; root: string; worktreeSetup?: { command: string } } | null
+  project: {
+    id: string
+    name: string
+    root: string
+    worktreeSetup?: { command: string }
+    instances?: Instances
+  } | null
   projects: Record<string, ProjectEntry>
   activeProjectId: string | null
   projectOrder: string[]
@@ -383,6 +400,8 @@ interface State {
   restoreStack: () => void
   /** "Not now" on the offer to detect dependencies (workspace layout only). */
   dependencyPromptDismissed: boolean
+  /** "Let agents set up run & test automatically" is off (workspace layout only). */
+  autoSetupOff: boolean
   /** Offers every declined suggestion again. */
   restoreValidators: () => void
   /** The planner's shown terminal id (UI only). */
@@ -888,6 +907,7 @@ const createState: StateCreator<State> = (set, get) => ({
     })),
   restoreStack: () => set({ stackDeclined: [] }),
   dependencyPromptDismissed: false,
+  autoSetupOff: false,
   planActive: null,
   setPlanActive: (planActive) => set({ planActive }),
   revealed: null,
@@ -914,7 +934,13 @@ const createState: StateCreator<State> = (set, get) => ({
     const projects = get().captureProjects()
     const state = {
       ...emptyProjectState(),
-      project: { id, name: p.name, root: p.root, worktreeSetup: p.worktreeSetup },
+      project: {
+        id,
+        name: p.name,
+        root: p.root,
+        worktreeSetup: p.worktreeSetup,
+        instances: p.instances,
+      },
       nodes: p.components.map(componentToNode),
       edges: p.links.map(linkToEdge),
       groups: p.groups ?? [],
@@ -945,6 +971,7 @@ const createState: StateCreator<State> = (set, get) => ({
                   name: p.name,
                   root: p.root,
                   worktreeSetup: p.worktreeSetup,
+                  instances: p.instances,
                 },
                 nodes: p.components.map(componentToNode),
                 edges: p.links.map(linkToEdge),
@@ -963,6 +990,7 @@ const createState: StateCreator<State> = (set, get) => ({
           name: p.name,
           root: p.root,
           worktreeSetup: p.worktreeSetup,
+          instances: p.instances,
         },
         nodes: p.components.map((c) => ({ ...componentToNode(c), selected: selected.has(c.id) })),
         edges: p.links.map((l) => ({ ...linkToEdge(l), selected: selectedEdges.has(l.id) })),
@@ -1322,8 +1350,9 @@ export function projectFrom({
 }: Pick<ProjectState, 'project' | 'nodes' | 'edges' | 'groups'>): Project {
   return {
     worktreeSetup: project?.worktreeSetup,
+    instances: project?.instances,
     projectId: project?.id,
-    schemaVersion: 4,
+    schemaVersion: 5,
     name: project?.name ?? 'project',
     root: project?.root ?? '',
     components: nodes.map((n) => ({
@@ -1374,6 +1403,7 @@ function emptyProjectState(): ProjectState {
     validatorDeclined: [],
     stackDeclined: [],
     dependencyPromptDismissed: false,
+    autoSetupOff: false,
     planActive: null,
     dirty: false,
     gitChanges: {},
@@ -1412,6 +1442,7 @@ function projectState(s: State): ProjectState {
     validatorDeclined,
     stackDeclined,
     dependencyPromptDismissed,
+    autoSetupOff,
     planActive,
     dirty,
     gitChanges,
@@ -1453,6 +1484,7 @@ function projectState(s: State): ProjectState {
     validatorDeclined,
     stackDeclined,
     dependencyPromptDismissed,
+    autoSetupOff,
     planActive,
     dirty,
     gitChanges,

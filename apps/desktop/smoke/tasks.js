@@ -793,7 +793,7 @@
       '"$PATCHBAY_CLI" agent validate web & "$PATCHBAY_CLI" agent validate web; wait; printf "contention-finished\\n"\r',
     )
     await until('bridge action contention', () =>
-      textOf(rootAgentSid).includes('Anothergraphactionisstillrunningorstopping'),
+      textOf(rootAgentSid).includes('Anotherenvironmentstartorvalidationisrunning'),
     )
     await until(
       'contended action finished',
@@ -823,6 +823,8 @@
       'agent environment stop is missing from task activity',
     )
     await smoke.stopGroup(group.id)
+    // Another stack remains, so the stale id is refused instead of starting run & test setup.
+    state().addGroup('Remaining stack', ['web'])
     state().removeGroup(group.id)
     await smoke.syncAgentProject(state().toProject())
     await smoke.terminalWrite(

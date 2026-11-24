@@ -372,15 +372,37 @@ struct Run {
     id: String,
     generation: u64,
 }
+/// Which coordinated operations an action excludes: the whole project, or, once run & test
+/// detection found parallel instances safe (`Project.instances`), only its own checkout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Lane {
+    Project,
+    Checkout(Option<String>),
+}
+impl Lane {
+    fn of(project: &Project, task: Option<&str>) -> Self {
+        if project.instances.as_ref().is_some_and(|i| i.parallel_safe) {
+            Self::Checkout(task.map(Into::into))
+        } else {
+            Self::Project
+        }
+    }
+    fn conflicts(&self, other: &Self) -> bool {
+        *self == Self::Project || *other == Self::Project || self == other
+    }
+}
 struct Active {
     key: String,
     cancelled: Arc<AtomicBool>,
     sessions: Vec<String>,
+    lane: Lane,
+    task: Option<String>,
 }
 #[derive(Default)]
 struct State {
     epoch: u64,
-    active: Option<Active>,
+    /// Running coordinated operations: one per project, or one per checkout when parallel.
+    active: Vec<Active>,
     stopping: bool,
     environments: BTreeMap<String, Vec<Run>>,
     environment_components: BTreeMap<String, Vec<String>>,
@@ -389,7 +411,7 @@ struct State {
 impl State {
     fn reset(&mut self) {
         self.epoch += 1;
-        if let Some(active) = &self.active {
+        for active in &self.active {
             active.cancelled.store(true, Ordering::SeqCst);
         }
         self.environments.clear();
@@ -426,7 +448,7 @@ impl GraphActions {
     ) -> Result<T> {
         let state = self.0.lock().unwrap();
         ensure!(
-            state.active.is_none() && !state.stopping,
+            state.active.is_empty() && !state.stopping,
             "Stop graph actions before changing component folders or removing components"
         );
         ensure!(
@@ -523,10 +545,28 @@ impl GraphActions {
                 state.epoch == epoch,
                 "Project changed before action started"
             );
+            let lane = Lane::of(project, plan.task.as_deref());
             ensure!(
-                state.active.is_none() && !state.stopping,
-                "Another graph action is still running or stopping"
+                !state.stopping,
+                "An environment is still stopping; retry when it has stopped"
             );
+            if let Some(other) = state.active.iter().find(|a| a.lane.conflicts(&lane)) {
+                let checkout = other
+                    .task
+                    .as_deref()
+                    .map_or_else(|| "the main checkout".into(), |t| format!("task {t}"));
+                if lane == Lane::Project {
+                    anyhow::bail!(
+                        "Another environment start or validation is running in {checkout}. This \
+                         project runs them one at a time because run & test detection hasn't \
+                         found parallel instances safe; retry when it finishes"
+                    );
+                }
+                anyhow::bail!(
+                    "Another environment start or validation is still running in {checkout}; \
+                     retry when it finishes"
+                );
+            }
             if environment.is_none() {
                 for id in &plan.sessions {
                     ensure!(
@@ -535,10 +575,12 @@ impl GraphActions {
                     );
                 }
             }
-            state.active = Some(Active {
+            state.active.push(Active {
                 key,
                 cancelled: cancelled.clone(),
                 sessions: plan.sessions.clone(),
+                lane,
+                task: plan.task.clone(),
             });
         }
         let mut launched = Vec::new();
@@ -760,7 +802,9 @@ impl GraphActions {
                     }
                 }
             }
-            state.active = None;
+            state
+                .active
+                .retain(|a| !Arc::ptr_eq(&a.cancelled, &cancelled));
         }
         result
     }
@@ -773,10 +817,9 @@ impl GraphActions {
     /// Panics if the internal lock is poisoned.
     pub fn with_session_stop_guard<T>(&self, id: &str, stop: impl FnOnce() -> T) -> T {
         let state = self.0.lock().unwrap();
-        if let Some(active) = &state.active
-            && active.key.starts_with("group:")
-            && active.sessions.iter().any(|session| session == id)
-        {
+        for active in state.active.iter().filter(|a| {
+            a.key.starts_with("group:") && a.sessions.iter().any(|session| session == id)
+        }) {
             active.cancelled.store(true, Ordering::SeqCst);
         }
         drop(state);
@@ -789,16 +832,26 @@ impl GraphActions {
     /// # Panics
     /// Panics if the internal lock is poisoned.
     pub fn cancel_validation(&self) -> bool {
+        self.cancel_validation_in(None)
+    }
+
+    /// [`Self::cancel_validation`] for one checkout (`Some(task)`, `Some(None)` for the main
+    /// one): a parallel validation in another checkout keeps running, while a project-wide
+    /// one is stopped from any checkout.
+    ///
+    /// # Panics
+    /// Panics if the internal lock is poisoned.
+    pub fn cancel_validation_in(&self, checkout: Option<Option<&str>>) -> bool {
         let state = self.0.lock().unwrap();
-        let Some(active) = state
-            .active
-            .as_ref()
-            .filter(|a| a.key.starts_with("validation:"))
-        else {
-            return false;
-        };
-        active.cancelled.store(true, Ordering::SeqCst);
-        true
+        let mut cancelled = false;
+        for active in state.active.iter().filter(|a| {
+            a.key.starts_with("validation:")
+                && checkout.is_none_or(|task| a.lane == Lane::Project || a.task.as_deref() == task)
+        }) {
+            active.cancelled.store(true, Ordering::SeqCst);
+            cancelled = true;
+        }
+        cancelled
     }
 
     /// Cancel in-flight startup and stop owned sessions in reverse startup order.
@@ -853,8 +906,10 @@ impl GraphActions {
             let mut state = self.0.lock().unwrap();
             ensure!(state.epoch == epoch, "Project changed before stop started");
             ensure!(!state.stopping, "An environment is already stopping");
-            if let Some(active) = &state.active
-                && active.key.strip_prefix("group:").is_some_and(&matches)
+            for active in state
+                .active
+                .iter()
+                .filter(|a| a.key.strip_prefix("group:").is_some_and(&matches))
             {
                 active.cancelled.store(true, Ordering::SeqCst);
             }
@@ -1005,6 +1060,70 @@ fn wait_for_readiness(
             run.id
         );
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(test)]
+mod lane_tests {
+    use super::*;
+
+    fn project(parallel: bool) -> Project {
+        let mut p: Project = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 5, "name": "p", "root": "/tmp/p", "components": [], "links": []
+        }))
+        .unwrap();
+        p.instances = Some(crate::model::Instances {
+            parallel_safe: parallel,
+            ..Default::default()
+        });
+        p
+    }
+
+    #[test]
+    fn parallel_safe_projects_lock_per_checkout() {
+        let serial = Lane::of(&project(false), Some("a"));
+        assert_eq!(serial, Lane::Project);
+        assert!(serial.conflicts(&Lane::Checkout(Some("b".into()))));
+        let a = Lane::of(&project(true), Some("a"));
+        let main = Lane::of(&project(true), None);
+        assert_eq!(main, Lane::Checkout(None));
+        assert!(!a.conflicts(&main));
+        assert!(!a.conflicts(&Lane::Checkout(Some("b".into()))));
+        assert!(a.conflicts(&Lane::Checkout(Some("a".into()))));
+        assert!(a.conflicts(&Lane::Project));
+        let mut legacy = project(true);
+        legacy.instances = None;
+        assert_eq!(Lane::of(&legacy, Some("a")), Lane::Project);
+    }
+
+    #[test]
+    fn cancelling_a_checkout_leaves_other_parallel_validations_running() {
+        let actions = GraphActions::default();
+        let active = |task: Option<&str>, lane: Lane| Active {
+            key: "validation:selected".into(),
+            cancelled: Arc::default(),
+            sessions: vec![],
+            lane,
+            task: task.map(Into::into),
+        };
+        {
+            let mut state = actions.0.lock().unwrap();
+            state
+                .active
+                .push(active(Some("a"), Lane::Checkout(Some("a".into()))));
+            state.active.push(active(None, Lane::Checkout(None)));
+        }
+        assert!(actions.cancel_validation_in(Some(Some("a"))));
+        {
+            let state = actions.0.lock().unwrap();
+            assert!(state.active[0].cancelled.load(Ordering::SeqCst));
+            assert!(!state.active[1].cancelled.load(Ordering::SeqCst));
+        }
+        assert!(!actions.cancel_validation_in(Some(Some("b"))));
+        // A project-wide run stops from any checkout.
+        actions.0.lock().unwrap().active = vec![active(Some("a"), Lane::Project)];
+        assert!(actions.cancel_validation_in(Some(None)));
+        assert!(actions.cancel_validation());
     }
 }
 

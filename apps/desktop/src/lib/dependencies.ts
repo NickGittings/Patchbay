@@ -16,7 +16,7 @@ import { mapEditsBlocked, onMapCreated } from './mapSave'
 import { revealTerminal } from './attention'
 import { arrangeMap, undoArrange } from './arrange'
 import { planTerminals } from './plan'
-import { launching, mapPresetId, startMapAgent } from './sessions'
+import { launching, mapPresetId, startMapAgent, type StackDetection } from './sessions'
 
 /** A dependency to review: found in manifests, or proposed by the detection agent. */
 export interface FoundLink {
@@ -266,6 +266,7 @@ export async function startDependencyAgent(projectId: string, preset: TerminalSp
  * unless map edits wait for recovery. One already running or on its way is shown instead (also
  * while they wait), and the user is told when it runs another preset; an exited one restarts with
  * `preset`. Only a session that started is revealed. `label` names the job in messages, `tab` its terminal.
+ * Returns whether this call started a session.
  */
 export async function startDetectionAgent(
   projectId: string,
@@ -274,10 +275,9 @@ export async function startDetectionAgent(
     terminalId,
     label,
     tab,
-    componentIds,
-    stackId,
-  }: { terminalId: string; label: string; tab: string; componentIds?: string[]; stackId?: string },
-) {
+    detection,
+  }: { terminalId: string; label: string; tab: string; detection?: StackDetection },
+): Promise<boolean> {
   const sid = sessionId(MAP_SCOPE, terminalId, null, projectId)
   const s = useStore.getState()
   // A launch on its way keeps the preset and tab it started with. Showing it edits no map, so it
@@ -292,9 +292,9 @@ export async function startDetectionAgent(
       )
     }
     if (s.project?.id === projectId) revealTerminal({ sid, componentId: MAP_SCOPE })
-    return
+    return false
   }
-  if (!canDetect(projectId)) return
+  if (!canDetect(projectId)) return false
   // The tab names the preset this launch runs, also when an earlier one ran another, and goes
   // back to the earlier one if the launch doesn't start.
   const previous = s.runtimeTerminals[sid]
@@ -312,11 +312,9 @@ export async function startDetectionAgent(
   const ours = useStore.getState().runtimeTerminals[sid]
   let started = false
   try {
-    started = stackId
-      ? await startMapAgent(projectId, preset, terminalId, undefined, stackId)
-      : componentIds
-        ? await startMapAgent(projectId, preset, terminalId, componentIds)
-        : await startMapAgent(projectId, preset, terminalId)
+    started = detection
+      ? await startMapAgent(projectId, preset, terminalId, detection)
+      : await startMapAgent(projectId, preset, terminalId)
   } finally {
     if (!started && useStore.getState().runtimeTerminals[sid] === ours)
       useStore.setState((st) => {
@@ -328,6 +326,7 @@ export async function startDetectionAgent(
   }
   if (started && useStore.getState().project?.id === projectId)
     revealTerminal({ sid, componentId: MAP_SCOPE })
+  return started
 }
 
 /**

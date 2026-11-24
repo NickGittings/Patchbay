@@ -9,7 +9,13 @@ import type { PendingStack } from '../types'
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
 vi.mock('../lib/windows', () => ({ showsSession: vi.fn() }))
-const state = vi.hoisted(() => ({ nodes: [] as FlowNode[], groups: [], projects: {} }))
+const state = vi.hoisted(() => ({
+  nodes: [] as FlowNode[],
+  groups: [],
+  projects: {},
+  taskActivities: {},
+  graphActionBusy: false,
+}))
 vi.mock('../store', () => ({
   useStore: Object.assign((select: (s: typeof state) => unknown) => select(state), {
     getState: () => state,

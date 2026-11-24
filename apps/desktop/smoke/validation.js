@@ -1,4 +1,5 @@
-// Discovery submits through its authenticated terminal, then review applies and runs checks.
+// Run → Configure checks starts run & test detection for chosen components; its version 2
+// proposal carries the checks, and the Stack review applies and runs them.
 ;(async () => {
   const until = async (what, check) => {
     const deadline = Date.now() + 30000
@@ -43,9 +44,12 @@
       groups: [],
     })
     await smoke.syncAgentProject(state().toProject())
+    // Covers only API: accepted only while the detection keeps its component selection.
     const proposal = {
-      version: 1,
-      terminals: [
+      version: 2,
+      name: 'Local stack',
+      terminals: [],
+      checks: [
         {
           component: 'api',
           path: '.',
@@ -55,7 +59,6 @@
           reason: 'README.md:1 fixture failure',
         },
       ],
-      missing: [],
     }
     state().setDevices([
       {
@@ -64,7 +67,7 @@
         category: 'agent',
         kind: 'agent',
         source: 'builtin',
-        command: `printf '%s' '${JSON.stringify(proposal)}' | "$PATCHBAY_CLI" agent propose-validation --file -; exec cat`,
+        command: `printf '%s' '${JSON.stringify(proposal)}' | "$PATCHBAY_CLI" agent propose-stack --file -; exec cat`,
       },
     ])
     smoke.selectPanel('activity')
@@ -78,38 +81,49 @@
     )
     api.querySelector('input').click()
     ;(await until('discovery', () => button('Discover checks'))).click()
-    const sid = smoke.sessionId('@map', 'validation-discovery', null)
+    const sid = smoke.sessionId('@map', 'stack', null)
     await until('authenticated submission', () =>
-      smoke.terminalText(sid).text.replace(/\s+/g, '').includes('"submitted":1'),
+      smoke.terminalText(sid).text.replace(/\s+/g, '').includes('"checks":1'),
+    )
+    const projectId = state().project.id
+    const first = await until(
+      'proposal for review',
+      () => smoke.stackProposals.getState().pending[projectId]?.id,
     )
     smoke.stopTerminal(sid)
-    await until('discovery exited', () => state().sessions[sid]?.running === false)
+    await until('detection exited', () => state().sessions[sid]?.running === false)
     // A reload loses the frontend's selection cache. Exercise the ordinary dock/
     // Sessions restart path with the same empty request, without resuming an agent.
     const originalFetch = window.fetch
-    const startUrl = window.__TAURI_INTERNALS__.convertFileSrc('validation_agent_start', 'ipc')
+    const startUrl = window.__TAURI_INTERNALS__.convertFileSrc('stack_agent_start', 'ipc')
     let recoveredSelection = false
     window.fetch = (input, options) => {
       if (String(input) === startUrl) {
         const body = JSON.parse(options.body)
-        if (body.resume !== false) throw new Error('Expected an ordinary discovery restart')
-        body.componentIds = []
+        if (body.resume !== false || body.newDetection)
+          throw new Error('Expected an ordinary detection restart')
+        delete body.componentIds
         options = { ...options, body: JSON.stringify(body) }
         recoveredSelection = true
       }
       return originalFetch(input, options)
     }
     try {
-      const requestId = await smoke.startTerminal('@map', 'validation-discovery', null)
+      const requestId = await smoke.startTerminal('@map', 'stack', null)
       if (!requestId || !recoveredSelection)
-        throw new Error(`Discovery did not restart with its retained selection: ${state().message}`)
-      await until('restarted discovery running', () => state().sessions[sid]?.running === true)
+        throw new Error(`Detection did not restart: ${state().message}`)
+      await until('restarted detection running', () => state().sessions[sid]?.running === true)
+      // Without the retained selection, the API-only proposal would miss Web and be refused.
+      await until('restarted detection kept its selection', () => {
+        const id = smoke.stackProposals.getState().pending[projectId]?.id
+        return id && id !== first
+      })
     } finally {
       window.fetch = originalFetch
     }
-    smoke.selectPanel('activity')
+    smoke.selectPanel('stack')
     await until('evidence', () => document.body.textContent.includes('README.md:1 fixture failure'))
-    ;(await until('apply and run', () => button('Apply and run'))).click()
+    ;(await until('apply and run', () => button('Apply and run checks'))).click()
     await until('failed report', () => state().graphActionReport?.results?.[0]?.exitCode === 3)
     const report = state().graphActionReport
     if (report.results.length !== 1 || report.plan.stages.flat().join(',') !== 'api')
@@ -118,7 +132,7 @@
       throw new Error('Failed run lost configuration')
     smoke.stopTerminal(sid)
     await smoke.report(
-      'PASS validation: empty setup, selection, retained discovery restart, authenticated discovery, evidence, additive apply, scoped failed run',
+      'PASS validation: empty setup, selection, retained detection restart, authenticated version 2 checks, evidence, additive apply, scoped failed run',
     )
   } catch (error) {
     await smoke.report(`FAIL validation: ${error?.message ?? error} ${error?.stack ?? ''}`)

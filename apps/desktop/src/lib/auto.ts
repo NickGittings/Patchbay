@@ -1452,7 +1452,7 @@ export function stopAuto(projectId: string, task: string | null) {
       )
   }
   if (peekController(projectId, task)?.validating)
-    void graphValidationCancel(projectId).catch((e) =>
+    void graphValidationCancel(projectId, task).catch((e) =>
       useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
     )
 }

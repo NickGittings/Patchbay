@@ -82,6 +82,7 @@ export function workspaceDocument(): WorkspaceDocument {
               validatorDeclined: state.validatorDeclined,
               stackDeclined: state.stackDeclined,
               dependencyPromptDismissed: state.dependencyPromptDismissed,
+              autoSetupOff: state.autoSetupOff,
               viewport: state.viewport,
               panels: state.panels,
               activeTask: state.activeTask,
@@ -180,6 +181,7 @@ export function restoredLayout(
       ? [...new Set(layout.stackDeclined.filter((k): k is string => typeof k === 'string'))]
       : []
   if (!nested) out.dependencyPromptDismissed = layout.dependencyPromptDismissed === true
+  if (!nested) out.autoSetupOff = layout.autoSetupOff === true
   if (layout.graphActionReport && typeof layout.graphActionReport === 'object') {
     const report = layout.graphActionReport as ProjectState['graphActionReport']
     if (
@@ -242,6 +244,7 @@ export function restoredLayout(
                 'validatorDeclined',
                 'stackDeclined',
                 'dependencyPromptDismissed',
+                'autoSetupOff',
               ].includes(key),
           ),
         ),
@@ -415,6 +418,7 @@ export function initializeWorkspace() {
           s.validatorDeclined === prev.validatorDeclined &&
           s.stackDeclined === prev.stackDeclined &&
           s.dependencyPromptDismissed === prev.dependencyPromptDismissed &&
+          s.autoSetupOff === prev.autoSetupOff &&
           s.notifications === prev.notifications &&
           s.usageSettings === prev.usageSettings &&
           s.workspaceSettings === prev.workspaceSettings &&

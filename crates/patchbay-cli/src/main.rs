@@ -702,11 +702,14 @@ enum AgentCmd {
         #[arg(long)]
         file: PathBuf,
     },
-    /// Propose the local stack: its terminals and readiness (`-` reads stdin).
+    /// Retired: checks go in a version 2 `propose-stack` proposal.
+    #[command(hide = true)]
     ProposeValidation {
         #[arg(long)]
         file: PathBuf,
     },
+    /// Propose how to run and test the project: Development terminals, checks, worktree
+    /// preparation and parallel-instance isolation (`-` reads stdin).
     ProposeStack {
         #[arg(long)]
         file: PathBuf,
@@ -879,9 +882,9 @@ fn agent(command: AgentCmd) -> Result<bool> {
             AgentCmd::ProposeLinks { file } => Action::ProposeLinks {
                 proposal: read_proposal(&file)?,
             },
-            AgentCmd::ProposeValidation { file } => Action::ProposeValidation {
-                proposal: read_proposal(&file)?,
-            },
+            AgentCmd::ProposeValidation { .. } => {
+                bail!(patchbay_core::validation_proposals::RETIRED)
+            }
             AgentCmd::ProposeStack { file } => Action::ProposeStack {
                 proposal: read_proposal(&file)?,
             },

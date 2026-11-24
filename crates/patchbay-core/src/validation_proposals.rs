@@ -1,43 +1,50 @@
-//! Reviewed, selection-bound proposals for existing one-shot validation tooling.
+//! Validation checks a detection agent proposes, as part of a version 2 stack proposal
+//! (`stack_proposals.rs`), and the rules they follow. Standalone validation discovery
+//! (`propose-validation`) is retired; a submission it left behind is still read once for
+//! review, then cleared.
 use crate::{
-    context,
-    model::{MAP_SCOPE, Project, TerminalKind, TerminalSpec},
-    policy::Policy,
-    pty::SessionSpec,
+    model::{Project, TerminalKind},
     submissions::{Store, Submission},
 };
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, HashSet},
-    fmt::Write as _,
-};
+use std::collections::HashSet;
+
 static SUBMISSIONS: Store = Store::new("validation-proposals");
+/// The retired discovery terminal; sessions still running it may submit nothing.
 pub const VALIDATION_TERMINAL: &str = "validation-discovery";
-pub const SELECTION_ENV: &str = "PATCHBAY_VALIDATION_SELECTION";
+pub const MAX_CHECKS: usize = 100;
+pub const MAX_MISSING: usize = 500;
+const TEXT_LIMIT: usize = 1000;
+const NAME_LIMIT: usize = 60;
+/// The error a retired `propose-validation` gets.
+pub const RETIRED: &str = "propose-validation is retired: put checks and missingChecks in a version 2 proposal and submit it with propose-stack";
+
+/// A one-shot check for a component: an unassigned task terminal by `terminal` with its
+/// exact `command`, or a new one with `name`. `path` is the component's folder as the
+/// agent saw it, so a moved component is refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProposedCheck {
     pub component: String,
     pub path: String,
+    #[serde(default)]
     pub terminal: Option<String>,
+    #[serde(default)]
     pub name: Option<String>,
     pub command: String,
     pub reason: String,
 }
+
+/// Why a component gets no check: no tooling, or prerequisites the agent can't provide.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MissingCheck {
     pub component: String,
     pub reason: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ValidationProposal {
-    pub version: u32,
-    pub terminals: Vec<ProposedCheck>,
-    pub missing: Vec<MissingCheck>,
-}
+
+/// A submission left by the retired discovery agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pending {
@@ -53,124 +60,137 @@ impl Submission for Pending {
         &self.id
     }
 }
+
 fn line(s: &str, max: usize) -> bool {
     !s.trim().is_empty() && s.chars().count() <= max && !s.contains(['\n', '\r'])
 }
-impl ValidationProposal {
-    /// Validate a report against the authenticated launch selection and readable map.
-    /// # Errors
-    /// Rejects unknown versions, oversized reports, invalid terminals and incomplete coverage.
-    pub fn validate(&self, project: &Project, selected: &[String]) -> Result<()> {
-        ensure!(self.version == 1, "Unsupported proposal version");
-        ensure!(
-            !selected.is_empty() && selected.len() <= 500,
-            "Select 1–500 components"
-        );
-        ensure!(
-            self.terminals.len() <= 100 && self.missing.len() <= 500,
-            "Report is too large"
-        );
-        let mut seen = HashSet::new();
-        let mut names = HashSet::new();
-        let mut covered = HashSet::new();
-        for t in &self.terminals {
-            ensure!(
-                selected.contains(&t.component),
-                "Component {} is outside the launch selection",
-                t.component
-            );
-            let c = project
-                .component(&t.component)
-                .ok_or_else(|| anyhow::anyhow!("Unknown component {}", t.component))?;
-            ensure!(c.path == t.path, "Component folder changed: {}", c.id);
-            ensure!(
-                line(&t.command, 1000) && line(&t.reason, 1000),
-                "Give a bounded command and source evidence"
-            );
-            if let Some(id) = &t.terminal {
-                let x = c
-                    .terminals
-                    .iter()
-                    .find(|x| &x.id == id)
-                    .ok_or_else(|| anyhow::anyhow!("Unknown terminal {id}"))?;
-                ensure!(
-                    t.name.is_none()
-                        && x.kind == TerminalKind::Task
-                        && x.action.is_none()
-                        && x.command == t.command,
-                    "Only matching unassigned task terminals can become Validation"
-                );
-            } else {
-                let name = t.name.as_deref().unwrap_or("");
-                ensure!(line(name, 60), "Name each new check");
-                ensure!(
-                    names.insert((&t.component, crate::detect::slug(name))),
-                    "Repeated terminal name"
-                );
-                ensure!(
-                    !c.terminals
-                        .iter()
-                        .any(|x| x.name.eq_ignore_ascii_case(name)
-                            || x.id == crate::detect::slug(name)),
-                    "Terminal name already exists"
-                );
-                ensure!(
-                    !c.terminals.iter().any(|x| x.kind == TerminalKind::Task
-                        && x.action.is_none()
-                        && x.command == t.command),
-                    "Reuse the matching unassigned task terminal"
-                );
-            }
-            ensure!(
-                seen.insert((&t.component, &t.command)),
-                "Repeated check command"
-            );
-            covered.insert(&t.component);
-        }
-        for m in &self.missing {
-            ensure!(
-                selected.contains(&m.component) && project.component(&m.component).is_some(),
-                "Missing-check report outside selection"
-            );
-            ensure!(
-                line(&m.reason, 1000),
-                "Explain missing checks or prerequisites"
-            );
-            ensure!(
-                covered.insert(&m.component),
-                "Repeated or contradictory component report"
-            );
-        }
-        ensure!(
-            selected.iter().all(|id| covered.contains(id)),
-            "Report checks or an explanation for every selected component"
-        );
-        Ok(())
-    }
-}
-/// Persist a validated discovery report.
+
+/// Check proposed checks against the readable map. `scope` is the component selection the
+/// detection was launched with, or every component when empty. Every component in scope
+/// without a Validation terminal needs checks or a missing-check explanation (with a
+/// selection, every selected one does). `development` lists `(component, terminal id)`
+/// pairs the same proposal makes Development, which can't also become checks.
+///
 /// # Errors
-/// Fails for an invalid report or storage failure.
-pub fn submit(
+/// Fails for oversized reports, components outside scope, moved folders, terminals that
+/// can't become Validation, repeats, or incomplete coverage.
+pub fn validate_checks(
     project: &Project,
-    session: &str,
-    selected: &[String],
-    proposal: &ValidationProposal,
-) -> Result<Pending> {
-    proposal.validate(project, selected)?;
-    let pending = Pending {
-        id: uuid::Uuid::new_v4().to_string(),
-        session_id: session.into(),
-        submitted_ms: crate::pty::now_ms(),
-        component_ids: selected.to_vec(),
-        terminals: proposal.terminals.clone(),
-        missing: proposal.missing.clone(),
-    };
-    let _guard = SUBMISSIONS.lock();
-    SUBMISSIONS.write_in(&SUBMISSIONS.dir()?, &project.root, &pending)?;
-    Ok(pending)
+    scope: &[String],
+    checks: &[ProposedCheck],
+    missing: &[MissingCheck],
+    development: &[(&str, &str)],
+) -> Result<()> {
+    ensure!(scope.len() <= 500, "Select at most 500 components");
+    for id in scope {
+        ensure!(
+            project.component(id).is_some(),
+            "Unknown selected component {id}"
+        );
+    }
+    ensure!(
+        checks.len() <= MAX_CHECKS && missing.len() <= MAX_MISSING,
+        "Propose at most {MAX_CHECKS} checks and {MAX_MISSING} missing-check reports"
+    );
+    let in_scope = |id: &str| scope.is_empty() || scope.iter().any(|s| s == id);
+    let mut seen = HashSet::new();
+    let mut names = HashSet::new();
+    let mut covered = HashSet::new();
+    for (n, t) in checks.iter().enumerate() {
+        let at = format!(
+            "Check {} ({} › {})",
+            n + 1,
+            t.component,
+            t.terminal.as_deref().or(t.name.as_deref()).unwrap_or("?")
+        );
+        ensure!(
+            in_scope(&t.component),
+            "{at}: component {} is outside the selection",
+            t.component
+        );
+        let c = project
+            .component(&t.component)
+            .ok_or_else(|| anyhow::anyhow!("{at}: unknown component {}", t.component))?;
+        ensure!(c.path == t.path, "{at}: component folder changed: {}", c.id);
+        ensure!(
+            line(&t.command, TEXT_LIMIT) && line(&t.reason, TEXT_LIMIT),
+            "{at}: give a one-line command and source evidence"
+        );
+        if let Some(id) = &t.terminal {
+            let x = c
+                .terminals
+                .iter()
+                .find(|x| &x.id == id)
+                .ok_or_else(|| anyhow::anyhow!("{at}: unknown terminal {id}"))?;
+            ensure!(
+                t.name.is_none()
+                    && x.kind == TerminalKind::Task
+                    && x.action.is_none()
+                    && x.command == t.command,
+                "{at}: only matching unassigned task terminals can become Validation"
+            );
+            ensure!(
+                !development.contains(&(t.component.as_str(), id.as_str())),
+                "{at}: {id} is proposed as a Development terminal too"
+            );
+        } else {
+            let name = t.name.as_deref().unwrap_or("");
+            ensure!(line(name, NAME_LIMIT), "{at}: name each new check");
+            ensure!(
+                names.insert((&t.component, crate::detect::slug(name))),
+                "{at}: repeated terminal name"
+            );
+            ensure!(
+                !c.terminals
+                    .iter()
+                    .any(|x| x.name.eq_ignore_ascii_case(name) || x.id == crate::detect::slug(name)),
+                "{at}: terminal name already exists"
+            );
+            ensure!(
+                !c.terminals.iter().any(|x| x.kind == TerminalKind::Task
+                    && x.action.is_none()
+                    && x.command == t.command),
+                "{at}: reuse the matching unassigned task terminal"
+            );
+        }
+        ensure!(
+            seen.insert((&t.component, &t.command)),
+            "{at}: repeated check command"
+        );
+        covered.insert(t.component.as_str());
+    }
+    for m in missing {
+        ensure!(
+            in_scope(&m.component) && project.component(&m.component).is_some(),
+            "Missing-check report for {} is outside the selection",
+            m.component
+        );
+        ensure!(
+            line(&m.reason, TEXT_LIMIT),
+            "Explain missing checks or prerequisites for {}",
+            m.component
+        );
+        ensure!(
+            covered.insert(m.component.as_str()),
+            "Repeated or contradictory report for {}",
+            m.component
+        );
+    }
+    for c in &project.components {
+        let validated = c
+            .terminals
+            .iter()
+            .any(|t| t.action == Some(crate::model::TerminalAction::Validation));
+        ensure!(
+            !in_scope(&c.id) || covered.contains(c.id.as_str()) || (scope.is_empty() && validated),
+            "Report checks or a missingChecks explanation for {}",
+            c.id
+        );
+    }
+    Ok(())
 }
-/// Read a report awaiting review.
+
+/// A submission the retired discovery agent left for review.
 /// # Errors
 /// Fails on storage errors.
 pub fn read(root: &str) -> Result<Option<Pending>> {
@@ -182,54 +202,6 @@ pub fn read(root: &str) -> Result<Option<Pending>> {
 pub fn clear(root: &str, id: &str) -> Result<bool> {
     SUBMISSIONS.clear_in::<Pending>(&SUBMISSIONS.dir()?, root, id)
 }
-/// Prepare a read-only discovery agent for the selected component folders.
-/// # Errors
-/// Rejects empty or unknown selections, invalid presets and policy failures.
-pub fn prepare(
-    project: &Project,
-    preset: &TerminalSpec,
-    selected: &[String],
-    policy: &dyn Policy,
-) -> Result<(TerminalSpec, SessionSpec)> {
-    ensure!(
-        !selected.is_empty() && selected.len() <= 500,
-        "Select 1–500 components"
-    );
-    let mut briefing = String::from(
-        "# Configure validation checks\nRead repository documentation, scripts, test and static-check configuration for ONLY these components. Do not run checks, edit repository files, install dependencies or set up environments. Discover tests, lint, type checks and format checks that exit after one run, using check-only modes. Exclude watchers, servers and automatic fixes. Report missing tooling and prerequisites explicitly. Commands run from the component folder; do not broaden checks to other components. Preserve existing validators. Reuse an unassigned task terminal with the same command; never repurpose Development, shell or agent terminals.\n",
-    );
-    for id in selected {
-        let c = project
-            .component(id)
-            .ok_or_else(|| anyhow::anyhow!("Unknown component {id}"))?;
-        let _ = writeln!(briefing, "Component: {}", serde_json::to_string(c)?);
-    }
-    let _ = writeln!(
-        briefing,
-        "Submit JSON {{\"version\":1,\"terminals\":[{{\"component\":\"id\",\"path\":\"component path from above\",\"terminal\":null,\"name\":\"Tests\",\"command\":\"npm test -- --run\",\"reason\":\"package.json:10 and prerequisites\"}}],\"missing\":[{{\"component\":\"id with no suitable checks\",\"reason\":\"explanation\"}}]}} via {} on stdin. For existing terminals give terminal id, name null and its exact command. Cover every selected component with checks or a missing explanation. An empty terminals list is valid. Do not propose already configured validators. The user reviews before applying.",
-        context::agent_command("propose-validation --file -")
-    );
-    let mut terminal = preset.clone();
-    terminal.id = VALIDATION_TERMINAL.into();
-    terminal.name = format!("Configure checks · {}", preset.name);
-    let mut env = BTreeMap::new();
-    env.insert(SELECTION_ENV.into(), serde_json::to_string(selected)?);
-    let mut selected_project = project.clone();
-    selected_project
-        .components
-        .retain(|c| selected.contains(&c.id));
-    let spec = context::job_agent_spec(
-        project,
-        &terminal,
-        &briefing,
-        selected_project.external_dirs(),
-        MAP_SCOPE,
-        "Discover validation checks and submit your proposal.",
-        env,
-        policy,
-    )?;
-    Ok((terminal, spec))
-}
 
 #[cfg(test)]
 mod tests {
@@ -238,62 +210,60 @@ mod tests {
     fn project() -> Project {
         serde_json::from_value(json!({"schemaVersion":4,"name":"p","root":"/tmp/p","components":[{"id":"api","name":"API","kind":"backend","path":"api","terminals":[{"id":"check","name":"Check","kind":"task","command":"npm test"}]},{"id":"web","name":"Web","kind":"frontend","path":"/tmp/other-repo","terminals":[]}],"links":[]})).unwrap()
     }
-    fn report() -> ValidationProposal {
-        serde_json::from_value(json!({"version":1,"terminals":[{"component":"api","path":"api","terminal":"check","name":null,"command":"npm test","reason":"package.json:7"}],"missing":[]})).unwrap()
+    fn check() -> ProposedCheck {
+        serde_json::from_value(json!({"component":"api","path":"api","terminal":"check","name":null,"command":"npm test","reason":"package.json:7"})).unwrap()
     }
+    fn missing(component: &str) -> MissingCheck {
+        MissingCheck {
+            component: component.into(),
+            reason: "No tooling configured".into(),
+        }
+    }
+
     #[test]
-    fn selection_and_snapshots_are_enforced() {
+    fn selection_snapshots_and_coverage_are_enforced() {
         let mut p = project();
-        let selected = vec!["api".into()];
-        assert!(report().validate(&p, &selected).is_ok());
-        assert!(report().validate(&p, &["web".into()]).is_err());
-        assert!(
-            report()
-                .validate(&p, &["api".into(), "web".into()])
-                .is_err()
-        );
+        let api = vec!["api".to_string()];
+        assert!(validate_checks(&p, &api, &[check()], &[], &[]).is_ok());
+        assert!(validate_checks(&p, &["web".into()], &[check()], &[], &[]).is_err());
+        let both = vec!["api".to_string(), "web".to_string()];
+        let err = validate_checks(&p, &both, &[check()], &[], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("for web"), "{err}");
+        assert!(validate_checks(&p, &both, &[check()], &[missing("web")], &[]).is_ok());
+        // Without a selection every component without a validator is covered.
+        assert!(validate_checks(&p, &[], &[check()], &[], &[]).is_err());
+        assert!(validate_checks(&p, &[], &[check()], &[missing("web")], &[]).is_ok());
+        let err = validate_checks(&p, &api, &[check()], &[], &[("api", "check")])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Development terminal too"), "{err}");
         p.components[0].terminals[0].action = Some(crate::model::TerminalAction::Development);
-        assert!(report().validate(&p, &selected).is_err());
+        assert!(validate_checks(&p, &api, &[check()], &[], &[]).is_err());
         p.components[0].terminals[0].action = None;
         p.components[0].terminals[0].command = "npm run dev".into();
-        assert!(report().validate(&p, &selected).is_err());
-        let mut bad = report();
-        bad.version = 2;
-        assert!(bad.validate(&project(), &selected).is_err());
-    }
-    #[test]
-    fn empty_report_and_external_component_are_supported() {
-        let p = project();
-        let report = ValidationProposal {
-            version: 1,
-            terminals: vec![],
-            missing: vec![MissingCheck {
-                component: "web".into(),
-                reason: "No tooling configured; install prerequisites separately".into(),
-            }],
-        };
-        assert!(report.validate(&p, &["web".into()]).is_ok());
-        let dir = std::env::temp_dir().join(format!("validation-{}", uuid::Uuid::new_v4()));
-        let first = Pending {
-            id: "1".into(),
-            session_id: "s".into(),
-            submitted_ms: 0,
-            component_ids: vec!["web".into()],
-            terminals: vec![],
-            missing: report.missing,
-        };
-        SUBMISSIONS.write_in(&dir, &p.root, &first).unwrap();
-        let second = Pending {
-            id: "2".into(),
-            ..first
-        };
-        SUBMISSIONS.write_in(&dir, &p.root, &second).unwrap();
-        assert!(!SUBMISSIONS.clear_in::<Pending>(&dir, &p.root, "1").unwrap());
-        assert_eq!(
-            SUBMISSIONS.read_in::<Pending>(&dir, &p.root).unwrap(),
-            Some(second)
+        assert!(validate_checks(&p, &api, &[check()], &[], &[]).is_err());
+        let mut moved = check();
+        moved.path = "elsewhere".into();
+        assert!(validate_checks(&project(), &api, &[moved], &[], &[]).is_err());
+        assert!(
+            validate_checks(&project(), &api, &[check()], &[missing("api")], &[]).is_err(),
+            "a component is either checked or missing"
         );
-        assert!(SUBMISSIONS.clear_in::<Pending>(&dir, &p.root, "2").unwrap());
-        std::fs::remove_dir_all(dir).unwrap();
+        assert!(validate_checks(&project(), &["db".into()], &[], &[], &[]).is_err());
+    }
+
+    #[test]
+    fn existing_validators_need_no_report_and_new_checks_are_named() {
+        let mut p = project();
+        p.components[0].terminals[0].action = Some(crate::model::TerminalAction::Validation);
+        assert!(validate_checks(&p, &[], &[], &[missing("web")], &[]).is_ok());
+        let new: ProposedCheck = serde_json::from_value(json!({"component":"web","path":"/tmp/other-repo","name":"Lint","command":"npm run lint","reason":"package.json:9"})).unwrap();
+        assert!(validate_checks(&p, &[], std::slice::from_ref(&new), &[], &[]).is_ok());
+        let mut unnamed = new.clone();
+        unnamed.name = None;
+        assert!(validate_checks(&p, &[], &[unnamed], &[], &[]).is_err());
+        assert!(validate_checks(&p, &[], &[new.clone(), new], &[], &[]).is_err());
     }
 }
