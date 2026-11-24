@@ -1,4 +1,4 @@
-import { projectStateOf, useStore, workspaceOf } from '../store'
+import { useStore } from '../store'
 import { PROJECT_DRAFT, plannerChatTask, plannerSessionId, type MergeRequest } from '../types'
 import { noteLead, teamFor } from './chatTeams'
 import type { SimpleOrigin, SimpleStage } from './simple'
@@ -148,18 +148,4 @@ export function recordPlannerStart(
   }).catch(() => {})
 }
 
-const AUTO_HOLDS: Record<string, string> = {
-  running: 'Auto is running this worktree',
-  waitingOnYou: 'Auto is waiting on you in this worktree',
-}
-/**
- * Auto's agents in its worktree are its own while its run goes on, so every flow's Build, Fix,
- * Review and Merge, the lead's too, waits. A paused run hands the worktree back: Resume infers its
- * stage from whatever was done meanwhile, as its pause messages ask.
- */
-export function refuseWhileAutoRuns(projectId: string, task: string | null | undefined) {
-  const state = projectStateOf(projectId)
-  if (!state || task === undefined) return
-  const held = AUTO_HOLDS[workspaceOf(state, task).auto?.status ?? '']
-  if (held) throw new Error(`${held}. Stop Auto or let it finish first.`)
-}
+export { refuseWhileAutoRuns } from './workBlocker'

@@ -327,7 +327,9 @@ export default function WorkspaceRail() {
           >
             <header className="utility-header">
               <div>
-                <h2>{panelLabel(panel, extensionViews)}</h2>
+                <h2 tabIndex={panel === 'auto' ? -1 : undefined}>
+                  {panelLabel(panel, extensionViews)}
+                </h2>
                 <small title={subtitle}>{subtitle}</small>
               </div>
               {panel === 'sessions' && (

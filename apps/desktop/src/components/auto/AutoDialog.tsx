@@ -61,13 +61,14 @@ function changeDraft(
 export default function AutoDialog({
   onIntegrations,
   simple = false,
+  focusGoal = false,
 }: {
   onIntegrations: (provider?: HookProvider) => void
   simple?: boolean
+  focusGoal?: boolean
 }) {
   const projectId = useStore((s) => s.project?.id)
   const cleanup = useStore((s) => s.workspaceSettings.mergeCleanup)
-  const cleanupChoice = cleanup === 'ask' || cleanup === 'delete' ? cleanup : 'keep'
   const task = useStore((s) => s.activeTask)
   const closeMenu = useContext(CloseMenu)
   const devices = useStore((s) => s.devices)
@@ -81,7 +82,9 @@ export default function AutoDialog({
     changeDraft(draftKey, setDraft, (d) => ({ ...d, ...patch }), draft)
   // This run's choices; unpicked stages follow the global agent roles.
   const { picked, reviewers: pickedReviewers, overrides, mode, stage } = draft
-  const effort = defaultAutoEffort(simple)
+  const effort = draft.replacementEffort ?? defaultAutoEffort(simple)
+  const cleanupChoice =
+    draft.cleanup ?? (cleanup === 'ask' || cleanup === 'delete' ? cleanup : 'keep')
   const [roundsEmpty, setRoundsEmpty] = useState(false)
   const reviewers = useMemo(() => {
     const kept = pickedReviewers && agents.filter((a) => pickedReviewers.includes(a.id))
@@ -299,6 +302,7 @@ export default function AutoDialog({
         <label>
           Task goal
           <textarea
+            autoFocus={focusGoal}
             value={goal}
             onChange={(e) => edit({ goal: e.target.value })}
             rows={4}

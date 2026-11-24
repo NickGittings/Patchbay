@@ -9,6 +9,7 @@ import { roleDevice } from './agentRoles'
 import { agentDevices, plannerDevice } from './plan'
 import { savePlanDraft } from './planDrafts'
 import { startTerminal } from './sessions'
+import { refuseWhileAutoRuns } from './workBlocker'
 import { refreshTasks } from './tasks'
 
 export type HandoffTarget = {
@@ -51,6 +52,7 @@ async function handoffPlannerPlan(
     const s = useStore.getState()
     if (!target && (s.project?.id !== projectId || s.activeTask !== task))
       throw new Error('The task changed. Choose Implement in the task you want to work on.')
+    if (!auto) refuseWhileAutoRuns(projectId, task)
     const state = projectStateOf(projectId, s)
     if (!state) throw new Error('Open the project first')
     return state
@@ -113,6 +115,7 @@ async function handoffPlannerPlan(
         (target?.providerRunId ? r.id === target.providerRunId : !auto) &&
         !['stopped', 'complete'].includes(r.state),
     )
+    current()
     const run =
       existing ??
       (await createProviderRun(
@@ -126,6 +129,7 @@ async function handoffPlannerPlan(
         target?.providerRunId,
         ...(auto?.autonomous ? [auto] : []),
       ))
+    current()
     const started = run.coordinator?.sessionId
       ? run
       : await startProviderJob(project, run.id, run.coordinator!.id)

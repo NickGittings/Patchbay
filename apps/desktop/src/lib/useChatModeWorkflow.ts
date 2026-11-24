@@ -2,6 +2,17 @@ import { useState } from 'react'
 import { useStore } from '../store'
 import { PLAN_SCOPE, REVIEW_SCOPE } from '../types'
 import type { thread } from './simple'
+import { chatAutoHandoff } from './chatAutoHandoff'
+import { cancelQueued } from './simpleQueue'
+import { interruptSession } from './simpleComposer'
+import {
+  controlWork,
+  unavailableWork,
+  workSelection,
+  type WorkCommand,
+  type WorkOutcome,
+} from './chatWork'
+import { openWorktreeAuto, workError, worktreeIdentity } from './workBlocker'
 import type { FlowAction } from './simpleFlow'
 import type { useSimpleData } from './useSimpleData'
 import { simpleKey, useSimpleUi } from './simpleUi'
@@ -10,9 +21,10 @@ import { roleDevice, roleDevices } from './agentRoles'
 import { simpleReviewRequest } from './simpleReview'
 import { launchBuild, launchFix, launchMerge, launchReview } from './launchStage'
 import { gitBranches, gitWorktrees } from './ipc'
-import { mergeNow, resumeAuto, pauseAuto, stopAuto } from './auto'
+import { mergeNow, resumeAuto, pauseAuto, autoRun } from './auto'
 import { controlTeam, resetLead, type ChatTeam } from './chatTeams'
-import { chatAutoActive, chatHandoff } from './chat'
+import { chatRecipient, chatHandoff } from './chat'
+import { unfinished } from './autoSettings'
 import { autoDrafts, autoDraftKey, emptyAutoDraft } from './autoDrafts'
 
 type Store = ReturnType<typeof useStore.getState>
@@ -55,10 +67,27 @@ export function useChatModeWorkflow({
   const stage = model.stage
   const [pendingResult, setPendingResult] = useState({ key: '', action: '' })
   const pending = pendingResult.key === key ? pendingResult.action : ''
-  const [failureResult, setFailureResult] = useState({ key: '', text: '' })
-  const failure = failureResult.key === key ? failureResult.text : ''
-  const setFailure = (text: string) => setFailureResult({ key, text })
-  const [dialog, setDialog] = useState<'review' | 'merge'>()
+  const [failureResult, setFailureResult] = useState<{ key: string; error?: Error }>()
+  const failure = failureResult?.key === key ? failureResult.error : undefined
+  const setFailure = (error?: unknown) =>
+    setFailureResult({ key, error: error === undefined ? undefined : workError(error) })
+  const [workResult, setWorkResult] = useState<{ key: string; outcomes: WorkOutcome[] }>()
+  const [autoPrompt, setAutoPrompt] = useState<string>()
+  const targetWorktree = { projectId, task }
+  const tree = worktreeIdentity(targetWorktree)
+  const selected = (command: WorkCommand) => workSelection(command, team, auto)
+  const currentScope = () => {
+    const state = useStore.getState()
+    return (
+      !!tree &&
+      state.project?.id === projectId &&
+      state.activeTask === task &&
+      worktreeIdentity(targetWorktree) === tree
+    )
+  }
+  const [dialogState, setDialogState] = useState<{ key: string; kind: 'review' | 'merge' }>()
+  const dialog = dialogState?.key === key ? dialogState.kind : undefined
+  const setDialog = (kind?: 'review' | 'merge') => setDialogState(kind ? { key, kind } : undefined)
   const reviewer = model.records.filter((r) => r.metadata.componentId === REVIEW_SCOPE).at(-1)
   const planner =
     model.records
@@ -74,11 +103,11 @@ export function useChatModeWorkflow({
     pendingActions.add(lock)
     useSimpleUi.getState().patch(key, { pendingWorkflow: true })
     setPendingResult({ key, action })
-    setFailure('')
+    setFailure()
     try {
       await fn()
     } catch (e) {
-      setFailure(String(e))
+      setFailure(e)
     } finally {
       pendingActions.delete(lock)
       useSimpleUi.getState().patch(key, { pendingWorkflow: false })
@@ -140,7 +169,8 @@ export function useChatModeWorkflow({
           return
         }
         const from = (await gitWorktrees(projectId)).find((w) => w.path === source.path)
-        if (!from) throw new Error('The merge worktrees changed. Choose a destination again.')
+        if (!currentScope() || !from || from.branch !== source.branch)
+          throw new Error('The merge worktrees changed. Choose a destination again.')
         // Merge checks for conflicts first and stops to show them; Merge with agent goes ahead.
         // Uncommitted source changes open the dialog, which asks whether the agent commits them.
         const started = await launchMerge('chat', task, {
@@ -174,23 +204,18 @@ export function useChatModeWorkflow({
       }
     })
 
-  const pauseWork = () =>
-    run('pause', async () => {
-      if (!team) return
-      await controlTeam(team, { kind: 'pause' })
-      if (chatAutoActive(auto?.status)) pauseAuto(projectId, task)
-    })
-  const continueWork = () =>
-    run('continue', async () => {
-      if (!team) return
-      await controlTeam(team, { kind: 'resume' })
-      if (auto?.status === 'paused') await resumeAuto(projectId, task)
-    })
-  const stopWork = () =>
-    run('stop', async () => {
-      if (!team) return
-      await controlTeam(team, { kind: 'stop' })
-      if (auto && !['done', 'stopped'].includes(auto.status)) stopAuto(projectId, task)
+  const work = (command: WorkCommand, selection = selected(command), confirmedTree = tree) =>
+    run(command, async () => {
+      if (!selection.team && !selection.auto) {
+        setWorkResult({
+          key,
+          outcomes: [{ target: '', result: unavailableWork(command, targetWorktree) }],
+        })
+        return
+      }
+      setWorkResult({ key, outcomes: [] })
+      const outcomes = await controlWork(command, targetWorktree, confirmedTree, selection)
+      setWorkResult({ key, outcomes })
     })
   const canConfirm = (confirmationKey: string | undefined) => {
     const current = useStore.getState()
@@ -206,7 +231,7 @@ export function useChatModeWorkflow({
       if (team) await controlTeam(team, { kind: 'historyBoundary' })
       return clearSimpleChat(projectId, task)
     } catch (error) {
-      setFailure(String(error))
+      setFailure(error)
       return false
     }
   }
@@ -217,24 +242,86 @@ export function useChatModeWorkflow({
       completed()
     })
   }
+  const handoffAgent = () => {
+    const state = useStore.getState()
+    const selected = chatRecipient(model.records, state.simple?.selectedAgent)
+    const lead = team && state.sessionRecords.find((record) => record.id === team.lead.sessionId)
+    const record = selected ?? lead
+    if (!record) return
+    return { id: record.id, name: record.metadata.name, session: state.sessions[record.id] }
+  }
+  const handoffBlock = (duringInterrupt = false) => {
+    const ui = useSimpleUi.getState().worktrees[key]
+    return chatAutoHandoff(
+      duringInterrupt ? { ...ui, pendingWorkflow: false } : (ui ?? {}),
+      handoffAgent(),
+      useStore.getState().serviceConnected,
+    )
+  }
+  const closeAutoPrompt = () => setAutoPrompt(undefined)
   const openAuto = () => {
-    if (auto && ['running', 'waitingOnYou', 'paused'].includes(auto.status)) {
-      useStore.getState().showAutoPanel()
+    if (!currentScope()) return
+    const current = autoRun(projectId, task)
+    if (current && ['running', 'waitingOnYou', 'paused', 'failed'].includes(current.status)) {
+      closeAutoPrompt()
+      openWorktreeAuto(targetWorktree)
+      return
+    }
+    if (handoffBlock()) {
+      setAutoPrompt(key)
       return
     }
     const draftKey = autoDraftKey(projectId, task)
+    const existing = autoDrafts.get(draftKey)
+    // Keep a goal the user typed or a replacement run's goal; refresh one Chat wrote earlier.
+    const kept =
+      existing?.goal !== undefined && existing.goal !== existing.chatGoal
+        ? existing.goal
+        : undefined
+    const chatGoal = kept
+      ? existing?.chatGoal
+      : chatHandoff(
+          simple,
+          source?.branch ?? 'Project folder',
+          changed.map((f) => f.path),
+        )
     autoDrafts.set(draftKey, {
-      ...(autoDrafts.get(draftKey) ?? emptyAutoDraft()),
-      goal: chatHandoff(
-        simple,
-        source?.branch ?? 'Project folder',
-        changed.map((f) => f.path),
-      ),
-      autonomous: true,
+      ...(existing ?? emptyAutoDraft()),
+      goal: kept ?? chatGoal,
+      chatGoal,
+      autonomous: existing?.autonomous ?? true,
     })
     useStore.setState((s) => ({ autoDraftVersion: s.autoDraftVersion + 1 }))
-    useStore.getState().showAutoPanel()
+    closeAutoPrompt()
+    openWorktreeAuto(targetWorktree)
   }
+  const cancelAutoQueue = () => {
+    if (!currentScope() || !handoffBlock()?.queued) return
+    cancelQueued(key)
+    closeAutoPrompt()
+    requestAnimationFrame(focusComposer)
+  }
+  const interruptAutoHandoff = (
+    expected: NonNullable<ReturnType<typeof handoffBlock>>['interrupt'],
+  ) =>
+    run('interrupt', async () => {
+      const checkTurn = () => {
+        const auto = autoRun(projectId, task)
+        const live = currentScope() && !unfinished(auto?.status) && handoffBlock(true)?.interrupt
+        if (
+          !expected ||
+          !live ||
+          expected.id !== live.id ||
+          expected.generation !== live.generation ||
+          expected.turn !== live.turn ||
+          expected.since !== live.since
+        )
+          throw new Error('The agent’s turn changed. Check its current state before interrupting.')
+        return live
+      }
+      const live = checkTurn()
+      await interruptSession(live.id, live.generation, checkTurn)
+    })
   return {
     pending,
     failure,
@@ -242,9 +329,17 @@ export function useChatModeWorkflow({
     setDialog,
     act,
     mergeStarted,
-    pauseWork,
-    continueWork,
-    stopWork,
+    work,
+    selected,
+    tree,
+    workOutcomes: workResult?.key === key ? workResult.outcomes : [],
+    setFailure,
+    autoPrompt: autoPrompt === key,
+    closeAutoPrompt,
+    handoffBlock: handoffBlock(),
+    handoffAgent: handoffAgent(),
+    cancelAutoQueue,
+    interruptAutoHandoff,
     clearHistory,
     startFresh,
     openAuto,

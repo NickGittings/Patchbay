@@ -1,3 +1,4 @@
+import { autoBlocker } from '../lib/workBlocker'
 import { useEffect, useState } from 'react'
 import { launchReview, taskOfWorktree } from '../lib/launchStage'
 import { gitBranches } from '../lib/ipc'
@@ -11,6 +12,7 @@ export default function ReviewAgentDialog({
   worktrees,
   close,
   launched,
+  onError,
   origin,
   task,
   initialBase,
@@ -26,12 +28,16 @@ export default function ReviewAgentDialog({
   worktrees: Worktree[]
   close: () => void
   launched: (sid: string) => void
+  onError?: (error: Error) => void
 }) {
   // Capture this dialog's project so switching tabs cannot redirect a pending launch.
   const [project] = useState(() => useStore.getState().toProject())
   const records = useStore((s) => s.sessionRecords)
   const sessions = useStore((s) => s.sessions)
   const tasks = useStore((s) => s.tasks)
+  const sourceTask = task !== undefined ? task : taskOfWorktree(source, project.projectId)
+  const blockedMessage = useStore(() => autoBlocker(project.projectId, sourceTask)?.message)
+  const blocker = blockedMessage ? autoBlocker(project.projectId, sourceTask) : undefined
   const revision = useStore((s) => s.gitChanges)
   const [branches, setBranches] = useState<string[]>()
   const [branchError, setBranchError] = useState('')
@@ -78,14 +84,16 @@ export default function ReviewAgentDialog({
       ready={!!base && base !== source.branch}
       // A reviewer that settled is replaced, as in every flow; only one still writing blocks.
       running={reviewWorktreeBusy(records, sessions, source.path)}
-      runningText="A review agent is already running in this worktree."
+      runningText="Wait for the current reviewer to finish, or exit it before starting a new review."
+      blocker={blocker}
+      onError={onError}
       offlineText="Reconnect before starting a review agent."
       hint="Reviews committed work since the merge base, uncommitted changes, and untracked files. Reports findings only; fixes belong in Build. Read-only behavior relies on the briefing, not on rewriting your agent command."
       launch={async (devices) => {
         const { started, errors } = await launchReview(
           origin,
           project,
-          task !== undefined ? task : taskOfWorktree(source, project.projectId),
+          sourceTask,
           { worktree: source.path, branch: source.branch!, base },
           devices,
         )

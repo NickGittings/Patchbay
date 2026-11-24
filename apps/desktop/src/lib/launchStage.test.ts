@@ -90,7 +90,7 @@ test('a review after Auto finished starts and is recorded', async () => {
 test('fixes and merges also wait for a running Auto run, which says how it holds the worktree', async () => {
   useStore.setState({ auto: { status: 'waitingOnYou' } as AutoRun, activeTask: null })
   const reviewer = { metadata: { projectId: 'p' }, spec: { cwd: '/p' } } as never
-  await expect(launchFix('manual', reviewer, 'follow')).rejects.toThrow('Auto is waiting on you')
+  await expect(launchFix('manual', reviewer, 'follow')).rejects.toThrow('Auto is waiting for input')
   expect(fixReviewFindings).not.toHaveBeenCalled()
   await expect(
     launchMerge('manual', null, {
@@ -99,7 +99,7 @@ test('fixes and merges also wait for a running Auto run, which says how it holds
       destinationBranch: 'main',
       device: {} as never,
     }),
-  ).rejects.toThrow('Stop Auto or let it finish first')
+  ).rejects.toThrow('Open the run to continue')
   expect(startMerge).not.toHaveBeenCalled()
 })
 
@@ -125,4 +125,58 @@ test('a paused Auto run hands the worktree back, as its pause messages ask', asy
   useStore.setState({ auto: { status: 'paused' } as AutoRun, activeTask: null })
   await launchReview('manual', project, null, request, [])
   expect(startSimpleReview).toHaveBeenCalledOnce()
+})
+
+test('Open Auto selects the merge destination, even when the source is the active worktree', async () => {
+  const { gitWorktrees } = await import('./ipc')
+  const { openWorktreeAuto, returnAfterAutoStop } = await import('./workBlocker')
+  const source = { path: '/p', branch: 'main', head: 'm', main: true, current: true }
+  const destination = { path: '/p/w', branch: 'feature', head: 'f', main: false, current: false }
+  vi.mocked(gitWorktrees).mockResolvedValue([source, destination])
+  const run = { runId: 'destination-run', status: 'running' } as AutoRun
+  useStore.getState().patchTask('p', 't', { auto: run })
+  const routed = launchMerge('manual', null, {
+    project,
+    source,
+    destinationBranch: 'feature',
+    device: {} as never,
+  })
+  await expect(routed).rejects.toMatchObject({
+    recovery: { kind: 'auto', target: { projectId: 'p', task: 't' } },
+  })
+  await routed.catch((error) =>
+    openWorktreeAuto(error.recovery.target, error.recovery.returnAfterStop),
+  )
+  expect(useStore.getState()).toMatchObject({ activeTask: 't', utilityPanel: 'auto' })
+  returnAfterAutoStop({ projectId: 'p', task: 't' }, run)
+  expect(useStore.getState()).toMatchObject({ activeTask: null, utilityPanel: null })
+  expect(startMerge).not.toHaveBeenCalled()
+})
+
+test('merge rechecks the resolved destination when Auto takes it during preflight', async () => {
+  const { gitWorktrees } = await import('./ipc')
+  const source = { path: '/p', branch: 'main', head: 'm', main: true, current: true }
+  vi.mocked(gitWorktrees).mockResolvedValue([source])
+  vi.mocked(startMerge).mockImplementationOnce(async (options) => {
+    useStore.getState().patchTask('p', 't', { auto: { status: 'waitingOnYou' } as AutoRun })
+    if ('source' in options) {
+      options.beforeLaunch?.({
+        source: '/p',
+        sourceBranch: 'main',
+        destination: '/p/w',
+        destinationBranch: 'feature',
+      })
+    }
+    throw new Error('Merge escaped its ownership check')
+  })
+  await expect(
+    launchMerge('chat', null, {
+      project,
+      source,
+      destinationBranch: 'feature',
+      device: {} as never,
+    }),
+  ).rejects.toMatchObject({
+    recovery: { kind: 'auto', target: { projectId: 'p', task: 't' } },
+  })
 })

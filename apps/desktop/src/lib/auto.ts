@@ -88,7 +88,7 @@ import {
 } from './autoSettings'
 import { fnv1a } from './hash'
 import { checkHooks, hooksUsable, type HookProvider } from './agentHooks'
-import { autoRuns, autoWorkspace } from './autoState'
+import { autoRuns, autoWorkspace, sameAutoRun } from './autoState'
 import { recordStageLaunch, refuseWhileAutoRuns, type StageAction } from './stageRecord'
 import { taskOfWorktree } from './launchStage'
 import { completeAutoStories } from './stories'
@@ -352,6 +352,8 @@ function workspace(projectId: string, task: string | null) {
 }
 export const autoRun = (projectId: string, task: string | null) => workspace(projectId, task)?.auto
 function pauseDefaults(update: Partial<AutoRun>): Partial<AutoRun> {
+  // Any status change settles a pending Stop unless the update keeps it explicitly.
+  if (update.status) update = { stopPending: undefined, ...update }
   if (update.status === 'paused') {
     return {
       resumeTrigger: undefined,
@@ -373,7 +375,13 @@ function pauseDefaults(update: Partial<AutoRun>): Partial<AutoRun> {
   }
   return update
 }
-function patch(projectId: string, task: string | null, update: Partial<AutoRun>, text?: string) {
+function patch(
+  projectId: string,
+  task: string | null,
+  update: Partial<AutoRun>,
+  text?: string,
+  releaseOwnership = true,
+) {
   const run = autoRun(projectId, task)
   if (!run) return
   update = pauseDefaults(update)
@@ -399,7 +407,7 @@ function patch(projectId: string, task: string | null, update: Partial<AutoRun>,
       log: text ? [...run.log, { atMs: Date.now(), text }].slice(-100) : run.log,
     },
   })
-  if (update.status === 'done' || update.status === 'stopped')
+  if (update.status === 'done' || (update.status === 'stopped' && releaseOwnership))
     void autoOwnership(projectId, task, false, run.ownershipId ?? run.runId)
       .then(() => (update.status === 'done' ? completeAutoTask(projectId, task) : undefined))
       .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
@@ -810,6 +818,8 @@ interface AutoController {
   pending: boolean
   wake?: () => void
   validating: boolean
+  stopping?: boolean
+  controls: number
   gatePoll?: { runId: string; atMs: number }
   completionPoll?: { turn: string; atMs: number }
   gateRequest?: { key: string; request: MergeRequest }
@@ -829,6 +839,7 @@ function controllerFor(projectId: string, task: string | null) {
       starting: false,
       pending: false,
       validating: false,
+      controls: 0,
     }
     controllers.set(key, controller)
   }
@@ -836,7 +847,7 @@ function controllerFor(projectId: string, task: string | null) {
 }
 function release(controller: AutoController) {
   controller.phase = 'idle'
-  if (controller.starting) return
+  if (controller.starting || controller.stopping || controller.controls) return
   if (controller.pending) {
     controller.wake?.()
     return
@@ -851,10 +862,27 @@ function release(controller: AutoController) {
   )
     controllers.delete(key)
 }
+/** Let a confirmed Stop settle any existing command before stopping the captured work. */
+async function trackAutoControl(
+  projectId: string,
+  task: string | null,
+  command: () => Promise<void>,
+) {
+  checkAutoStop(projectId, task)
+  const controller = controllerFor(projectId, task)
+  controller.controls++
+  try {
+    await command()
+  } finally {
+    controller.controls--
+    if (controller.phase === 'idle') release(controller)
+  }
+}
 export async function startAuto(projectId: string, task: string | null, settings: AutoSettings) {
   snapshotReadEpoch++
   const controller = controllerFor(projectId, task)
   if (controller.starting) throw new Error('Auto is already starting in this worktree')
+  checkAutoStop(projectId, task)
   // A launch may still attach its agent to a run; any other drive belongs to a finished run.
   if (controller.phase === 'launching')
     throw new Error('Auto is still starting an agent; Start once it has started')
@@ -941,23 +969,37 @@ export function pauseAuto(
   task: string | null,
   reason = 'Paused by you',
   pauseKind: NonNullable<AutoRun['pauseKind']> = 'user',
+  reportFailure = false,
 ) {
+  if (peekController(projectId, task)?.stopping)
+    return reportFailure
+      ? Promise.reject(new Error('Auto is already stopping.'))
+      : Promise.resolve()
   const run = autoRun(projectId, task)
   patch(
     projectId,
     task,
     {
       status: 'paused',
+      // A failed Stop's agents may still run; pausing doesn't settle that.
+      stopPending: run?.stopPending,
       reason,
       pauseKind,
       recovery: run?.recovery ? { ...run.recovery, pending: false } : undefined,
     },
     reason,
   )
-  for (const id of [run?.scanRound, run?.implementationRun ?? run?.implementationLaunch].filter(
+  const ids = [run?.scanRound, run?.implementationRun ?? run?.implementationLaunch].filter(
     (id): id is string => !!id,
-  ))
-    void controlProviderRun(projectId, id, { kind: 'pause' }).catch(() => {})
+  )
+  if (!ids.length) return Promise.resolve()
+  return trackAutoControl(projectId, task, async () => {
+    const results = await Promise.allSettled(
+      ids.map((id) => controlProviderRun(projectId, id, { kind: 'pause' })),
+    )
+    const failed = results.find((result) => result.status === 'rejected')
+    if (reportFailure && failed) throw failed.reason
+  })
 }
 const sessionAgent = (id: string | null | undefined) => {
   if (!id) return undefined
@@ -1014,6 +1056,7 @@ export async function resumeAutoWithAgent(
   task: string | null,
   deviceId: string,
 ) {
+  checkAutoStop(projectId, task)
   const run = autoRun(projectId, task)
   if (!run) return
   const devices = agentDevices(useStore.getState().devices)
@@ -1070,16 +1113,27 @@ export async function resumeAutoWithAgent(
     throw e
   }
 }
-export async function resumeAuto(
+export function resumeAuto(
   projectId: string,
   task: string | null,
   scheduled = false,
+  terminal?: TerminalSpec,
+) {
+  return trackAutoControl(projectId, task, () => resume(projectId, task, scheduled, terminal))
+}
+
+async function resume(
+  projectId: string,
+  task: string | null,
+  scheduled: boolean,
   terminal?: TerminalSpec,
 ) {
   snapshotReadEpoch++
   if (!scheduled) cancelAutoResume(projectId, task)
   const run = autoRun(projectId, task)
   if (!run) return
+  // Only the user resumes a run whose Stop has not finished.
+  if (scheduled && run.stopPending) return
   for (const id of runAgents(run)) {
     const device = agentDevices(useStore.getState().devices).find((d) => d.id === id)
     if (device) await requireDeviceAuth(device, projectId, task, undefined, !scheduled)
@@ -1102,7 +1156,7 @@ export async function resumeAuto(
     )
     if (build && autoRun(projectId, task) === run) {
       patch(projectId, task, { implementationRun: build.id, ...track([]) })
-      return resumeAuto(projectId, task, scheduled, terminal)
+      return resume(projectId, task, scheduled, terminal)
     }
   }
   if (run.stage === 'scan' || (run.stage === 'implement' && run.implementationRun)) {
@@ -1428,7 +1482,21 @@ const stopTracked = (run: AutoRun) =>
     run,
     launches(run).map((l) => l.sessionId),
   )
-export function stopAuto(projectId: string, task: string | null) {
+export function stopAuto(projectId: string, task: string | null): void
+export function stopAuto(
+  projectId: string,
+  task: string | null,
+  expected: AutoRun,
+  options?: { replace?: boolean },
+): Promise<void>
+export function stopAuto(
+  projectId: string,
+  task: string | null,
+  expected?: AutoRun,
+  options?: { replace?: boolean },
+) {
+  if (expected) return stopSelectedAuto(projectId, task, expected, !!options?.replace)
+  checkAutoStop(projectId, task)
   snapshotReadEpoch++
   const run = autoRun(projectId, task)
   patch(
@@ -1456,13 +1524,198 @@ export function stopAuto(projectId: string, task: string | null) {
       useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
     )
 }
-export async function skipStage(projectId: string, task: string | null) {
+
+/** The confirmed run is no longer the current one; nothing was stopped on its behalf. */
+class AutoRunChanged extends Error {}
+
+/**
+ * Stop the confirmed run and wait for its agents. A replacement needs them gone, so its stop stays
+ * pending on failure. A plain Stop that can't confirm this falls back to stopping at once and
+ * leaves any agent still exiting, as Stop always did.
+ */
+async function stopSelectedAuto(
+  projectId: string,
+  task: string | null,
+  expected: AutoRun,
+  replace: boolean,
+) {
+  try {
+    await stopConfirmedAuto(projectId, task, expected)
+  } catch (error) {
+    const now = autoRun(projectId, task)
+    if (
+      replace ||
+      error instanceof AutoRunChanged ||
+      peekController(projectId, task)?.stopping ||
+      !now ||
+      (now.ownershipId ?? now.runId) !== (expected.ownershipId ?? expected.runId) ||
+      !unfinished(now.status)
+    )
+      throw error
+    stopAuto(projectId, task)
+    useStore
+      .getState()
+      .setMessage(
+        `Auto stopped, but some of its work may still be exiting. ${workErrorText(error)}`,
+        undefined,
+        undefined,
+        'warning',
+      )
+  }
+}
+const workErrorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+function checkAutoStop(projectId: string, task: string | null) {
+  if (peekController(projectId, task)?.stopping)
+    throw new Error('Auto is still stopping. Try again when its agents have stopped.')
+}
+
+/** Stop the selected run and wait before offering a replacement. A failed stop remains retryable. */
+async function stopConfirmedAuto(projectId: string, task: string | null, expected: AutoRun) {
+  const run = autoRun(projectId, task)
+  if (!run || !sameAutoRun(expected, run) || run.status === 'done' || run.status === 'stopped')
+    throw new AutoRunChanged('The Auto run changed. Open Auto and review its current state.')
+  const controller = controllerFor(projectId, task)
+  checkAutoStop(projectId, task)
+  snapshotReadEpoch++
+  if (controller.phase === 'launching' || controller.starting)
+    throw new Error('Auto is still starting an agent. Try Stop again once the launch settles.')
+  if (
+    (launches(run).some((launch) => launch.owned) ||
+      run.scanRound ||
+      run.implementationRun ||
+      run.implementationLaunch ||
+      controller.validating) &&
+    !useStore.getState().serviceConnected
+  )
+    throw new Error('Wait for the session service to reconnect, then try Stop again.')
+  controller.stopping = true
+  const runId = crypto.randomUUID()
+  // Restored if the stop fails. A scheduled resume is not: it would restart what the user stopped.
+  const scheduling = { usageWait: run.usageWait, limitedProviders: run.limitedProviders }
+  patch(projectId, task, {
+    status: 'paused',
+    stopPending: true,
+    runId,
+    ownershipId: run.ownershipId ?? run.runId,
+    reason: 'Stopping Auto…',
+    recovery: run.recovery ? { ...run.recovery, pending: false } : undefined,
+  })
+  try {
+    const current = () => {
+      if (autoRun(projectId, task)?.runId !== runId)
+        throw new AutoRunChanged('The Auto run changed. Open Auto to check its current state.')
+    }
+    const waitForStop = async (running: () => boolean | Promise<boolean>, message: string) => {
+      const deadline = Date.now() + 10000
+      while (await running()) {
+        current()
+        if (Date.now() >= deadline) throw new Error(message)
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      current()
+    }
+    if (controller.validating) await graphValidationCancel(projectId, task)
+    await waitForStop(
+      () => controller.phase !== 'idle' || controller.validating,
+      'Auto work is still settling. Try Stop again when it has finished.',
+    )
+    // Other controls see the new runId and return at their next check. Give them a moment so
+    // their provider calls land before the stop; a hung one must not block Stop.
+    const settleBy = Date.now() + 2000
+    while (controller.controls > 0 && Date.now() < settleBy) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      current()
+    }
+    // Work that settled meanwhile may have recorded sessions or provider runs; stop both.
+    const latest = autoRun(projectId, task) ?? run
+    const tracked = [...launches(run), ...launches(latest)].filter(
+      (launch, i, all) => all.findIndex((l) => l.sessionId === launch.sessionId) === i,
+    )
+    if (tracked.some((launch) => launch.owned && launch.startedMs === undefined))
+      await reconcileFreshSessions()
+    const stopSession = async (launch: Tracked, requestStop = true) => {
+      const id = launch.sessionId
+      const ownedSession = async () => {
+        const session = await terminalSnapshot(id, 0)
+        return session?.running && owns(launch, session.startedMs) ? session : undefined
+      }
+      const session = await ownedSession()
+      current()
+      if (!session) return
+      if (requestStop && !session.status?.stopped) await terminalStop(id)
+      await waitForStop(
+        async () => !!(await ownedSession()),
+        'An Auto agent is still stopping. Try Stop again once it has exited.',
+      )
+    }
+    const providerIds = [
+      ...new Set(
+        [run, latest].flatMap((r) => [r.scanRound, r.implementationRun ?? r.implementationLaunch]),
+      ),
+    ].filter((id): id is string => !!id)
+    const stopProviders = async () => {
+      const runs = await providerRuns(projectId)
+      for (const id of providerIds) {
+        if (!runs.some((provider) => provider.id === id)) continue
+        current()
+        const provider = await controlProviderRun(projectId, id, { kind: 'stop' })
+        await reconcileFreshSessions()
+        const owned = [provider.coordinator, ...provider.jobs].flatMap((job) =>
+          job?.sessionId
+            ? [{ sessionId: job.sessionId, requestId: job.requestId, owned: true }]
+            : [],
+        )
+        await Promise.all(owned.map((launch) => stopSession(launch, false)))
+      }
+    }
+    const results = await Promise.allSettled([
+      ...tracked.filter((launch) => launch.owned).map((launch) => stopSession(launch)),
+      ...(providerIds.length ? [stopProviders()] : []),
+    ])
+    const errors = results.flatMap((result) =>
+      result.status === 'rejected'
+        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+        : [],
+    )
+    if (errors.length) throw new Error(errors.join('\n'))
+    current()
+    await autoOwnership(projectId, task, false, run.ownershipId ?? run.runId)
+    if (autoRun(projectId, task)?.runId !== runId)
+      throw new AutoRunChanged('The Auto run changed. Open Auto to check its current state.')
+    patch(projectId, task, { status: 'stopped', reason: 'Stopped by you' }, 'Auto stopped', false)
+  } catch (error) {
+    if (autoRun(projectId, task)?.runId === runId)
+      patch(projectId, task, {
+        ...scheduling,
+        reason: `Could not finish stopping Auto. ${error instanceof Error ? error.message : error}`,
+      })
+    throw error
+  } finally {
+    controller.stopping = false
+    if (controller.phase === 'idle') release(controller)
+  }
+}
+
+/** Polling may replace the run object meanwhile; only another run, stage or status is a change. */
+function checkSkipTarget(projectId: string, task: string | null, run: AutoRun) {
+  const now = autoRun(projectId, task)
+  if (now?.runId !== run.runId || now.stage !== run.stage || now.status !== run.status)
+    throw new Error('The Auto run changed before it could continue. Open Auto to check its state.')
+}
+
+export function skipStage(projectId: string, task: string | null) {
+  return trackAutoControl(projectId, task, () => skip(projectId, task))
+}
+
+async function skip(projectId: string, task: string | null) {
   cancelAutoResume(projectId, task)
   const run = autoRun(projectId, task)
   if (!run || run.status === 'running') return
   if (run.stage === 'scan') {
     if (!run.scanRound) throw new Error('Start scanning before continuing with findings')
     await controlProviderRun(projectId, run.scanRound, { kind: 'continueScan' })
+    checkSkipTarget(projectId, task, run)
     patch(projectId, task, {
       ...track([]),
       stage: 'plan',
@@ -1473,6 +1726,7 @@ export async function skipStage(projectId: string, task: string | null) {
   }
   if (run.stage === 'implement' && run.implementationRun) {
     const build = (await providerRuns(projectId)).find((r) => r.id === run.implementationRun)
+    checkSkipTarget(projectId, task, run)
     if (!build || build.state !== 'complete')
       throw new Error('Every assignment must be integrated before validation or review')
   }
@@ -1525,6 +1779,7 @@ function settleIntegrated(projectId: string, task: string | null, run: AutoRun) 
   void stopTracked(run)
 }
 export function mergeNow(projectId: string, task: string | null) {
+  checkAutoStop(projectId, task)
   const run = autoRun(projectId, task)
   if (run?.stage !== 'mergeGate' || run.status !== 'waitingOnYou') return
   patch(projectId, task, { stage: 'merge', status: 'running', reason: undefined }, 'Merge approved')
@@ -2959,7 +3214,9 @@ export function cancelAutoResume(projectId: string, task: string | null) {
     patch(projectId, task, { resumeTrigger: undefined }, 'Scheduled resume cancelled')
 }
 export function scheduleAutoResume(projectId: string, task: string | null, atMs: number) {
+  checkAutoStop(projectId, task)
   const run = autoRun(projectId, task)
+  if (run?.stopPending) throw new Error('Finish stopping Auto before scheduling a resume')
   if (run?.status !== 'paused' || run.pauseKind === 'needsUser')
     throw new Error('Resolve the issue or pause the run before scheduling')
   if (!Number.isFinite(atMs) || atMs <= Date.now()) throw new Error('Choose a future date and time')
@@ -3106,7 +3363,7 @@ export function followAuto() {
     if (disposed) return
     const controller = controllerFor(projectId, task)
     controller.wake = () => schedule(projectId, task)
-    if (controller.phase !== 'idle' || controller.starting) {
+    if (controller.phase !== 'idle' || controller.starting || controller.stopping) {
       controller.pending = true
       return
     }

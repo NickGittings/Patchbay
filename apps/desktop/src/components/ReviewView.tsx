@@ -1,3 +1,5 @@
+import WorkFeedback from './WorkFeedback'
+import { autoBlocker } from '../lib/workBlocker'
 import { availableReviewBase } from '../lib/reviewAgents'
 import PanelStatus from './PanelStatus'
 import CommitDetails from './changes/CommitDetails'
@@ -162,6 +164,13 @@ export default function ReviewView() {
   if (reviewDialogScope && !reviewDialog) setReviewDialogScope(null)
   const mergeDialog = mergeDialogScope === dialogScope
   if (mergeDialogScope && !mergeDialog) setMergeDialogScope(null)
+  const [jobError, setJobError] = useState<{
+    scope: string
+    stage: 'review' | 'merge'
+    error: Error
+  }>()
+  const blockedMessage = useStore(() => autoBlocker(projectId, activeTask)?.message)
+  const autoHold = blockedMessage ? autoBlocker(projectId, activeTask) : undefined
   const canMerge = !!source?.branch && mergeDestinations(source, worktrees, branches).length > 0
   const findings = useReviewFindings(projectId, source?.branch)
   const base = availableReviewBase(source, tasks, worktrees, branches, findings?.findings?.base)
@@ -316,7 +325,11 @@ export default function ReviewView() {
           source={source}
           worktrees={worktrees}
           close={() => setReviewDialogScope(null)}
+          onError={(error) => setJobError({ scope: dialogScope, stage: 'review', error })}
           launched={(sid) => {
+            setJobError((current) =>
+              current?.scope === dialogScope && current.stage === 'review' ? undefined : current,
+            )
             if (useStore.getState().project?.id === projectId)
               useStore.getState().setActiveSession(sid)
             setReviewDialogScope(null)
@@ -331,7 +344,11 @@ export default function ReviewView() {
           worktrees={worktrees}
           branches={branches}
           close={() => setMergeDialogScope(null)}
+          onError={(error) => setJobError({ scope: dialogScope, stage: 'merge', error })}
           launched={(sid) => {
+            setJobError((current) =>
+              current?.scope === dialogScope && current.stage === 'merge' ? undefined : current,
+            )
             if (useStore.getState().project?.id === projectId)
               useStore.getState().setActiveSession(sid)
             setMergeDialogScope(null)
@@ -374,20 +391,33 @@ export default function ReviewView() {
                       </details>
                     )}
                   </div>
+                  {autoHold && <WorkFeedback error={autoHold} />}
+                  {!reviewDialog &&
+                    !mergeDialog &&
+                    jobError?.scope === dialogScope &&
+                    jobError.error.message !== autoHold?.message && (
+                      <WorkFeedback error={jobError.error} />
+                    )}
+                  {source && !source.branch && (
+                    <p className="hint">Check out a branch before reviewing or merging.</p>
+                  )}
+                  {source?.branch && branches.length > 0 && !canMerge && (
+                    <p className="hint">Create another local branch before merging.</p>
+                  )}
                   <div className="review-title-row">
                     <span className="review-totals">
                       {review && shownFiles.length > 0 && <DiffStat {...totals} />}
                     </span>
                     <button
                       className={`review-agent-button${nextMerge || nextFix ? '' : ' primary'}`}
-                      disabled={!source?.branch}
+                      disabled={!source?.branch || !!autoHold}
                       onClick={() => setReviewDialogScope(dialogScope)}
                     >
                       Review branch…
                     </button>
                     <button
                       className={`review-merge-button${nextMerge ? ' primary' : ''}`}
-                      disabled={!canMerge}
+                      disabled={!canMerge || !!autoHold}
                       title={
                         canMerge
                           ? 'Merge the reviewed branch into another local branch'

@@ -28,7 +28,7 @@ import { refreshTasks } from './tasks'
 import { useStore } from '../store'
 import { listenForTerminals, reconcileFreshSessions } from './sessions'
 import { sessionLive, sessionTimeMs } from './sessionList'
-import { reviewerBusy } from './review'
+export { reviewWorktreeBusy } from './review'
 import { agentTerminal } from './plan'
 
 /** Existing local branches, with a checkout when one is already available. */
@@ -109,26 +109,6 @@ export const reviewWorktreeRunning = (
   sessions: Record<string, SessionState>,
   worktree: string,
 ) => jobRunning(records, sessions, REVIEW_SCOPE, worktree)
-
-/**
- * A review of `worktree` that may still be writing findings. Interactive agents keep running at
- * their prompt once done, so a live process counts as finished only once its agent reported the
- * end of its turn (`review`; a self-reported one until output resumes), or its provider's hooks
- * confirmed it idle. A permission prompt, quiet
- * thinking, a stale self-report or an unconfirmed Esc may still lead to more writing; without any
- * report, the reviewer must exit first.
- */
-export const reviewWorktreeBusy = (
-  records: SessionRecord[],
-  sessions: Record<string, SessionState>,
-  worktree: string,
-) =>
-  records.some(
-    (r) =>
-      r.metadata.componentId === REVIEW_SCOPE &&
-      r.spec.cwd === worktree &&
-      reviewerBusy(sessions[r.id], sessions[r.id]?.running ?? sessionLive(r)),
-  )
 
 /** Recover review and merge terminals from the session service, even after Review unmounts. */
 /**
@@ -231,6 +211,10 @@ export type MergeOptions = MergeLaunch &
     | {
         source: Worktree
         destinationBranch: string
+        /** Recheck ownership before resolution commits the source or prepares a checkout. */
+        beforeResolve?: () => void
+        /** Recheck ownership after destination resolution and before starting the agent. */
+        beforeLaunch?: (request: MergeRequest) => void
         /** Stop and report conflicts with the destination instead of launching. */
         checkConflicts?: boolean
         /**
@@ -289,6 +273,7 @@ export async function startMerge(options: MergeOptions): Promise<MergeStart> {
     if (!changes.length) approved = undefined
   }
   let request: MergeRequest
+  options.beforeResolve?.()
   try {
     request = await mergeDestinationResolve(
       project,
@@ -300,6 +285,7 @@ export async function startMerge(options: MergeOptions): Promise<MergeStart> {
   } finally {
     await refreshTasks(project.projectId).catch(() => {})
   }
+  options.beforeLaunch?.(request)
   const sessionId = await launchMerge(project, request, device, requestId, undefined, 'ask')
   return { kind: 'started', request, sessionId, requestId }
 }

@@ -1,10 +1,13 @@
 import {
+  REVIEW_SCOPE,
   sessionId,
+  type SessionRecord,
   type ChangedFile,
   type ChangeKind,
   type SessionState,
   type TerminalSpec,
 } from '../types'
+import { sessionLive } from './sessionList'
 
 /** Whether a task terminal's last run covers the current changes. */
 export type ValidationState = 'running' | 'passed' | 'failed' | 'stale' | 'notRun'
@@ -164,3 +167,23 @@ export function agentTurnEnded(
     !reviewerBusy(s, true)
   )
 }
+
+/**
+ * A review of `worktree` that may still be writing findings. Interactive agents keep running at
+ * their prompt once done, so a live process counts as finished only once its agent reported the
+ * end of its turn (`review`; a self-reported one until output resumes), or its provider's hooks
+ * confirmed it idle. A permission prompt, quiet
+ * thinking, a stale self-report or an unconfirmed Esc may still lead to more writing; without any
+ * report, the reviewer must exit first.
+ */
+export const reviewWorktreeBusy = (
+  records: SessionRecord[],
+  sessions: Record<string, SessionState>,
+  worktree: string,
+) =>
+  records.some(
+    (r) =>
+      r.metadata.componentId === REVIEW_SCOPE &&
+      r.spec.cwd === worktree &&
+      reviewerBusy(sessions[r.id], sessions[r.id]?.running ?? sessionLive(r)),
+  )

@@ -114,3 +114,24 @@ Review groups task/branch and comparison context with verdict and findings above
 the full worktree path is disclosed on demand. Review and component Changes use `PanelStatus`
 for loading and retryable failures, with technical details collapsed. Validation remains scoped
 to each component rather than being implied by the review verdict.
+
+### Blocked work controls
+
+Auto's panel is shared by Chat and the regular views. A paused run gives **Resume** priority.
+**Stop and configure new run** confirms the goal and worktree, checks the run and checkout again,
+and waits for the run's owned agents and active work to settle. If stopping fails or remains in
+progress, the panel shows the reason and a retry stays available. Until that stop succeeds, the
+run keeps `stopPending`: the shared launch checks refuse other work in that worktree, and only the
+user can resume it (a scheduled resume is dropped; its usage wait is kept). A plain **Stop**, from
+the panel or Chat's **Stop work**, that cannot confirm its agents exited falls back to stopping
+the run at once and warns that work may still be exiting. Stop waits briefly for an in-flight
+Resume, Pause, or skip, but never blocks on one that hangs. A successful stop opens setup in
+the same worktree with the previous goal, agent presets, and applicable run settings. The starting
+stage returns to **Detected** and the replacement begins only with **Start**, with its fix-round
+count at zero. The rail still infers a starting stage from work already underway.
+
+The shared Build, Review, Fix, and Merge launch checks identify the Auto-owned worktree in their
+feedback. **Open Auto** selects that exact worktree, including a merge destination discovered
+during resolution. After a direct **Stop** from that recovery route, Patchbay returns to the
+original worktree and stage controls for an explicit retry. Dialogs keep failed launches visible
+after closing. Existing ownership and launch checks still apply.

@@ -24,3 +24,13 @@ export function autoRuns(state: AutoState) {
       return run ? [{ task, run }] : []
     })
 }
+
+export function sameAutoRun(expected: AutoRun, current: AutoRun | null | undefined) {
+  return (
+    current?.runId === expected.runId &&
+    current.status === expected.status &&
+    current.stage === expected.stage &&
+    current.pausedMs === expected.pausedMs &&
+    current.branch === expected.branch
+  )
+}

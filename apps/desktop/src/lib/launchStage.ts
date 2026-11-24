@@ -5,7 +5,8 @@ import { implementPlannerPlan, type HandoffTarget } from './planHandoff'
 import { startMerge, type MergeOptions } from './reviewAgents'
 import { fixReviewFindings } from './reviewHandoff'
 import { startSimpleReview } from './simpleReview'
-import { recordStageLaunch, refuseWhileAutoRuns, type StageLaunch } from './stageRecord'
+import { autoBlocker, refuseWhileAutoRuns } from './workBlocker'
+import { recordStageLaunch, type StageLaunch } from './stageRecord'
 
 /** The agent already runs, so a failure to record it never reports the launch as failed. */
 const recordQuietly = (launch: StageLaunch) => recordStageLaunch(launch).catch(() => {})
@@ -61,7 +62,9 @@ export async function launchReview(
   devices: DeviceManifest[],
 ) {
   refuseWhileAutoRuns(project.projectId!, task)
-  const result = await startSimpleReview(project, request, devices)
+  const result = await startSimpleReview(project, request, devices, () =>
+    refuseWhileAutoRuns(project.projectId!, task),
+  )
   if (task === undefined) return result
   await recordQuietly({
     projectId: project.projectId!,
@@ -90,10 +93,19 @@ export async function launchMerge(
   const destination = (await gitWorktrees(projectId)).find(
     (w) => w.branch === options.destinationBranch,
   )
-  if (destination) refuseWhileAutoRuns(projectId, taskOfWorktree(destination, projectId))
-  // Checked again after the worktree read, in case Auto started or resumed meanwhile.
-  refuseWhileAutoRuns(projectId, task)
-  const started = await startMerge(options)
+  const check = (target?: Pick<Worktree, 'path'> & Partial<Pick<Worktree, 'main'>>) => {
+    const blocker = mergeAutoBlocker(projectId, task, target)
+    if (blocker) throw blocker
+  }
+  check(destination)
+  const started = await startMerge({
+    ...options,
+    beforeResolve: () => check(destination),
+    beforeLaunch: (request) =>
+      check(
+        request.destination === destination?.path ? destination : { path: request.destination },
+      ),
+  })
   if (started.kind === 'started' && task !== undefined)
     await recordQuietly({
       projectId: options.project.projectId!,
@@ -121,4 +133,17 @@ export function taskOfWorktree(
   const task = state?.tasks.find((t) => !t.missing && t.worktree === worktree.path)
   if (task) return task.id
   return worktree.main || worktree.path === state?.project?.root ? null : undefined
+}
+
+/** Auto may control the source or the checkout where the merge agent will run. */
+export function mergeAutoBlocker(
+  projectId: string | undefined,
+  source: string | null | undefined,
+  destination?: Pick<Worktree, 'path'> & Partial<Pick<Worktree, 'main'>>,
+) {
+  if (!projectId) return
+  return (
+    autoBlocker(projectId, source) ??
+    (destination && autoBlocker(projectId, taskOfWorktree(destination, projectId)))
+  )
 }

@@ -1,3 +1,5 @@
+import WorkFeedback from './WorkFeedback'
+import { autoBlocker, workError } from '../lib/workBlocker'
 import { usePlanningTask, usePlanningSelection } from '../lib/planningScope'
 import ProviderRunsPanel from './ProviderRunsPanel'
 import PersistedGroup from './PersistedGroup'
@@ -107,7 +109,7 @@ export default function PlanView() {
     (pendingTransfer?.projectId === project?.id ? pendingTransfer?.task : undefined)
   const [restarting, setRestarting] = useState(false)
   const [implementing, setImplementing] = useState(false)
-  const [handoffResult, setHandoffResult] = useState({ key: '', error: '' })
+  const [handoffResult, setHandoffResult] = useState<{ key: string; error?: Error }>()
   const [planLoads, setPlanLoads] = useState(0)
   const [planOpen, setPlanOpen] = useState(false)
   const [plan, setPlan] = useState('')
@@ -205,7 +207,11 @@ export default function PlanView() {
   const planKey = projectId ? `${projectId}\n${task ?? ''}` : null
   // Which worktree a handoff targeted, so switching away hides its error.
   const handoffKey = `${projectId ?? ''}\n${task ?? ''}`
-  const handoffError = handoffResult.key === handoffKey ? handoffResult.error : ''
+  const handoffError = handoffResult?.key === handoffKey ? handoffResult.error : undefined
+  const blockedMessage = useStore(
+    () => task !== PROJECT_DRAFT && autoBlocker(projectId, task)?.message,
+  )
+  const autoHold = blockedMessage ? autoBlocker(projectId, task) : undefined
   // Which plan a finished save belongs to, so a project switch mid-save doesn't show its result.
   const currentKey = useRef(planKey)
   useEffect(() => {
@@ -302,14 +308,14 @@ export default function PlanView() {
   const implement = async (key = handoffKey) => {
     if (implementing) return
     setImplementing(true)
-    setHandoffResult({ key, error: '' })
+    setHandoffResult(undefined)
     try {
       await launchBuild('manual', active.id, projectId!, task, 'follow', {
         projectId: projectId!,
         task,
       })
     } catch (e) {
-      setHandoffResult({ key, error: String(e) })
+      setHandoffResult({ key, error: workError(e) })
     } finally {
       setImplementing(false)
     }
@@ -390,10 +396,10 @@ export default function PlanView() {
                       try {
                         await transferProjectDraft(projectId!, retryTask)
                         setPendingTransfer(undefined)
-                        setHandoffResult({ key: handoffKey, error: '' })
+                        setHandoffResult(undefined)
                         useStore.getState().setActiveTask(retryTask)
                       } catch (e) {
-                        setHandoffResult({ key: handoffKey, error: String(e) })
+                        setHandoffResult({ key: handoffKey, error: workError(e) })
                       } finally {
                         setImplementing(false)
                       }
@@ -407,17 +413,16 @@ export default function PlanView() {
               ) : (
                 <button
                   className={stage?.state.step === 'planReady' ? 'primary' : undefined}
-                  disabled={implementing || proposalBusy}
+                  disabled={implementing || proposalBusy || !!autoHold}
                   onClick={() => void implement()}
                 >
                   {implementing ? implementLabel : `Implement in ${taskTitle ?? 'main worktree'} →`}
                 </button>
               )}
             </div>
-            {handoffError && (
-              <p className="hint file-tree-error" role="alert">
-                {handoffError}
-              </p>
+            {autoHold && <WorkFeedback error={autoHold} />}
+            {handoffError && handoffError.message !== autoHold?.message && (
+              <WorkFeedback error={handoffError} />
             )}
             <div className="hint">
               {highlighted.length

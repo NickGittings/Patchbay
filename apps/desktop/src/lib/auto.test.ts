@@ -13,6 +13,7 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
 }))
 import { beforeEach, afterEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
+import { autoBlocker } from './workBlocker'
 import {
   TASK_ROOT_SCOPE,
   TERMINAL_RUNNING,
@@ -6144,4 +6145,131 @@ test.each([
       pauseKind: 'usage',
       limitedProviders: ['codex'],
     })
+})
+
+test('confirmed Stop ignores a replacement run and leaves its agents untargeted', async () => {
+  load()
+  setRun({ status: 'paused', runId: 'confirmed' })
+  const confirmed = autoRun('p', 't')!
+  setRun({ status: 'paused', runId: 'replacement' })
+  await expect(stopAuto('p', 't', confirmed)).rejects.toThrow('Auto run changed')
+  expect(autoRun('p', 't')?.runId).toBe('replacement')
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+})
+
+test('a failed confirmed Stop leaves its paused run available for another attempt', async () => {
+  load()
+  setRun({ status: 'paused', sessionId: 's', sessionOwned: true, sessionStartedMs: 1000 })
+  const confirmed = autoRun('p', 't')!
+  vi.mocked(ipc.terminalSnapshot).mockRejectedValueOnce(new Error('service unavailable'))
+  await expect(stopAuto('p', 't', confirmed, { replace: true })).rejects.toThrow(
+    'service unavailable',
+  )
+  expect(autoRun('p', 't')).toMatchObject({
+    status: 'paused',
+    reason: expect.stringContaining('service unavailable'),
+  })
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(null)
+  await stopAuto('p', 't', autoRun('p', 't')!)
+  expect(autoRun('p', 't')?.status).toBe('stopped')
+})
+
+test('confirmed Stop waits for an in-flight provider resume before ending the round', async () => {
+  vi.useFakeTimers()
+  const { providers, current } = await autonomousScan()
+  current.jobs = []
+  setRun({ stage: 'scan', scanRound: 'scan', status: 'paused' })
+  let finishResume!: (run: typeof current) => void
+  vi.mocked(providers.controlProviderRun).mockImplementation(async (_project, _id, control) => {
+    if (control.kind === 'resume')
+      return new Promise((resolve) => {
+        finishResume = resolve
+      })
+    current.state = 'stopped'
+    return current
+  })
+  const resuming = resumeAuto('p', 't')
+  await flush()
+  expect(providers.controlProviderRun).toHaveBeenCalledWith('p', 'scan', { kind: 'resume' })
+  const stopping = stopAuto('p', 't', autoRun('p', 't')!)
+  await flush()
+  expect(providers.controlProviderRun).toHaveBeenCalledTimes(1)
+  expect(autoRun('p', 't')?.reason).toBe('Stopping Auto…')
+  current.state = 'running'
+  finishResume(current)
+  await resuming
+  await vi.advanceTimersByTimeAsync(100)
+  await stopping
+  expect(providers.controlProviderRun).toHaveBeenLastCalledWith('p', 'scan', { kind: 'stop' })
+  expect(autoRun('p', 't')?.status).toBe('stopped')
+  expect(current.state).toBe('stopped')
+})
+
+test('a failed Stop for a replacement keeps blocking work and never resumes on its own', async () => {
+  load()
+  const usageWait = { providers: ['claude' as const], atMs: 5000 }
+  setRun({
+    status: 'paused',
+    pauseKind: 'usage',
+    resumeTrigger: { kind: 'usage', atMs: 5000 },
+    usageWait,
+    sessionId: 's',
+    sessionOwned: true,
+    sessionStartedMs: 1000,
+  })
+  vi.mocked(ipc.terminalSnapshot).mockRejectedValueOnce(new Error('service unavailable'))
+  await expect(stopAuto('p', 't', autoRun('p', 't')!, { replace: true })).rejects.toThrow(
+    'service unavailable',
+  )
+  expect(autoRun('p', 't')).toMatchObject({ status: 'paused', stopPending: true, usageWait })
+  expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
+  expect(autoBlocker('p', 't')?.message).toContain('still stopping')
+  await resumeAuto('p', 't', true)
+  expect(autoRun('p', 't')).toMatchObject({ status: 'paused', stopPending: true })
+  pauseAuto('p', 't')
+  expect(() => scheduleAutoResume('p', 't', Date.now() + 60_000)).toThrow('Finish stopping')
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(null)
+  await stopAuto('p', 't', autoRun('p', 't')!)
+  expect(autoRun('p', 't')?.stopPending).toBeUndefined()
+  expect(autoBlocker('p', 't')).toBeUndefined()
+})
+
+test('confirmed Stop does not wait on a hung provider resume', async () => {
+  vi.useFakeTimers()
+  const { providers, current } = await autonomousScan()
+  current.jobs = []
+  setRun({ stage: 'scan', scanRound: 'scan', status: 'paused' })
+  vi.mocked(providers.controlProviderRun).mockImplementation(async (_project, _id, control) => {
+    if (control.kind === 'resume') return new Promise(() => {})
+    current.state = 'stopped'
+    return current
+  })
+  void resumeAuto('p', 't')
+  await flush()
+  const stopping = stopAuto('p', 't', autoRun('p', 't')!)
+  await vi.advanceTimersByTimeAsync(3000)
+  await stopping
+  expect(providers.controlProviderRun).toHaveBeenLastCalledWith('p', 'scan', { kind: 'stop' })
+  expect(autoRun('p', 't')?.status).toBe('stopped')
+})
+
+test('continuing a scan reports a run that changed meanwhile instead of returning silently', async () => {
+  const { providers } = await autonomousScan()
+  setRun({ stage: 'scan', scanRound: 'scan', status: 'waitingOnYou' })
+  vi.mocked(providers.controlProviderRun).mockImplementation(async () => {
+    setRun({ stage: 'scan', scanRound: 'scan', status: 'paused' })
+    return {} as never
+  })
+  await expect(skipStage('p', 't')).rejects.toThrow('changed before it could continue')
+  expect(autoRun('p', 't')?.stage).toBe('scan')
+})
+
+test('a plain Stop that cannot confirm its agents stopped still stops the run', async () => {
+  load()
+  setRun({ status: 'paused', sessionId: 's', sessionOwned: true, sessionStartedMs: 1000 })
+  vi.mocked(ipc.terminalSnapshot).mockRejectedValueOnce(new Error('service unavailable'))
+  await stopAuto('p', 't', autoRun('p', 't')!)
+  expect(autoRun('p', 't')?.status).toBe('stopped')
+  expect(autoRun('p', 't')?.stopPending).toBeUndefined()
+  expect(useStore.getState().message).toContain('service unavailable')
 })
