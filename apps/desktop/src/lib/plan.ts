@@ -1,4 +1,4 @@
-import type { DeviceManifest, TerminalSpec } from '../types'
+import { BUILTIN_SOURCE, type DeviceManifest, type TerminalSpec } from '../types'
 
 /** The planner when no agent preset is installed. */
 const FALLBACK_AGENT: DeviceManifest = {
@@ -7,7 +7,7 @@ const FALLBACK_AGENT: DeviceManifest = {
   category: 'agent',
   command: 'claude',
   kind: 'agent',
-  source: 'builtin',
+  source: BUILTIN_SOURCE,
 }
 
 /** Agent presets for planning and implementation, else the built-in Claude. */

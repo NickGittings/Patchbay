@@ -8,6 +8,14 @@ use patchbay_core::session::{AgentSession, Request};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+const TASK_ACTIVITY_EVENT: &str = "patchbay://task-activity";
+const PROPOSAL_EVENT: &str = "patchbay://proposal";
+const MAP_LINKS_EVENT: &str = "patchbay://map-links";
+const STACK_PROPOSALS_EVENT: &str = "patchbay://stack-proposals";
+const VALIDATION_PROPOSALS_EVENT: &str = "patchbay://validation-proposals";
+const AGENT_QUESTION_EVENT: &str = "patchbay://agent-question";
+const AGENT_QUESTION_CLOSED_EVENT: &str = "patchbay://agent-question-closed";
+
 struct Desktop(AppHandle);
 impl Host for Desktop {
     fn project(&self, id: &str) -> anyhow::Result<ProjectScope> {
@@ -39,29 +47,29 @@ impl Host for Desktop {
     }
     fn emit_activity(&self, activity: &Activity) {
         self.0.state::<AppState>().activities.record(activity);
-        let _ = self.0.emit("patchbay://task-activity", activity);
+        let _ = self.0.emit(TASK_ACTIVITY_EVENT, activity);
     }
     fn proposal_submitted(&self, launch: &LaunchContext) {
         let _ = self.0.emit(
-            "patchbay://proposal",
+            PROPOSAL_EVENT,
             serde_json::json!({"projectId":launch.project_id,"task":launch.task}),
         );
     }
     fn links_proposed(&self, launch: &LaunchContext) {
         let _ = self.0.emit(
-            "patchbay://map-links",
+            MAP_LINKS_EVENT,
             serde_json::json!({"projectId":launch.project_id}),
         );
     }
     fn stack_proposed(&self, launch: &LaunchContext) {
         let _ = self.0.emit(
-            "patchbay://stack-proposals",
+            STACK_PROPOSALS_EVENT,
             serde_json::json!({"projectId":launch.project_id}),
         );
     }
     fn validation_proposed(&self, launch: &LaunchContext) {
         let _ = self.0.emit(
-            "patchbay://validation-proposals",
+            VALIDATION_PROPOSALS_EVENT,
             serde_json::json!({"projectId":launch.project_id}),
         );
     }
@@ -88,12 +96,12 @@ impl Host for Desktop {
             wait,
             |offered| {
                 id = Some(offered.id.clone());
-                let _ = self.0.emit("patchbay://agent-question", offered);
+                let _ = self.0.emit(AGENT_QUESTION_EVENT, offered);
             },
         );
         if let Some(id) = id {
             let _ = self.0.emit(
-                "patchbay://agent-question-closed",
+                AGENT_QUESTION_CLOSED_EVENT,
                 serde_json::json!({"id":id,"answered":answer.is_some()}),
             );
         }

@@ -6,6 +6,9 @@ import type { AutoRun } from '../types'
 import { autoRuns } from './autoState'
 import { autoHasWorkingSessions } from './auto'
 
+const setKeepAwakeDemand = (enabled: boolean, needed: boolean) =>
+  invoke<void>('set_auto_keep_awake_demand', { enabled, needed })
+
 export type PowerStatus = 'inactive' | 'active' | 'onBattery' | 'powerUnknown' | 'unavailable'
 export const useAutoPower = create<{ status: PowerStatus; error?: string | null }>(() => ({
   status: 'inactive',
@@ -94,13 +97,13 @@ export function followAutoPower() {
       })
     busy = true
     try {
-      await invoke('set_auto_keep_awake_demand', { enabled, needed })
+      await setKeepAwakeDemand(enabled, needed)
     } catch (e) {
       if (!disposed) useAutoPower.setState({ status: 'unavailable', error: String(e) })
     } finally {
       busy = false
       if (disposed) {
-        void invoke('set_auto_keep_awake_demand', { enabled: false, needed: false }).catch(() => {})
+        void setKeepAwakeDemand(false, false).catch(() => {})
       }
       if (pending) {
         pending = false
@@ -142,6 +145,6 @@ export function followAutoPower() {
     clearInterval(timer)
     void unlisten.then((stop) => stop?.())
     // The in-flight command also releases in finally, preserving cleanup ordering.
-    void invoke('set_auto_keep_awake_demand', { enabled: false, needed: false }).catch(() => {})
+    void setKeepAwakeDemand(false, false).catch(() => {})
   }
 }

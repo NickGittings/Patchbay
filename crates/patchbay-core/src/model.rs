@@ -5,6 +5,9 @@ use std::io::Write;
 use std::path::{Component as PathPart, Path, PathBuf};
 use std::sync::Mutex;
 
+/// Source of built-in detection results and device presets.
+pub const BUILTIN_SOURCE: &str = "builtin";
+
 pub const SCHEMA_VERSION: u32 = 4;
 /// Reserved component scope for project-level planner sessions.
 pub const SCAN_SCOPE: &str = "@scan";

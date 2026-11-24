@@ -1,6 +1,6 @@
 import { agentChatTask } from './agentChats'
 import { projectStateOf, useStore, workspaceOf } from '../store'
-import { PLAN_SCOPE, sessionMetadata, type Reply, type SessionRecord } from '../types'
+import { MAP_SCOPE, PLAN_SCOPE, sessionMetadata, type Reply, type SessionRecord } from '../types'
 import { logSimple } from './simpleActions'
 import { ownsPlanner, relatedSession, recordStage, visibleReply, type SimpleState } from './simple'
 import { hydrateJournal } from './journal'
@@ -48,7 +48,7 @@ function replyScopes(sid: string, generation: number, record?: SessionRecord) {
     const worktree = state.tasks.find((t) => t.id === task)
     const path = worktree?.worktree ?? state.project.root
     const branch = worktree?.branch
-    if (metadata.componentId === '@map' && agentChatTask(r, generation) !== task) continue
+    if (metadata.componentId === MAP_SCOPE && agentChatTask(r, generation) !== task) continue
     if (
       !relatedSession(r, { projectId: metadata.projectId, task, path, branch }, generation, simple)
     )

@@ -2,11 +2,9 @@
 // desktop app, stop a run's session service, and outlive an interrupt long enough to do that.
 import { spawn, execFileSync } from 'node:child_process'
 import { resolve, join } from 'node:path'
-import { createRequire } from 'node:module'
-const require = createRequire(import.meta.url)
 export const desktop = resolve(import.meta.dirname, '..')
 export const root = resolve(desktop, '../..')
-/** Set by `smoke-all.mjs`, which has built the app and serves its Vite on port 1420. */
+/** Set by `smoke-all.mjs`, which has built the app and serves its Vite (`PATCHBAY_DEV_PORT`). */
 export const prebuilt = Boolean(process.env.PATCHBAY_SMOKE_PREBUILT)
 
 export const binary = (name) =>
@@ -17,15 +15,17 @@ export const binary = (name) =>
   )
 
 /**
- * The prebuilt app, or `tauri dev` (with an optional config override) when run on its own. `stdio`
- * is passed to `spawn`, for a launcher that reads the app's reports from its stderr.
+ * The prebuilt app, or `tauri dev` on a free Vite port (`scripts/tauri.mjs`) when run on its own.
+ * `stdio` is passed to `spawn`, for a launcher that reads the app's reports from its stderr.
  */
-export function launchApp(env, config, stdio = 'inherit') {
+export function launchApp(env, stdio = 'inherit') {
   if (prebuilt)
     return spawn(binary('patchbay-desktop'), [], { cwd: join(desktop, 'src-tauri'), env, stdio })
-  const args = [require.resolve('@tauri-apps/cli/tauri.js'), 'dev']
-  if (config) args.push('--config', config)
-  return spawn(process.execPath, args, { cwd: desktop, env, stdio })
+  return spawn(process.execPath, [join(desktop, 'scripts/tauri.mjs'), 'dev'], {
+    cwd: desktop,
+    env,
+    stdio,
+  })
 }
 
 /** Stop the session service of the run whose state dir `env` names, if one started. */

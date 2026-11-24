@@ -2,6 +2,8 @@
 use serde::Deserialize;
 use tauri::{AppHandle, WebviewWindow};
 
+pub(crate) const SAVE_MENU_ACTION: &str = "action:save";
+
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Deserialize)]
 pub(crate) struct Entry {
@@ -67,7 +69,7 @@ pub(crate) fn update_native_menu(
                     continue;
                 }
                 // Cmd+S is owned here only; JS handles search and view shortcuts in each window.
-                let accelerator = (entry.id == "action:save").then_some("CmdOrCtrl+S");
+                let accelerator = (entry.id == SAVE_MENU_ACTION).then_some("CmdOrCtrl+S");
                 let item = MenuItem::with_id(&app, id, &entry.title, entry.enabled, accelerator)
                     .map_err(super::err)?;
                 submenu.append(&item).map_err(super::err)?;

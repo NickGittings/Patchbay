@@ -29,6 +29,7 @@
   --task: var(--review);
   --role-lead: var(--accent);
   --role-builder: #2dd4bf;
+  --role-subBuilder: var(--role-builder);
   --role-planner: #f472b6;
   --role-reviewer: var(--review);
   /* Neutral, so a merge agent never reads as the amber 'needs attention' signal. */
@@ -4847,4 +4848,37 @@ kbd {
 .menu-list:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+/* An extension's rail view fills its utility panel; the view pads itself. */
+.utility-panel[data-panel^='ext:'] .utility-scroll {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.utility-panel[data-panel^='ext:'] .extension-webview {
+  height: 100%;
+}
+.utility-panel[data-panel^='ext:'] .hint {
+  padding: 16px 12px;
+}
+.extension-hosts {
+  display: grid;
+  gap: 6px;
+}
+.extension-hosts .row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.extension-hosts input {
+  flex: 1;
+  min-width: 0;
+}
+.secret-dialog form {
+  display: grid;
+  gap: 10px;
+}
+.secret-dialog label {
+  display: grid;
+  gap: 4px;
 }

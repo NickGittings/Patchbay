@@ -1,6 +1,7 @@
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useStore } from '../store'
 import { gitStatus } from './ipc'
+import { MAIN_WINDOW_LABEL } from './mainWindow'
 
 let running: Promise<void> | undefined
 const pending = new Set<string>()
@@ -28,7 +29,7 @@ export function invalidateGitRefresh(projectId?: string) {
  * refreshes its originating project's status, even when its tab is inactive.
  */
 export function requestGitRefresh(projectId = useStore.getState().project?.id): Promise<void> {
-  if (getCurrentWebviewWindow().label !== 'main' || !projectId) return Promise.resolve()
+  if (getCurrentWebviewWindow().label !== MAIN_WINDOW_LABEL || !projectId) return Promise.resolve()
   pending.add(projectId)
   running ??= refresh().finally(() => {
     running = undefined

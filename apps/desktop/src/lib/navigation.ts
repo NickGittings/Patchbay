@@ -1,9 +1,9 @@
 import { isMac } from './platform'
-import { editorOpen, editorPreferences, terminalOpenReference } from './ipc'
-import { invoke } from '@tauri-apps/api/core'
+import { editorOpen, editorPreferences, editorResolveTarget, terminalOpenReference } from './ipc'
 import { FILE_EDITOR_EVENT, type FileRequest } from './fileEditor'
 import { useStore } from '../store'
 import { sessionMetadata, type EditorTarget } from '../types'
+import { simpleKey, useSimpleUi } from './simpleUi'
 
 export const EDITOR_SETTINGS_EVENT = 'patchbay:editor-settings'
 export const FILE_SEARCH_EVENT = 'patchbay:file-search'
@@ -21,9 +21,20 @@ export function showFileSearch() {
 }
 export const FOCUS_COMPONENT_EVENT = 'patchbay:focus-component'
 let pendingFocus: string | null = null
+/** Select the map or story board from a tab or a workspace action. */
+export function showNavigationCanvas(stories: boolean) {
+  const s = useStore.getState()
+  const key = simpleKey(s.project?.id, s.activeTask)
+  const ui = useSimpleUi.getState()
+  if (ui.worktrees[key]?.changes || ui.worktrees[key]?.agents)
+    ui.patch(key, { changes: false, agents: false })
+  s.setStoryBoard(stories)
+}
+
 /** Shows a component on the map, opening Navigation unless Chat's map is already shown. */
 export function focusComponent(id: string) {
   const s = useStore.getState()
+  showNavigationCanvas(false)
   if (!s.simpleMode) {
     if (s.view !== 'navigation') s.setView('navigation')
     s.select(id)
@@ -53,12 +64,7 @@ export async function openInEditor(
   const task = scope ? scope.task : s.activeTask
   try {
     const prefs = await editorPreferences()
-    const resolved = await invoke<{ path: string; isDir: boolean }>('editor_resolve_target', {
-      projectId,
-      task,
-      worktree: scope?.worktree,
-      path: target.path,
-    })
+    const resolved = await editorResolveTarget(target.path, projectId, task, scope?.worktree)
     if (prefs.fileOpenMode !== 'external' && !resolved.isDir) {
       target = { ...target, path: resolved.path }
       window.dispatchEvent(
@@ -80,12 +86,7 @@ export async function openTerminalReference(sid: string, reference: string, gene
   try {
     const prefs = await editorPreferences()
     if (prefs.fileOpenMode !== 'external') {
-      const resolved = await invoke<FileRequest>('terminal_open_reference', {
-        sessionId: sid,
-        generation,
-        reference,
-        resolveOnly: true,
-      })
+      const resolved = await terminalOpenReference(sid, generation, reference, true)
       window.dispatchEvent(new CustomEvent(FILE_EDITOR_EVENT, { detail: resolved }))
     } else await terminalOpenReference(sid, generation, reference)
   } catch (e) {

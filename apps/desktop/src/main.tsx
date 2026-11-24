@@ -7,7 +7,15 @@ import App from './App'
 import ComponentWindow from './components/ComponentWindow'
 import ProviderSetupDialog from './components/ProviderSetupDialog'
 import ConfirmHost from './components/ConfirmHost'
+import SecretPromptHost from './extensions/SecretPromptHost'
 import { trackActiveWindow } from './lib/windows'
+
+// The main window takes file drops in the page (`dragDropEnabled: false`) so Chat's composer
+// receives dropped images. A file dropped anywhere else must not replace the app with that file.
+for (const type of ['dragover', 'drop'])
+  window.addEventListener(type, (e) => {
+    if ((e as DragEvent).dataTransfer?.types.includes('Files')) e.preventDefault()
+  })
 
 const component = new URLSearchParams(window.location.search).get('component')
 
@@ -21,5 +29,6 @@ createRoot(document.getElementById('root')!).render(
     {component !== null ? <ComponentWindow id={component} /> : <App />}
     <ProviderSetupDialog />
     <ConfirmHost />
+    {component === null && <SecretPromptHost />}
   </StrictMode>,
 )

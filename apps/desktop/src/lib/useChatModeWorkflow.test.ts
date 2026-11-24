@@ -1,4 +1,4 @@
-import { beforeEach, expect, test, vi } from 'vitest'
+import { beforeEach, describe, expect, test, vi } from 'vitest'
 const hooks = vi.hoisted(() => ({ states: [] as unknown[], cursor: 0 }))
 vi.mock('react', async (original) => ({
   ...(await original<typeof import('react')>()),
@@ -14,8 +14,13 @@ vi.mock('react', async (original) => ({
   },
 }))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
-vi.mock('./reviewAgents', () => ({ startMergeAgent: vi.fn() }))
-vi.mock('./chatTeams', () => ({ controlTeam: vi.fn(), noteLead: vi.fn(), resetLead: vi.fn() }))
+vi.mock('./reviewAgents', () => ({ startMerge: vi.fn() }))
+vi.mock('./chatTeams', () => ({
+  controlTeam: vi.fn(),
+  noteLead: vi.fn(),
+  resetLead: vi.fn(),
+  teamFor: vi.fn(),
+}))
 vi.mock('./auto', () => ({
   mergeNow: vi.fn(),
   resumeAuto: vi.fn(),
@@ -29,7 +34,10 @@ vi.mock('./simpleActions', () => ({
   logLaunch: vi.fn(),
   logSimple: vi.fn(),
 }))
-vi.mock('./ipc', () => ({ gitBranches: vi.fn(), gitWorktrees: vi.fn(), mergeConflicts: vi.fn() }))
+vi.mock('./ipc', () => ({
+  gitBranches: vi.fn(),
+  gitWorktrees: vi.fn(),
+}))
 vi.mock('./simpleReview', () => ({
   simpleReviewRequest: vi.fn(() => ({})),
   startSimpleReview: vi.fn(),
@@ -40,7 +48,8 @@ import { useChatModeWorkflow } from './useChatModeWorkflow'
 import { implementPlannerPlan } from './planHandoff'
 import { noteLead } from './chatTeams'
 import { clearSimpleChat, logLaunch } from './simpleActions'
-import { gitBranches } from './ipc'
+import { gitBranches, gitWorktrees } from './ipc'
+import { startMerge } from './reviewAgents'
 import { startSimpleReview } from './simpleReview'
 import { thread } from './simple'
 import { retireStageAgents } from './stageRetire'
@@ -156,7 +165,7 @@ test('partial review success logs started reviewers and surfaces remaining error
     { atRunStart: true },
   )
   expect(render().failure).toBe('second reviewer failed')
-  expect(retireStageAgents).toHaveBeenCalledWith('p', null, ['reviewer'], context.model.foreign)
+  expect(retireStageAgents).toHaveBeenCalledWith('p', null, ['reviewer'], undefined)
 })
 test('a stage that fails to launch leaves the earlier agents running', async () => {
   vi.mocked(gitBranches).mockResolvedValue(['main'])
@@ -218,4 +227,75 @@ test('completion keeps launch ownership and leaves another scope pending', async
   expect(useSimpleUi.getState().worktrees[other.key]?.pendingWorkflow).toBe(true)
   finishOther({ sessionId: 'other' })
   await vi.waitFor(() => expect(render(other).pending).toBe(''))
+})
+
+const source = { path: '/p/feature', branch: 'feature', head: 'f1' }
+const target = { path: '/p', branch: 'main', head: 'm1' }
+describe('Merge', () => {
+  const started = {
+    kind: 'started',
+    sessionId: 'merger',
+    requestId: 'merge-request',
+    request: {
+      source: source.path,
+      sourceBranch: 'feature',
+      destination: target.path,
+      destinationBranch: 'main',
+    },
+  } as const
+  const merge = () => {
+    vi.mocked(gitWorktrees).mockResolvedValue([source, target] as never)
+    vi.mocked(startMerge).mockResolvedValue(started)
+    return { source, target } as unknown as Partial<Context>
+  }
+  test('conflicts stay shown when the merge cannot start', async () => {
+    const sides = merge()
+    useSimpleUi.getState().patch(context.key, { mergeCheck: { key: 'k', paths: ['a.ts'] } })
+    vi.mocked(startMerge).mockRejectedValue(new Error('no merge agent'))
+    render(sides).act('merge')
+    await idle()
+    expect(useSimpleUi.getState().worktrees[context.key]?.mergeCheck?.paths).toEqual(['a.ts'])
+  })
+  test('without conflicts one click starts the merge agent', async () => {
+    const sides = merge()
+    render(sides).act('checkMerge')
+    await idle()
+    expect(startMerge).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        source,
+        destinationBranch: 'main',
+        checkConflicts: true,
+        commitSource: 'report',
+      }),
+    )
+    expect(useSimpleUi.getState().worktrees[context.key]?.mergeCheck).toBeUndefined()
+  })
+  test('conflicts stop the merge and stay shown for this worktree', async () => {
+    const sides = merge()
+    vi.mocked(startMerge).mockResolvedValueOnce({
+      kind: 'conflicts',
+      paths: ['src/a.ts'],
+      sourceHead: 'f1',
+      destinationHead: 'm1',
+    })
+    render(sides).act('checkMerge')
+    await idle()
+    expect(useSimpleUi.getState().worktrees[context.key]?.mergeCheck).toEqual({
+      key: JSON.stringify([context.key, 'f1', 'm1']),
+      paths: ['src/a.ts'],
+    })
+    render(sides).act('merge')
+    await idle()
+    expect(startMerge).toHaveBeenLastCalledWith(expect.objectContaining({ checkConflicts: false }))
+    expect(useSimpleUi.getState().worktrees[context.key]?.mergeCheck).toBeUndefined()
+  })
+  test('uncommitted source changes open the dialog instead of merging', async () => {
+    const sides = merge()
+    vi.mocked(startMerge).mockResolvedValueOnce({ kind: 'uncommitted', changes: [' M a.ts'] })
+    const workflow = render(sides)
+    workflow.act('merge')
+    await idle()
+    expect(render(sides).dialog).toBe('merge')
+    expect(logLaunch).not.toHaveBeenCalled()
+  })
 })

@@ -9,6 +9,11 @@ vi.mock('./auto', () => ({
   stopAuto: vi.fn(),
 }))
 vi.mock('./leadStages', () => ({ startLeadStage: vi.fn(), settleLeadStage: vi.fn() }))
+vi.mock('./stories', () => ({
+  findStory: vi.fn(async (_project: string, id: string) => ({ id, title: 'Import' })),
+  storyGoal: vi.fn(() => 'Import\n\n- [ ] Works'),
+  linkAutoStory: vi.fn(async () => {}),
+}))
 import { startAuto, pauseAuto } from './auto'
 import { settleLeadStage, startLeadStage } from './leadStages'
 import { invoke } from '@tauri-apps/api/core'
@@ -31,8 +36,9 @@ import {
   sendWorkerMessage,
   useChatTeams,
   type ChatTeam,
+  type TeamControl,
 } from './chatTeams'
-import type { AutoRun, SessionRecord } from '../types'
+import type { AutoRun, SessionRecord, WorkflowAction } from '../types'
 const preset = {
   id: 'codex',
   name: 'Codex',
@@ -432,15 +438,14 @@ test('a side-message RPC with an uncertain reply retries the same durable identi
   expect(messages[0][1]).toEqual(messages[1][1])
 })
 
-function mockRequestDriver(action: string, settings = {}) {
+function mockRequestDriver(action: WorkflowAction, settings = {}) {
   const saved = team({
     requests: [{ id: 'request', action, settings, state: 'queued', result: null }],
   })
   vi.mocked(invoke).mockImplementation(async (cmd, args) => {
     if (cmd === 'chat_teams') return [saved] as never
     if (cmd === 'chat_team_control') {
-      const control = (args as { control: { kind: string; state: string; result: string | null } })
-        .control
+      const { control } = args as { control: TeamControl }
       if (control.kind === 'requestState') {
         const request = saved.requests![0]
         if (control.state === 'starting' && !['queued', 'waiting'].includes(request.state))
@@ -459,7 +464,7 @@ test('lead workflow controls claim requests once before applying the existing Au
   expect(pauseAuto).toHaveBeenCalledExactlyOnceWith('p', null)
   expect(saved.requests![0].state).toBe('completed')
 })
-test.each(['startPlan', 'startBuild', 'startFix', 'startMerge'])(
+test.each(['startPlan', 'startBuild', 'startFix', 'startMerge'] satisfies WorkflowAction[])(
   '%s runs its stage for the team once',
   async (action) => {
     const saved = mockRequestDriver(action)
@@ -507,9 +512,13 @@ test('an overlapping Auto start remains waiting and can be retried after scope r
   )
 })
 
-test.each([undefined, 'implement'] as const)(
-  'lead Auto starts reuse configuration without carrying previous runtime state (stage %s)',
-  async (stage) => {
+test.each([
+  [false, undefined, undefined, 'standard'],
+  [true, undefined, undefined, 'light'],
+  [false, 'implement', 'light', 'light'],
+] as const)(
+  'lead Auto starts use matching defaults and honor explicit settings (Simple %s, stage %s, effort %s)',
+  async (simpleMode, stage, effort, expectedEffort) => {
     const previous: AutoRun = {
       goal: 'Old task',
       effort: 'thorough',
@@ -519,7 +528,7 @@ test.each([undefined, 'implement'] as const)(
       reviewers: ['reviewer'],
       scanners: ['scanner'],
       workers: ['worker'],
-      overrides: { maxRounds: 4 },
+      overrides: { maxRounds: 4, severityFloor: 'low', validate: true },
       autonomous: true,
       background: true,
       resumeOnUsageReset: true,
@@ -535,23 +544,24 @@ test.each([undefined, 'implement'] as const)(
       scanRound: 'old-scan',
       log: [{ atMs: 1, text: 'Old log' }],
     }
+    useStore.setState({ simpleMode })
     useStore.getState().patchTask('p', null, { auto: previous })
     const saved = mockRequestDriver('startAuto', {
-      effort: 'light',
+      ...(effort ? { effort } : {}),
       ...(stage ? { stage } : {}),
     })
     await refreshChatTeams('p')
     expect(saved.requests![0].state).toBe('completed')
     expect(startAuto).toHaveBeenCalledExactlyOnceWith('p', null, {
       goal: 'Goal',
-      effort: 'light',
+      effort: expectedEffort,
       device: 'codex',
       merge: previous.merge,
       agents: previous.agents,
       reviewers: previous.reviewers,
       scanners: previous.scanners,
       workers: previous.workers,
-      overrides: previous.overrides,
+      overrides: simpleMode ? { maxRounds: 4 } : previous.overrides,
       autonomous: true,
       background: true,
       resumeOnUsageReset: true,
@@ -559,6 +569,20 @@ test.each([undefined, 'implement'] as const)(
     })
   },
 )
+
+test('a lead Auto start for a story uses its text as the goal and links it once started', async () => {
+  const stories = await import('./stories')
+  const saved = mockRequestDriver('startAuto', { story: 's1', goal: 'Something else' })
+  await refreshChatTeams('p')
+  expect(saved.requests![0].state).toBe('completed')
+  const settings = vi.mocked(startAuto).mock.calls[0][2]
+  expect(settings.goal).toBe('Import\n\n- [ ] Works')
+  expect(settings).not.toHaveProperty('story')
+  expect(stories.linkAutoStory).toHaveBeenCalledExactlyOnceWith('p', null, 's1')
+  expect(vi.mocked(startAuto).mock.invocationCallOrder[0]).toBeLessThan(
+    vi.mocked(stories.linkAutoStory).mock.invocationCallOrder[0],
+  )
+})
 
 test('live continuation resolves the durable lead once and keeps the transcript and draft', async () => {
   const saved = team()

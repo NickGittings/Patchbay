@@ -1,7 +1,7 @@
 import { projectStateOf, useStore } from '../store'
 import { PROJECT_DRAFT, isReservedScope, plannerChatTask, type SessionRecord } from '../types'
 import { sessionOwner, terminalChatDestination } from './attention'
-import { agentProviderLabel, chatRole } from './chatIdentity'
+import { agentProviderLabel, chatIdentity } from './chatIdentity'
 import { useChatTeams } from './chatTeams'
 import { sessionIdentity } from './notifications'
 import {
@@ -55,10 +55,10 @@ export function agentSearchInputs(s: Snapshot): unknown[] {
 function roleLabel(record: SessionRecord) {
   const { teams, runs } = useChatTeams.getState()
   const { projectId } = record.metadata
-  const chat = chatRole(record, teams[projectId], runs[projectId])
-  if (chat !== 'Agent') return chat
-  const { role, tone } = sessionRole(record.metadata)
-  return tone === 'implement' ? 'Builder' : role
+  const { role } = chatIdentity(record, teams[projectId], runs[projectId])
+  // A plain chat agent reads as an Agent here too, not its scope's Build.
+  if (role !== 'Agent' || record.spec.purpose === 'chat') return role
+  return sessionRole(record.metadata).role
 }
 
 function describe(s: Snapshot, record: SessionRecord) {

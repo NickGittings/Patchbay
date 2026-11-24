@@ -263,3 +263,50 @@ export function turnSteps(session: Pick<SessionState, 'activity' | 'status'> | u
     .filter((a) => !turn || !a.turn || a.turn === turn)
     .toSorted((a, b) => a.sequence - b.sequence)
 }
+/**
+ * The steps and duration of the turn a saved reply ended, from the session's retained window: the
+ * reply's turn comes from `replies` of the same generation, so a reply the window has dropped, a
+ * run since replaced, or a provider that names no turn shows no steps. The duration runs from
+ * the earlier of the prompt that started the turn and its first step.
+ */
+export function replyTurn(
+  session: Pick<SessionState, 'activity' | 'replies' | 'generation'> | undefined,
+  reply: { generation: number; sequence: number; atMs: number },
+  promptAtMs?: number,
+): { steps: Activity[]; durationMs?: number } {
+  const turn =
+    session?.generation === reply.generation
+      ? session.replies?.find((r) => r.sequence === reply.sequence)?.turn
+      : undefined
+  const steps = turn
+    ? (session?.activity ?? [])
+        .filter((a) => a.turn === turn)
+        .toSorted((a, b) => a.sequence - b.sequence)
+    : []
+  const starts = [promptAtMs, steps[0]?.atMs].filter(
+    (ms): ms is number => ms !== undefined && ms <= reply.atMs,
+  )
+  return { steps, durationMs: starts.length ? reply.atMs - Math.min(...starts) : undefined }
+}
+
+/** A turn's length: "42s", "3m 12s", "1h 4m". */
+export function turnLength(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m${s % 60 ? ` ${s % 60}s` : ''}`
+  const m = Math.floor(s / 60)
+  return `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`
+}
+
+/**
+ * When the running turn began: the earlier of the prompt that started it and its first retained
+ * step. The agent's state time is only a fallback, since answering a permission request resets it.
+ */
+export function turnStartMs(
+  promptAtMs: number | undefined,
+  steps: readonly Activity[],
+  stateSinceMs: number,
+) {
+  const starts = [promptAtMs, steps[0]?.atMs].filter((ms): ms is number => ms !== undefined)
+  return starts.length ? Math.min(...starts) : stateSinceMs
+}

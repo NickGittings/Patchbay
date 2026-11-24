@@ -1,13 +1,7 @@
 import { useEffect, useState } from 'react'
-import { startSimpleReview, type StartedReviewer } from '../lib/simpleReview'
+import { launchReview, taskOfWorktree } from '../lib/launchStage'
 import { gitBranches } from '../lib/ipc'
-import {
-  defaultReviewBase,
-  reviewBases,
-  reviewWorktreeRunning,
-  reviewWorktreeBusy,
-  startReviewAgents,
-} from '../lib/reviewAgents'
+import { defaultReviewBase, reviewBases, reviewWorktreeBusy } from '../lib/reviewAgents'
 import { useStore } from '../store'
 import type { Worktree } from '../types'
 import AgentJobDialog from './AgentJobDialog'
@@ -17,16 +11,17 @@ export default function ReviewAgentDialog({
   worktrees,
   close,
   launched,
-  started: onStarted,
-  restartSettled = false,
+  origin,
+  task,
   initialBase,
   compact = false,
 }: {
   compact?: boolean
   initialBase?: string
-  restartSettled?: boolean
-  /** Every reviewer started, each with its launch request. */
-  started?: (reviewers: StartedReviewer[]) => void
+  /** Which flow the dialog serves, recorded with the review. */
+  origin: 'chat' | 'manual'
+  /** The source's task, when the caller knows it. */
+  task?: string | null
   source: Worktree
   worktrees: Worktree[]
   close: () => void
@@ -81,17 +76,16 @@ export default function ReviewAgentDialog({
       compact={compact}
       source={source}
       ready={!!base && base !== source.branch}
-      running={(restartSettled ? reviewWorktreeBusy : reviewWorktreeRunning)(
-        records,
-        sessions,
-        source.path,
-      )}
+      // A reviewer that settled is replaced, as in every flow; only one still writing blocks.
+      running={reviewWorktreeBusy(records, sessions, source.path)}
       runningText="A review agent is already running in this worktree."
       offlineText="Reconnect before starting a review agent."
       hint="Reviews committed work since the merge base, uncommitted changes, and untracked files. Reports findings only; fixes belong in Build. Read-only behavior relies on the briefing, not on rewriting your agent command."
       launch={async (devices) => {
-        const { started, errors } = await (restartSettled ? startSimpleReview : startReviewAgents)(
+        const { started, errors } = await launchReview(
+          origin,
           project,
+          task !== undefined ? task : taskOfWorktree(source, project.projectId),
           { worktree: source.path, branch: source.branch!, base },
           devices,
         )
@@ -104,7 +98,6 @@ export default function ReviewAgentDialog({
               undefined,
               'error',
             )
-        onStarted?.(started)
         return started[0].sessionId
       }}
       close={close}

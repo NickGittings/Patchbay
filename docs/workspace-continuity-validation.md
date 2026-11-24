@@ -29,6 +29,5 @@ multiple-display geometry checks, and manual provider resume with explicitly sup
 conversation IDs. The portable implementation is present; those platform/account checks
 have not been performed on this macOS host.
 
-For native lifecycle verification, run `npm run smoke:lifecycle` from `apps/desktop` with a
-free port (`PATCHBAY_SMOKE_PORT` defaults to 1432). The harness creates two repositories and
+For native lifecycle verification, run `npm run smoke:lifecycle` from `apps/desktop`. The harness creates two repositories and
 an isolated extension/service registry, retains its artifacts, and stops only its own work.

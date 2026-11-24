@@ -1,7 +1,7 @@
 import { requireDeviceAuth } from './providerAuth'
 import { createProviderRun, providerRuns, startProviderJob } from './orchestration'
 import { roleDevices } from './agentRoles'
-import { updateStory } from './stories'
+import { findStory, startedStatus, updateStory } from './stories'
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
 import { TASK_ROOT_SCOPE, plannerSessionId, sessionId } from '../types'
 import { planRead, proposalApply, proposalRead, terminalStop } from './ipc'
@@ -92,7 +92,7 @@ async function handoffPlannerPlan(
   const workers = workerIds
     ? workerIds.map((id) => {
         const found = agentDevices(initial.devices).find((d) => d.id === id)
-        if (!found) throw new Error(`Worker preset ${id} is not installed`)
+        if (!found) throw new Error(`Sub-builder preset ${id} is not installed`)
         return found
       })
     : auto || target?.chatTeam
@@ -130,7 +130,7 @@ async function handoffPlannerPlan(
       ? run
       : await startProviderJob(project, run.id, run.coordinator!.id)
     if (!started.coordinator?.sessionId)
-      throw new Error(started.error ?? 'Coordinator launch unconfirmed')
+      throw new Error(started.error ?? 'Builder launch unconfirmed')
     launched = {
       sessionId: started.coordinator.sessionId,
       requestId: started.coordinator.requestId,
@@ -141,10 +141,7 @@ async function handoffPlannerPlan(
     let requestId: string | undefined
     try {
       requestId = await startTerminal(TASK_ROOT_SCOPE, terminalId, task, projectId, {
-        kickoff: {
-          kind: 'implementPlan',
-          subagents: useStore.getState().implementSubagents || undefined,
-        },
+        kickoff: { kind: 'implementPlan' },
         auto,
         chatTeam: target?.chatTeam,
       })
@@ -158,20 +155,22 @@ async function handoffPlannerPlan(
     }
     launched = { sessionId: sessionId(TASK_ROOT_SCOPE, terminalId, task, projectId), requestId }
   }
-  if (story && task) {
+  if (story) {
     try {
-      if (current().stories.find((s) => s.id === story)?.task !== task)
-        await updateStory(projectId, story, { task })
-      if (
-        workspaceOf(current(), task).planStory === story &&
-        workspaceOf(current(), task).planStoryTerminal === plannerId
-      )
+      const item = await findStory(projectId, story)
+      const patch = startedStatus(item, 'building')
+      const link = task && item.task !== task
+      if (link || patch.status)
+        await updateStory(projectId, story, { ...patch, ...(link ? { task } : {}) })
+      const state = projectStateOf(projectId)
+      const planned = state && workspaceOf(state, task)
+      if (planned?.planStory === story && planned.planStoryTerminal === plannerId)
         useStore.getState().patchTask(projectId, task, { planStory: null, planStoryTerminal: null })
     } catch (e) {
       useStore
         .getState()
         .setMessage(
-          `Implementation started, but its story could not be linked: ${String(e)}`,
+          `Implementation started, but its story could not be updated: ${String(e)}`,
           undefined,
           undefined,
           'error',

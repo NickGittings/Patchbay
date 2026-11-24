@@ -26,6 +26,7 @@ import {
   TASK_ROOT_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
+  MAIN_PLANNING_TASK,
   TERMINAL_RUNNING,
   plannerSessionId,
   type AgentRole,
@@ -33,6 +34,8 @@ import {
   type AutoLaunch,
   type AutoRun,
   type AutoStage,
+  type MergeRequest,
+  type Project,
   type EffortSettings,
   type Severity,
   type ReviewFindings,
@@ -48,6 +51,8 @@ import {
   gitBranches,
   gitReview,
   gitWorktrees,
+  mergeBranchOutcome,
+  mergeDestinationResolve,
   mergeOutcome,
   planRead,
   proposalRead,
@@ -64,10 +69,11 @@ import { refreshTasks } from './tasks'
 import { fixReviewFindings } from './reviewHandoff'
 import {
   DEFAULT_BRANCHES,
+  defaultMergeDestination,
   defaultReviewBase,
   reviewBaseInputs,
   reviewState,
-  startMergeAgent,
+  startMerge,
   startReviewAgents,
 } from './reviewAgents'
 import { reconcileFreshSessions, startTerminal } from './sessions'
@@ -83,6 +89,8 @@ import {
 import { fnv1a } from './hash'
 import { checkHooks, hooksUsable, type HookProvider } from './agentHooks'
 import { autoRuns, autoWorkspace } from './autoState'
+import { recordStageLaunch, refuseWhileAutoRuns, type StageAction } from './stageRecord'
+import { taskOfWorktree } from './launchStage'
 import { completeAutoStories } from './stories'
 export { EFFORT, STAGES, STAGE_LABELS } from './autoSettings'
 
@@ -116,6 +124,7 @@ export interface AutoSnapshot {
   goal: string
   source: Worktree
   worktrees: Worktree[]
+  branches: string[]
   base: string
   changedComponents: string[]
   hasChanges: boolean
@@ -415,24 +424,56 @@ export function driveable(projectId: string, task: string | null, run = autoRun(
       !!projectStateOf(projectId))
   )
 }
-function mergeRequest(snapshot: Pick<AutoSnapshot, 'source' | 'worktrees'>, run: AutoRun) {
-  const destination = snapshot.worktrees.find((w) => w.branch === run.merge.destinationBranch)
-  if (!destination || destination.path === snapshot.source.path)
-    throw new AutoConfigurationError(
-      'Choose a different destination branch with an existing worktree',
-    )
+/** The chat action each launching Auto stage records. */
+const AUTO_LAUNCHES = {
+  plan: 'plan',
+  implement: 'implement',
+  review: 'review',
+  fix: 'fix',
+  merge: 'merge',
+} as const satisfies Partial<Record<AutoStage, StageAction>>
+function checkedOutMergeRequest(
+  { source, worktrees }: Pick<AutoSnapshot, 'source' | 'worktrees'>,
+  destinationBranch: string,
+): MergeRequest | null {
+  const destination = worktrees.find(
+    (w) => w.branch === destinationBranch && w.path !== source.path,
+  )
+  if (!destination) return null
   return {
-    ...(run.merge.mode === 'auto' && run.reviewedHead
-      ? { expectedSourceHead: run.reviewedHead }
-      : {}),
-    source: snapshot.source.path,
-    sourceBranch: snapshot.source.branch!,
+    source: source.path,
+    sourceBranch: source.branch!,
     destination: destination.path,
-    destinationBranch: run.merge.destinationBranch,
+    destinationBranch,
   }
+}
+
+async function resolveAutoMergeRequest(
+  project: Project,
+  source: AutoSnapshot['source'],
+  run: AutoRun,
+): Promise<MergeRequest> {
+  const { destinationBranch, mode } = run.merge
+  let request: MergeRequest
+  try {
+    request = await mergeDestinationResolve(project, source.path, source.branch!, destinationBranch)
+  } finally {
+    // Publish a newly registered checkout, including when validation failed after creation.
+    void refreshTasks(project.projectId).catch(() => {})
+  }
+  return mode === 'auto' && run.reviewedHead
+    ? { ...request, expectedSourceHead: run.reviewedHead }
+    : request
 }
 /** A setup problem that only an explicit user change can resolve. */
 class AutoConfigurationError extends Error {}
+const validDestination = (destination: string, source: Worktree, branches: string[]) =>
+  destination !== source.branch && branches.includes(destination)
+
+function assertMergeDestination(destination: string, source: Worktree, branches: string[]) {
+  if (!validDestination(destination, source, branches))
+    throw new AutoConfigurationError('Choose a different local destination branch')
+}
 /** The run's worktree no longer has the run's branch checked out. */
 export class BranchMoved extends Error {}
 /** The worktree's `branch` has nothing to review against, such as `main` in the project folder. */
@@ -563,11 +604,13 @@ export async function autoSnapshot(
   const path = source.path
   // Review what the merge will bring in: the destination when it is a branch, else the default. A
   // run in place reviews against its Start commit; one not started yet, against the current HEAD.
-  const destination = run.merge.destinationBranch
+  const destination =
+    run.merge.destinationBranch ||
+    (inferring && !run.branch ? defaultMergeDestination(source, worktrees, branches) : '')
   const baseInputs = reviewBaseInputs(source, tasks, worktrees, branches)
   const branchBase = run.baseCommit
     ? ''
-    : destination && destination !== source.branch && branches.includes(destination)
+    : validDestination(destination, source, branches)
       ? destination
       : defaultReviewBase(source, tasks, worktrees, branches)
   const inPlaceBase =
@@ -594,7 +637,7 @@ export async function autoSnapshot(
       (r.spec.cwd === path && r.metadata.componentId === REVIEW_SCOPE) ||
       // The planner is project-wide: it belongs to this run only while it plans or tracks it.
       (r.metadata.componentId === PLAN_SCOPE &&
-        ((r.metadata.task ?? null) === (task ?? '_worktree_main') ||
+        ((r.metadata.task ?? null) === (task ?? MAIN_PLANNING_TASK) ||
           (!r.metadata.task && r.id === run.sessionId)) &&
         (r.id === run.sessionId ||
           (run.stage === 'plan' &&
@@ -649,6 +692,7 @@ export async function autoSnapshot(
     ),
     source,
     worktrees,
+    branches,
     base,
     changedComponents: Object.keys(review.changes).filter(
       (id) => review.changes[id].length > 0 && project.components.some((c) => c.id === id),
@@ -683,12 +727,13 @@ export async function autoSnapshot(
           records.some(
             (r) => r.metadata.componentId === MERGE_SCOPE && r.spec.merge_source === path,
           )))) &&
-    run.merge.destinationBranch &&
-    snapshot.worktrees.some(
-      (w) => w.branch === run.merge.destinationBranch && w.path !== source.path,
-    )
-  )
-    snapshot.outcome = await mergeOutcome(project, mergeRequest(snapshot, run))
+    validDestination(destination, source, branches)
+  ) {
+    const request = checkedOutMergeRequest(snapshot, destination)
+    snapshot.outcome = request
+      ? await mergeOutcome(project, request)
+      : await mergeBranchOutcome(projectId, source.path, source.branch, destination)
+  }
   return snapshot
 }
 export type AutoSettings = Pick<
@@ -767,7 +812,7 @@ interface AutoController {
   validating: boolean
   gatePoll?: { runId: string; atMs: number }
   completionPoll?: { turn: string; atMs: number }
-  gateRequest?: { key: string; request: ReturnType<typeof mergeRequest> }
+  gateRequest?: { key: string; request: MergeRequest }
 }
 const controllers = new Map<string, AutoController>()
 /** The worktree's controller, if it has one; checks never create one. */
@@ -836,11 +881,19 @@ export async function startAuto(projectId: string, task: string | null, settings
       log: [],
     }
     const snapshot = await autoSnapshot(projectId, task, run, true)
+    const { source, worktrees, branches } = snapshot
     if (snapshot.inPlace) {
       if (settings.stage === 'merge' || settings.stage === 'mergeGate')
         throw new Error('Auto runs in place here, with no merge; choose another starting stage')
       run.baseCommit = snapshot.base
       run.merge = IN_PLACE_MERGE
+    } else if (run.merge.destinationBranch) {
+      assertMergeDestination(run.merge.destinationBranch, source, branches)
+    } else {
+      run.merge = {
+        ...run.merge,
+        destinationBranch: defaultMergeDestination(source, worktrees, branches),
+      }
     }
     const decision = inferStage(snapshot, run, true)
     let stage =
@@ -1922,7 +1975,13 @@ async function approvalOutcome(
   if (controller.gateRequest?.key !== key) {
     const worktrees = await gitWorktrees(projectId)
     const { source } = await sourceWorktree(projectId, task, worktrees, run.branch)
-    controller.gateRequest = { key, request: mergeRequest({ source, worktrees }, run) }
+    const { destinationBranch } = run.merge
+    const request = checkedOutMergeRequest({ source, worktrees }, destinationBranch)
+    if (!request) {
+      assertMergeDestination(destinationBranch, source, await gitBranches(projectId))
+      return mergeBranchOutcome(projectId, source.path, source.branch, destinationBranch)
+    }
+    controller.gateRequest = { key, request }
   }
   return mergeOutcome(project, controller.gateRequest.request)
 }
@@ -2020,7 +2079,7 @@ async function drive(projectId: string, task: string | null) {
           { ...track([]), ...nextStep(run), plannerTurn: run.stage === 'scan' },
           run.stage === 'scan'
             ? 'Completed scan reports handed to the planner'
-            : 'All worker assignments integrated',
+            : 'All Sub-builder assignments integrated',
         )
       }
       return
@@ -2042,6 +2101,7 @@ async function drive(projectId: string, task: string | null) {
         // Resolve worktrees again after a missing checkout or branch switch, and show the
         // failure beside the wait's own reason while retrying for temporary Git errors.
         controller.gateRequest = undefined
+        if (e instanceof AutoConfigurationError) throw e
         const latest = autoRun(projectId, task)
         const gateError = e instanceof Error ? e.message : String(e)
         if (
@@ -2474,7 +2534,8 @@ async function drive(projectId: string, task: string | null) {
       pause('The review no longer permits automatic merging; Resume to review again')
       return
     }
-    if (run.stage === 'merge') mergeRequest(snapshot, run)
+    if (run.stage === 'merge')
+      assertMergeDestination(run.merge.destinationBranch, snapshot.source, snapshot.branches)
     if (
       (run.stage === 'mergeGate' || run.stage === 'merge') &&
       run.merge.mode === 'auto' &&
@@ -2653,6 +2714,9 @@ async function drive(projectId: string, task: string | null) {
     let review: Pick<AutoLaunch, 'requestId' | 'lane'>[] = []
     let reviewRound: string | undefined
     let reviewErrors: string[] = []
+    // What the chat records about this launch once Auto owns it (`recordStageLaunch`).
+    let launchRequest: string | undefined
+    let launchedMerge: MergeRequest | undefined
     const brief = briefing(run)
     patch(
       projectId,
@@ -2681,7 +2745,7 @@ async function drive(projectId: string, task: string | null) {
         if (!live() || !driveable(projectId, task)) return
         patch(projectId, task, { plannerTurn: true, planMark: snapshot.planMark })
         launching = true
-        await startTerminal(PLAN_SCOPE, deviceId, task, projectId, {
+        launchRequest = await startTerminal(PLAN_SCOPE, deviceId, task, projectId, {
           kickoff: { kind: 'plan' },
           auto: brief,
           scanRound: run.scanRound,
@@ -2709,6 +2773,7 @@ async function drive(projectId: string, task: string | null) {
             ...(run.workers ? [run.workers] : []),
           )
           sid = started.sessionId
+          launchRequest = started.requestId
           if (started.implementationRun) {
             const owner = autoRun(projectId, task)
             if (owner?.runId !== runId || owner.status === 'stopped' || owner.status === 'done')
@@ -2739,29 +2804,61 @@ async function drive(projectId: string, task: string | null) {
         if (!snapshot.reviewRecord)
           throw new AutoConfigurationError('Open findings and start a review before fixing')
         launching = true
-        sid = (
-          await fixReviewFindings(snapshot.reviewRecord, brief, deviceId, presentation, {
-            projectId,
-            task,
-          })
-        ).sessionId
+        {
+          const fixing = await fixReviewFindings(
+            snapshot.reviewRecord,
+            brief,
+            deviceId,
+            presentation,
+            { projectId, task },
+          )
+          sid = fixing.sessionId
+          launchRequest = fixing.requestId
+        }
         // A refused launch rejects; one that returned may be running even if confirming it fails,
         // so it uses up its round now.
         if (sid && autoRun(projectId, task)?.runId === runId)
           patch(projectId, task, { round: run.round + 1 })
         break
-      case 'merge':
-        launching = true
-        sid = await startMergeAgent(
-          project,
-          mergeRequest(snapshot, run),
-          device,
-          crypto.randomUUID(),
-          brief,
-          run.merge.cleanup ?? 'keep',
-          run.ownershipId ?? run.runId,
+      case 'merge': {
+        const [worktrees] = await Promise.all([
+          gitWorktrees(projectId),
+          refreshTasks(projectId, { quiet: true, requireSuccess: true }),
+        ])
+        if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
+        const destination = worktrees.find((w) => w.branch === run.merge.destinationBranch)
+        const checkOwner = (worktree: Pick<Worktree, 'path'> & Partial<Pick<Worktree, 'main'>>) => {
+          try {
+            refuseWhileAutoRuns(projectId, taskOfWorktree(worktree, projectId))
+          } catch (e) {
+            throw new AutoConfigurationError(String(e instanceof Error ? e.message : e))
+          }
+        }
+        if (destination) checkOwner(destination)
+        // Resolution may create a checkout and finish after Pause or Stop.
+        const request = await resolveAutoMergeRequest(project, snapshot.source, run)
+        if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
+        checkOwner(
+          worktrees.find((w) => w.path === request.destination) ?? { path: request.destination },
         )
+        launching = true
+        const started = await startMerge({
+          project,
+          device,
+          request,
+          auto: {
+            brief,
+            cleanup: run.merge.cleanup ?? 'keep',
+            ownershipId: run.ownershipId ?? run.runId,
+          },
+        })
+        // A pinned request skips the checks that could stop short of launching.
+        if (started.kind !== 'started') throw new Error('The merge agent did not start')
+        sid = started.sessionId
+        launchRequest = started.requestId
+        launchedMerge = started.request
         break
+      }
       default:
         throw new Error(`Unsupported Auto stage ${run.stage}`)
     }
@@ -2803,6 +2900,20 @@ async function drive(projectId: string, task: string | null) {
           }
         : {}),
     })
+    // The chat and the regular views show Auto's stages like any other launch. Recording never
+    // fails the run, and Auto keeps its agents.
+    void recordStageLaunch({
+      projectId,
+      task,
+      origin: 'auto',
+      action: AUTO_LAUNCHES[run.stage as keyof typeof AUTO_LAUNCHES],
+      launched: [sid, ...lanes].map((id, i) => ({
+        sessionId: id,
+        requestId: run.stage === 'review' ? review[i]?.requestId : launchRequest,
+      })),
+      ...(launchedMerge ? { request: launchedMerge } : {}),
+      autoRunId: runId,
+    }).catch(() => {})
   } catch (e) {
     const latest = autoRun(projectId, task)
     if (

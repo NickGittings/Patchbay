@@ -1,12 +1,14 @@
 import { projectOf, projectStateOf, useStore } from '../store'
 import {
   PLAN_SCOPE,
+  COORDINATOR_SCOPE,
   REVIEW_SCOPE,
   MERGE_SCOPE,
   TASK_ROOT_SCOPE,
   type SessionRecord,
   plannerSessionId,
   type AutoRun,
+  type AutoStage,
   type Story,
   type StoryPatch,
   type StoryStatus,
@@ -16,11 +18,11 @@ import { roleDevice } from './agentRoles'
 import { autoDraftKey, autoDrafts, emptyAutoDraft } from './autoDrafts'
 import { autoRuns, autoWorkspace } from './autoState'
 import { finished, unfinished } from './autoSettings'
-import { storyCompleteAuto, storyList, storyUpdate, terminalSnapshot } from './ipc'
+import { storyCompleteAuto, storyList, storyReorder, storyUpdate, terminalSnapshot } from './ipc'
 import { stopAndWait } from './stopAndWait'
 import { startTerminal } from './sessions'
+import { recordPlannerStart } from './stageRecord'
 import { seedNewTask } from './tasks'
-import { logLaunch } from './simpleActions'
 import { confirmAction } from './confirm'
 
 const ordered = (items: Story[]) =>
@@ -48,13 +50,87 @@ export function tree(stories: Story[]) {
   }
 }
 
-export type StoryProgress = StoryStatus | 'reviewing' | 'merging'
+/**
+ * The board's top-to-bottom priority, mirrored by core `stories::board_order`: each epic, then its
+ * features, each followed by its stories, and finally unassigned stories.
+ */
+export function boardOrder(stories: Story[]): Story[] {
+  const { epics, unassigned } = tree(stories)
+  return [
+    ...epics.flatMap((e) => [e.item, ...e.features.flatMap((f) => [f.item, ...f.stories])]),
+    ...unassigned,
+  ]
+}
 
-export function progressLabel(progress: StoryProgress) {
+/**
+ * The items `item` is prioritized among, as a column shows them together (core
+ * `stories::sibling_group`): a feature's stories, an epic's features, else the unassigned.
+ */
+export function siblings(stories: Story[], item: Story): Story[] {
+  const byId = new Map(stories.map((s) => [s.id, s]))
+  const group = (s: Story) => {
+    const parent = s.parent ? byId.get(s.parent) : undefined
+    const shown =
+      (s.kind === 'feature' && parent?.kind === 'epic') ||
+      // A story sits under its feature only while that feature sits under an epic.
+      (s.kind === 'story' &&
+        parent?.kind === 'feature' &&
+        byId.get(parent.parent ?? '')?.kind === 'epic')
+    return shown ? s.parent : null
+  }
+  return ordered(stories.filter((s) => s.kind === item.kind && group(s) === group(item)))
+}
+
+/**
+ * The sibling ids, top to bottom, after moving `id` before `before` (`null`: to the end of its
+ * group). Undefined when `before` isn't a sibling or nothing would move.
+ */
+export function reorder(stories: Story[], id: string, before: string | null) {
+  const item = stories.find((s) => s.id === id)
+  if (!item || before === id) return
+  const group = siblings(stories, item).map((s) => s.id)
+  if (before !== null && !group.includes(before)) return
+  const rest = group.filter((s) => s !== id)
+  const at = before === null ? rest.length : rest.indexOf(before)
+  const ids = [...rest.slice(0, at), id, ...rest.slice(at)]
+  return ids.every((s, i) => s === group[i]) ? undefined : ids
+}
+
+/** Save a new priority for one sibling group, shown at once and restored if the save fails. */
+export async function moveStory(projectId: string, id: string, before: string | null) {
+  const state = projectStateOf(projectId)
+  const ids = state && reorder(state.stories, id, before)
+  if (!ids) return
+  const order = new Map(ids.map((s, i) => [s, i]))
+  requests.set(projectId, (requests.get(projectId) ?? 0) + 1)
+  useStore.getState().patchProject(projectId, {
+    stories: state.stories.map((s) => (order.has(s.id) ? { ...s, order: order.get(s.id)! } : s)),
+  })
+  // Saves run one at a time per project, so quick moves are stored in the order they were made.
+  const save = (reorders.get(projectId) ?? Promise.resolve()).then(async () => {
+    try {
+      await storyReorder(projectId, ids)
+      // A refresh that read the board before this save would restore the old order.
+      requests.set(projectId, (requests.get(projectId) ?? 0) + 1)
+    } catch (e) {
+      useStore.getState().setMessage(String(e), undefined, undefined, 'error')
+      await refreshStories(projectId)
+    }
+  })
+  reorders.set(projectId, save)
+  await save
+  if (reorders.get(projectId) === save) reorders.delete(projectId)
+}
+const reorders = new Map<string, Promise<void>>()
+
+type ParentStatus = 'active' | 'closed'
+type LiveStoryStatus = Exclude<StoryStatus, 'backlog' | 'done'>
+
+export function progressLabel(progress: ResolvedStoryStatus['value']) {
   return progress === 'reviewing' ? 'review' : progress === 'merging' ? 'merge' : progress
 }
 
-export const PROGRESS: StoryProgress[] = [
+export const STORY_STATUSES: StoryStatus[] = [
   'backlog',
   'planned',
   'building',
@@ -63,34 +139,45 @@ export const PROGRESS: StoryProgress[] = [
   'done',
 ]
 
-/** Most recently started role wins; a later fix returns a story to Building. */
+/**
+ * Most recently started running role wins; a later fix returns a story to Building. Finished
+ * sessions leave the saved status in place, so an old merge or review never reappears as live.
+ */
 export function worktreeStage(
   task: Task,
   projectId: string,
   records: readonly SessionRecord[],
-): StoryProgress {
+): LiveStoryStatus | null {
   const record = records
     .filter(
       (r) =>
+        r.snapshot?.running &&
         r.metadata.projectId === projectId &&
-        ((r.metadata.componentId === REVIEW_SCOPE && r.metadata.branch === task.branch) ||
+        ((r.metadata.componentId === REVIEW_SCOPE &&
+          !!task.branch &&
+          r.metadata.branch === task.branch) ||
           (r.metadata.componentId === MERGE_SCOPE && r.spec.merge_source === task.worktree) ||
-          (r.metadata.componentId === TASK_ROOT_SCOPE && r.metadata.task === task.id)),
+          (r.metadata.task === task.id &&
+            (r.metadata.componentId === COORDINATOR_SCOPE ||
+              (r.metadata.componentId === TASK_ROOT_SCOPE &&
+                r.metadata.kind === 'agent' &&
+                r.spec.purpose !== 'chat')))),
     )
     .sort((a, b) => (a.snapshot?.startedMs ?? 0) - (b.snapshot?.startedMs ?? 0))
     .at(-1)
-  return record?.metadata.componentId === REVIEW_SCOPE
+  if (!record) return null
+  return record.metadata.componentId === REVIEW_SCOPE
     ? 'reviewing'
-    : record?.metadata.componentId === MERGE_SCOPE
+    : record.metadata.componentId === MERGE_SCOPE
       ? 'merging'
       : 'building'
 }
 
-export type ResolvedStoryStatus = {
-  value: StoryProgress
-} & ({ source: 'saved' | 'auto' | 'children' } | { source: 'worktree'; worktree: Task })
+export type ResolvedStoryStatus =
+  | { value: StoryStatus | ParentStatus; source: 'saved' | 'auto' | 'children' }
+  | { value: LiveStoryStatus; source: 'worktree'; worktree: Task }
 
-export type StoryFilter = 'all' | 'active' | StoryProgress
+export type StoryFilter = 'all' | ParentStatus | StoryStatus
 
 export const STORY_FILTERS: { value: StoryFilter; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -103,6 +190,12 @@ export const STORY_FILTERS: { value: StoryFilter; label: string }[] = [
   { value: 'done', label: 'Done' },
 ]
 
+export const PARENT_FILTERS: { value: StoryFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'active', label: 'Active' },
+  { value: 'closed', label: 'Closed' },
+]
+
 /** Filter one column by full-board derived status, preserving its display order. */
 export function filterStories(
   items: Story[],
@@ -112,7 +205,7 @@ export function filterStories(
   if (filter === 'all') return items
   return items.filter((item) => {
     const value = statuses.get(item.id)?.value
-    return filter === 'active'
+    return filter === 'active' && item.kind === 'story'
       ? value === 'planned' || value === 'building' || value === 'reviewing' || value === 'merging'
       : value === filter
   })
@@ -122,6 +215,18 @@ type StoryRuns = Record<
   string,
   (Pick<AutoRun, 'runId' | 'status'> & Partial<Pick<AutoRun, 'stage'>>) | null | undefined
 >
+
+const AUTO_STORY_STATUS: Record<AutoStage, LiveStoryStatus | null> = {
+  scan: 'planned',
+  plan: 'planned',
+  implement: 'building',
+  validate: 'building',
+  fix: 'building',
+  review: 'reviewing',
+  mergeGate: 'merging',
+  merge: 'merging',
+  done: null,
+}
 
 /** A worktree's live state takes precedence over a saved intermediate status. */
 function ownStatus(
@@ -142,17 +247,19 @@ function ownStatus(
     return { value: 'done', source: 'auto' }
   if (task && !task.missing) {
     const run = runs[task.id]
-    const value =
-      run && unfinished(run.status)
-        ? run.stage === 'review'
-          ? 'reviewing'
-          : run.stage === 'mergeGate' || run.stage === 'merge'
-            ? 'merging'
-            : 'building'
-        : worktreeStage(task, projectId, records)
-    return { value, source: 'worktree', worktree: task }
+    const autoStatus = run?.stage && unfinished(run.status) ? AUTO_STORY_STATUS[run.stage] : null
+    const value = autoStatus ?? worktreeStage(task, projectId, records)
+    if (value) return { value, source: 'worktree', worktree: task }
   }
   return { value: story.status, source: 'saved' }
+}
+
+/** Mirrors core `stories::parent_status`, using live progress when it is available. */
+function parentStatus(item: Story, children: ResolvedStoryStatus['value'][]): ParentStatus {
+  return item.status === 'done' ||
+    (children.length > 0 && children.every((value) => value === 'done' || value === 'closed'))
+    ? 'closed'
+    : 'active'
 }
 
 /** Resolve each item once, sharing both progress and its source with cards and editors. */
@@ -166,7 +273,7 @@ export function storyStatuses(
   const statuses = new Map<string, ResolvedStoryStatus>()
   const children = new Map<string, Story[]>()
   for (const story of stories) {
-    if (!story.parent) continue
+    if (!story.parent || story.kind === 'epic') continue
     const siblings = children.get(story.parent) ?? []
     siblings.push(story)
     children.set(story.parent, siblings)
@@ -174,18 +281,18 @@ export function storyStatuses(
   const resolve = (story: Story): ResolvedStoryStatus => {
     const cached = statuses.get(story.id)
     if (cached) return cached
-    const own = ownStatus(story, tasks, runs, projectId, records)
-    const childItems = story.kind === 'story' ? [] : (children.get(story.id) ?? [])
-    const status =
-      story.status !== 'done' && childItems.length
-        ? {
-            value: rollup(
-              own.value,
+    const childKind = story.kind === 'epic' ? 'feature' : 'story'
+    const childItems = (children.get(story.id) ?? []).filter((s) => s.kind === childKind)
+    const status: ResolvedStoryStatus =
+      story.kind === 'story'
+        ? ownStatus(story, tasks, runs, projectId, records)
+        : {
+            value: parentStatus(
+              story,
               childItems.map((s) => resolve(s).value),
             ),
-            source: 'children' as const,
+            source: story.status === 'done' || !childItems.length ? 'saved' : 'children',
           }
-        : own
     statuses.set(story.id, status)
     return status
   }
@@ -204,11 +311,18 @@ export function reopenStoryPatch(story: Story, run?: StoryRuns[string]): StoryPa
   }
 }
 
-export const STORY_STATUSES: StoryStatus[] = ['backlog', 'planned', 'building', 'done']
-
-/** Parents progress as far as their least advanced child; empty parents keep their own status. */
-export function rollup(parent: StoryProgress, children: StoryProgress[]): StoryProgress {
-  return children.length ? PROGRESS[Math.min(...children.map((s) => PROGRESS.indexOf(s)))] : parent
+/**
+ * A workflow's status write, empty when there is nothing to save. Saved Done stays Done. Core
+ * skips the status if completion or relinking landed while a launch or poll was in flight, but
+ * still applies any linkage sent with it.
+ */
+export function startedStatus(story: Story, status?: LiveStoryStatus | null): StoryPatch {
+  if (story.status === 'done' || story.kind !== 'story' || !status || story.status === status)
+    return {}
+  return {
+    status,
+    expectedProgress: { status: story.status, task: story.task, autoRunId: story.autoRunId },
+  }
 }
 
 export function descendants(stories: Story[], item: Story): Story[] {
@@ -240,7 +354,8 @@ export async function refreshStories(projectId: string) {
   try {
     const stories = await storyList(projectId)
     const state = projectStateOf(projectId)
-    if (requests.get(projectId) === seq && state) {
+    // While moves are saving, the file lags the shown order; the next refresh after them catches up.
+    if (requests.get(projectId) === seq && !reorders.has(projectId) && state) {
       const removedPlanner = state.planStory && !stories.some((s) => s.id === state.planStory)
       useStore.getState().patchProject(projectId, {
         stories,
@@ -306,26 +421,70 @@ export async function planStory(projectId: string, story: Story) {
   else s.revealChat({ projectId, task })
   s.setPlanActive(device.id)
   const planningAtMs = Date.now()
-  const requestId = await startTerminal(PLAN_SCOPE, device.id, s.activeTask, projectId, {
+  const requestId = await launchStoryPlanner(projectId, s.activeTask, device.id, story)
+  // Recorded the same way in Chat and the regular views, in the background, so a run lookup
+  // never delays the story's status. Chat also shows the story's title from the click.
+  if (requestId)
+    void recordPlannerStart(projectId, task, device.id, requestId, {
+      origin: chat ? 'chat' : 'manual',
+      ...(chat ? { text: story.title, atMs: planningAtMs } : {}),
+    })
+}
+
+/** Components a story's planner or Auto run covers: its own and its descendants'. */
+export function storyComponents(stories: Story[], story: Story) {
+  return [...new Set([story, ...descendants(stories, story)].flatMap((s) => s.components))]
+}
+
+/**
+ * Start `story`'s planner in `task`'s worktree, which receives the Story briefing, and mark the
+ * story Planned. Callers own confirmation, view changes and launch logging. `components` replaces
+ * the worktree's highlighted ones for this launch.
+ */
+export async function launchStoryPlanner(
+  projectId: string,
+  task: string | null,
+  device: string,
+  story: Story,
+  components?: string[],
+  request?: string,
+) {
+  // Saved components may have left the map since; none falls back to the worktree's highlights.
+  const known = components?.filter((id) =>
+    projectOf(projectId)?.components.some((c) => c.id === id),
+  )
+  const requestId = await startTerminal(PLAN_SCOPE, device, task, projectId, {
     kickoff: { kind: 'planStory' },
     story: story.id,
+    components: known?.length ? known : undefined,
+    planRequest: request?.trim() || undefined,
   })
-  if (chat)
-    // Logged in the background, so a run lookup never delays the story's status.
-    void logLaunch(
-      projectId,
-      task,
-      {
-        kind: 'action',
-        action: 'plan',
-        stage: 'plan',
-        sessionId: sid,
-        text: story.title,
-        atMs: planningAtMs,
-      },
-      requestId,
-    )
-  await updateStory(projectId, story.id, { status: 'planned' })
+  // The planner is running either way, so its launch is still returned for logging.
+  try {
+    const patch = startedStatus(await findStory(projectId, story.id), 'planned')
+    if (patch.status) await updateStory(projectId, story.id, patch)
+  } catch (e) {
+    useStore
+      .getState()
+      .setMessage(
+        `Planner started, but its story could not be marked Planned: ${String(e)}`,
+        undefined,
+        undefined,
+        'error',
+      )
+  }
+  return requestId
+}
+
+/**
+ * A story by id as saved. Agent commands write the file directly, so the shown board can lag it
+ * by a poll, and workflow guards must compare against the file. Read it directly rather than
+ * through refreshStories, whose result a concurrent refresh or move can discard.
+ */
+export async function findStory(projectId: string, id: string) {
+  const story = (await storyList(projectId)).find((s) => s.id === id)
+  if (!story) throw new Error(`Unknown story ${id}. Run \`agent stories\` for the board's ids.`)
+  return story
 }
 
 export async function linkStory(projectId: string, story: string, task: string) {
@@ -382,8 +541,10 @@ export function autoStory(projectId: string, story: Story) {
 export async function linkAutoStory(projectId: string, task: string | null, story?: string) {
   if (!story || !task) return
   try {
+    const item = await findStory(projectId, story)
     const run = autoWorkspace(projectStateOf(projectId), task)?.auto
-    await updateStory(projectId, story, { task, autoRunId: run?.runId ?? '' })
+    const patch = startedStatus(item, run?.stage && AUTO_STORY_STATUS[run.stage])
+    await updateStory(projectId, story, { ...patch, task, autoRunId: run?.runId ?? '' })
     if (run?.status === 'done') await completeAutoStories(projectId, task, run.runId)
   } catch (e) {
     useStore
@@ -401,7 +562,12 @@ export async function linkAutoStory(projectId: string, task: string | null, stor
 export async function completeAutoStories(projectId: string, task: string | null, runId: string) {
   if (!task) return
   const stories = projectStateOf(projectId)?.stories ?? []
-  if (!stories.some((s) => s.task === task && s.autoRunId === runId && s.status !== 'done')) return
+  if (
+    !stories.some(
+      (s) => s.kind === 'story' && s.task === task && s.autoRunId === runId && s.status !== 'done',
+    )
+  )
+    return
   const completed = await storyCompleteAuto(projectId, task, runId)
   requests.set(projectId, (requests.get(projectId) ?? 0) + 1)
   const state = projectStateOf(projectId)
@@ -413,4 +579,13 @@ export async function completeAutoStories(projectId: string, task: string | null
           : s,
       ),
     })
+}
+
+/** The display name of the extension an item was imported by, or its id once it's gone. */
+export function sourceName(
+  source: NonNullable<Story['source']>,
+  registry: { extensions: { id: string; manifest: { displayName?: string | null } }[] },
+) {
+  const extension = registry.extensions.find((e) => e.id === source.extension)
+  return extension?.manifest.displayName ?? source.extension
 }

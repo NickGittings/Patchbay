@@ -1,13 +1,12 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
-import { DEFAULT_USAGE, MAX_SUBAGENTS, MIN_SUBAGENTS, SUBAGENT_COUNTS } from '../types'
+import { DEFAULT_USAGE } from '../types'
 import { SIMPLE_VERSION } from './simple'
 vi.mock('./ipc', () => ({ quitPatchbay: vi.fn(), workspaceLoad: vi.fn(), workspaceSave: vi.fn() }))
 vi.mock('./windows', () => ({ openComponentWindow: vi.fn() }))
 vi.mock('./sessions', () => ({ reconcileSessions: vi.fn() }))
 const { workspaceDocument, restoredLayout } = await import('./workspace')
-const { restoredAgentDefaults } = await import('./agentRoles')
-const defaultAgentSettings = { agentRoles: {}, implementSubagents: 0 }
+const defaultAgentSettings = { agentRoles: {} }
 beforeEach(() => {
   useStore.setState(useStore.getInitialState())
   useStore.getState().loadProject({
@@ -193,49 +192,14 @@ test('a layout saved with the retired plannedFromProject flag restores without i
   expect(layout.taskWorkspaces?.old).not.toHaveProperty('plannedFromProject')
 })
 
-test('Implement subagents restore Off or supported integer counts', () => {
-  expect(SUBAGENT_COUNTS).toEqual([0, 2, 3, 4, 5, 6, 7, 8])
-  for (const implementSubagents of SUBAGENT_COUNTS)
-    expect(
-      restoredAgentDefaults({ settings: { implementSubagents }, projects: [], activeProject: null })
-        .implementSubagents,
-    ).toBe(implementSubagents)
-  for (const implementSubagents of [
-    undefined,
-    null,
-    '3',
-    true,
-    -1,
-    MIN_SUBAGENTS - 1,
-    MAX_SUBAGENTS + 1,
-    MIN_SUBAGENTS + 0.5,
-    NaN,
-    Infinity,
-    {},
-  ])
-    expect(
-      restoredAgentDefaults({ settings: { implementSubagents }, projects: [], activeProject: null })
-        .implementSubagents,
-    ).toBe(0)
-  const restored = restoredLayout({
-    implementSubagents: 3,
-    taskWorkspaces: { other: { implementSubagents: 7 } },
-  })
-  expect(restored.taskWorkspaces?.other).not.toHaveProperty('implementSubagents')
-  expect(restored.taskWorkspaces?.['']).not.toHaveProperty('implementSubagents')
-})
-
-test('agent roles and subagents persist globally across projects without dirtying maps', () => {
+test('agent roles persist globally across projects without dirtying maps', () => {
   const firstProject = useStore.getState().toProject()
-  useStore.getState().setImplementSubagents(3)
   useStore.getState().setAgentRoles({ plan: ['codex'], review: ['codex', 'claude'] })
   expect(useStore.getState().dirty).toBe(false)
   expect(useStore.getState().toProject()).toEqual(firstProject)
   const layout = workspaceDocument().projects[0].layout
-  expect(layout).not.toHaveProperty('implementSubagents')
   expect(layout).not.toHaveProperty('agentRoles')
   expect(workspaceDocument().settings).toMatchObject({
-    implementSubagents: 3,
     agentRoles: { plan: ['codex'], review: ['codex', 'claude'] },
   })
   useStore.getState().loadProject({
@@ -246,18 +210,13 @@ test('agent roles and subagents persist globally across projects without dirtyin
     links: [],
     components: [],
   })
-  expect(useStore.getState().implementSubagents).toBe(3)
   expect(useStore.getState().agentRoles.review).toEqual(['codex', 'claude'])
   useStore.getState().setAgentRoles({ review: ['claude'] })
-  useStore.getState().setImplementSubagents(5)
   useStore.getState().activateProject('p')
-  expect(useStore.getState().implementSubagents).toBe(5)
   expect(useStore.getState().agentRoles).toEqual({ review: ['claude'] })
-  expect(workspaceDocument().projects[1].layout).not.toHaveProperty('implementSubagents')
   useStore.getState().closeProject('second')
   useStore.getState().closeProject('p')
   expect(workspaceDocument().settings).toMatchObject({
-    implementSubagents: 5,
     agentRoles: { review: ['claude'] },
   })
 })

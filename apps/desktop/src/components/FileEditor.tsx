@@ -6,6 +6,7 @@ import { useCollapsed } from '../lib/useCollapsed'
 import { INSPECTOR_PANEL } from '../lib/panelLayout'
 import { listen, emitTo } from '@tauri-apps/api/event'
 import {
+  EDITOR_CLOSE_REQUEST_EVENT,
   FILE_EDITOR_EVENT,
   readTextFile,
   saveTextFile,
@@ -14,6 +15,7 @@ import {
   type TextFile,
 } from '../lib/fileEditor'
 import { editorOpen } from '../lib/ipc'
+import { MAIN_WINDOW_LABEL } from '../lib/mainWindow'
 
 interface Tab extends FileRequest {
   id: string
@@ -143,18 +145,15 @@ export default function FileEditor({
     let disposed = false
     let unlisten: (() => void) | undefined
     let stopRequests: (() => void) | undefined
-    void listen<{ reply: string; requester: string }>(
-      'patchbay://editor-close-request',
-      async (event) => {
-        const allowed = await guard()
-        await emitTo(event.payload.requester, event.payload.reply, allowed)
-      },
-    ).then((cleanup) => {
+    void listen<{ reply: string; requester: string }>(EDITOR_CLOSE_REQUEST_EVENT, async (event) => {
+      const allowed = await guard()
+      await emitTo(event.payload.requester, event.payload.reply, allowed)
+    }).then((cleanup) => {
       if (disposed) cleanup()
       else stopRequests = cleanup
     })
     // Main-window close is coordinated by workspace.ts; pop-outs need their own guard.
-    if (getCurrentWindow().label !== 'main') {
+    if (getCurrentWindow().label !== MAIN_WINDOW_LABEL) {
       void getCurrentWindow()
         .onCloseRequested((event) => {
           if (!current.current.some((tab) => dirty(tab) || tab.busy)) return

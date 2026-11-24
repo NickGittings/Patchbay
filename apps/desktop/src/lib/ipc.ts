@@ -1,6 +1,7 @@
 import { planningScope, planningTask } from '../types'
 import { authenticateInvocation, type AuthRequest, type AuthStatus } from './providerAuth'
 import { extraContext } from '../extensions/context'
+import type { FileRequest } from './fileEditor'
 import type { ExtensionRegistry } from '../types'
 import { Channel, invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { projectStateOf, useStore, workspaceOf } from '../store'
@@ -46,12 +47,17 @@ import type {
   TerminalSpec,
   Worktree,
 } from '../types'
+import { MAIN_WINDOW_LABEL } from './mainWindow'
 
 export const GIT_DIRTY_EVENT = 'patchbay://git-dirty'
 /** Mirrors `BRANCHES_CHANGED_EVENT`: a watched `HEAD` or ref changed in the named project. */
 export const BRANCHES_CHANGED_EVENT = 'patchbay://branches-changed'
 /** Mirrors `service::TERMINAL_EVENT`. */
 const TERMINAL_EVENT = 'patchbay://terminal'
+const FILE_ACCESS_EVENT = 'patchbay://file-access'
+const AGENT_QUESTION_EVENT = 'patchbay://agent-question'
+const AGENT_QUESTION_CLOSED_EVENT = 'patchbay://agent-question-closed'
+const VALIDATION_PROPOSALS_EVENT = 'patchbay://validation-proposals'
 
 /** Backend folder picker; may also ask whether external folders may be read. */
 export const openProject = () =>
@@ -147,8 +153,7 @@ export const pickComponentFolder = () => invoke<string | null>('pick_component_f
 /** Tell the backend which component folders are on the map; it can only narrow file access. */
 export const syncRoots = (paths: string[], projectId = useStore.getState().project?.id) =>
   invoke<void>('sync_roots', { paths, projectId })
-export const onFileAccessChanged = (handler: () => void) =>
-  listen('patchbay://file-access', handler)
+export const onFileAccessChanged = (handler: () => void) => listen(FILE_ACCESS_EVENT, handler)
 /** `task` reads the task's worktree instead of the project's own. */
 export const gitStatus = (
   components: { id: string; path: string }[],
@@ -243,6 +248,12 @@ export const planTransferPending = (projectId: string) =>
   invoke<string | null>('plan_transfer_pending', { projectId })
 export const planTransfer = (projectId: string, task: string, finish: boolean) =>
   invoke<void>('plan_transfer', { projectId, task, finish })
+/** Save an image for Chat's composer; resolves to the path the agent reads it from. */
+export const saveChatAttachment = (projectId: string, bytes: Uint8Array) =>
+  // Raw bytes, not JSON: a screenshot can be several megabytes.
+  tauriInvoke<string>('save_chat_attachment', bytes, {
+    headers: { 'patchbay-project': encodeURIComponent(projectId) },
+  })
 export const planRead = (projectId: string, task?: string) =>
   invoke<PlanText>('plan_read', {
     projectId,
@@ -370,7 +381,7 @@ export const serviceRetire = () => invoke<void>('service_retire')
 /** The main window hears every session; a pop-out only its own component's (`Bridge::route`). */
 export function onTerminalEvent(handler: (e: TerminalEvent) => void): Promise<UnlistenFn> {
   const label = getCurrentWebviewWindow().label
-  const channel = label === 'main' ? TERMINAL_EVENT : `${TERMINAL_EVENT}/${label}`
+  const channel = label === MAIN_WINDOW_LABEL ? TERMINAL_EVENT : `${TERMINAL_EVENT}/${label}`
   return listen<{ instanceId: string; event: TerminalEvent }>(channel, (e) =>
     handler({ ...e.payload.event, instanceId: e.payload.instanceId }),
   )
@@ -409,8 +420,47 @@ export const editorOpen = (
 ) => invoke<void>('editor_open', { target, projectId, task, worktree })
 export const fileSearch = (query: string, projectId: string, task: string | null) =>
   invoke<FileSearchResult[]>('file_search', { query, projectId, task })
-export const terminalOpenReference = (sessionId: string, generation: number, reference: string) =>
-  invoke<void>('terminal_open_reference', { sessionId, generation, reference })
+/** Opens a terminal file reference externally, or with `resolveOnly` returns it for the built-in editor. */
+export function terminalOpenReference(
+  sessionId: string,
+  generation: number,
+  reference: string,
+  resolveOnly: true,
+): Promise<FileRequest>
+export function terminalOpenReference(
+  sessionId: string,
+  generation: number,
+  reference: string,
+  resolveOnly?: false,
+): Promise<void>
+export function terminalOpenReference(
+  sessionId: string,
+  generation: number,
+  reference: string,
+  resolveOnly = false,
+) {
+  // The backend always returns the request when `resolveOnly` is set, and nothing otherwise.
+  return resolveOnly
+    ? invoke<FileRequest>('terminal_open_reference', {
+        sessionId,
+        generation,
+        reference,
+        resolveOnly,
+      })
+    : invoke<void>('terminal_open_reference', { sessionId, generation, reference })
+}
+export const editorResolveTarget = (
+  path: string,
+  projectId: string,
+  task: string | null,
+  worktree?: string,
+) =>
+  invoke<{ path: string; isDir: boolean }>('editor_resolve_target', {
+    projectId,
+    task,
+    worktree,
+    path,
+  })
 
 export const listExtensions = () => invoke<ExtensionRegistry>('list_extensions')
 export const reloadExtensions = () => invoke<ExtensionRegistry>('reload_extensions')
@@ -520,6 +570,55 @@ export const extensionSessionsList = (
   })
 export const extensionUrlOpen = (extensionId: string, projectId: string, url: string) =>
   invoke<void>('extension_url_open', { extensionId, projectId, url })
+export const extensionStoriesList = (extensionId: string, projectId: string) =>
+  invoke<Story[]>('extension_stories_list', { extensionId, projectId })
+export const extensionStoriesUpsert = (
+  extensionId: string,
+  projectId: string,
+  items: import('../types').ExternalStoryItem[],
+) =>
+  invoke<import('../types').StoryImportReport>('extension_stories_upsert', {
+    extensionId,
+    projectId,
+    items,
+  })
+export const extensionFilePick = (
+  extensionId: string,
+  title: string | null,
+  extensions: string[],
+) =>
+  invoke<{ name: string; text: string } | null>('extension_file_pick', {
+    extensionId,
+    title,
+    extensions,
+  })
+export interface ExtensionHttpRequest {
+  url: string
+  method?: 'GET' | 'POST' | 'HEAD'
+  headers?: [string, string][]
+  body?: string | null
+  auth?: { secret: string; scheme: 'bearer' | 'basic' | 'raw'; username?: string } | null
+}
+export interface ExtensionHttpResponse {
+  status: number
+  url: string
+  headers: [string, string][]
+  body: string
+}
+export const extensionHttpFetch = (extensionId: string, request: ExtensionHttpRequest) =>
+  invoke<ExtensionHttpResponse>('extension_http_fetch', { extensionId, request })
+export const extensionSecretSet = (
+  extensionId: string,
+  name: string,
+  value: string,
+  hosts: string[],
+) => invoke<void>('extension_secret_set', { extensionId, name, value, hosts })
+export const extensionSecretHas = (extensionId: string, name: string) =>
+  invoke<boolean>('extension_secret_has', { extensionId, name })
+export const extensionSecretDelete = (extensionId: string, name: string) =>
+  invoke<void>('extension_secret_delete', { extensionId, name })
+export const setExtensionHosts = (id: string, hosts: string[]) =>
+  invoke<ExtensionRegistry>('set_extension_hosts', { id, hosts })
 
 /** The task a fix for review session `sessionId` runs in; `null` for the project folder. */
 export const reviewFixTask = (sessionId: string, projectId: string) =>
@@ -564,13 +663,11 @@ export const onProposal = (
 export const onAgentQuestion = (
   handler: (question: import('../types').AgentQuestion) => void,
 ): Promise<UnlistenFn> =>
-  listen<import('../types').AgentQuestion>('patchbay://agent-question', (e) => handler(e.payload))
+  listen<import('../types').AgentQuestion>(AGENT_QUESTION_EVENT, (e) => handler(e.payload))
 export const onAgentQuestionClosed = (
   handler: (event: { id: string; answered: boolean }) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ id: string; answered: boolean }>('patchbay://agent-question-closed', (e) =>
-    handler(e.payload),
-  )
+  listen<{ id: string; answered: boolean }>(AGENT_QUESTION_CLOSED_EVENT, (e) => handler(e.payload))
 export const agentQuestions = () => invoke<import('../types').AgentQuestion[]>('agent_questions')
 export const agentQuestionsWatch = (sessionIds: string[]) =>
   invoke<void>('agent_questions_watch', { sessionIds })
@@ -725,6 +822,19 @@ export const mergeConflicts = (projectId: string, source: string, destination: s
     destination,
   })
 
+export const mergeBranchOutcome = (
+  projectId: string,
+  source: string,
+  sourceBranch: string,
+  destinationBranch: string,
+) =>
+  invoke<import('../types').MergeOutcome>('merge_branch_outcome', {
+    projectId,
+    source,
+    sourceBranch,
+    destinationBranch,
+  })
+
 export const mergeOutcome = (project: Project, request: import('../types').MergeRequest) =>
   invoke<import('../types').MergeOutcome>('merge_outcome', {
     projectId: project.projectId,
@@ -759,10 +869,15 @@ export const storyCreate = (projectId: string, draft: StoryDraft) =>
   invoke<Story>('story_create', { projectId, draft })
 export const storyUpdate = (projectId: string, id: string, patch: StoryPatch) =>
   invoke<Story>('story_update', { projectId, id, patch })
+/** Sets one complete sibling group's top-to-bottom priority. */
+export const storyReorder = (projectId: string, ids: string[]) =>
+  invoke<void>('story_reorder', { projectId, ids })
 export const storyRemove = (projectId: string, id: string, cascade: boolean) =>
   invoke<void>('story_remove', { projectId, id, cascade })
 export const storyCompleteAuto = (projectId: string, task: string, runId: string) =>
   invoke<Story[]>('story_complete_auto', { projectId, task, runId })
+export const storySourceOpen = (projectId: string, id: string) =>
+  invoke<void>('story_source_open', { projectId, id })
 
 export const usageRead = () => invoke<import('../types').Usage>('usage_read')
 export const usageStatusLineCheck = (sourceOverride?: string) =>
@@ -800,7 +915,7 @@ export const enableWorktreeSetup = (projectId: string, command: string) =>
   invoke<void>('worktree_setup_enable', { projectId, command })
 
 export const onValidationProposals = (handler: (event: { projectId: string }) => void) =>
-  listen<{ projectId: string }>('patchbay://validation-proposals', (e) => handler(e.payload))
+  listen<{ projectId: string }>(VALIDATION_PROPOSALS_EVENT, (e) => handler(e.payload))
 export const validationProposalRead = (projectId: string) =>
   invoke<import('../types').PendingValidation | null>('validation_proposal_read', { projectId })
 export const validationProposalClear = (projectId: string, id: string) =>

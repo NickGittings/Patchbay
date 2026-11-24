@@ -16,7 +16,6 @@ import {
   resumeAutoWithAgent,
   skipStage,
   stopAuto,
-  STAGE_LABELS,
 } from '../../lib/auto'
 import { revealTerminal } from '../../lib/attention'
 import { useClockNow } from '../../lib/clock'
@@ -33,6 +32,9 @@ import { useRunningReviewLanes } from '../../lib/reviewAgents'
 import { useReviewFindings } from '../../lib/useReviewFindings'
 import { activeTaskOf } from '../../lib/tasks'
 import { shortSha } from '../../lib/commitId'
+import { autoStepper } from '../../lib/stageModel'
+import { useStageModel } from '../../lib/useStageModel'
+import StageStrip from '../StageStrip'
 import './auto.css'
 
 function validationSummary(reports: ActionReport[]) {
@@ -41,6 +43,12 @@ function validationSummary(reports: ActionReport[]) {
   const failed = checks.filter((check) => !taskPassed(check)).length
   if (failed) return `${failed} of ${checks.length} checks did not pass`
   return `${checks.length} ${checks.length === 1 ? 'check' : 'checks'} passed`
+}
+
+const POWER_PROBLEMS: Partial<Record<string, string>> = {
+  onBattery: 'On battery: scheduled work may wait until the device wakes.',
+  powerUnknown: 'Power source unknown: sleep prevention is inactive.',
+  unavailable: 'Sleep prevention unavailable.',
 }
 
 /** After a usage pause: continue now on a preset whose subscription still has usage. */
@@ -92,6 +100,8 @@ export default function AutoPanel({
   const keepAwake = useStore((s) => s.workspaceSettings.autoKeepAwake === true)
   const power = useAutoPower()
   const run = useStore((s) => s.auto)
+  // The worktree's shared stage model, which also covers work after this run ended.
+  const stage = useStageModel()
   const projectId = useStore((s) => s.project?.id)
   const task = useStore((s) => s.activeTask)
   const draftVersion = useStore((s) => s.autoDraftVersion)
@@ -149,29 +159,21 @@ export default function AutoPanel({
     (['onBattery', 'powerUnknown', 'unavailable'].includes(power.status) || !!power.error)
   const powerSection = (
     <PanelDetails title="Power" reveal={powerProblem}>
-      <label className="auto-check auto-toggle">
+      <label className="auto-check auto-toggle" data-power={keepAwake ? power.status : undefined}>
         <input
           type="checkbox"
+          role="switch"
           checked={keepAwake}
           onChange={(e) => setAutoKeepAwake(e.target.checked)}
         />
-        Keep device awake for Auto work
+        Keep awake while plugged in
       </label>
-      <small className="auto-hint">
-        While plugged in, prevent idle sleep during Auto work and scheduled waits. Keep Patchbay
-        open. The screen can turn off. This does not wake a sleeping device.
-      </small>
-      {keepAwake && (
+      <p className="auto-hint">
+        Keep Patchbay open. The screen can turn off. This setting cannot wake a sleeping device.
+      </p>
+      {powerProblem && (
         <p role="status" className="auto-hint">
-          {
-            {
-              inactive: 'Sleep prevention is idle.',
-              active: 'Keeping device awake while plugged in.',
-              onBattery: 'On battery: scheduled work may wait until the device wakes.',
-              powerUnknown: 'Power source unknown: sleep prevention is inactive.',
-              unavailable: 'Sleep prevention unavailable.',
-            }[power.status]
-          }
+          {POWER_PROBLEMS[power.status] ?? 'Sleep prevention error.'}
           {power.error && ` ${power.error}`}
         </p>
       )}
@@ -188,17 +190,9 @@ export default function AutoPanel({
         {powerSection}
       </PanelContent>
     )
-  const steps = [
-    ...(run.scanners?.length || run.scanRound ? ['scan' as const] : []),
-    'plan' as const,
-    'implement' as const,
-    'validate' as const,
-    'review' as const,
-    // A run in place ends after review.
-    ...(inPlace(run) ? [] : ['merge' as const]),
-  ]
-  const current = currentStep(run)
-  const currentIndex = steps.indexOf(current)
+  // A run that later work superseded shows that work, as Chat does; otherwise the run's stages.
+  const superseded = !!stage && !stage.autoCurrent
+  const stages = superseded ? stage.stepper : autoStepper(run)
   const tone = STATUS_TONES[run.status]
   const stoppable = !['done', 'stopped'].includes(run.status)
   const scheduleKey = JSON.stringify([projectId, task, run.runId, run.status, run.stage])
@@ -229,23 +223,12 @@ export default function AutoPanel({
             {run.goal}
           </p>
         </header>
-        <ol className="auto-stepper" aria-label="Run stages">
-          {steps.map((stage, i) => (
-            <li
-              key={stage}
-              aria-current={stage === current ? 'step' : undefined}
-              data-state={
-                i < currentIndex || (i === currentIndex && run.status === 'done')
-                  ? 'done'
-                  : i === currentIndex
-                    ? CURRENT_STEP_STATES[run.status]
-                    : 'upcoming'
-              }
-            >
-              {STAGE_LABELS[stage]}
-            </li>
-          ))}
-        </ol>
+        <StageStrip items={stages} label={superseded ? 'Current work stages' : 'Run stages'} />
+        {superseded && (
+          <p className="auto-hint" role="status">
+            Work continued after this run; the stages show the worktree’s current work.
+          </p>
+        )}
         {(run.autonomous || run.recovery) && (
           <div className="auto-meta">
             {run.autonomous && (
@@ -351,6 +334,7 @@ export default function AutoPanel({
               <label className="auto-toggle">
                 <input
                   type="checkbox"
+                  role="switch"
                   checked={run.resumeOnUsageReset === true}
                   onChange={(e) =>
                     projectId && setAutoUsageResume(projectId, task, e.target.checked)
@@ -458,23 +442,6 @@ const STATUS_TONES: Record<AutoRun['status'], string> = {
   failed: 'bad',
   done: 'ok',
   stopped: '',
-}
-
-/** How the stepper marks the run's stage, so a paused, failed or stopped run doesn't look active. */
-const CURRENT_STEP_STATES: Record<AutoRun['status'], string> = {
-  running: 'current',
-  paused: 'attention',
-  waitingOnYou: 'attention',
-  failed: 'failed',
-  done: 'done',
-  stopped: 'stopped',
-}
-
-/** The stepper stage a run is on: fixing is implementing again, and the gate belongs to merge. */
-function currentStep(run: AutoRun) {
-  if (run.stage === 'fix') return 'implement'
-  if (run.stage === 'mergeGate' || run.stage === 'done') return inPlace(run) ? 'review' : 'merge'
-  return run.stage
 }
 
 /** The run's latest review verdict at a glance, with a way to read it in Review. */

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import type { Component } from '../types'
+import type { Component, Story } from '../types'
 import { evaluateWhen, type WhenContext } from './when'
 
 const component: Component = {
@@ -56,5 +56,30 @@ describe('evaluateWhen', () => {
     expect(when("component.hasFile('x'")).toBe(false)
     expect(when('`true`')).toBe(false)
     expect(when('true || '.repeat(1000) + 'true')).toBe(false)
+  })
+})
+
+describe('story clauses', () => {
+  const story: Story = {
+    id: 's1',
+    kind: 'story',
+    parent: null,
+    title: 'Import',
+    description: '',
+    acceptance: [],
+    components: [],
+    task: null,
+    status: 'backlog',
+    createdMs: 1,
+    order: 1,
+    source: { extension: 'patchbay.github-issues', externalId: 'issue:1' },
+  }
+  test('match the item a stories/item placement is shown for', () => {
+    const c: WhenContext = { view: 'navigation', story }
+    expect(when("story.kind == 'story'", c)).toBe(true)
+    expect(when("story.source == 'patchbay.github-issues'", c)).toBe(true)
+    expect(when('story.imported', c)).toBe(true)
+    expect(when('story.imported', { ...c, story: { ...story, source: null } })).toBe(false)
+    expect(when("story.kind == 'epic'", context)).toBe(false)
   })
 })

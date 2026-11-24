@@ -5,8 +5,9 @@ import type { SimpleEntry } from '../lib/simple'
 import { useChatIdentity } from '../lib/chatIdentity'
 import { chatReplyId } from '../lib/chatNavigation'
 import { useStore } from '../store'
-import { activityLabel, turnSteps } from '../lib/activity'
-import type { SessionRecord } from '../types'
+import { activityLabel, replyTurn, turnLength, turnStartMs, turnSteps } from '../lib/activity'
+import { useClockNow } from '../lib/clock'
+import type { Activity, SessionRecord } from '../types'
 import Markdown from './findings/Markdown'
 import SimpleStatus from './SimpleStatus'
 import MessageMeta from './MessageMeta'
@@ -57,7 +58,7 @@ export default function SimpleAgent({
           </button>
         )}
       </header>
-      {entries.map((entry) =>
+      {entries.map((entry, index) =>
         entry.kind === 'prompt' ? (
           <div className="simple-prompt" data-chat-entry={entry.id} key={entry.id}>
             <strong>You</strong>
@@ -67,6 +68,10 @@ export default function SimpleAgent({
         ) : entry.kind === 'reply' ? (
           <div className="simple-reply" data-chat-entry={chatReplyId(entry)} key={entry.id}>
             <MessageMeta atMs={entry.atMs} text={entry.text} />
+            <TurnSteps
+              cwd={record?.spec.cwd}
+              {...replyTurn(session, entry, promptBefore(entries, index))}
+            />
             <Markdown text={entry.text} />
           </div>
         ) : null,
@@ -78,7 +83,18 @@ export default function SimpleAgent({
       )}
       {latest && busy && (
         <div className="simple-working" role="status">
-          <p>{current ? activityLabel(current, record?.spec.cwd) : 'Working…'}</p>
+          <p>
+            {current ? activityLabel(current, record?.spec.cwd) : 'Working…'}
+            {session?.status?.agent?.state === 'working' && (
+              <TurnTimer
+                sinceMs={turnStartMs(
+                  promptBefore(entries, entries.length),
+                  steps,
+                  session.status.agent.sinceMs,
+                )}
+              />
+            )}
+          </p>
           {steps.length > 1 && (
             <details className="simple-steps">
               <summary>{steps.length} steps</summary>
@@ -92,5 +108,53 @@ export default function SimpleAgent({
         </div>
       )}
     </article>
+  )
+}
+
+/** When the user's prompt that started the turn ending at `index` was sent, if it is shown. */
+function promptBefore(entries: SimpleEntry[], index: number) {
+  for (let i = index - 1; i >= 0; i--) {
+    const entry = entries[i]
+    if (entry.kind === 'reply') return undefined
+    if (entry.kind === 'prompt') return entry.atMs
+  }
+  return undefined
+}
+
+/** What a finished turn did, folded under its reply so the work stays visible. */
+function TurnSteps({
+  steps,
+  durationMs,
+  cwd,
+}: {
+  steps: Activity[]
+  durationMs?: number
+  cwd?: string
+}) {
+  const time = durationMs === undefined ? undefined : turnLength(durationMs)
+  if (!steps.length) return time ? <p className="simple-turn-time">Worked for {time}</p> : null
+  const summary = `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}${time ? ` · ${time}` : ''}`
+  return (
+    <details className="simple-steps simple-turn-steps">
+      <summary>{summary}</summary>
+      <ol>
+        {steps.map((step) => (
+          <li key={step.sequence}>{activityLabel(step, cwd)}</li>
+        ))}
+      </ol>
+    </details>
+  )
+}
+
+/** How long the current turn has run; only this leaf subscribes to the clock. */
+function TurnTimer({ sinceMs }: { sinceMs: number }) {
+  // The shared clock ticks every ten seconds, so a running turn shows whole minutes.
+  const now = useClockNow()
+  const ms = Math.max(0, now - sinceMs)
+  return (
+    <span className="simple-turn-time">
+      {' '}
+      · {ms < 60_000 ? '<1m' : turnLength(ms - (ms % 60_000))}
+    </span>
   )
 }

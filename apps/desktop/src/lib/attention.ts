@@ -6,12 +6,14 @@ import { autoWorkspace } from './autoState'
 import { STAGE_LABELS, STATUS_LABELS } from './autoSettings'
 import { useStore } from '../store'
 import {
+  COORDINATOR_SCOPE,
   MAP_SCOPE,
   PLAN_SCOPE,
   MERGE_SCOPE,
   REVIEW_SCOPE,
   isReviewAgentScope,
   TASK_ROOT_SCOPE,
+  WORKER_SCOPE,
   sessionView,
   parseSessionId,
   plannerSessionId,
@@ -59,6 +61,8 @@ type Snapshot = Pick<
 export function sessionOwner(componentId: string | undefined, nodes: Snapshot['nodes']) {
   if (componentId === PLAN_SCOPE) return 'Planner'
   if (componentId === TASK_ROOT_SCOPE) return 'Task root'
+  if (componentId === COORDINATOR_SCOPE) return 'Builder'
+  if (componentId === WORKER_SCOPE) return 'Sub-builder'
   if (componentId === REVIEW_SCOPE) return 'Review agent'
   if (componentId === MERGE_SCOPE) return 'Merge agent'
   if (componentId === MAP_SCOPE) return 'Map agent'

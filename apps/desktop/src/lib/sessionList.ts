@@ -42,9 +42,9 @@ export function sessionRole(
     case SCAN_SCOPE:
       return { role: 'Scan', tone: 'plan' }
     case COORDINATOR_SCOPE:
-      return { role: 'Coordinator', tone: 'implement' }
+      return { role: 'Builder', tone: 'implement' }
     case WORKER_SCOPE:
-      return { role: 'Worker', tone: 'implement' }
+      return { role: 'Sub-builder', tone: 'implement' }
     default:
       if (metadata.kind !== 'agent') return { role: 'Task', tone: 'task' }
       // A root agent with a reviewed branch is fixing that review's findings.

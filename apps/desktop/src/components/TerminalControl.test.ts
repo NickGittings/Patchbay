@@ -14,6 +14,7 @@ vi.mock('../store', () => {
     ),
   }
 })
+vi.mock('../lib/stageRecord', () => ({ recordPlannerStart: vi.fn() }))
 vi.mock('../lib/sessions', () => ({
   autoControlsAgent: () => false,
   newConversation: vi.fn(),

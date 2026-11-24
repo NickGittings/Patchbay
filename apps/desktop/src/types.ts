@@ -1,5 +1,27 @@
 // Mirrors patchbay-core's serde types.
 
+/** Built-in detector and preset provenance; mirrors core `model::BUILTIN_SOURCE`. */
+export const BUILTIN_SOURCE = 'builtin'
+/** Mirrors the reserved recipient in core's chat orchestration. */
+export const LEAD_RECIPIENT = 'lead'
+export type WorkflowAction =
+  | 'startAgent'
+  | 'startPlan'
+  | 'startBuild'
+  | 'startReview'
+  | 'startFix'
+  | 'startMerge'
+  | 'startCouncilReview'
+  | 'startAuto'
+  | 'pauseAuto'
+  | 'resumeAuto'
+  | 'stopAuto'
+  /** Saved by another Patchbay build (core's `#[serde(other)]` fallback); never run. */
+  | 'unknown'
+export type WorkflowState =
+  'queued' | 'waiting' | 'starting' | 'running' | 'completed' | 'uncertain' | 'failed' | 'unknown'
+export type OwnerKind = 'chat' | 'auto' | 'unknown'
+
 export const SCAN_SCOPE = '@scan'
 export const COORDINATOR_SCOPE = '@coordinator'
 export const WORKER_SCOPE = '@worker'
@@ -22,17 +44,6 @@ export const MAP_SCOPE = '@map'
 export const MAP_AGENT_TERMINAL = 'detect'
 /** Mirrors `stack_proposals::STACK_TERMINAL`: stack detection, beside it at `MAP_SCOPE`. */
 export const STACK_AGENT_TERMINAL = 'stack'
-/** Mirrors context::{MIN_SUBAGENTS, MAX_SUBAGENTS}. */
-export const MIN_SUBAGENTS = 2
-export const MAX_SUBAGENTS = 8
-/** Implement's subagent choices: 0 (Off), then MIN_SUBAGENTS..=MAX_SUBAGENTS. */
-export const SUBAGENT_COUNTS: readonly number[] = [
-  0,
-  ...Array.from({ length: MAX_SUBAGENTS - MIN_SUBAGENTS + 1 }, (_, i) => i + MIN_SUBAGENTS),
-]
-export const isSubagentCount = (n: unknown): n is number =>
-  typeof n === 'number' && SUBAGENT_COUNTS.includes(n)
-
 /**
  * A fresh agent's first task, `context::Kickoff`. A fix names the review session; the backend
  * reads its recorded worktree and branch, and refuses once that branch isn't checked out there.
@@ -40,7 +51,7 @@ export const isSubagentCount = (n: unknown): n is number =>
  * prompts an Auto planner; `planStory` plans the backend-owned Story section.
  */
 export type Kickoff =
-  | { kind: 'implementPlan'; subagents?: number }
+  | { kind: 'implementPlan' }
   | { kind: 'fixFindings'; reviewSession?: string }
   | { kind: 'plan' }
   | { kind: 'planStory' }
@@ -1006,10 +1017,16 @@ export interface MenuContribution {
   command: string
   when?: string | null
 }
+export const STORY_ITEM_MENU = 'stories/item'
+export const STORIES_READ_PERMISSION = 'stories:read'
+
+export type ViewLocation = 'inspector' | 'dock' | 'rail'
 export interface ViewContribution {
   id: string
   title: string
-  location: 'inspector' | 'dock'
+  location: ViewLocation
+  /** A built-in rail icon for `rail` views, from `extensions::RAIL_ICONS`. */
+  icon?: string | null
 }
 export interface ExtensionManifest {
   name: string
@@ -1020,6 +1037,8 @@ export interface ExtensionManifest {
   main?: string | null
   activationEvents: string[]
   permissions: string[]
+  /** Origins the `network` permission reaches. */
+  network: string[]
   contributes: {
     devices: DeviceManifest[]
     detectors: DetectorContribution[]
@@ -1035,6 +1054,8 @@ export interface Extension {
   manifest: ExtensionManifest
   enabled: boolean
   errors: string[]
+  /** Extra origins the user approved for `network`, such as an on-premises server. */
+  approvedHosts: string[]
 }
 export interface ExtensionRegistry {
   extensions: Extension[]
@@ -1157,7 +1178,7 @@ export interface TaskActivity {
 
 /** Per-user board items, mirrored from `stories.rs`. */
 export type StoryKind = 'epic' | 'feature' | 'story'
-export type StoryStatus = 'backlog' | 'planned' | 'building' | 'done'
+export type StoryStatus = 'backlog' | 'planned' | 'building' | 'reviewing' | 'merging' | 'done'
 export interface Story {
   id: string
   kind: StoryKind
@@ -1178,6 +1199,31 @@ export interface Story {
   completedHead?: string | null
   createdMs: number
   order: number
+  /** The tracker item an extension imported this from. */
+  source?: StorySource | null
+}
+/** `stories::StorySource`: matched on extension and external id when re-importing. */
+export interface StorySource {
+  extension: string
+  externalId: string
+  url?: string | null
+}
+/** `stories::ExternalItem`: one tracker item an extension imports. */
+export interface ExternalStoryItem {
+  externalId: string
+  kind: StoryKind
+  title: string
+  /** Another item's `externalId`, in this batch or imported earlier. */
+  parent?: string | null
+  description?: string
+  acceptance?: string[]
+  url?: string | null
+}
+/** `stories::ImportReport` */
+export interface StoryImportReport {
+  created: number
+  updated: number
+  unchanged: number
 }
 export interface StoryDraft {
   kind: StoryKind
@@ -1190,6 +1236,13 @@ export interface StoryDraft {
 /** Use an empty string to clear a parent or task link. */
 export type StoryPatch = Partial<
   Pick<Story, 'title' | 'description' | 'acceptance' | 'components' | 'status' | 'order'>
-> & { parent?: string; task?: string; autoRunId?: string; reopen?: boolean }
+> & {
+  parent?: string
+  task?: string
+  autoRunId?: string
+  reopen?: boolean
+  /** Apply workflow progress only to the saved story and linkage that produced it. */
+  expectedProgress?: Pick<Story, 'status' | 'task' | 'autoRunId'>
+}
 
 export type MergeCleanup = 'ask' | 'keep' | 'delete'

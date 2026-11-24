@@ -6,6 +6,8 @@ import { useStore } from '../store'
 import { useExtensionCommands } from '../extensions/commands'
 import { runWorkspaceAction, type WorkspaceAction } from './workspaceActions'
 
+export const MENU_ACTION_EVENT = 'patchbay://menu-action'
+
 /** The macOS Project and Settings menus, and Cmd/Ctrl+S on every platform. */
 export function useNativeMenus(actions: WorkspaceAction[]) {
   const task = useStore((s) => s.activeTask)
@@ -52,7 +54,7 @@ export function useNativeMenus(actions: WorkspaceAction[]) {
   }, [])
   useEffect(() => {
     if (!isMac) return
-    const unlisten = listen<string>('patchbay://menu-action', ({ payload }) => {
+    const unlisten = listen<string>(MENU_ACTION_EVENT, ({ payload }) => {
       if (payload === 'commands') useStore.getState().setPaletteOpen(true)
       else if (payload.startsWith('action:'))
         runWorkspaceAction(latest.current.actions.find((a) => a.id === payload.slice(7)))

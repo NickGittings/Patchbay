@@ -1,6 +1,7 @@
 import { emitTo, listen } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type { ContextSection, Project } from '../types'
+import { MAIN_WINDOW_LABEL } from '../lib/mainWindow'
 
 type Collector = (
   project: Project,
@@ -32,7 +33,9 @@ export function extraContext(
 ): Promise<ContextSection[]> {
   if (collector) return collector(project, ids, caller, task)
   const { label } = getCurrentWebviewWindow()
-  return label === 'main' ? Promise.resolve([]) : askMain(label, project.projectId ?? '', ids, task)
+  return label === MAIN_WINDOW_LABEL
+    ? Promise.resolve([])
+    : askMain(label, project.projectId ?? '', ids, task)
 }
 
 function askMain(
@@ -59,7 +62,7 @@ function askMain(
       .then((stop) => {
         unlisten = stop
         if (settled) stop()
-        else return emitTo('main', REQUEST_EVENT, { id, label, projectId, ids, task })
+        else return emitTo(MAIN_WINDOW_LABEL, REQUEST_EVENT, { id, label, projectId, ids, task })
       })
       .catch(() => done([]))
   })

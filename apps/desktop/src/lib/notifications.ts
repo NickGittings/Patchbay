@@ -18,7 +18,13 @@ import { finished } from './autoSettings'
 import { terminalStatus } from './display'
 import { distinctLabels } from './sessionList'
 import { shortTitle } from './shortTitle'
-import { agentProviderLabel, chatRole, leadsActiveTeam, providerLabel } from './chatIdentity'
+import {
+  agentProviderLabel,
+  chatIdentity,
+  leadsActiveTeam,
+  providerLabel,
+  namedBuilder,
+} from './chatIdentity'
 import { useChatTeams } from './chatTeams'
 
 const KIND_HEALTH = { finished: 'review', needsInput: 'input', failed: 'fail' } as const
@@ -213,7 +219,7 @@ const PHRASES = {
 
 /**
  * Who the agent is (role, name, provider), where it works, and the one fact its event needs: why
- * it asks, or how it exited. Never its prompt, which for a Chat worker is the whole assignment.
+ * it asks, or how it exited. Never its prompt, which for a Chat Sub-builder is the whole assignment.
  */
 export function describe(
   s: Snapshot,
@@ -233,8 +239,10 @@ export function describe(
     lane,
   } = identity
   const teams = useChatTeams.getState()
-  const role = chatRole(record, teams.teams[projectId ?? ''], teams.runs[projectId ?? ''])
-  const owner = role === 'Builder' ? role : sessionOwner(componentId, state?.nodes ?? [])
+  const projectTeams = teams.teams[projectId ?? '']
+  const projectRuns = teams.runs[projectId ?? '']
+  const { role, roleKey } = chatIdentity(record, projectTeams, projectRuns)
+  const owner = namedBuilder(record, roleKey) ? role : sessionOwner(componentId, state?.nodes ?? [])
   const worktree = taskTitle ? shortTitle(taskTitle) : task || 'Project folder'
   const session = s.sessions[sid]
   const provider = agentProviderLabel(record) ?? providerLabel(session?.status?.agent?.provider)

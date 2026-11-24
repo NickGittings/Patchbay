@@ -3,7 +3,7 @@ import { MERGE_SCOPE } from '../types'
 import { autoWorkspace } from './autoState'
 import { integrated } from './autoSettings'
 import { gitWorktrees, mergeOutcome } from './ipc'
-import { refreshStories } from './stories'
+import { refreshStories, startedStatus, storyStatuses, updateStory } from './stories'
 
 /** Poll the small board store; read Git only after its inputs or live Git status change. */
 export function storyProgressPoll(projectId: string) {
@@ -27,13 +27,37 @@ export function storyProgressPoll(projectId: string) {
       try {
         await refreshStories(projectId)
         if (disposed) return
+        const progress = projectStateOf(projectId)
+        if (!progress) return
+        const runs = Object.fromEntries(
+          progress.tasks.map((task) => [task.id, autoWorkspace(progress, task.id)?.auto]),
+        )
+        const statuses = storyStatuses(
+          progress.stories,
+          progress.tasks,
+          runs,
+          projectId,
+          useStore.getState().sessionRecords,
+        )
+        for (const story of progress.stories) {
+          if (disposed) return
+          const resolved = statuses.get(story.id)
+          if (story.kind !== 'story' || resolved?.source !== 'worktree') continue
+          const patch = startedStatus(story, resolved.value)
+          if (!patch.status) continue
+          // One story's failed save must not stop the others or merge detection below.
+          await updateStory(projectId, story.id, patch).catch(() => {})
+        }
+        if (disposed) return
         const state = projectStateOf(projectId)
         const project = projectOf(projectId)
         if (!state || !project) return
         const linked = state.tasks
           .filter((t) => !t.missing)
           .flatMap((task) => {
-            const stories = state.stories.filter((s) => s.task === task.id && s.status !== 'done')
+            const stories = state.stories.filter(
+              (s) => s.kind === 'story' && s.task === task.id && s.status !== 'done',
+            )
             if (!stories.length) return []
             const run = autoWorkspace(state, task.id)?.auto
             const record = [...useStore.getState().sessionRecords]
@@ -88,7 +112,7 @@ export function storyProgressPoll(projectId: string) {
         )
         if (!disposed) checked = key
       } catch {
-        // Retry failed reads; missing branches and unreadable Git are not completion evidence.
+        // Retry failed board or Git operations on the next poll.
       } finally {
         pending = false
       }

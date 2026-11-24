@@ -89,29 +89,18 @@
     const rolesPanel = await until('Agent roles panel', () => query('[aria-label="Agent roles"]'))
     // Check label association rather than focus: WebKit on macOS doesn't focus a select
     // through its label, and smoke windows never have focus anyway.
-    for (const role of ['Plan', 'Implement', 'Fix', 'Merge']) {
+    for (const role of ['Plan', 'Builder', 'Fix', 'Merge']) {
       const select = rolesPanel.querySelector(`select[aria-label="${role}"]`)
       assert(select?.labels?.length === 1, `${role} select has no label`)
     }
-    const subagentsLabel = [...rolesPanel.querySelectorAll('label')].find(
-      (el) => el.textContent === 'Subagents',
-    )
-    const subagents = subagentsLabel?.control
-    assert(subagents?.tagName === 'SELECT', 'missing subagent control')
     assert(
-      [...subagents.options].map((o) => o.value).join() === '0,2,3,4,5,6,7,8',
-      'incorrect subagent choices',
+      rolesPanel.querySelector('[aria-label^="Sub-builders: "]'),
+      'missing Sub-builders picker',
     )
-    const beforeSubagents = JSON.stringify(state().toProject())
-    const wasDirty = state().dirty
-    choose(subagents, '3')
-    await until('subagents selected', () => state().implementSubagents === 3)
     assert(
-      state().dirty === wasDirty && JSON.stringify(state().toProject()) === beforeSubagents,
-      'subagent setting changed the project map',
+      !rolesPanel.textContent.includes('Subagents'),
+      'retired Subagents field is still visible',
     )
-    choose(subagents, '0')
-    await until('subagents disabled', () => state().implementSubagents === 0)
     click(rolesPanel.querySelector('[aria-label="Close Agent roles"]'))
     // Canvas first: the Inspector opens with a selection, the dock only while terminals run.
     // Hidden panels collapse but stay mounted, so check their panel's size (padding overflows it).
@@ -272,6 +261,37 @@
     )
     assert(!textOf(sid).includes('unrelated notes'), 'planner includes unrelated components')
     assert(state().planStartedWith[sid] === 'alpha,beta', 'planner launch scope was not recorded')
+    click(viewButton('Navigation'))
+    const agentsTab = () => query('.navigation-shell .view-tabs button[aria-label^="Agents,"]')
+    click(
+      await until(
+        'Navigation Agents count',
+        () => agentsTab()?.textContent === 'Agents 1' && agentsTab(),
+      ),
+    )
+    const plannerCard = await until('planner on the Agents canvas', () =>
+      query(`.agent-canvas [data-session="${CSS.escape(sid)}"][data-role="planner"]`),
+    )
+    assert(agentsTab().getAttribute('aria-pressed') === 'true', 'Agents tab is not active')
+    assert(query('.navigation-map').inert, 'map is interactive behind the Agents canvas')
+    click(plannerCard.querySelector('[aria-label^="View "]'))
+    await until(
+      'planner terminal active in the Navigation dock',
+      () =>
+        query(`.terminal-dock [data-dock-session="${CSS.escape(sid)}"].active`) &&
+        query('.terminal-dock .terminal-host .xterm'),
+    )
+    assert(!state().simpleMode && state().view === 'navigation', 'Terminal left Navigation')
+    click(query('.terminal-dock .dock-close'))
+    await until('planner terminal closed', () => !query('.terminal-dock .tab.active'))
+    assert(state().sessions[sid]?.running, 'closing the dock stopped the planner')
+    click([...query('.agent-canvas .view-tabs').children].find((b) => b.textContent === 'Map'))
+    await until(
+      'original map restored',
+      () => !query('.agent-canvas') && !query('.navigation-map').inert,
+    )
+    click(viewButton('Plan'))
+    await until('planner view restored', () => query('.planner-terminal'))
     state().toggleHighlight('beta')
     await until('stale hint', () => query('.planner-stale'))
     const restartFetch = window.fetch
@@ -326,11 +346,10 @@
     await until('implementation agent', () => tiles('@task').length === 2)
     const agent = state().rootTerminals.find((t) => t.kind === 'agent')
     const agentSid = smoke.sessionId('@task', agent.id)
-    const agentHeader = query(`.terminal-tile[data-session="${agentSid}"] .terminal-tile-header`)
-    assert(
-      agentHeader?.querySelector('.hint')?.textContent === 'Build ›',
-      'root agent tile does not name its role',
-    )
+    const agentHeader = await until('root agent tile names its role', () => {
+      const header = query(`.terminal-tile[data-session="${agentSid}"] .terminal-tile-header`)
+      return header?.querySelector('.hint')?.textContent === 'Builder ›' && header
+    })
     assert(!agentHeader.textContent.includes('Task root'), 'root agent tile says Task root')
     await until('automatic plan handoff', () => textOf(agentSid).includes('# Smoke handoff'))
     await until('planner stopped after handoff', () => !state().sessions[sid]?.running)
@@ -674,6 +693,34 @@
       'a stopped task counts as failed',
     )
 
+    click(viewButton('Navigation'))
+    state().select('unrelated')
+    const componentAgent = smoke.sessionId('unrelated', 'agent')
+    const escapedAgent = CSS.escape(componentAgent)
+    const componentTab = `.terminal-dock [data-dock-session="${escapedAgent}"]`
+    const dockedTab = await until('component agent dock tab', () => query(componentTab))
+    click(await until('Navigation Agents tab', agentsTab))
+    click(
+      await until('component agent Terminal button', () =>
+        query(`.agent-canvas [data-session="${escapedAgent}"] [aria-label^="View "]`),
+      ),
+    )
+    await until('existing component tab active', () => query(`${componentTab}.active`))
+    assert(query(componentTab) === dockedTab, 'Agents replaced the existing dock tab')
+    assert(
+      [...query('.terminal-dock .dock-actions').querySelectorAll('button')].some(
+        (b) => b.textContent === 'New conversation',
+      ),
+      'Agents removed the component terminal controls',
+    )
+    smoke.stopTerminal(componentAgent)
+    await until('agent exited while still pinned', () => !state().sessions[componentAgent]?.running)
+    click(await until('close agent terminal', () => query('[title="Close this agent terminal"]')))
+    await until('agent terminal closed', () => query('[title="Close this exited terminal"]'))
+    assert(state().dockKept.includes(componentAgent), 'Closing the agent removed its pinned tab')
+    assert(query(componentTab) === dockedTab, 'Closing the agent removed its dock tab')
+    click(viewButton('Build'))
+
     const scopeBefore = [...state().highlighted]
     const plansBefore = { ...state().planStartedWith }
     state().loadProject(project)
@@ -830,7 +877,7 @@
     state().setActiveSession(null)
     smoke.store.setState({ inspector: null })
     await smoke.report(
-      'PASS views: navigation actions, inspector files, component search, changes handoff, scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity, multi-component implementation, peers',
+      'PASS views: navigation actions, Agents canvas and dock, inspector files, component search, changes handoff, scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity, multi-component implementation, peers',
     )
   } catch (e) {
     await smoke.report(`FAIL views: ${e?.message ?? e} ${e?.stack ?? ''}`)

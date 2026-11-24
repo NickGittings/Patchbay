@@ -1,4 +1,5 @@
 //! Local subscription usage snapshots and opt-in Claude status-line capture.
+use crate::codex::{EVENT_MSG, TOKEN_COUNT};
 use crate::{adapters::Adapter, agent_hooks};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -143,11 +144,11 @@ fn codex_tail(bytes: &[u8], fallback_ms: u64) -> Option<ProviderUsage> {
         .rev()
         .find_map(|line| {
             let event: Value = serde_json::from_str(line).ok()?;
-            if event.get("type")?.as_str()? != "event_msg" {
+            if event.get("type")?.as_str()? != EVENT_MSG {
                 return None;
             }
             let payload = event.get("payload")?;
-            if payload.get("type")?.as_str()? != "token_count" {
+            if payload.get("type")?.as_str()? != TOKEN_COUNT {
                 return None;
             }
             let limits = payload.get("rate_limits")?;

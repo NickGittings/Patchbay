@@ -1,4 +1,4 @@
-import type { AgentRole, AutoRun, AutoStage, EffortSettings } from '../types'
+import type { AgentRole, AutoStage, EffortSettings } from '../types'
 
 /**
  * What the user gave the Auto dialog, kept while its popover is closed until a run starts. Only
@@ -12,7 +12,6 @@ export interface AutoDraft {
   resumeOnUsageReset?: boolean
   /** The goal as the user typed it; absent, the dialog infers one. */
   goal?: string
-  effort: AutoRun['effort']
   overrides: Partial<EffortSettings>
   mode: 'ask' | 'auto'
   /** The destination the user picked; absent, the dialog picks one. */
@@ -25,7 +24,6 @@ export interface AutoDraft {
 }
 
 export const emptyAutoDraft = (): AutoDraft => ({
-  effort: 'standard',
   overrides: {},
   mode: 'ask',
   picked: {},

@@ -119,6 +119,19 @@
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.story-card[draggable='true'] {
+  cursor: grab;
+}
+.story-card.dragging {
+  opacity: 0.5;
+}
+/* Where a dragged card lands: a line along the edge it would take. */
+.story-card.drop-before {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+.story-card.drop-after {
+  box-shadow: 0 2px 0 var(--accent);
+}
 .story-card-title {
   display: flex;
   align-items: baseline;
@@ -151,13 +164,15 @@
 .story-status {
   text-transform: capitalize;
 }
-.story-status.planned {
+.story-status.planned,
+.story-status.active {
   color: var(--accent-text);
 }
 .story-status.building {
   color: var(--running);
 }
-.story-status.done {
+.story-status.done,
+.story-status.closed {
   color: var(--ok);
 }
 .story-worktree {
@@ -278,4 +293,47 @@
 }
 .story-status.merging {
   color: var(--review);
+}
+/* Extension commands contributed to `stories/toolbar`, such as tracker imports. */
+.story-board-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.story-board-actions:empty {
+  display: none;
+}
+.story-board-actions button {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.story-imported {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.story-source {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.story-source .row,
+.story-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.story-source-actions:empty {
+  display: none;
+}
+.story-source-actions {
+  margin-bottom: 12px;
 }

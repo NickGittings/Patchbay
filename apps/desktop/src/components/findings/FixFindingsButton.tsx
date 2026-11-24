@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { reviewWorktreeBusy } from '../../lib/reviewAgents'
-import { fixReviewFindings } from '../../lib/reviewHandoff'
+import { launchFix } from '../../lib/launchStage'
 import { useStore } from '../../store'
 import type { SessionRecord } from '../../types'
 
@@ -8,9 +8,12 @@ import type { SessionRecord } from '../../types'
 export default function FixFindingsButton({
   record,
   hasFindings,
+  primary = false,
 }: {
   record: SessionRecord
   hasFindings: boolean
+  /** Fixing is the worktree's next step. */
+  primary?: boolean
 }) {
   const [starting, setStarting] = useState(false)
   // Any review still writing to this worktree's findings, not only this one.
@@ -19,6 +22,7 @@ export default function FixFindingsButton({
   )
   return (
     <button
+      className={primary ? 'primary' : undefined}
       disabled={starting || reviewing || !hasFindings}
       title={
         reviewing
@@ -27,7 +31,8 @@ export default function FixFindingsButton({
       }
       onClick={() => {
         setStarting(true)
-        void fixReviewFindings(record)
+        // In Chat mode the agent panel shows this button too.
+        void launchFix(useStore.getState().simpleMode ? 'chat' : 'manual', record, 'follow')
           .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
           .finally(() => setStarting(false))
       }}

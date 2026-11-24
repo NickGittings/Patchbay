@@ -1,6 +1,7 @@
 //! Authenticated loopback command channel. A capability fixes launch context;
 //! callers cannot supply a different project, checkout, or arbitrary command.
 use crate::proposals::Proposal;
+use crate::stories::{StoryDraft, StoryStatus};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -77,6 +78,22 @@ pub enum Proposes {
     Nothing,
 }
 
+/// Board fields agents may edit. Worktree and Auto linkage belong to the app.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StoryEdit {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub acceptance: Option<Vec<String>>,
+    pub parent: Option<String>,
+    pub status: Option<StoryStatus>,
+    pub order: Option<u32>,
+    #[serde(default)]
+    pub close: bool,
+    #[serde(default)]
+    pub reopen: bool,
+}
+
 impl Role {
     /// The role of a session at `component_id` running `terminal_id`.
     #[must_use]
@@ -107,6 +124,19 @@ pub enum Action {
         command: crate::orchestration::Command,
     },
     Context {},
+    /// The story board in priority order, its next unstarted story, and with `id`
+    /// that item's briefing.
+    Stories {
+        #[serde(default)]
+        id: Option<String>,
+    },
+    StoryCreate {
+        draft: StoryDraft,
+    },
+    StoryUpdate {
+        id: String,
+        edit: StoryEdit,
+    },
     Status {},
     Logs {
         #[serde(rename = "sessionId")]

@@ -18,6 +18,9 @@ import { openComponentWindow } from './windows'
 import { reconcileSessions } from './sessions'
 import { flushMapSaves, initializeMapAutosave } from './mapSave'
 
+const RETIRED_IMPLEMENT_SETTING = 'implementSubagents'
+const QUIT_REQUEST_EVENT = 'patchbay://quit-request'
+
 let initialized: Promise<void> | undefined
 let timer: ReturnType<typeof setTimeout> | undefined
 let writing = Promise.resolve()
@@ -49,7 +52,6 @@ export function workspaceDocument(): WorkspaceDocument {
     settings: {
       ...s.workspaceSettings,
       agentRoles: s.agentRoles,
-      implementSubagents: s.implementSubagents,
       notifications: s.notifications,
       usage: s.usageSettings,
     },
@@ -92,7 +94,7 @@ export function workspaceDocument(): WorkspaceDocument {
             }
           : Object.fromEntries(
               Object.entries(p.unavailableLayout ?? {}).filter(
-                ([key]) => key !== 'agentRoles' && key !== 'implementSubagents',
+                ([key]) => key !== 'agentRoles' && key !== RETIRED_IMPLEMENT_SETTING,
               ),
             ),
       }
@@ -237,7 +239,6 @@ export function restoredLayout(
                 'planStartedWith',
                 'storyBoard',
                 'agentRoles',
-                'implementSubagents',
                 'validatorDeclined',
                 'stackDeclined',
                 'dependencyPromptDismissed',
@@ -258,16 +259,14 @@ export function initializeWorkspace() {
     const initialKeepAwake = useStore.getState().workspaceSettings.autoKeepAwake
     const initialHookSources = useStore.getState().workspaceSettings.hookSources
     const initialAgentRoles = useStore.getState().agentRoles
-    const initialSubagents = useStore.getState().implementSubagents
     let savedAgentRoles: unknown
-    let savedSubagents: unknown
     let restoredSettings: unknown
     let savedHookSources: unknown
     let savedChatAgent: unknown
     let savedKeepAwake: unknown
     // Listen before restoring: the backend defers every quit to this listener, so a slow
     // restore must not swallow Cmd+Q. Flushing is a no-op until restore finishes.
-    await listen('patchbay://quit-request', async () => {
+    await listen(QUIT_REQUEST_EVENT, async () => {
       if (!(await guardAllEditorWindows())) return
       await flushMapSaves()
       await flushWorkspace()
@@ -297,10 +296,13 @@ export function initializeWorkspace() {
       savedKeepAwake = document.settings?.autoKeepAwake
       savedChatAgent = document.settings?.chatAgent
       savedAgentRoles = document.settings?.agentRoles
-      savedSubagents = document.settings?.implementSubagents
       const agentDefaults = restoredAgentDefaults(document)
       useStore.setState((s) => {
-        const { hookSources: _saved, ...settings } = document.settings ?? {}
+        const {
+          hookSources: _saved,
+          [RETIRED_IMPLEMENT_SETTING]: _retired,
+          ...settings
+        } = document.settings ?? {}
         const hookSources = mergeRestoredHookSources(
           savedHookSources,
           s.workspaceSettings.hookSources,
@@ -308,10 +310,6 @@ export function initializeWorkspace() {
         )
         return {
           agentRoles: s.agentRoles !== initialAgentRoles ? s.agentRoles : agentDefaults.agentRoles,
-          implementSubagents:
-            s.implementSubagents !== initialSubagents
-              ? s.implementSubagents
-              : agentDefaults.implementSubagents,
           usageSettings: mergeRestoredUsage(savedUsage, s.usageSettings, initialUsage),
           workspaceSettings: {
             ...settings,
@@ -414,7 +412,6 @@ export function initializeWorkspace() {
           s.planStoryTerminal === prev.planStoryTerminal &&
           s.planStartedWith === prev.planStartedWith &&
           s.agentRoles === prev.agentRoles &&
-          s.implementSubagents === prev.implementSubagents &&
           s.validatorDeclined === prev.validatorDeclined &&
           s.stackDeclined === prev.stackDeclined &&
           s.dependencyPromptDismissed === prev.dependencyPromptDismissed &&
@@ -448,8 +445,7 @@ export function initializeWorkspace() {
       JSON.stringify(useStore.getState().workspaceSettings.hookSources) !==
         JSON.stringify(savedHookSources) ||
       useStore.getState().workspaceSettings.chatAgent !== savedChatAgent ||
-      JSON.stringify(useStore.getState().agentRoles) !== JSON.stringify(savedAgentRoles) ||
-      useStore.getState().implementSubagents !== savedSubagents
+      JSON.stringify(useStore.getState().agentRoles) !== JSON.stringify(savedAgentRoles)
     ) {
       clearTimeout(timer)
       timer = setTimeout(() => void flushWorkspace(), 500)

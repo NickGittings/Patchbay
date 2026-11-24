@@ -583,12 +583,21 @@
       workflowText().includes('No issues. Merge into main?'),
     )
     await until('review retired the finished fixer', () => !state().sessions[fixer]?.running)
+    // Merge checks conflicts and, with none, starts the merge agent in the same click.
     click(button('Merge'))
-    await until('no conflict prompt', () =>
-      workflowText().includes('No conflicts with main. Merge?'),
+    await until('merge started without a second click', () =>
+      [...(state().simple.retainedWorkflow ?? []), ...state().simple.log].some(
+        (e) => e.action === 'merge',
+      ),
     )
-    click(button('Merge'))
-    await until('merged', () => workflowText().includes('Merged into main.'))
+    assert(!workflowText().includes('No conflicts'), 'Merge asked a second time')
+    // The timeline narrates the merge until the confirmed merge into main clears Chat.
+    await until(
+      'merged',
+      () =>
+        chatText().includes('Merged into main.') ||
+        (state().simple.clearBoundary && !state().simple.log.length),
+    )
     inChat()
     // Release the merge agent's exclusive destination before starting another planner there.
     const merger = [...(state().simple.retainedWorkflow ?? []), ...state().simple.log].findLast(

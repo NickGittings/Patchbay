@@ -23,7 +23,15 @@ import {
 } from '../lib/chatTeams'
 import { selectPanel, useRail } from '../lib/rail'
 import { persistReplies } from '../lib/simpleReplies'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import {
+  caretPoint,
+  clippingAncestor,
+  MENTION_MAX_HEIGHT,
+  placeMention,
+  samePlacement,
+  type MentionPlacement,
+} from '../lib/caretPoint'
 import { useStore } from '../store'
 import { useShallow } from 'zustand/react/shallow'
 import type { SessionRecord } from '../types'
@@ -34,8 +42,12 @@ import {
   resumeRecipient,
   sendToSession,
   lastSubmission,
+  componentMentions,
   editedMentions,
+  sentFromDraft,
+  storyToken,
   forceable,
+  imageFiles,
   interruptible,
   interruptSession,
   deliveryConfirmed,
@@ -44,11 +56,22 @@ import {
   promptReady,
   transmittedText,
   waitForPrompt,
+  withImages,
 } from '../lib/simpleComposer'
+import { saveChatAttachment } from '../lib/ipc'
 import { logLaunch, logSimple } from '../lib/simpleActions'
 import { cancelQueued, enqueuePrompt, flushQueued, sendableNow } from '../lib/simpleQueue'
 import { refreshSession, reconcileFreshSessions, restartTerminal } from '../lib/sessions'
 import { openIntegrations, useAgentHooksInstalled } from '../lib/agentHooks'
+import { boardOrder } from '../lib/stories'
+import type { StoryKind } from '../types'
+
+/** An autocomplete option: a map component, or a story board item when `story` names its kind. */
+interface MentionCandidate {
+  id: string
+  label: string
+  story?: StoryKind
+}
 
 export default function SimpleComposer({
   scopeKey,
@@ -71,6 +94,7 @@ export default function SimpleComposer({
       project: s.project,
       activeTask: s.activeTask,
       nodes: s.nodes,
+      stories: s.stories,
       devices: s.devices,
       agentRoles: s.agentRoles,
       chatAgent: s.workspaceSettings.chatAgent,
@@ -103,6 +127,53 @@ export default function SimpleComposer({
   const setError = (text: string, kind?: ChatFailureKind) =>
     setErrorResult({ key: scopeKey, text, kind })
   const [caret, setCaret] = useState(0)
+  const [attaching, setAttaching] = useState(0)
+  const shownScope = useRef(scopeKey)
+  useEffect(() => {
+    shownScope.current = scopeKey
+  }, [scopeKey])
+  /**
+   * Take over a paste or drop of images: remove any selected text now, as a paste would, then save
+   * the images and put their paths where the caret is once they are saved.
+   */
+  const attach = async (files: File[], field: HTMLTextAreaElement) => {
+    const projectId = s.project?.id
+    if (!files.length || !projectId) return
+    const key = scopeKey
+    const { selectionStart: from, selectionEnd: to } = field
+    if (to > from) {
+      const draft = ui.draft.slice(0, from) + ui.draft.slice(to)
+      patch({ draft, mentions: editedMentions(ui.draft, draft, ui.mentions) })
+    }
+    let at = from
+    setAttaching((n) => n + 1)
+    try {
+      const paths = await Promise.all(
+        files.map(async (f) =>
+          saveChatAttachment(projectId, new Uint8Array(await f.arrayBuffer())),
+        ),
+      )
+      // The user may have typed while the images saved: insert at the live caret while this
+      // chat is still shown, else at the end of its draft.
+      const current = useSimpleUi.getState().worktrees[key] ?? EMPTY_SIMPLE_UI
+      const live = shownScope.current === key ? input.current : null
+      at = live ? live.selectionStart : current.draft.length
+      const next = withImages(current.draft, at, paths)
+      useSimpleUi.getState().patch(key, {
+        draft: next.draft,
+        mentions: editedMentions(current.draft, next.draft, current.mentions),
+      })
+      if (live) {
+        setCaret(next.caret)
+        // After React writes the new value, so the textarea's caret and ours agree.
+        requestAnimationFrame(() => live.setSelectionRange(next.caret, next.caret))
+      }
+    } catch (e) {
+      setError(`Couldn't attach the image: ${String(e)}`)
+    } finally {
+      setAttaching((n) => n - 1)
+    }
+  }
   const submitting = useRef(false)
   const input = useRef<HTMLTextAreaElement>(null)
   const lifecycle = useRef(0)
@@ -171,17 +242,96 @@ export default function SimpleComposer({
   const queryKey = JSON.stringify([scopeKey, query?.[1] ?? null])
   const [selection, setSelection] = useState({ key: queryKey, index: 0, dismissed: false })
   if (selection.key !== queryKey) setSelection({ key: queryKey, index: 0, dismissed: false })
-  const candidates =
+  // Components first, as they scope the work; then epics, features and stories in board order.
+  const candidates: MentionCandidate[] =
     query && !selection.dismissed
-      ? s.nodes
-          .filter((n) => `${n.id} ${n.data.name}`.toLowerCase().includes(query[1].toLowerCase()))
-          .slice(0, 8)
+      ? [
+          ...s.nodes
+            .filter((n) => `${n.id} ${n.data.name}`.toLowerCase().includes(query[1].toLowerCase()))
+            .slice(0, 8)
+            .map((n) => ({ id: n.id, label: n.data.name })),
+          ...boardOrder(s.stories)
+            .filter((item) =>
+              `${item.id} ${item.title}`.toLowerCase().includes(query[1].toLowerCase()),
+            )
+            .slice(0, 6)
+            .map((item) => ({ id: item.id, label: item.title, story: item.kind })),
+        ]
       : []
   const selectedIndex = Math.min(selection.index, Math.max(0, candidates.length - 1))
+  const mentionList = useRef<HTMLDivElement>(null)
+  // Hover selects only when the pointer itself moves, not when the list opens or scrolls under it.
+  const pointer = useRef({ x: NaN, y: NaN })
+  const [placement, setPlacement] = useState<MentionPlacement>()
+  const listOpen = candidates.length > 0
+  // The popover hugs the `@`, not the moving caret, so it holds still while the query is typed.
+  const anchor = query ? caret - query[1].length - 1 : -1
+  const placeMentions = useRef(() => {})
+  const placeList = () => {
+    const area = input.current,
+      list = mentionList.current,
+      box = area?.parentElement
+    if (!listOpen || !area || !list || !box) return
+    const point = caretPoint(area, anchor)
+    const rect = box.getBoundingClientRect()
+    const clip = clippingAncestor(box).getBoundingClientRect()
+    const padding = list.offsetHeight - list.clientHeight
+    // A line scrolled out of the textarea anchors at its visible edge instead of over other controls.
+    const top = Math.min(Math.max(point.top, 0), Math.max(0, area.clientHeight - point.lineHeight))
+    const next = placeMention({
+      caret: {
+        left: area.offsetLeft + area.clientLeft + point.left,
+        top: area.offsetTop + area.clientTop + top,
+      },
+      lineHeight: point.lineHeight,
+      popover: { width: list.offsetWidth, height: list.scrollHeight + padding },
+      bounds: {
+        width: rect.width,
+        top: Math.max(0, clip.top) - rect.top,
+        bottom: Math.min(window.innerHeight, clip.bottom) - rect.top,
+      },
+    })
+    setPlacement((current) => (samePlacement(current, next) ? current : next))
+  }
+  useLayoutEffect(() => {
+    placeMentions.current = placeList
+  })
+  // Observers live as long as the list is open; typing only re-measures.
+  useLayoutEffect(() => {
+    const area = input.current,
+      list = mentionList.current,
+      box = area?.parentElement
+    if (!listOpen || !area || !list || !box) return
+    // Hover waits for the pointer to move over the open list before it selects.
+    pointer.current = { x: NaN, y: NaN }
+    const remeasure = () => placeMentions.current()
+    // The composer also moves when the window or the panel around it changes size.
+    const resize = new ResizeObserver(remeasure)
+    for (const element of [area, list, box, clippingAncestor(box)]) resize.observe(element)
+    area.addEventListener('scroll', remeasure)
+    window.addEventListener('resize', remeasure)
+    return () => {
+      resize.disconnect()
+      area.removeEventListener('scroll', remeasure)
+      window.removeEventListener('resize', remeasure)
+    }
+  }, [listOpen])
+  useLayoutEffect(() => placeList(), [listOpen, anchor, ui.draft, candidates.length])
+  // Scroll only the list: scrollIntoView would also scroll the clipped panels around it.
+  useLayoutEffect(() => {
+    const list = mentionList.current
+    const option = list?.querySelector<HTMLElement>('[aria-selected="true"]')
+    if (!list || !option) return
+    if (option.offsetTop < list.scrollTop) list.scrollTop = option.offsetTop - 4
+    else if (option.offsetTop + option.offsetHeight > list.scrollTop + list.clientHeight)
+      list.scrollTop = option.offsetTop + option.offsetHeight - list.clientHeight + 4
+  }, [selectedIndex, queryKey, listOpen])
   // The service applies the same provider, turn and approval checks.
   const canForce = !autoActive && running && !ready && s.serviceConnected && forceable(state)
   const asking = running && state?.status?.agent?.state === 'needsInput'
   const send = async (force = false) => {
+    // An image still saving would land in the next draft instead of this message.
+    if (attaching > 0) return
     if (ui.unconfirmed || submitting.current || !(force ? canForce : status.sendable) || !s.project)
       return
     const projectId = s.project.id,
@@ -190,14 +340,14 @@ export default function SimpleComposer({
       mentions = [...ui.mentions]
     const mountedEpoch = lifecycle.current
     const initialGeneration = state?.generation
-    const text = transmittedText(draft, mentions)
+    const text = transmittedText(draft, mentions, useStore.getState().stories)
     if (!text.trim()) {
       if (mentions.length) {
         logSimple(projectId, task, {
           kind: 'action',
           action: 'scope',
           stage,
-          mentions: mentions.map((m) => m.id),
+          mentions: componentMentions(mentions),
         })
         patch({ draft: '', mentions: [] })
       }
@@ -344,7 +494,7 @@ export default function SimpleComposer({
         sid,
         generation,
         text,
-        mentions: mentions.map((m) => m.id),
+        mentions: componentMentions(mentions),
         stage: recordStage(target!),
         force,
         current: stillCurrent,
@@ -361,19 +511,27 @@ export default function SimpleComposer({
       patch({ pendingAction: false })
     }
   }
-  const mention = (id: string) => {
+  const mention = ({ id, label, story }: MentionCandidate) => {
     const end = caret,
       start = end - query![1].length - 1,
-      token = `@${id}`
+      token = story ? storyToken({ id, title: label }) : `@${id}`
     const draft = ui.draft.slice(0, start) + token + ui.draft.slice(end)
     patch({
       draft,
       mentions: [
         ...editedMentions(ui.draft, draft, ui.mentions),
-        { id, token, start, end: start + token.length },
+        {
+          id,
+          token,
+          start,
+          end: start + token.length,
+          ...(story ? { kind: 'story' as const } : {}),
+        },
       ],
     })
-    if (!useStore.getState().highlighted.includes(id)) useStore.getState().toggleHighlight(id)
+    // Stories travel as text in the message; only components change the work's scope.
+    if (!story && !useStore.getState().highlighted.includes(id))
+      useStore.getState().toggleHighlight(id)
     setCaret(start + token.length)
     input.current?.focus()
     requestAnimationFrame(() =>
@@ -405,7 +563,9 @@ export default function SimpleComposer({
     // The lead read the notes that message carried.
     void settleLeadNotes(s.project.id, s.activeTask, message.noteIds ?? [])
     const latest = useSimpleUi.getState().worktrees[scopeKey]
-    const matches = !!latest && transmittedText(latest.draft, latest.mentions) === message.text
+    const matches =
+      !!latest &&
+      sentFromDraft(message.text, latest.draft, latest.mentions, useStore.getState().stories)
     patch({ unconfirmed: undefined, ...(matches ? { draft: '', mentions: [] } : {}) })
   }
   // The agent's own hook naming the message settles a delivery whose reply was lost.
@@ -464,67 +624,128 @@ export default function SimpleComposer({
               patch({ draft, mentions: editedMentions(ui.draft, draft, ui.mentions) })
             }}
           >
-            {s.nodes.find((n) => n.id === m.id)?.data.name ?? m.id} ×
+            {m.kind === 'story' ? (
+              <>
+                <i
+                  className={`story-dot ${s.stories.find((i) => i.id === m.id)?.kind ?? 'story'}`}
+                />
+                {s.stories.find((i) => i.id === m.id)?.title ?? m.id}
+              </>
+            ) : (
+              (s.nodes.find((n) => n.id === m.id)?.data.name ?? m.id)
+            )}{' '}
+            ×
           </button>
         ))}
       </div>
-      <textarea
-        ref={input}
-        aria-label="Message agent"
-        role="combobox"
-        aria-autocomplete="list"
-        aria-expanded={candidates.length > 0}
-        aria-controls={candidates.length > 0 ? mentionListId : undefined}
-        aria-activedescendant={
-          candidates.length > 0 ? `${mentionListId}-${candidates[selectedIndex].id}` : undefined
-        }
-        value={ui.draft}
-        placeholder="Message the agent… @component to scope · Shift+Enter for a newline"
-        onSelect={(e) => {
-          setCaret(e.currentTarget.selectionStart)
-        }}
-        onChange={(e) => {
-          setCaret(e.target.selectionStart)
-          patch({
-            draft: e.target.value,
-            mentions: editedMentions(ui.draft, e.target.value, ui.mentions),
-          })
-        }}
-        onKeyDown={(e) => {
-          if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
-          const navigation = mentionKey(e.key, selectedIndex, candidates.length)
-          if (navigation) {
-            e.preventDefault()
-            setSelection({ key: queryKey, ...navigation })
-            return
+      <div className="simple-input">
+        <textarea
+          ref={input}
+          aria-label="Message agent"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={candidates.length > 0}
+          aria-controls={candidates.length > 0 ? mentionListId : undefined}
+          aria-activedescendant={
+            candidates.length > 0
+              ? `${mentionListId}-${candidates[selectedIndex].story ? 'story-' : ''}${candidates[selectedIndex].id}`
+              : undefined
           }
-          if (e.key !== 'Enter') return
-          if (candidates.length && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+          value={ui.draft}
+          placeholder="Message the agent… @component to scope, @story to reference · paste images · Shift+Enter for a newline"
+          onSelect={(e) => {
+            setCaret(e.currentTarget.selectionStart)
+          }}
+          onChange={(e) => {
+            setCaret(e.target.selectionStart)
+            patch({
+              draft: e.target.value,
+              mentions: editedMentions(ui.draft, e.target.value, ui.mentions),
+            })
+          }}
+          onPaste={(e) => {
+            const files = imageFiles(e.clipboardData.files)
+            // Apps that copy text with a picture of it (spreadsheets, documents) paste the text.
+            if (!files.length || e.clipboardData.getData('text/plain')) return
             e.preventDefault()
-            mention(candidates[selectedIndex].id)
-          } else if (!e.shiftKey || e.metaKey || e.ctrlKey) {
+            void attach(files, e.currentTarget)
+          }}
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer.items).some((i) => i.type.startsWith('image/')))
+              e.preventDefault()
+          }}
+          onDrop={(e) => {
+            const files = imageFiles(e.dataTransfer.files)
+            if (!files.length) return
             e.preventDefault()
-            if (status.sendable) void send()
-          }
-        }}
-      />
-      {candidates.length > 0 && (
-        <div id={mentionListId} role="listbox" aria-label="Mention component">
-          {candidates.map((n, index) => (
-            <button
-              role="option"
-              tabIndex={-1}
-              id={`${mentionListId}-${n.id}`}
-              aria-selected={index === selectedIndex}
-              key={n.id}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => mention(n.id)}
-            >
-              {n.data.name}
-            </button>
-          ))}
-        </div>
-      )}
+            void attach(files, e.currentTarget)
+          }}
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
+            const navigation = mentionKey(e.key, selectedIndex, candidates.length)
+            if (navigation) {
+              e.preventDefault()
+              setSelection({ key: queryKey, ...navigation })
+              return
+            }
+            if (e.key !== 'Enter') return
+            if (candidates.length && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+              e.preventDefault()
+              mention(candidates[selectedIndex])
+            } else if (!e.shiftKey || e.metaKey || e.ctrlKey) {
+              e.preventDefault()
+              if (status.sendable && !attaching) void send()
+            }
+          }}
+        />
+        {listOpen && (
+          <div
+            ref={mentionList}
+            id={mentionListId}
+            role="listbox"
+            aria-label="Mention component or story"
+            className="simple-mention-list"
+            data-placement={placement?.placement ?? 'above'}
+            style={{
+              left: placement?.left ?? 0,
+              top: placement?.top ?? 0,
+              maxHeight: placement?.maxHeight ?? MENTION_MAX_HEIGHT,
+              visibility: placement ? undefined : 'hidden',
+            }}
+          >
+            {candidates.map((n, index) => (
+              <button
+                role="option"
+                tabIndex={-1}
+                id={`${mentionListId}-${n.story ? 'story-' : ''}${n.id}`}
+                aria-selected={index === selectedIndex}
+                aria-label={n.story ? `${n.story} ${n.label}` : undefined}
+                key={`${n.story ?? 'component'}:${n.id}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseMove={(event) => {
+                  const last = pointer.current
+                  const moved =
+                    !Number.isNaN(last.x) && (event.clientX !== last.x || event.clientY !== last.y)
+                  pointer.current = { x: event.clientX, y: event.clientY }
+                  if (moved && index !== selectedIndex)
+                    setSelection({ key: queryKey, index, dismissed: false })
+                }}
+                onClick={() => mention(n)}
+              >
+                {n.story ? (
+                  <i className={`story-dot ${n.story}`} />
+                ) : (
+                  <i className="mention-glyph" />
+                )}
+                <span className="mention-label">{n.label}</span>
+                {(n.story || n.id !== n.label) && (
+                  <span className="mention-detail">{n.story ?? n.id}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="simple-composer-controls">
         <span className="chat-recipient" role="status">
           {recipient
@@ -555,7 +776,7 @@ export default function SimpleComposer({
         </button>
         {!asking && canForce && (
           <button
-            disabled={pending || !ui.draft.trim()}
+            disabled={pending || !ui.draft.trim() || attaching > 0}
             title="Types into the agent now, even mid-turn"
             onClick={() => void send(true)}
           >
@@ -564,7 +785,8 @@ export default function SimpleComposer({
         )}
         <button
           className="primary"
-          disabled={!!ui.unconfirmed || !status.sendable || !ui.draft.trim()}
+          disabled={!!ui.unconfirmed || !status.sendable || !ui.draft.trim() || attaching > 0}
+          title={attaching ? 'Attaching image…' : undefined}
           onClick={() => void send()}
         >
           {status.action === 'queue' ? 'Queue' : 'Send'}

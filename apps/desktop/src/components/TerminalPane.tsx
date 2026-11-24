@@ -7,7 +7,7 @@ import {
   terminalStatus,
 } from '../lib/display'
 import { terminalSeen, terminalAttach, terminalDetach } from '../lib/ipc'
-import { hydrateSession, startTerminal } from '../lib/sessions'
+import { RECONNECTED_EVENT, hydrateSession, startTerminal } from '../lib/sessions'
 import {
   attach,
   detachHost,
@@ -16,7 +16,7 @@ import {
   ownsTerminalHost,
   scheduleFit,
 } from '../lib/terminals'
-import { ACTIVE_CHANGED } from '../lib/windows'
+import { ACTIVE_CHANGED_EVENT } from '../lib/windows'
 import { useStore } from '../store'
 import { sessionId, type TerminalSpec } from '../types'
 
@@ -87,7 +87,7 @@ export default function TerminalPane({
     intersection.observe(host)
     observer.observe(host)
     // Fires when this or another window gains focus, which can move PTY sizing here.
-    window.addEventListener(ACTIVE_CHANGED, refit)
+    window.addEventListener(ACTIVE_CHANGED_EVENT, refit)
     document.addEventListener('visibilitychange', refit)
     // Hydration fails while the service is disconnected; reconnecting retries it.
     let hydrated = false
@@ -116,7 +116,7 @@ export default function TerminalPane({
       if (hydrated) refit()
       else void load()
     }
-    window.addEventListener('patchbay:reconnected', reconnected)
+    window.addEventListener(RECONNECTED_EVENT, reconnected)
     void load()
     return () => {
       disposed = true
@@ -124,9 +124,9 @@ export default function TerminalPane({
       cancelAnimationFrame(resizeFrame)
       intersection.disconnect()
       if (!detachHost(sid, host)) void terminalDetach(sid).catch(() => {})
-      window.removeEventListener('patchbay:reconnected', reconnected)
+      window.removeEventListener(RECONNECTED_EVENT, reconnected)
       document.removeEventListener('visibilitychange', refit)
-      window.removeEventListener(ACTIVE_CHANGED, refit)
+      window.removeEventListener(ACTIVE_CHANGED_EVENT, refit)
     }
   }, [sid, componentId, terminal.id, autoStarts, focus, existingSessionId, task])
 

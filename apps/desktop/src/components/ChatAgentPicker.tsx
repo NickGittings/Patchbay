@@ -57,7 +57,9 @@ export default function ChatAgentPicker({ records }: { records: SessionRecord[] 
       </button>
       {open && (
         <div className="chat-agent-switch">
-          <p>Switching starts a fresh agent conversation with retained work context and workers.</p>
+          <p>
+            Switching starts a fresh agent conversation with retained work context and sub-builders.
+          </p>
           <select
             aria-label="Switch chat agent"
             value=""

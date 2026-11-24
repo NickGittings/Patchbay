@@ -13,6 +13,8 @@ import {
   railWidth,
   setRailExpanded,
   railViews,
+  extensionPanel,
+  extensionPanelView,
   selectedRailView,
   selectPanel,
   selectRailView,
@@ -33,8 +35,12 @@ import AgentProfilesPanel from './AgentProfilesPanel'
 import AgentRolesPanel from './AgentRolesPanel'
 import NotificationsPanel from './NotificationsPanel'
 import PanelContent from './PanelContent'
+import { ExtensionView } from '../extensions/views'
+import { useExtensionViews } from '../extensions/useExtensionViews'
+import type { ViewContribution } from '../types'
 
-const utilities: Record<UtilityPanel, { label: string }> = {
+type BuiltInPanel = Exclude<UtilityPanel, `ext:${string}`>
+const utilities: Record<BuiltInPanel, { label: string }> = {
   project: { label: 'Project' },
   worktree: { label: 'Worktree' },
   auto: { label: 'Auto mode' },
@@ -43,18 +49,29 @@ const utilities: Record<UtilityPanel, { label: string }> = {
   sessions: { label: 'Sessions' },
   usage: { label: 'Usage' },
 }
+const WIDTH_KEY = 'patchbay.utilityPanelWidth'
+
 function initialWidth() {
   try {
-    return Number(localStorage.getItem('patchbay.utilityPanelWidth')) || 360
+    return Number(localStorage.getItem(WIDTH_KEY)) || 360
   } catch {
     return 360
   }
 }
-function focusPanelTrigger(panel: UtilityPanel) {
+/** A panel's title: built-in labels, or the extension view's own title. */
+function panelLabel(panel: UtilityPanel, views: ViewContribution[]) {
+  const view = extensionPanelView(panel)
+  if (view === null) return utilities[panel as BuiltInPanel].label
+  return views.find((v) => v.id === view)?.title ?? 'Extension'
+}
+function focusPanelTrigger(panel: UtilityPanel, views: ViewContribution[] = []) {
   const host =
     panel === 'project' || panel === 'worktree' ? '.workspace-context' : '.workspace-rail'
+  const view = extensionPanelView(panel)
   const trigger = document.querySelector<HTMLButtonElement>(
-    `${host} [aria-label="${utilities[panel].label}"]`,
+    view === null
+      ? `${host} [aria-label="${panelLabel(panel, views)}"]`
+      : `${host} [data-extension-panel="${CSS.escape(view)}"]`,
   )
   if (trigger?.getClientRects().length) trigger.focus()
   else
@@ -81,6 +98,12 @@ export default function WorkspaceRail() {
   const counts = useStore(useShallow(worktreeAttention))
   const count = Object.values(counts).reduce((sum, n) => sum + n, 0)
   const selected = selectedRailView()
+  const extensionViews = useExtensionViews('rail').views
+  const openView = extensionPanelView(panel)
+  // A panel whose extension was disabled or reloaded away closes.
+  useEffect(() => {
+    if (openView !== null && !extensionViews.some((v) => v.id === openView)) selectPanel(null)
+  }, [openView, extensionViews])
   const [sessionsActions, setSessionsActions] = useState<HTMLDivElement | null>(null)
   const [sessionsHost, setSessionsHost] = useState<HTMLDivElement | null>(null)
   const [resizing, setResizing] = useState(false)
@@ -92,11 +115,13 @@ export default function WorkspaceRail() {
   const actualWidth = panelWidth(width, windowWidth, navigationWidth)
   const worktreeName = task?.title ?? 'Main worktree'
   const panelSubtitle = (id: UtilityPanel) =>
-    id === 'project'
-      ? (project?.name ?? entry?.name ?? 'No project')
-      : id === 'sessions' || id === 'usage'
-        ? 'All projects'
-        : `${project?.name ?? 'No project'} · ${worktreeName}`
+    extensionPanelView(id) !== null
+      ? `${project?.name ?? 'No project'} · ${worktreeName}`
+      : id === 'project'
+        ? (project?.name ?? entry?.name ?? 'No project')
+        : id === 'sessions' || id === 'usage'
+          ? 'All projects'
+          : `${project?.name ?? 'No project'} · ${worktreeName}`
   const subtitle = panel ? panelSubtitle(panel) : ''
   const closeOnEscape = (e: KeyboardEvent<HTMLElement>) => {
     if (
@@ -106,7 +131,7 @@ export default function WorkspaceRail() {
     ) {
       e.preventDefault()
       selectPanel(null)
-      if (panel) focusPanelTrigger(panel)
+      if (panel) focusPanelTrigger(panel, extensionViews)
     }
   }
   useEffect(() => {
@@ -116,7 +141,7 @@ export default function WorkspaceRail() {
   }, [])
   const saveWidth = (next: number) => {
     try {
-      localStorage.setItem('patchbay.utilityPanelWidth', String(next))
+      localStorage.setItem(WIDTH_KEY, String(next))
     } catch {
       /* Storage may be unavailable. */
     }
@@ -131,7 +156,7 @@ export default function WorkspaceRail() {
   const drag = useRef<{ offset: number; width?: number }>(undefined)
   const railRight = () =>
     document.querySelector('.workspace-rail')?.getBoundingClientRect().right ?? navigationWidth
-  const utility = (id: UtilityPanel) => {
+  const utility = (id: BuiltInPanel) => {
     const { label } = utilities[id]
     const status =
       id === 'project' && entry?.mapSave?.status === 'error'
@@ -226,6 +251,30 @@ export default function WorkspaceRail() {
         {utility('stack')}
         {utility('sessions')}
         {utility('usage')}
+        {extensionViews.length > 0 && (
+          <>
+            <hr />
+            <span className="rail-group-label">Extensions</span>
+            {extensionViews.map((view) => {
+              const id = extensionPanel(view.id)
+              return (
+                <RailTooltip
+                  key={view.id}
+                  className={panel === id ? 'utility-active' : ''}
+                  aria-label={view.title}
+                  aria-pressed={panel === id}
+                  data-extension-panel={view.id}
+                  tooltip={`${view.title}: ${panelSubtitle(id)}`}
+                  disabled={!project}
+                  onClick={() => togglePanel(id)}
+                >
+                  <RailIcon name={view.icon ?? 'extension'} />
+                  <span className="rail-label">{view.title}</span>
+                </RailTooltip>
+              )
+            })}
+          </>
+        )}
         <span className="spacer" />
         <RailTooltip
           aria-label={expanded ? 'Collapse navigation labels' : 'Expand navigation labels'}
@@ -248,23 +297,23 @@ export default function WorkspaceRail() {
             className="utility-panel"
             data-panel={panel}
             style={{ width: actualWidth }}
-            aria-label={`${utilities[panel].label} panel`}
+            aria-label={`${panelLabel(panel, extensionViews)} panel`}
             onKeyDown={closeOnEscape}
           >
             <header className="utility-header">
               <div>
-                <h2>{utilities[panel].label}</h2>
+                <h2>{panelLabel(panel, extensionViews)}</h2>
                 <small title={subtitle}>{subtitle}</small>
               </div>
               {panel === 'sessions' && (
                 <div className="panel-section-head" ref={setSessionsActions} />
               )}
               <button
-                aria-label={`Close ${utilities[panel].label} panel`}
+                aria-label={`Close ${panelLabel(panel, extensionViews)} panel`}
                 title="Close panel"
                 onClick={() => {
                   selectPanel(null)
-                  focusPanelTrigger(panel)
+                  focusPanelTrigger(panel, extensionViews)
                 }}
               >
                 ×
@@ -292,8 +341,11 @@ export default function WorkspaceRail() {
                 )}
                 {panel === 'stack' && project && <StackPanel key={project.id} />}
                 {panel === 'usage' && <UsagePanel />}
+                {openView !== null && project && (
+                  <ExtensionView key={`${project.id}/${activeTask}/${openView}`} id={openView} />
+                )}
                 {!project && !['project', 'sessions', 'usage'].includes(panel) && (
-                  <p>Open a project to use {utilities[panel].label}.</p>
+                  <p>Open a project to use {panelLabel(panel, extensionViews)}.</p>
                 )}
               </PanelContent>
             </div>

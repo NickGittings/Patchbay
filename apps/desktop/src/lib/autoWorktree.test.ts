@@ -126,13 +126,13 @@ test("attaching a worktree from Auto's prompt copies no plan", async () => {
 })
 
 test('a typed goal titles the worktree and moves to its draft with the other choices', async () => {
-  autoDrafts.set(folder, { ...emptyAutoDraft(), effort: 'thorough', destination: 'main' })
+  autoDrafts.set(folder, { ...emptyAutoDraft(), overrides: { maxRounds: 5 }, destination: 'main' })
   seedAutoTask(folder, '  Typed goal\nmore  ')
   expect(useStore.getState().newTask?.title).toBe('Typed goal')
   await createTask({ title: 'N', branch: 'n', components: [] })
   expect(autoDrafts.has(folder)).toBe(false)
   expect(autoDrafts.get(target)).toMatchObject({
-    effort: 'thorough',
+    overrides: { maxRounds: 5 },
     goal: 'Typed goal\nmore',
     destination: undefined,
   })

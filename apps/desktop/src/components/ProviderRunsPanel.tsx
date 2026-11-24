@@ -12,6 +12,8 @@ import {
   type ProviderRun,
 } from '../lib/orchestration'
 import { startTerminal } from '../lib/sessions'
+import { ROLE_LABELS } from '../lib/chatIdentity'
+import { recordPlannerStart } from '../lib/stageRecord'
 import TerminalPane from './TerminalPane'
 
 /** Scan reports stay in Plan; assignment and integration results stay in Build. */
@@ -69,7 +71,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
   return (
     <section
       className="provider-runs"
-      aria-label={kind === 'scan' ? 'Scan findings' : 'Implementation assignments'}
+      aria-label={kind === 'scan' ? 'Scan findings' : 'Sub-builders'}
     >
       {kind === 'scan' && !autoActive && !active && (
         <div className="row">
@@ -101,7 +103,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
         <>
           <div className="row">
             <strong>
-              {kind === 'scan' ? 'Scans' : 'Assignments'} · {run.state}
+              {kind === 'scan' ? 'Scans' : 'Sub-builders'} · {run.state}
             </strong>
             {active && (
               <button
@@ -157,7 +159,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
                       shownGoal !== run.goal
                     )
                       throw new Error('Goal or scope changed; start a new scan round')
-                    await startTerminal(PLAN_SCOPE, planner.id, task, projectId, {
+                    const requestId = await startTerminal(PLAN_SCOPE, planner.id, task, projectId, {
                       kickoff: { kind: 'plan' },
                       scanRound: run.id,
                       auto: {
@@ -167,6 +169,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
                         commit: false,
                       },
                     })
+                    if (requestId) recordPlannerStart(projectId, task, planner.id, requestId)
                   })
                 }
               >
@@ -178,7 +181,7 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
           <table>
             <thead>
               <tr>
-                <th>Assignment</th>
+                <th>{kind === 'scan' ? 'Scan' : 'Assignment'}</th>
                 <th>Provider</th>
                 <th>Status</th>
                 <th>Integration</th>
@@ -189,7 +192,14 @@ export default function ProviderRunsPanel({ kind }: { kind: ProviderRun['kind'] 
               {[...(run.coordinator ? [run.coordinator] : []), ...run.jobs].map((job) => (
                 <tr key={job.id}>
                   <td title={job.instructions}>
-                    {job.id === run.coordinator?.id ? 'Coordinator' : job.instructions || 'Scan'}
+                    {kind === 'scan'
+                      ? job.instructions || 'Scan'
+                      : job.id === run.coordinator?.id
+                        ? ROLE_LABELS.builder
+                        : ROLE_LABELS.subBuilder}
+                    {kind === 'implementation' &&
+                      job.id !== run.coordinator?.id &&
+                      job.instructions && <p>{job.instructions}</p>}
                     {job.summary && <p>{job.summary}</p>}
                     {job.report && (
                       <details>

@@ -8,6 +8,9 @@ vi.mock('./providerAuth', () => ({
   requireDeviceAuth: vi.fn(async () => {}),
   ProviderSetupRequired: class extends Error {},
 }))
+vi.mock('@tauri-apps/api/webviewWindow', () => ({
+  getCurrentWebviewWindow: () => ({ label: 'main' }),
+}))
 import { beforeEach, afterEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import {
@@ -33,10 +36,13 @@ vi.mock('./ipc', () => ({
   gitReview: vi.fn(),
   gitWorktrees: vi.fn(),
   graphActionRun: vi.fn(),
+  mergeBranchOutcome: vi.fn(),
+  mergeDestinationResolve: vi.fn(),
   mergeOutcome: vi.fn(),
   planRead: vi.fn(),
   proposalRead: vi.fn(),
   reviewRead: vi.fn(),
+  taskList: vi.fn(),
   terminalStop: vi.fn(),
   terminalSnapshot: vi.fn(),
   terminalPrompt: vi.fn(),
@@ -50,13 +56,17 @@ vi.mock('./sessions', () => ({
 }))
 vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
 vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
+vi.mock('./stageRecord', () => ({
+  recordStageLaunch: vi.fn(async () => {}),
+  refuseWhileAutoRuns: vi.fn(),
+}))
 vi.mock('./reviewAgents', async () => {
   const actual = await vi.importActual<typeof import('./reviewAgents')>('./reviewAgents')
   const startReviewAgent = vi.fn()
   return {
     ...actual,
     startReviewAgent,
-    startMergeAgent: vi.fn(),
+    startMerge: vi.fn(),
     // Through the mocked single launch, as the real one does, with a lane per reviewer of a round.
     startReviewAgents: vi.fn(
       async (...[project, request, devices, auto]: Parameters<typeof actual.startReviewAgents>) => {
@@ -111,6 +121,13 @@ const {
 const ipc = await import('./ipc')
 const jobs = await import('./reviewAgents')
 const awaitSessions = await import('./sessions')
+const { recordStageLaunch, refuseWhileAutoRuns } = await import('./stageRecord')
+const started = (sessionId: string) => ({
+  kind: 'started' as const,
+  sessionId,
+  requestId: 'merge-request',
+  request: { source: '/w', sourceBranch: 'b', destination: '/p', destinationBranch: 'main' },
+})
 const tree: Worktree = {
   path: '/p/feature',
   branch: 'feature',
@@ -153,6 +170,7 @@ const snapshot = (
 ): import('./auto').AutoSnapshot => ({
   source: tree,
   worktrees: [tree],
+  branches: ['feature', 'main'],
   base: 'main',
   goal: 'Goal',
   plan: '',
@@ -276,7 +294,7 @@ test('merge approval, verified outcome, overrides and validation failures', () =
   expect(nextStep(run({ validationFindings: 'Failed check' }), findings()).stage).toBe('fix')
 })
 function load() {
-  vi.mocked(jobs.startMergeAgent).mockResolvedValue('merge-s')
+  vi.mocked(jobs.startMerge).mockResolvedValue(started('merge-s'))
   const { reconcileFreshSessions } = awaitSessions
   vi.mocked(reconcileFreshSessions).mockImplementation(async () => {
     const sessions = { ...useStore.getState().sessions }
@@ -345,6 +363,16 @@ function load() {
   vi.mocked(ipc.planRead).mockResolvedValue({ text: '', cut: false })
   vi.mocked(ipc.proposalRead).mockResolvedValue(null)
   vi.mocked(ipc.reviewRead).mockResolvedValue(null)
+  vi.mocked(ipc.taskList).mockImplementation(async () => useStore.getState().tasks)
+  vi.mocked(ipc.mergeBranchOutcome).mockResolvedValue('notMerged')
+  vi.mocked(ipc.mergeDestinationResolve).mockImplementation(
+    async (_project, source, sourceBranch, destinationBranch) => ({
+      source,
+      sourceBranch,
+      destination: '/p',
+      destinationBranch,
+    }),
+  )
   vi.mocked(ipc.mergeOutcome).mockResolvedValue('notMerged')
 }
 function mockScopePlannerLaunch() {
@@ -424,10 +452,22 @@ test('driver requires a new authoritative turn and stops reviewer before gating'
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
     expect(ipc.terminalStop).toHaveBeenCalledWith('s')
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
     mergeNow('p', 't')
     await flush()
-    expect(jobs.startMergeAgent).toHaveBeenCalledTimes(1)
+    expect(jobs.startMerge).toHaveBeenCalledTimes(1)
+    // Each stage Auto owns shows in the chat and the regular views like any other launch.
+    expect(vi.mocked(recordStageLaunch).mock.calls.map(([l]) => [l.origin, l.action])).toEqual([
+      ['auto', 'review'],
+      ['auto', 'merge'],
+    ])
+    expect(recordStageLaunch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        launched: [{ sessionId: 'merge-s', requestId: 'merge-request' }],
+        request: expect.objectContaining({ destinationBranch: 'main' }),
+        autoRunId: autoRun('p', 't')?.runId,
+      }),
+    )
   })
 })
 test('parallel reviewers share a round; the run waits for all, then stops the others', async () => {
@@ -1007,7 +1047,7 @@ test('starting at Merge on an unreviewed branch waits for approval', async () =>
   await withFollower(async () => {
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
 
@@ -1090,7 +1130,7 @@ test('skipping a stale review clears the old head and permits an approved merge'
   await withFollower(async () => {
     mergeNow('p', 't')
     await flush()
-    expect(jobs.startMergeAgent).toHaveBeenCalledTimes(1)
+    expect(jobs.startMerge).toHaveBeenCalledTimes(1)
     expect(autoRun('p', 't')?.status).toBe('running')
   })
 })
@@ -1267,12 +1307,219 @@ const inPlaceSettings = {
   merge: { mode: 'ask' as const, destinationBranch: '' },
 }
 
+test.each(['ask', 'auto'] as const)(
+  'Auto fills the default branch and resolves its checkout at merge time (%s)',
+  async (mode) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2000)
+    load()
+    useStore.getState().setActiveTask(null, true)
+    const source = { ...tree, path: '/p', current: true, main: true }
+    const destination = { ...tree, path: '/main-worktree', branch: 'main' }
+    const request = {
+      source: source.path,
+      sourceBranch: source.branch!,
+      destination: destination.path,
+      destinationBranch: destination.branch,
+    }
+    vi.mocked(ipc.gitWorktrees).mockResolvedValue([source])
+    vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+    vi.mocked(ipc.mergeDestinationResolve).mockImplementation(async () => {
+      vi.mocked(ipc.gitWorktrees).mockResolvedValue([source, destination])
+      return request
+    })
+    vi.mocked(jobs.startMerge).mockImplementation(async (options) => ({
+      ...started('merge-s'),
+      request: 'request' in options ? options.request : request,
+    }))
+
+    await startAuto('p', null, {
+      ...inPlaceSettings,
+      merge: { mode, destinationBranch: '', cleanup: 'delete' },
+    })
+    expect(autoRun('p', null)).toMatchObject({
+      branch: 'feature',
+      stage: 'mergeGate',
+      merge: { mode, destinationBranch: 'main', cleanup: 'delete' },
+    })
+    expect(ipc.mergeOutcome).not.toHaveBeenCalled()
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+
+    await withFollower(async () => {
+      await flush()
+      if (mode === 'ask') {
+        expect(autoRun('p', null)).toMatchObject({
+          stage: 'mergeGate',
+          status: 'waitingOnYou',
+          gateError: undefined,
+        })
+        expect(ipc.mergeOutcome).not.toHaveBeenCalled()
+        expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+        mergeNow('p', null)
+        await flush()
+      }
+      expect(ipc.mergeDestinationResolve).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ root: '/p' }),
+        '/p',
+        'feature',
+        'main',
+      )
+      const pinned = mode === 'auto' ? { ...request, expectedSourceHead: 'abc' } : request
+      expect(jobs.startMerge).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          request: pinned,
+          auto: expect.objectContaining({ cleanup: 'delete' }),
+        }),
+      )
+      expect(recordStageLaunch).toHaveBeenCalledWith(expect.objectContaining({ request: pinned }))
+    })
+  },
+)
+
+test('checkout creation failure pauses the merge so it can be retried', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  vi.mocked(ipc.mergeDestinationResolve).mockRejectedValueOnce(
+    new Error('Uncommitted source changes'),
+  )
+  setRun({ stage: 'merge', effort: 'light' })
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
+    expect(autoRun('p', 't')?.reason).toContain('Uncommitted source changes')
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+    await resumeAuto('p', 't')
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'mergeGate', status: 'waitingOnYou' })
+    mergeNow('p', 't')
+    await flush()
+    expect(jobs.startMerge).toHaveBeenCalledOnce()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'running' })
+  })
+})
+
+test('Auto pauses a merge when it cannot refresh destination task ownership', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  vi.mocked(ipc.mergeDestinationResolve).mockResolvedValue({
+    source: tree.path,
+    sourceBranch: 'feature',
+    destination: '/p/main',
+    destinationBranch: 'main',
+  })
+  vi.mocked(ipc.taskList).mockRejectedValue(new Error('Task storage is unreadable'))
+  setRun({ stage: 'merge' })
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
+    expect(autoRun('p', 't')?.reason).toContain('Task storage is unreadable')
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+  })
+})
+
+test('Auto checks destination ownership before resolving a checkout', async () => {
+  load()
+  vi.mocked(refuseWhileAutoRuns).mockImplementationOnce(() => {
+    throw new Error('Auto is running this worktree')
+  })
+  setRun({ stage: 'merge' })
+  await withFollower(async () => {
+    await flush()
+    expect(refuseWhileAutoRuns).toHaveBeenCalledWith('p', null)
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'merge', status: 'paused' })
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+  })
+})
+
+test('stopping during merge preflight does not resolve a destination checkout', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  let finish!: (tasks: ReturnType<typeof useStore.getState>['tasks']) => void
+  vi.mocked(ipc.taskList).mockReturnValueOnce(new Promise((resolve) => (finish = resolve)))
+  setRun({ stage: 'merge' })
+  await withFollower(async () => {
+    await flush()
+    expect(ipc.taskList).toHaveBeenCalledOnce()
+    stopAuto('p', 't')
+    finish(useStore.getState().tasks)
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('stopped')
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+  })
+})
+
+test('stopping during destination resolution does not launch a merge agent', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  let finish!: (request: Awaited<ReturnType<typeof ipc.mergeDestinationResolve>>) => void
+  vi.mocked(ipc.mergeDestinationResolve).mockReturnValueOnce(
+    new Promise((resolve) => (finish = resolve)),
+  )
+  setRun({ stage: 'merge' })
+  await withFollower(async () => {
+    await flush()
+    expect(ipc.mergeDestinationResolve).toHaveBeenCalledOnce()
+    stopAuto('p', 't')
+    finish({
+      source: tree.path,
+      sourceBranch: 'feature',
+      destination: '/p/main',
+      destinationBranch: 'main',
+    })
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('stopped')
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+  })
+})
+
+test('Auto recognizes merged work when the destination branch has no checkout', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
+  vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
+  vi.mocked(ipc.planRead).mockResolvedValue({ text: '# Finished work', cut: false })
+  vi.mocked(ipc.mergeBranchOutcome).mockResolvedValue('alreadyIntegrated')
+  const settings = { ...inPlaceSettings, goal: '' }
+  expect((await autoSnapshot('p', 't', run({ ...settings, stage: 'plan' }), true)).outcome).toBe(
+    'alreadyIntegrated',
+  )
+  const merging = run({
+    ...settings,
+    stage: 'merge',
+    merge: { mode: 'ask', destinationBranch: 'main' },
+  })
+  expect((await autoSnapshot('p', 't', merging)).outcome).toBe('alreadyIntegrated')
+  await expect(startAuto('p', 't', settings)).rejects.toThrow('describe the new goal')
+  expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+})
+
+test.each(['deleted', 'feature'])(
+  'Auto refuses %s as a destination before starting',
+  async (destinationBranch) => {
+    load()
+    await expect(
+      startAuto('p', 't', {
+        ...inPlaceSettings,
+        merge: { mode: 'ask', destinationBranch },
+      }),
+    ).rejects.toThrow('Choose a different local destination branch')
+    expect(autoRun('p', 't')).toBeNull()
+  },
+)
+
 test('the default branch in the project folder runs in place against its HEAD', async () => {
   loadInPlace()
   const preview = await autoSnapshot('p', null, run({ runId: '', merge: inPlaceSettings.merge }))
   expect(preview).toMatchObject({ inPlace: true, base: 'start' })
   vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
-  await startAuto('p', null, inPlaceSettings)
+  await startAuto('p', null, {
+    ...inPlaceSettings,
+    merge: { mode: 'ask', destinationBranch: 'main' },
+  })
   expect(autoRun('p', null)).toMatchObject({
     baseCommit: 'start',
     branch: 'main',
@@ -1334,7 +1581,7 @@ test('a clean review in place ends Done without a merge gate', async () => {
     expect(ipc.terminalStop).toHaveBeenCalledWith('s')
   })
   expect(ipc.mergeOutcome).not.toHaveBeenCalled()
-  expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+  expect(jobs.startMerge).not.toHaveBeenCalled()
 })
 
 test('clean findings in place end Done, but a new goal on the same HEAD plans', () => {
@@ -1508,8 +1755,8 @@ test.each(['plan', 'implement', 'fix', 'merge'] as const)(
       useStore.setState({ sessions: { [sid]: { running: true } } })
     })
     vi.mocked(implementPlannerPlan).mockResolvedValue({ sessionId: sid, requestId: 'r' })
-    vi.mocked(fixReviewFindings).mockResolvedValue({ sessionId: sid, requestId: 'r' })
-    vi.mocked(jobs.startMergeAgent).mockResolvedValue(sid)
+    vi.mocked(fixReviewFindings).mockResolvedValue({ sessionId: sid, requestId: 'r', task: 't' })
+    vi.mocked(jobs.startMerge).mockResolvedValue(started(sid))
     useStore.setState({
       sessionRecords: [
         {
@@ -1921,7 +2168,48 @@ test.each(['merged', 'alreadyIntegrated'] as const)(
       mergeNow('p', 't')
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
+    })
+  },
+)
+
+test('a waiting merge gate notices a hand merge into a branch without a checkout', async () => {
+  vi.useFakeTimers()
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  setRun({ stage: 'mergeGate', status: 'waitingOnYou', branch: 'feature' })
+  await withFollower(async () => {
+    await flush()
+    expect(ipc.mergeBranchOutcome).toHaveBeenCalledWith('p', tree.path, 'feature', 'main')
+    expect(autoRun('p', 't')?.status).toBe('waitingOnYou')
+    vi.mocked(ipc.mergeBranchOutcome).mockResolvedValue('alreadyIntegrated')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+  })
+})
+
+test.each(['', 'deleted'])(
+  'the merge gate pauses for an unavailable destination %j',
+  async (destinationBranch) => {
+    load()
+    vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+    vi.mocked(ipc.mergeBranchOutcome).mockRejectedValue(new Error('fatal: invalid branch'))
+    setRun({
+      stage: 'mergeGate',
+      status: 'waitingOnYou',
+      merge: { mode: 'ask', destinationBranch },
+    })
+    await withFollower(async () => {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({
+        stage: 'mergeGate',
+        status: 'paused',
+        pauseKind: 'needsUser',
+        reason: 'Choose a different local destination branch',
+      })
+      expect(ipc.mergeBranchOutcome).not.toHaveBeenCalled()
     })
   },
 )
@@ -2022,7 +2310,7 @@ test.each(['merged', 'alreadyIntegrated'] as const)(
       vi.mocked(ipc.mergeOutcome).mockResolvedValue(outcome)
       await vi.advanceTimersByTimeAsync(5000)
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -2112,7 +2400,7 @@ test.each(['review', 'fix'] as const)(
     const launch = stage === 'fix' ? fixReviewFindings : jobs.startReviewAgent
     if (stage === 'fix')
       vi.mocked(fixReviewFindings).mockImplementation(() =>
-        pending().then((sessionId) => ({ sessionId, requestId: undefined })),
+        pending().then((sessionId) => ({ sessionId, requestId: undefined, task: 't' })),
       )
     else vi.mocked(jobs.startReviewAgent).mockImplementation(pending)
     setRun({ stage })
@@ -2226,7 +2514,7 @@ test.each(['worktrees', 'outcome'] as const)(
       vi.mocked(ipc.mergeOutcome).mockResolvedValue('merged')
       await vi.advanceTimersByTimeAsync(5000)
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -2293,7 +2581,9 @@ test('approval polling refreshes its request after a changed destination worktre
     expect(autoRun('p', 't')?.gateError).toContain('destination changed')
     vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
     await vi.advanceTimersByTimeAsync(5000)
-    expect(autoRun('p', 't')?.gateError).toContain('existing worktree')
+    expect(autoRun('p', 't')).toMatchObject({ status: 'waitingOnYou', gateError: undefined })
+    expect(ipc.mergeOutcome).toHaveBeenCalledTimes(2)
+    expect(ipc.mergeDestinationResolve).not.toHaveBeenCalled()
     const moved = { ...destination, path: '/p/main' }
     vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree, moved])
     vi.mocked(ipc.mergeOutcome).mockImplementation(async (_project, request) =>
@@ -2302,7 +2592,7 @@ test('approval polling refreshes its request after a changed destination worktre
     await vi.advanceTimersByTimeAsync(5000)
     expect(ipc.gitWorktrees).toHaveBeenCalledTimes(3)
     expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
 
@@ -2447,7 +2737,7 @@ test.each(['closed', 'stopped', 'idle', 'forgotten'] as const)(
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'done', status: 'done' })
       expect(ipc.gitReview).not.toHaveBeenCalled()
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
       // Only an agent still at its prompt is left to stop; a finished run offers no Stop.
       if (state === 'idle') expect(ipc.terminalStop).toHaveBeenCalledWith('s')
       else expect(ipc.terminalStop).not.toHaveBeenCalled()
@@ -2604,7 +2894,7 @@ test('Auto pauses legacy mixed-format findings instead of merging them', async (
     })
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'review', status: 'paused' })
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
 
@@ -2617,7 +2907,7 @@ test.each(['mergeGate', 'merge'] as const)(
     await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')).toMatchObject({ status: 'paused' })
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -2657,6 +2947,7 @@ test.each(['refused', 'empty', 'unconfirmed'] as const)(
       vi.mocked(fixReviewFindings).mockResolvedValue({
         sessionId: failure === 'empty' ? '' : 'unknown-session',
         requestId: undefined,
+        task: 't',
       })
     setRun({ stage: 'fix' })
     await withFollower(async () => {
@@ -2671,7 +2962,7 @@ test.each(['refused', 'empty', 'unconfirmed'] as const)(
       expect(autoRun('p', 't')?.sessionId).toBeUndefined()
       await skipStage('p', 't')
       expect(autoRun('p', 't')?.stage).toBe('review')
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -2797,7 +3088,7 @@ test.each(['review', 'merge'] as const)(
       expect(ipc.terminalStop).toHaveBeenCalledWith('s')
       expect(ipc.terminalStop).not.toHaveBeenCalledWith('manual')
       expect(jobs.startReviewAgents).not.toHaveBeenCalled()
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
     })
   },
 )
@@ -3990,7 +4281,7 @@ test.each(['implement', 'fix'] as const)(
     const { fixReviewFindings } = await import('./reviewHandoff')
     const launch = stage === 'implement' ? implementPlannerPlan : fixReviewFindings
     useStore.setState({ sessionRecords: [reviewRecord('reviewer', null, reviewSession('review'))] })
-    vi.mocked(launch).mockResolvedValue({ sessionId: 'started', requestId: 'request' })
+    vi.mocked(launch).mockResolvedValue({ sessionId: 'started', requestId: 'request', task: 't' })
     vi.mocked(awaitSessions.reconcileFreshSessions).mockImplementation(async () => {
       useStore.setState({ serviceConnected: false })
       throw new Error('Connection lost while confirming the launch')
@@ -4215,7 +4506,7 @@ test.each([
     const { fixReviewFindings } = await import('./reviewHandoff')
     vi.mocked(fixReviewFindings).mockImplementation(async () => {
       agent('working', 2000)
-      return { sessionId: 's', requestId: 'request' }
+      return { sessionId: 's', requestId: 'request', task: 't' }
     })
     setRun({ stage: 'fix', background })
     await withFollower(async () => {
@@ -4452,7 +4743,7 @@ test('a failed coordinated launch saves its identity before handoff and recovers
       state: 'paused',
       jobs: [],
     } as unknown as import('./orchestration').ProviderRun
-    throw new Error('Coordinator launch unconfirmed')
+    throw new Error('Builder launch unconfirmed')
   })
   vi.mocked(providers.providerRuns).mockImplementation(async () => [building])
   vi.mocked(providers.driveProviderRuns).mockImplementation(async () => [building])
@@ -4787,7 +5078,7 @@ test('three interrupted agents with unchanged artifacts exhaust recovery; relaun
     expect(awaitSessions.startTerminal).toHaveBeenCalledTimes(3)
     expect(autoRun('p', 't')).toMatchObject({ status: 'failed', recovery: { attempts: 3 } })
     expect(autoRun('p', 't')?.reason).toContain('Recovery budget exhausted')
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
 
@@ -4876,7 +5167,7 @@ test.each([false, true])(
     await withFollower(async () => {
       await flush()
       expect(autoRun('p', 't')?.status).toBe('failed')
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
       const { fixReviewFindings } = await import('./reviewHandoff')
       expect(fixReviewFindings).not.toHaveBeenCalled()
     })
@@ -5013,13 +5304,13 @@ test.each(['missing', 'invalid'] as const)(
         stage: 'review',
         recovery: { attempts: 1 },
       })
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
       vi.mocked(ipc.reviewRead).mockResolvedValue({ ...findings(), startedMs: 50001 })
       agent('review', 52000)
       await flush()
       await vi.advanceTimersByTimeAsync(5000)
       await flush()
-      expect(jobs.startMergeAgent).toHaveBeenCalledOnce()
+      expect(jobs.startMerge).toHaveBeenCalledOnce()
     })
   },
 )
@@ -5104,14 +5395,11 @@ test.each(['light', 'standard'] as const)(
     await withFollower(async () => {
       await flush()
       await flush()
-      expect(jobs.startMergeAgent).toHaveBeenCalledExactlyOnceWith(
-        expect.anything(),
-        expect.objectContaining({ expectedSourceHead: 'abc' }),
-        expect.anything(),
-        expect.any(String),
-        expect.anything(),
-        'keep',
-        'owner',
+      expect(jobs.startMerge).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          request: expect.objectContaining({ expectedSourceHead: 'abc' }),
+          auto: expect.objectContaining({ cleanup: 'keep', ownershipId: 'owner' }),
+        }),
       )
       expect(autoRun('p', 't')).toMatchObject({
         stage: 'merge',
@@ -5155,7 +5443,7 @@ test.each(['head', 'findings'] as const)(
     await withFollower(async () => {
       await flush()
       await flush()
-      expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+      expect(jobs.startMerge).not.toHaveBeenCalled()
       expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
       expect(autoRun('p', 't')).toMatchObject({ stage: 'review', reviewedHead: undefined })
     })
@@ -5193,7 +5481,7 @@ test('automatic merge rechecks review inputs after asynchronous hook preflight',
       ReturnType<typeof ipc.agentHooksCheck>
     >)
     await flush()
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
     expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
     expect(autoRun('p', 't')).toMatchObject({ stage: 'review', reviewedHead: undefined })
   })
@@ -5209,7 +5497,7 @@ test('a source change caught by merge preparation returns autonomous execution t
     merge: { mode: 'auto', destinationBranch: 'main' },
   })
   vi.mocked(ipc.reviewRead).mockResolvedValue(findings())
-  vi.mocked(jobs.startMergeAgent).mockRejectedValue(
+  vi.mocked(jobs.startMerge).mockRejectedValue(
     new Error('The source changed since review; review again before merging'),
   )
   vi.mocked(jobs.startReviewAgent).mockImplementation(async () => {
@@ -5219,14 +5507,11 @@ test('a source change caught by merge preparation returns autonomous execution t
   await withFollower(async () => {
     await flush()
     await flush()
-    expect(jobs.startMergeAgent).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ expectedSourceHead: 'abc' }),
-      expect.anything(),
-      expect.any(String),
-      expect.anything(),
-      'keep',
-      'run',
+    expect(jobs.startMerge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({ expectedSourceHead: 'abc' }),
+        auto: expect.objectContaining({ cleanup: 'keep', ownershipId: 'run' }),
+      }),
     )
     expect(jobs.startReviewAgent).toHaveBeenCalledOnce()
     expect(autoRun('p', 't')).toMatchObject({
@@ -5638,7 +5923,7 @@ test('a new process generation reassesses completion immediately without waiting
     await flush()
     expect(ipc.reviewRead).toHaveBeenCalledTimes(2)
     expect(autoRun('p', 't')?.stage).toBe('review')
-    expect(jobs.startMergeAgent).not.toHaveBeenCalled()
+    expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
 

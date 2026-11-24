@@ -84,8 +84,8 @@ test('shows running agents of this chat and every undismissed assignment', () =>
     ['job:queued', 'worker'],
     ['job:done', 'finished'],
   ])
-  expect(result[1].role).toBe('Builder')
-  expect(result.map((c) => c.roleKey)).toEqual(['lead', 'builder', 'builder', 'builder'])
+  expect(result.slice(1).map((c) => c.role)).toEqual(['Sub-builder', 'Sub-builder', 'Sub-builder'])
+  expect(result.map((c) => c.roleKey)).toEqual(['lead', 'subBuilder', 'subBuilder', 'subBuilder'])
   expect(result[2].detail).toBe('Preset queued')
 })
 
@@ -94,6 +94,29 @@ test("a dismissed job's session does not come back as a separate agent", () => {
   expect(
     cards([record('worker')], { worker: running() }, [], [dismissed]).map((c) => c.id),
   ).toEqual([])
+})
+
+test('Navigation includes shared planners from its project', () => {
+  const records = [
+    record('shared', { componentId: PLAN_SCOPE, task: undefined }),
+    record('other-task', { componentId: PLAN_SCOPE, task: 'elsewhere' }),
+    record('other-project', { componentId: PLAN_SCOPE, projectId: 'elsewhere', task: undefined }),
+  ]
+  const sessions = Object.fromEntries(records.map(({ id }) => [id, running()]))
+  expect(
+    chatAgentCards({
+      records,
+      sessions,
+      simple: null,
+      worktree,
+      team: undefined,
+      teams: [],
+      runs: [],
+      jobs: [],
+      allJobs: [],
+      includeSharedPlanners: true,
+    }).map((c) => c.id),
+  ).toEqual(['session:shared'])
 })
 
 const card = (extra: Partial<AgentCard>) => extra as AgentCard

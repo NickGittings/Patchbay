@@ -2,10 +2,16 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 import type { ReviewFindings } from '../../types'
+import type { PowerStatus } from '../../lib/autoPower'
 import AutoPanel from './AutoPanel'
 
 type Snapshot = ReturnType<typeof import('../../store').useStore.getState>
-const mock = vi.hoisted(() => ({ state: {} as Snapshot, findings: null as ReviewFindings | null }))
+const mock = vi.hoisted(() => ({
+  state: {} as Snapshot,
+  findings: null as ReviewFindings | null,
+  power: { status: 'inactive' } as { status: PowerStatus; error?: string },
+  stage: null as null | { autoCurrent: boolean; stepper: unknown[] },
+}))
 vi.mock('../../store', () => ({
   useStore: (select: (s: Snapshot) => unknown) => select(mock.state),
 }))
@@ -13,6 +19,10 @@ vi.mock('../../lib/auto', () => ({
   STAGE_LABELS: { review: 'Review' },
   effortSettings: () => ({ maxRounds: 2 }),
   inPlace: (run: { baseCommit?: string }) => !!run.baseCommit,
+}))
+vi.mock('../../lib/autoPower', () => ({
+  useAutoPower: () => mock.power,
+  setAutoKeepAwake: vi.fn(),
 }))
 vi.mock('../../lib/simpleActions', () => ({ logSimple: vi.fn() }))
 vi.mock('../../lib/attention', () => ({ revealTerminal: vi.fn() }))
@@ -25,10 +35,13 @@ vi.mock('../../lib/reviewAgents', () => ({
   laneRunning: (running: string, lane: string) => running === lane,
 }))
 vi.mock('./AutoDialog', () => ({ default: () => null }))
+vi.mock('../../lib/useStageModel', () => ({ useStageModel: () => mock.stage }))
 vi.mock('../../lib/plan', () => ({ agentDevices: () => [] }))
 vi.mock('../../lib/usage', () => ({ presetExhausted: () => [], useUsage: () => null }))
 
 beforeEach(() => {
+  mock.power = { status: 'inactive' }
+  mock.stage = null
   mock.state = {
     workspaceSettings: {},
     project: { id: 'p' },
@@ -44,6 +57,15 @@ beforeEach(() => {
       merge: { destinationBranch: 'main' },
     },
   } as unknown as Snapshot
+})
+
+test('Power labels errors even when sleep prevention reports an active state', () => {
+  mock.state.workspaceSettings = { autoKeepAwake: true }
+  mock.power = { status: 'active', error: 'Permission denied' }
+  const html = renderToStaticMarkup(createElement(AutoPanel, { onIntegrations: () => {} }))
+  expect(html).toContain('Sleep prevention error. Permission denied')
+  expect(html).toContain('Keep Patchbay open.')
+  expect(html).toContain('This setting cannot wake a sleeping device.')
 })
 
 test.each(['writing', 'unreadable', 'failed'])(
@@ -111,4 +133,29 @@ test('the run panel exposes autonomous decisions and recovery attempts in Simple
   expect(html).toContain('Recovery 2/3 without progress')
   expect(html).toContain('Missing review artifact')
   expect(html).toContain('relaunch the stage')
+})
+
+test('the run’s stages read as Chat’s, with fixing as a pass inside Review', () => {
+  mock.state.auto = { ...mock.state.auto!, stage: 'fix' }
+  const html = renderToStaticMarkup(createElement(AutoPanel, { onIntegrations: () => {} }))
+  expect(html).toContain('aria-label="Run stages"')
+  expect(html).toMatch(/data-state="current"[^>]*><span>Review<small> · Fixing/)
+  expect(html).not.toContain('Implement')
+})
+
+test('a finished run that later work superseded shows that work’s stages', () => {
+  mock.state.auto = { ...mock.state.auto!, status: 'done', stage: 'done' }
+  mock.stage = {
+    autoCurrent: false,
+    stepper: [
+      { stage: 'plan', state: 'done' },
+      { stage: 'build', state: 'done' },
+      { stage: 'review', state: 'current' },
+      { stage: 'merge', state: 'upcoming' },
+    ],
+  }
+  const html = renderToStaticMarkup(createElement(AutoPanel, { onIntegrations: () => {} }))
+  expect(html).toContain('aria-label="Current work stages"')
+  expect(html).toContain('Work continued after this run')
+  expect(html).toMatch(/data-state="current"[^>]*><span>Review/)
 })

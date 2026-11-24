@@ -9,11 +9,14 @@ import {
   forcedSettleAt,
   promptReady,
   transmittedText,
+  componentMentions,
+  sentFromDraft,
+  storyToken,
   waitForPrompt,
   type SendContext,
   type SendPort,
 } from './simpleComposer'
-import type { SessionState } from '../types'
+import type { SessionState, Story } from '../types'
 import { sessionResume } from './ipc'
 vi.mock('./ipc', () => ({
   sessionResume: vi.fn(),
@@ -129,6 +132,67 @@ test('only intact selected tokens are stripped; edits relocate or invalidate str
   expect(editedMentions('x @app', 'x @apple', tokens)).toEqual([])
   expect(editedMentions('x @app', 'x @axp', tokens)).toEqual([])
   expect(transmittedText('x @other', tokens)).toBe('x @other')
+})
+test('story tokens name their item and its details follow the message once', () => {
+  const item = (id: string, kind: Story['kind'], parent: string | null, title: string): Story => ({
+    id,
+    kind,
+    parent,
+    title,
+    description: kind === 'story' ? 'Read CSV files.\nSkip blank rows.' : '',
+    acceptance: kind === 'story' ? ['Imports a sample file'] : [],
+    components: [],
+    task: null,
+    status: 'backlog',
+    createdMs: 1,
+    order: 0,
+  })
+  const board = [
+    item('e1', 'epic', null, 'Data'),
+    item('f1', 'feature', 'e1', 'Import'),
+    item('s1', 'story', 'f1', 'CSV import!'),
+  ]
+  const token = storyToken(board[2])
+  expect(token).toBe('@csv-import')
+  expect(storyToken({ id: 's9', title: '!!!' })).toBe('@s9')
+  expect(storyToken({ id: 's8', title: 'a' + '𝒜'.repeat(45) })).toBe('@a' + '𝒜'.repeat(39))
+  const draft = `Plan ${token} after @app, then ${token} again`
+  const at = (text: string, from = 0) => draft.indexOf(text, from)
+  const mentions = [
+    { id: 's1', token, start: at(token), end: at(token) + token.length, kind: 'story' as const },
+    { id: 'app', token: '@app', start: at('@app'), end: at('@app') + 4 },
+    {
+      id: 's1',
+      token,
+      start: at(token, at(token) + 1),
+      end: at(token, at(token) + 1) + token.length,
+      kind: 'story' as const,
+    },
+  ]
+  expect(transmittedText(draft, mentions, board)).toBe(
+    [
+      'Plan [Story s1: CSV import!] after , then [Story s1: CSV import!] again',
+      '',
+      'Referenced from the story board:',
+      '- Story s1: CSV import! (backlog; in Data → Import)',
+      '  Read CSV files.',
+      '  Skip blank rows.',
+      '  - [ ] Imports a sample file',
+    ].join('\n'),
+  )
+  // Components scope the work; stories never become component ids.
+  expect(componentMentions(mentions)).toEqual(['app'])
+  // A deleted item keeps its id in the text but adds no details; an edited token stays literal.
+  expect(transmittedText(draft, mentions.slice(0, 1), [])).toBe(
+    `Plan [Story s1] after @app, then ${token} again`,
+  )
+  expect(transmittedText(`Plan @csv`, mentions.slice(0, 1), board)).toBe('Plan @csv')
+  // A story planned right after sending still confirms the draft that sent it.
+  const sent = transmittedText(draft, mentions, board)
+  const planned = board.map((s) => (s.id === 's1' ? { ...s, status: 'planned' as const } : s))
+  expect(sentFromDraft(sent, draft, mentions, planned)).toBe(true)
+  expect(sentFromDraft(sent, `${draft}!`, mentions, planned)).toBe(false)
+  expect(sentFromDraft('x', 'x', [])).toBe(true)
 })
 test('readiness needs a running prompt with a hook-confirmed end of turn', () => {
   expect(promptReady(ready())).toBe(true)
@@ -597,4 +661,28 @@ test('the agent’s own prompt hook settles an unconfirmed delivery', async () =
   expect(deliveryConfirmed({ ...message, previousTurnId: null }, session({}))).toBe(true)
   // A message stored before turns were recorded waits for the user.
   expect(deliveryConfirmed({ ...message, previousTurnId: undefined }, session({}))).toBe(false)
+})
+
+test('pasted images become path lines of their own at the caret', async () => {
+  const { withImages } = await import('./simpleComposer')
+  expect(withImages('', 0, ['/a.png'])).toEqual({ draft: 'Image: /a.png', caret: 13 })
+  expect(withImages('Look at this', 12, ['/a.png', '/b.jpg'])).toEqual({
+    draft: 'Look at this\nImage: /a.png\nImage: /b.jpg',
+    caret: 40,
+  })
+  const middle = withImages('before after', 6, ['/a.png'])
+  expect(middle.draft).toBe('before\nImage: /a.png\n after')
+  expect(middle.draft.slice(0, middle.caret)).toBe('before\nImage: /a.png')
+  expect(withImages('line\n', 99, ['/a.png']).draft).toBe('line\nImage: /a.png')
+  expect(withImages('keep', 2, [])).toEqual({ draft: 'keep', caret: 2 })
+})
+
+test('only image files are attached', async () => {
+  const { imageFiles } = await import('./simpleComposer')
+  const file = (type: string) => ({ type }) as File
+  expect(imageFiles([file('image/png'), file('text/plain'), file('image/jpeg')])).toEqual([
+    file('image/png'),
+    file('image/jpeg'),
+  ])
+  expect(imageFiles(null)).toEqual([])
 })

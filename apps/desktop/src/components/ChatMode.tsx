@@ -5,27 +5,12 @@ import type { SessionRecord } from '../types'
 import { useChatTeams } from '../lib/chatTeams'
 import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
-import {
-  recordStage,
-  pendingLaunch,
-  LAUNCH_RECORD_GRACE_MS,
-  retryMergeBranch,
-  thread,
-} from '../lib/simple'
 import { leadStageSessions } from '../lib/leadStageRun'
-import {
-  chatStatus,
-  chatStepHeading,
-  chatStepper,
-  flow,
-  workflowPromptKey,
-} from '../lib/simpleFlow'
-import { inPlace } from '../lib/auto'
+import { stepCardHeading, workflowPromptKey } from '../lib/simpleFlow'
+import { useStageModel } from '../lib/useStageModel'
 import type { useSimpleData } from '../lib/useSimpleData'
-import { useExpiredDeadline } from '../lib/clock'
-import { pinChatTerminal, simpleKey, useSimpleUi, EMPTY_SIMPLE_UI } from '../lib/simpleUi'
+import { pinChatTerminal, useSimpleUi } from '../lib/simpleUi'
 import { chatRolePresets } from '../lib/agentRoles'
-import { defaultMergeDestination, chatReviewBase } from '../lib/reviewAgents'
 import {
   missingHooks,
   sessionReportedHooks,
@@ -49,6 +34,7 @@ import { stopTerminal } from '../lib/sessions'
 import { focusTerminal } from '../lib/terminals'
 import { useRail } from '../lib/rail'
 import ChatModeTimeline from './ChatModeTimeline'
+import StageStrip from './StageStrip'
 import { ChatCoordinationAlerts } from './ChatCoordination'
 import ReviewAgentDialog from './ReviewAgentDialog'
 import MergeAgentDialog from './MergeAgentDialog'
@@ -82,58 +68,14 @@ export default function ChatMode({
       revealed: s.revealed,
     })),
   )
-  const {
-    data,
-    source,
-    worktrees,
-    branches,
-    scope: worktree,
-    files: changed,
-    error,
-    findings,
-  } = reader
-  const key = simpleKey(s.project?.id, s.activeTask)
-  const team = useChatTeams((state) =>
-    state.teams[s.project?.id ?? '']?.find((t) => t.task === s.activeTask),
-  )
-  const ui = useSimpleUi((u) => u.worktrees[key] ?? EMPTY_SIMPLE_UI)
+  const { data, source, worktrees, branches, files: changed, error, findings } = reader
+  const stage = useStageModel(reader)!
+  const { key, team, ui, model, flowSnapshot, launch, now, retryBranch, target, reviewBase } = stage
   const [confirm, setConfirm] = useState<{ kind: 'clear' | 'fresh' | 'stop'; key: string }>()
   if (confirm && confirm.key !== key) setConfirm(undefined)
   const closeConfirm = () => setConfirm(undefined)
   const projectId = s.project?.id ?? '',
     task = s.activeTask
-  const snapshot = {
-    records: s.sessionRecords,
-    sessions: s.sessions,
-    simple: s.simple,
-    auto: s.auto,
-    ...data,
-    findings: findings?.findings,
-    createdMs: s.tasks.find((t) => t.id === task)?.createdMs,
-    lead: team?.lead.sessionId,
-  }
-  const model = thread(snapshot, worktree)
-  const launch = pendingLaunch(snapshot, model.records)
-  const now = useExpiredDeadline(launch ? launch.atMs + LAUNCH_RECORD_GRACE_MS : undefined)
-  const retryBranch = retryMergeBranch(s.simple, data?.outcome)
-  const target = worktrees.find(
-    (w) =>
-      w.branch ===
-      (retryBranch ?? (source && defaultMergeDestination(source, worktrees, branches))),
-  )
-  const merging = model.records.filter((r) => recordStage(r) === 'merge').at(-1)
-  const mergeBase =
-    model.stage === 'merge'
-      ? worktrees.find((w) => w.path === merging?.spec.cwd)?.branch
-      : undefined
-  const base = chatReviewBase(source, s.tasks, worktrees, branches, mergeBase)
-  const reviewBase = chatReviewBase(
-    source,
-    s.tasks,
-    worktrees,
-    branches,
-    findings?.findings?.base || mergeBase,
-  )
   const chatRef = useRef<HTMLDivElement>(null)
   const workflow = useChatModeWorkflow({
     key,
@@ -152,41 +94,10 @@ export default function ChatMode({
     focusComposer: () =>
       chatRef.current?.querySelector<HTMLTextAreaElement>('.simple-composer textarea')?.focus(),
   })
-  const { pending, failure, dialog, setDialog, check, act, logReviewers, logMerge } = workflow
-  const checkKey = JSON.stringify([key, source?.head, target?.head])
+  const { pending, failure, dialog, setDialog, act, mergeStarted } = workflow
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
   const identity = useChatIdentity(recipient)
-  const flowSnapshot = {
-    ...snapshot,
-    worktree,
-    findings: findings?.findings,
-    outcomePending: !data && !error,
-    outcomeError: data?.outcomeError || error || undefined,
-    base: base ?? undefined,
-    conflicts: check?.key === checkKey ? check.paths : undefined,
-    now,
-  }
-  const derived = flow(flowSnapshot, model)
-  const status = chatStatus(derived.step, {
-    lead: team?.status,
-    autoRunning: !!s.auto && !['stopped', 'failed', 'done'].includes(s.auto.status),
-    simple: s.simple,
-  })
-  // The derived prompt belongs to the derived step, so it goes when the lead says otherwise.
-  const state =
-    status.step === derived.step ? derived : { ...derived, step: status.step, prompt: undefined }
-  const verdict = findings?.findings?.verdict
-  const autoActive = chatAutoActive(s.auto?.status)
-  const autoStatus = s.auto?.status
-  const autoHalt = autoStatus === 'paused' || autoStatus === 'failed' ? autoStatus : undefined
-  const stepper = chatStepper(state.step, {
-    issues: verdict ? Object.values(verdict.counts).reduce((sum, n) => sum + n, 0) : undefined,
-    inPlace: !!s.auto && !['stopped', 'failed'].includes(s.auto.status) && inPlace(s.auto),
-    // A stopped Auto run hands the worktree back to you, so only a paused or failed one halts it.
-    halt:
-      autoHalt ?? (team?.state === 'paused' || team?.state === 'stopped' ? team.state : undefined),
-    note: autoActive || autoHalt ? s.auto?.reason || undefined : status.note,
-  })
+  const { state, stepper, autoActive, autoHalt } = stage
   const runs = useChatTeams((state) => (team ? state.runs[team.projectId] : undefined))
   const offered = useAgentQuestions((q) => q.pending)
   // The lead, and the workers it is running: their approvals and questions are answered here too.
@@ -250,7 +161,13 @@ export default function ChatMode({
   const promptKey = workflowPromptKey(flowSnapshot, model, state)
   if (!s.project) return null
   // Review's own dialog, beside the step's actions once there is work to review.
-  const options = ['built', 'reviewed', 'fixed'].includes(state.step)
+  const options =
+    !!state.prompt?.actions.length && ['built', 'reviewed', 'fixed'].includes(state.step)
+  const cardDismissed = !!ui.dismissedPrompts?.includes(promptKey)
+  const restoreCard = () =>
+    useSimpleUi.getState().patch(key, {
+      dismissedPrompts: (ui.dismissedPrompts ?? []).filter((k) => k !== promptKey),
+    })
   const openFile = (path: string, line?: number) => {
     const match = changedFileRef(changed, path, source?.path)
     useSimpleUi.getState().patch(key, {
@@ -263,15 +180,7 @@ export default function ChatMode({
     launch && now === undefined
       ? model.items.filter((i) => i.kind !== 'result' || i.result !== launch.stage)
       : model.items
-  const stepHeading = state.prompt?.actions.some((a) => a.action === 'resumeAuto')
-    ? 'Continue Auto mode'
-    : state.prompt?.actions.some((a) => a.action === 'mergeApproval')
-      ? 'Merge'
-      : state.prompt?.actions.some((a) => ['merge', 'checkMerge'].includes(a.action))
-        ? state.prompt.actions.some((a) => ['review', 'fix'].includes(a.action))
-          ? 'Review and merge'
-          : 'Merge'
-        : chatStepHeading(state.step)
+  const stepHeading = stepCardHeading(state.prompt)
   const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
   const openWorkerTerminal = (record: SessionRecord) => {
     pinChatTerminal(key, record.id, s.sessions[record.id]?.generation)
@@ -327,7 +236,7 @@ export default function ChatMode({
               <MenuSeparator />
               <MenuItem
                 disabled={!!team.reset || !!ui.pendingAction || !!ui.pendingWorkflow}
-                title="Reset the lead’s provider context. Workers and a concise work handoff are retained."
+                title="Reset the lead’s provider context. Sub-builders and a concise work handoff are retained."
                 onClick={() => setConfirm({ kind: 'fresh', key })}
               >
                 Clear lead context
@@ -419,7 +328,7 @@ export default function ChatMode({
         >
           <p>
             Clear the lead’s context? Its provider conversation resets and the chat is replaced with
-            a concise handoff. Workers and results are retained.
+            a concise handoff. Sub-builders and results are retained.
           </p>
         </Dialog>
       )}
@@ -446,30 +355,20 @@ export default function ChatMode({
             </>
           }
         >
-          <p>Stop the lead and workers for this task? You can continue work later.</p>
+          <p>Stop the lead and sub-builders for this task? You can continue work later.</p>
         </Dialog>
       )}
       {(state.step !== 'idle' || autoActive || autoHalt) && (
         <div className="chat-progress">
-          <ol className="auto-stepper chat-stepper" aria-label="Workflow stages">
-            {stepper.map((item) => (
-              <li
-                key={item.stage}
-                aria-current={
-                  ['current', 'ready', 'attention', 'stopped', 'failed'].includes(item.state)
-                    ? 'step'
-                    : undefined
-                }
-                data-state={item.state}
-                title={item.note}
-              >
-                <span>
-                  {CHAT_STAGE_LABELS[item.stage]}
-                  {item.note && <small> · {item.note}</small>}
-                </span>
-              </li>
-            ))}
-          </ol>
+          <StageStrip
+            items={stepper}
+            className="chat-stepper"
+            restore={
+              cardDismissed && state.prompt?.actions.length
+                ? { label: `Show ${stepHeading} actions`, onRestore: restoreCard }
+                : undefined
+            }
+          />
           {autoActive && (
             <button className="chat-auto-pause" onClick={workflow.pauseAuto}>
               Pause Auto
@@ -487,12 +386,12 @@ export default function ChatMode({
         <ReviewAgentDialog
           compact
           key={`${projectId}/${source.path}/${source.branch}`}
-          restartSettled
+          origin="chat"
+          task={task}
           initialBase={reviewBase || undefined}
           source={source}
           worktrees={worktrees}
           close={() => setDialog(undefined)}
-          started={(reviewers) => void logReviewers(reviewers)}
           launched={() => setDialog(undefined)}
         />
       )}
@@ -504,7 +403,9 @@ export default function ChatMode({
           branches={branches}
           initialDestination={retryBranch ?? target?.branch ?? undefined}
           close={() => setDialog(undefined)}
-          onRequest={(request, sid, requestId) => void logMerge(request, sid, requestId)}
+          origin="chat"
+          task={task}
+          onRequest={mergeStarted}
           launched={() => setDialog(undefined)}
         />
       )}
@@ -526,7 +427,7 @@ export default function ChatMode({
         openFile={openFile}
         openDiff={(file) => useSimpleUi.getState().patch(key, { changes: true, diff: file })}
       />
-      {!launching && !ui.dismissedPrompts?.includes(promptKey) && (state.prompt || options) && (
+      {!launching && !cardDismissed && !!state.prompt?.actions.length && (
         <section
           className="simple-step"
           data-step={state.step}
@@ -630,10 +531,3 @@ function ActivityHooksNotice({
     </p>
   )
 }
-
-const CHAT_STAGE_LABELS = {
-  plan: 'Plan',
-  build: 'Build',
-  review: 'Review',
-  merge: 'Merge',
-} as const

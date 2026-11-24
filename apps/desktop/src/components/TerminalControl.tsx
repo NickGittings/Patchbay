@@ -10,6 +10,7 @@ import {
   type TerminalSpec,
 } from '../types'
 import { confirmAction } from '../lib/confirm'
+import { recordPlannerStart } from '../lib/stageRecord'
 
 /** Header actions stay available even when the pane cannot load its saved output. */
 export default function TerminalControl({
@@ -21,6 +22,7 @@ export default function TerminalControl({
   task,
   projectId,
   disabled = false,
+  existingOnly = false,
   restarting = false,
   onRestart,
 }: {
@@ -32,6 +34,8 @@ export default function TerminalControl({
   task: string | null
   projectId?: string
   disabled?: boolean
+  /** A session opened outside its launch view only offers controls for the existing run. */
+  existingOnly?: boolean
   restarting?: boolean
   /** The planner also offers a restart while running to apply changed context. */
   onRestart?: () => Promise<void>
@@ -84,7 +88,7 @@ export default function TerminalControl({
   return (
     <>
       {kind === 'agent' && <ContextIndicator session={session} connected={connected} />}
-      {interactive && (
+      {interactive && !existingOnly && (
         <button
           disabled={disabled || busy || auto || !connected}
           title={auto ? 'Stop Auto before starting a new conversation' : undefined}
@@ -97,10 +101,20 @@ export default function TerminalControl({
         <button disabled={disabled || busy} onClick={() => stopTerminal(sid)}>
           ■ Stop
         </button>
-      ) : !isReviewAgentScope(componentId) ? (
+      ) : !existingOnly && !isReviewAgentScope(componentId) ? (
         <button
           disabled={disabled || busy}
-          onClick={() => void startTerminal(componentId, terminalId, task, projectId)}
+          onClick={() => {
+            // The launch's own project and worktree, before a slow start lets the user move on.
+            const now = useStore.getState()
+            const owner = projectId ?? now.project?.id
+            const scope = task === undefined ? now.activeTask : task
+            const origin = now.simpleMode ? 'chat' : 'manual'
+            void startTerminal(componentId, terminalId, task, projectId).then((requestId) => {
+              if (requestId && componentId === PLAN_SCOPE)
+                recordPlannerStart(owner, scope, terminalId, requestId, { origin })
+            })
+          }}
         >
           ▶ {busy ? 'Stopping…' : session ? 'Restart' : 'Start'}
         </button>

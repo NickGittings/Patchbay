@@ -7,7 +7,6 @@ import { useEffect, useState, type CSSProperties } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
 import { KIND_COLOR } from '../lib/display'
 import { isMac, titleBarMouseDown } from '../lib/platform'
-import { invoke } from '@tauri-apps/api/core'
 import { reconcileSessions } from '../lib/sessions'
 import { revealPath } from '../lib/ipc'
 import { listenForTerminals } from '../lib/sessions'
@@ -18,6 +17,8 @@ import {
   READY_EVENT,
   TASKS_EVENT,
   type TasksPayload,
+  windowLayout,
+  windowTab,
 } from '../lib/windows'
 import { useStore } from '../store'
 import { type Project } from '../types'
@@ -26,6 +27,7 @@ import FileTree from './FileTree'
 import FileEditor from './FileEditor'
 import ServiceBanner from './ServiceBanner'
 import TerminalGrid from './TerminalGrid'
+import { MAIN_WINDOW_LABEL } from '../lib/mainWindow'
 
 /** Panel sizes saved for this window, applied once the project model has loaded. */
 let savedPanels: Record<string, Record<string, number>> | undefined
@@ -73,7 +75,7 @@ export default function ComponentWindow({ id }: { id: string }) {
         }),
       )
       if (!disposed) {
-        await emitTo('main', READY_EVENT, {
+        await emitTo(MAIN_WINDOW_LABEL, READY_EVENT, {
           label: getCurrentWebviewWindow().label,
           projectId: new URLSearchParams(location.search).get('project'),
         })
@@ -86,9 +88,7 @@ export default function ComponentWindow({ id }: { id: string }) {
   }, [])
 
   useEffect(() => {
-    void invoke<{ tab?: 'files' | 'changes'; panels?: Record<string, Record<string, number>> }>(
-      'window_layout',
-    ).then((layout) => {
+    void windowLayout().then((layout) => {
       if (layout?.tab === 'files' || layout?.tab === 'changes') setTab(layout.tab)
       if (layout?.panels) {
         savedPanels = layout.panels
@@ -99,7 +99,7 @@ export default function ComponentWindow({ id }: { id: string }) {
   }, [])
   const changeTab = (value: 'files' | 'changes') => {
     setTab(value)
-    void invoke('window_tab', { tab: value })
+    void windowTab(value)
   }
   const name = component?.data.name
   useEffect(() => {

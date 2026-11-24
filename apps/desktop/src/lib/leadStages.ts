@@ -1,15 +1,14 @@
-import { projectOf, useStore } from '../store'
-import { PLAN_SCOPE, REVIEW_SCOPE, plannerChatTask, plannerSessionId } from '../types'
+import { projectOf, projectStateOf, useStore } from '../store'
+import {
+  PLAN_SCOPE,
+  REVIEW_SCOPE,
+  plannerChatTask,
+  plannerSessionId,
+  type MergeRequest,
+} from '../types'
 import { roleDevice } from './agentRoles'
 import { controlTeam, type ChatTeam } from './chatTeams'
-import {
-  gitBranches,
-  gitWorktrees,
-  mergeOutcome,
-  mergeSourceChanges,
-  planRead,
-  terminalSnapshot,
-} from './ipc'
+import { gitBranches, gitWorktrees, mergeOutcome, planRead, terminalSnapshot } from './ipc'
 import { savedStage, type StageRun } from './leadStageRun'
 import { implementPlannerPlan, type HandoffTarget } from './planHandoff'
 import { agentTurnEnded } from './review'
@@ -19,12 +18,17 @@ import {
   mergeDestinationRunning,
   reviewAgentRecords,
   reviewWorktreeBusy,
-  startBranchMerge,
+  startMerge,
 } from './reviewAgents'
 import { sessionTimeMs } from './sessionList'
 import { startTerminal } from './sessions'
-import { logLaunch } from './simpleActions'
-import { logStageLaunch } from './stageLog'
+import { taskOfWorktree } from './launchStage'
+import {
+  recordStageLaunch,
+  refuseWhileAutoRuns,
+  type LaunchedAgent,
+  type StageAction,
+} from './stageRecord'
 
 type Workflow = NonNullable<ChatTeam['requests']>[number]
 interface LaunchedStage {
@@ -52,28 +56,63 @@ const strings = (value: unknown) =>
     ? (value as string[])
     : undefined
 
+// The lead's workflow tells it about its own stages, and it keeps earlier agents to investigate.
+const recordLead = (
+  team: ChatTeam,
+  action: StageAction,
+  launched: LaunchedAgent,
+  request?: MergeRequest,
+) =>
+  recordStageLaunch({
+    projectId: team.projectId,
+    task: team.task,
+    origin: 'lead',
+    action,
+    launched: [launched],
+    ...(request ? { request } : {}),
+  })
+
 async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<LaunchedStage> {
-  const goal = request.settings.goal
-  if (typeof goal !== 'string' || !goal.trim()) throw new Error('Say what to plan')
+  const { goal, story: storyId } = request.settings
+  const stories = typeof storyId === 'string' ? await import('./stories') : undefined
+  const story =
+    stories && typeof storyId === 'string'
+      ? await stories.findStory(team.projectId, storyId)
+      : undefined
+  if (!story && (typeof goal !== 'string' || !goal.trim())) throw new Error('Say what to plan')
   const { sessions } = useStore.getState()
   const device = requireRoleDevice('plan')
   const sessionId = plannerSessionId(device.id, team.projectId, team.task)
   // Starting over would replace a conversation someone may still be using.
   if (sessions[sessionId]?.running)
     throw new Error('A planner is already running in this worktree. Ask the user how to proceed.')
-  const requestId = await startTerminal(PLAN_SCOPE, device.id, team.task, team.projectId, {
-    kickoff: { kind: 'planRequest' },
-    planRequest: goal,
-    components: leadComponents(team, request.settings.components),
-  })
+  const components = leadComponents(team, request.settings.components)
+  const requestId =
+    stories && story
+      ? // The same briefing and status as the board's Plan, in the team's worktree.
+        await stories.launchStoryPlanner(
+          team.projectId,
+          team.task,
+          device.id,
+          story,
+          components?.length
+            ? components
+            : stories.storyComponents(projectStateOf(team.projectId)?.stories ?? [], story),
+          typeof goal === 'string' ? goal : undefined,
+        )
+      : await startTerminal(PLAN_SCOPE, device.id, team.task, team.projectId, {
+          kickoff: { kind: 'planRequest' },
+          planRequest: goal as string,
+          components,
+        })
   const launched = { sessionId, requestId }
-  await logStageLaunch(team.projectId, team.task, 'plan', 'plan', launched, { lead: true })
+  await recordLead(team, 'plan', launched)
   return launched
 }
 
 /**
  * The map components a lead named for its planner, without ones no longer on the map. None left
- * (or none named) keeps the worktree's highlighted components.
+ * (or none named) keeps the worktree's highlighted components, or the story's.
  */
 function leadComponents(team: ChatTeam, named: unknown): string[] | undefined {
   const project = projectOf(team.projectId)
@@ -96,7 +135,7 @@ async function startLeadBuild(team: ChatTeam): Promise<LaunchedStage> {
     roleDevice(devices, agentRoles, 'plan')?.id
   if (!planner) throw new Error('Choose an agent for the plan role first')
   const launched = await implementPlannerPlan(planner, undefined, undefined, 'stay', target(team))
-  await logStageLaunch(team.projectId, team.task, 'implement', 'build', launched, { lead: true })
+  await recordLead(team, 'implement', launched)
   return launched
 }
 
@@ -109,7 +148,7 @@ async function startLeadFix(team: ChatTeam): Promise<LaunchedStage> {
   )
   if (!reviewer) throw new Error('Review this worktree before fixing its findings')
   const launched = await fixReviewFindings(reviewer, undefined, undefined, 'stay', target(team))
-  await logStageLaunch(team.projectId, team.task, 'fix', 'build', launched, { lead: true })
+  await recordLead(team, 'fix', launched)
   return launched
 }
 
@@ -128,34 +167,28 @@ async function startLeadMerge(team: ChatTeam, request: Workflow): Promise<Launch
       ? named.trim()
       : defaultMergeDestination(source, worktrees, branches)
   if (!destination) throw new Error('Ask the user which branch to merge into')
+  // The merge agent works in the destination, which Auto may own too.
+  const target = worktrees.find((w) => w.branch === destination)
+  if (target) refuseWhileAutoRuns(team.projectId, taskOfWorktree(target, team.projectId))
   const { sessionRecords, sessions } = useStore.getState()
-  const into = worktrees.find((w) => w.branch === destination)?.path
-  if (into && mergeDestinationRunning(sessionRecords, sessions, into))
+  if (target && mergeDestinationRunning(sessionRecords, sessions, target.path))
     throw new Error(
       'A merge agent is already running in this destination. Ask the user how to proceed.',
     )
-  const changes = await mergeSourceChanges(project, source.path, source.branch)
-  const approved = strings(request.settings.commitSource)
-  if (changes.length && !approved)
-    throw new Error(
-      `${source.branch} has uncommitted changes. Ask the user whether the merge agent should commit them. If they agree, retry with exactly these as commitSource:\n${JSON.stringify(changes)}`,
-    )
-  const device = requireRoleDevice('merge')
-  const requestId = crypto.randomUUID()
-  const { request: merge, sid } = await startBranchMerge(
+  const started = await startMerge({
     project,
     source,
-    destination,
-    device,
-    requestId,
-    changes.length ? approved : undefined,
-  )
-  await logLaunch(
-    team.projectId,
-    team.task,
-    { kind: 'action', action: 'merge', stage: 'merge', request: merge, sessionId: sid, lead: true },
-    requestId,
-  )
+    destinationBranch: destination,
+    device: requireRoleDevice('merge'),
+    commitSource: strings(request.settings.commitSource) ?? 'report',
+  })
+  if (started.kind === 'uncommitted')
+    throw new Error(
+      `${source.branch} has uncommitted changes. Ask the user whether the merge agent should commit them. If they agree, retry with exactly these as commitSource:\n${JSON.stringify(started.changes)}`,
+    )
+  if (started.kind !== 'started') throw new Error('The merge did not start')
+  const { request: merge, sessionId: sid, requestId } = started
+  await recordLead(team, 'merge', { sessionId: sid, requestId }, merge)
   return { sessionId: sid, requestId, merge }
 }
 
@@ -175,6 +208,9 @@ function launchStage(team: ChatTeam, request: Workflow) {
 
 /** Launch a claimed stage. It stays active until `settleLeadStage` sees its agent finish. */
 export async function startLeadStage(team: ChatTeam, request: Workflow) {
+  // Auto's agents own the worktree while its run goes on, for the lead as for the user. Planning
+  // touches no code, so it may go ahead, as it does from Chat and the Plan view.
+  if (request.action !== 'startPlan') refuseWhileAutoRuns(team.projectId, team.task)
   const startedMs = Date.now()
   const launched = await launchStage(team, request)
   // The workflow result wakes the lead, so the agent's own finish stays passive.

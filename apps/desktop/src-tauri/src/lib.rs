@@ -38,6 +38,8 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WindowE
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 #[cfg(debug_assertions)]
+mod dev_server;
+#[cfg(debug_assertions)]
 mod smoke;
 
 /// Emitted with a window's label when it closes, so the others can pick a new active window.
@@ -46,6 +48,8 @@ const FILE_ACCESS_EVENT: &str = "patchbay://file-access";
 const GIT_DIRTY_EVENT: &str = "patchbay://git-dirty";
 /// A watched `HEAD` or ref changed, so worktree branches may have moved.
 const BRANCHES_CHANGED_EVENT: &str = "patchbay://branches-changed";
+const MENU_ACTION_EVENT: &str = "patchbay://menu-action";
+const QUIT_REQUEST_EVENT: &str = "patchbay://quit-request";
 
 /// A component pop-out's window label. Must match `componentLabel` in `windows.ts`:
 /// the code points of `JSON.stringify([projectId, componentId])` in hex.
@@ -193,6 +197,17 @@ impl Extensions {
     fn set(&self, registry: Registry) -> Registry {
         *self.0.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(registry.clone()));
         registry
+    }
+
+    fn set_hosts(&self, id: &str, hosts: Vec<String>) -> CmdResult<Registry> {
+        let mut slot = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        let mut registry = slot
+            .get_or_insert_with(|| Arc::new(Registry::load()))
+            .as_ref()
+            .clone();
+        registry.set_hosts(id, hosts).map_err(err)?;
+        *slot = Some(Arc::new(registry.clone()));
+        Ok(registry)
     }
 
     fn set_enabled(&self, id: &str, enabled: bool) -> CmdResult<Registry> {
@@ -1128,6 +1143,44 @@ fn handoff_sections(
     )
 }
 
+/// Save an image pasted or dropped into Chat's composer and return its path. The
+/// body is the image's raw bytes, so a large screenshot isn't sent as JSON; the
+/// project id travels percent-encoded in the `patchbay-project` header.
+#[tauri::command]
+async fn save_chat_attachment(
+    request: tauri::ipc::Request<'_>,
+    state: State<'_, AppState>,
+) -> CmdResult<String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected the image's bytes".into());
+    };
+    // Refuse an oversized drop before copying it.
+    if bytes.len() > patchbay_core::attachments::ATTACHMENT_LIMIT {
+        return Err(format!(
+            "Images must be {} MB or smaller",
+            patchbay_core::attachments::ATTACHMENT_LIMIT / (1024 * 1024)
+        ));
+    }
+    let project_id = request
+        .headers()
+        .get("patchbay-project")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            percent_encoding::percent_decode_str(v)
+                .decode_utf8_lossy()
+                .into_owned()
+        })
+        .ok_or_else(|| "Missing project".to_string())?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    let bytes = bytes.clone();
+    blocking(move || {
+        patchbay_core::attachments::save(&root, &bytes)
+            .map(|path| path.display().to_string())
+            .map_err(err)
+    })
+    .await
+}
+
 /// The saved plan of the project (or `task`), empty when there is none.
 #[tauri::command]
 async fn plan_read(
@@ -1546,6 +1599,16 @@ async fn story_update(
 }
 
 #[tauri::command]
+async fn story_reorder(
+    project_id: String,
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> CmdResult<()> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || stories::reorder(&root, &ids).map_err(err)).await
+}
+
+#[tauri::command]
 async fn story_remove(
     project_id: String,
     state: State<'_, AppState>,
@@ -1554,6 +1617,28 @@ async fn story_remove(
 ) -> CmdResult<()> {
     let (root, _) = task_repo(&state, &project_id)?;
     blocking(move || stories::remove(&root, &id, cascade).map_err(err)).await
+}
+
+/// Open an imported item's tracker link, read from the saved board and validated again.
+#[tauri::command]
+async fn story_source_open(
+    project_id: String,
+    state: State<'_, AppState>,
+    id: String,
+) -> CmdResult<()> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || {
+        let url = stories::load(&root)
+            .map_err(err)?
+            .into_iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.source)
+            .and_then(|s| s.url)
+            .ok_or("This item has no tracker link")?;
+        let url = extensions::preview_url(&url).map_err(err)?;
+        tauri_plugin_opener::open_url(url, None::<&str>).map_err(err)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2204,6 +2289,30 @@ async fn merge_conflicts(
 }
 
 #[tauri::command]
+async fn merge_branch_outcome(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    project_id: String,
+    source: String,
+    source_branch: String,
+    destination_branch: String,
+) -> CmdResult<patchbay_core::merges::MergeOutcome> {
+    main_only(&window)?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || {
+        let outcome = patchbay_core::merges::branch_outcome(
+            &root,
+            &source,
+            &source_branch,
+            &destination_branch,
+        )
+        .map_err(err)?;
+        record_merge_outcome(&root, &source, outcome)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn merge_outcome(
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -2216,17 +2325,24 @@ async fn merge_outcome(
     blocking(move || {
         access.trust(&mut project).map_err(err)?;
         let outcome = patchbay_core::merges::outcome(&project, &request).map_err(err)?;
-        if matches!(
-            outcome,
-            patchbay_core::merges::MergeOutcome::Merged
-                | patchbay_core::merges::MergeOutcome::AlreadyIntegrated
-        ) {
-            stories::complete_merge(Path::new(&project.root), Path::new(&request.source))
-                .map_err(err)?;
-        }
-        Ok(outcome)
+        record_merge_outcome(Path::new(&project.root), &request.source, outcome)
     })
     .await
+}
+
+fn record_merge_outcome(
+    root: &Path,
+    source: &str,
+    outcome: patchbay_core::merges::MergeOutcome,
+) -> CmdResult<patchbay_core::merges::MergeOutcome> {
+    use patchbay_core::merges::MergeOutcome;
+    if matches!(
+        outcome,
+        MergeOutcome::Merged | MergeOutcome::AlreadyIntegrated
+    ) {
+        stories::complete_merge(root, Path::new(source)).map_err(err)?;
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]
@@ -3125,6 +3241,10 @@ async fn terminal_reset(state: State<'_, AppState>) -> CmdResult<u64> {
 /// Panics if the Tauri runtime fails to start.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
+    let mut context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    dev_server::apply(&mut context);
     let builder = tauri::Builder::default();
     #[cfg(debug_assertions)]
     let builder = smoke::install(builder);
@@ -3171,10 +3291,10 @@ pub fn run() {
                 // Project and Settings always operate on the main workspace, even from a pop-out.
                 // Saving needs none of main's UI, so Cmd+S in a pop-out keeps its focus.
                 if let Some(main) = app.get_webview_window("main") {
-                    if action != "action:save" {
+                    if action != native_menu::SAVE_MENU_ACTION {
                         let _ = main.set_focus();
                     }
-                    let _ = main.emit("patchbay://menu-action", action);
+                    let _ = main.emit(MENU_ACTION_EVENT, action);
                 }
             }
         })
@@ -3198,6 +3318,8 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             let main = main.decorations(false);
             let _main = main.build()?;
+            #[cfg(debug_assertions)]
+            smoke::conceal(&_main);
             #[cfg(target_os = "windows")]
             window_controls::verify(&_main)?;
             #[cfg(target_os = "macos")]
@@ -3267,8 +3389,10 @@ pub fn run() {
                 story_list,
                 story_create,
                 story_update,
+                story_reorder,
                 story_remove,
                 story_complete_auto,
+                story_source_open,
                 task_create,
                 worktree_setup,
                 worktree_setup_enable,
@@ -3297,6 +3421,7 @@ pub fn run() {
                 orchestration::provider_job_start,
                 plan_context,
                 plan_read,
+                save_chat_attachment,
                 plan_transfer,
                 plan_transfer_pending,
                 task_root_start,
@@ -3305,6 +3430,7 @@ pub fn run() {
                 merge_agent_start,
                 map_agent_start,
                 stack_agent_start,
+                merge_branch_outcome,
                 merge_outcome,
                 merge_cleanup,
                 merge_cleanup_preview,
@@ -3392,10 +3518,18 @@ pub fn run() {
                 extension_file_read,
                 extension_sessions_list,
                 extension_url_open,
+                extension_stories_list,
+                extension_stories_upsert,
+                extension_file_pick,
+                extension_http_fetch,
+                extension_secret_set,
+                extension_secret_has,
+                extension_secret_delete,
+                set_extension_hosts,
             ];
             handler(invoke)
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Patchbay")
         .run(|app, event| {
             if let RunEvent::ExitRequested { api, code, .. } = &event {
@@ -3405,7 +3539,7 @@ pub fn run() {
                     && app.get_webview_window("main").is_some()
                 {
                     api.prevent_exit();
-                    let _ = app.emit_to("main", "patchbay://quit-request", ());
+                    let _ = app.emit_to("main", QUIT_REQUEST_EVENT, ());
                 } else {
                     state
                         .quitting
@@ -3972,6 +4106,8 @@ async fn window_open(
         #[cfg(target_os = "windows")]
         let builder = window_controls::configure(builder, true);
         let _popout = builder.build().map_err(err)?;
+        #[cfg(debug_assertions)]
+        smoke::conceal(&_popout);
         #[cfg(target_os = "windows")]
         window_controls::verify(&_popout).map_err(err)?;
         #[cfg(target_os = "macos")]
@@ -4304,6 +4440,239 @@ async fn extension_url_open(
         tauri_plugin_opener::open_url(url, None::<&str>).map_err(err)
     })
     .await
+}
+
+/// The board, for an extension with `stories:read`.
+#[tauri::command]
+async fn extension_stories_list(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    project_id: String,
+) -> CmdResult<Vec<stories::Story>> {
+    main_only(&window)?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("stories:read"))
+            .map_err(err)?;
+        stories::load(&root).map_err(err)
+    })
+    .await
+}
+
+/// Create or update tracker items for an extension with `stories:write`. Items are matched
+/// on the extension's own source ids, so it can't overwrite anything it didn't import.
+#[tauri::command]
+async fn extension_stories_upsert(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    project_id: String,
+    items: Vec<stories::ExternalItem>,
+) -> CmdResult<stories::ImportReport> {
+    main_only(&window)?;
+    let (root, _) = task_repo(&state, &project_id)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("stories:write"))
+            .map_err(err)?;
+        stories::upsert_external(&root, &extension_id, items).map_err(err)
+    })
+    .await
+}
+
+/// Largest file `files.pick` returns.
+const PICKED_FILE_LIMIT: u64 = 1024 * 1024;
+
+#[derive(serde::Serialize)]
+struct PickedFile {
+    name: String,
+    text: String,
+}
+
+/// A file the user chooses in a native dialog, for an extension with `files:pick`.
+/// The user's choice is the grant: nothing else outside the project becomes readable.
+#[tauri::command]
+async fn extension_file_pick(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    title: Option<String>,
+    extensions: Vec<String>,
+) -> CmdResult<Option<PickedFile>> {
+    main_only(&window)?;
+    let registry = state.extensions.clone();
+    blocking(move || {
+        let extension = registry
+            .get()
+            .allowed(&extension_id, Some("files:pick"))
+            .map_err(err)?
+            .clone();
+        let name = extension
+            .manifest
+            .display_name
+            .clone()
+            .unwrap_or_else(|| extension.id.clone());
+        let title: String = title
+            .unwrap_or_else(|| format!("Choose a file for {name}"))
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(120)
+            .collect();
+        let filters: Vec<String> = extensions
+            .into_iter()
+            .filter(|e| {
+                !e.is_empty() && e.len() <= 16 && e.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
+            .take(16)
+            .collect();
+        let mut dialog = window.dialog().file().set_parent(&window).set_title(title);
+        if !filters.is_empty() {
+            let filters: Vec<&str> = filters.iter().map(String::as_str).collect();
+            dialog = dialog.add_filter("Supported files", &filters);
+        }
+        let Some(path) = dialog.blocking_pick_file() else {
+            return Ok(None);
+        };
+        let path = path.into_path().map_err(err)?;
+        let mut bytes = vec![];
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(
+                std::fs::File::open(&path).map_err(err)?,
+                PICKED_FILE_LIMIT + 1,
+            ),
+            &mut bytes,
+        )
+        .map_err(err)?;
+        if bytes.len() as u64 > PICKED_FILE_LIMIT {
+            return Err("Choose a file of at most 1 MiB".into());
+        }
+        Ok(Some(PickedFile {
+            name: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            text: String::from_utf8_lossy(&bytes).into_owned(),
+        }))
+    })
+    .await
+}
+
+/// An HTTP request through the native broker, for an extension with `network`, limited to
+/// its manifest's and the user's approved origins.
+#[tauri::command]
+async fn extension_http_fetch(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    request: patchbay_core::net::HttpRequest,
+) -> CmdResult<patchbay_core::net::HttpResponse> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        let registry = extensions.get();
+        if request.auth.is_some() {
+            registry
+                .allowed(&extension_id, Some("secrets"))
+                .map_err(err)?;
+        }
+        let hosts = registry.network_hosts(&extension_id).map_err(err)?;
+        patchbay_core::net::fetch(&extension_id, &hosts, &request).map_err(|e| format!("{e:#}"))
+    })
+    .await
+}
+
+/// Save a credential the user typed into Patchbay's own prompt (never the extension's).
+#[tauri::command]
+async fn extension_secret_set(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    name: String,
+    value: String,
+    hosts: Vec<String>,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        let registry = extensions.get();
+        registry
+            .allowed(&extension_id, Some("secrets"))
+            .map_err(err)?;
+        let current = registry.network_hosts(&extension_id).map_err(err)?;
+        let displayed = hosts
+            .iter()
+            .map(|host| patchbay_core::net::HostPattern::parse(host))
+            .collect::<anyhow::Result<std::collections::BTreeSet<_>>>()
+            .map_err(err)?;
+        if current
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .ne(&displayed)
+        {
+            return Err("Approved servers changed. Reopen the credential prompt.".into());
+        }
+        patchbay_core::secrets::set(&extension_id, &name, &value, &current).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn extension_secret_has(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    name: String,
+) -> CmdResult<bool> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        let registry = extensions.get();
+        registry
+            .allowed(&extension_id, Some("secrets"))
+            .map_err(err)?;
+        let hosts = registry.network_hosts(&extension_id).map_err(err)?;
+        patchbay_core::secrets::has(&extension_id, &name, &hosts).map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn extension_secret_delete(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    extension_id: String,
+    name: String,
+) -> CmdResult<()> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || {
+        extensions
+            .get()
+            .allowed(&extension_id, Some("secrets"))
+            .map_err(err)?;
+        patchbay_core::secrets::delete(&extension_id, &name).map_err(err)
+    })
+    .await
+}
+
+/// Replace the network origins the user approved for an extension, then reload.
+#[tauri::command]
+async fn set_extension_hosts(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    id: String,
+    hosts: Vec<String>,
+) -> CmdResult<Registry> {
+    main_only(&window)?;
+    let extensions = state.extensions.clone();
+    blocking(move || extensions.set_hosts(&id, hosts)).await
 }
 
 #[cfg(test)]

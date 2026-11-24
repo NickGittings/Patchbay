@@ -1,7 +1,7 @@
 //! Reviewed structural maintenance. Detection never replaces user configuration.
 use crate::access::AccessSnapshot;
 use crate::extensions::DetectorContribution;
-use crate::model::{Component, DetectionProvenance, Link, Project, SCHEMA_VERSION};
+use crate::model::{BUILTIN_SOURCE, Component, DetectionProvenance, Link, Project, SCHEMA_VERSION};
 use crate::{detect, model};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -163,7 +163,7 @@ fn responsible_scan(
     }
     // Declarative extension detectors report component markers, not dependency snapshots.
     // They cannot authoritatively prove their old relationships absent.
-    if origin.detector != "builtin" {
+    if origin.detector != BUILTIN_SOURCE {
         return false;
     }
     true
@@ -304,7 +304,7 @@ pub fn preview(
             change: Change::AddLink { link },
         });
     }
-    let available: HashSet<_> = std::iter::once("builtin".into())
+    let available: HashSet<_> = std::iter::once(BUILTIN_SOURCE.into())
         .chain(detectors.iter().map(|d| d.id.clone()))
         .collect();
     for link in &project.links {
