@@ -36,8 +36,12 @@ function ApprovedHosts({
   perform: (work: () => Promise<unknown>) => Promise<void>
 }) {
   const [draft, setDraft] = useState('')
-  const save = (hosts: string[]) =>
-    perform(async () => refreshExtensions(await setExtensionHosts(extension.id, hosts)))
+  const save = (hosts: string[], onSaved?: () => void) =>
+    perform(async () => {
+      const registry = await setExtensionHosts(extension.id, hosts)
+      onSaved?.()
+      await refreshExtensions(registry)
+    })
   return (
     <div className="extension-hosts">
       <small>
@@ -59,8 +63,11 @@ function ApprovedHosts({
         className="row"
         onSubmit={(e) => {
           e.preventDefault()
-          if (!draft.trim()) return
-          void save([...extension.approvedHosts, draft.trim()]).then(() => setDraft(''))
+          const submitted = draft
+          if (!submitted.trim()) return
+          void save([...extension.approvedHosts, submitted.trim()], () =>
+            setDraft((current) => (current === submitted ? '' : current)),
+          )
         }}
       >
         <input

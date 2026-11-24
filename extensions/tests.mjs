@@ -6,6 +6,7 @@ import * as storyImport from './story-import/extension.js'
 import * as github from './github-issues/extension.js'
 import * as linear from './linear/extension.js'
 import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 const deferred = () => {
   let resolve
   const promise = new Promise((r) => {
@@ -496,3 +497,94 @@ console.log(
 console.log(
   "PASS integrations: story file import, GitHub Issues and Linear mapping and pagination",
 );
+
+// Text limits apply to every tracker kind and count UTF-8 bytes.
+{
+  const title = '界🙂'.repeat(200)
+  const description = '- [ ] ' + '🙂'.repeat(18000)
+  const batches = [
+    github.toItems('acme/shop', [
+      { number: 1, title, body: description, milestone: { number: 1, title, description } },
+    ]),
+    linear.toItems('ENG', [
+      {
+        identifier: 'ENG-1', title, description,
+        project: { id: 'p1', name: title, description, initiatives: { nodes: [
+          { id: 'n1', name: title, description },
+        ] } },
+      },
+    ]),
+  ]
+  for (const items of batches) {
+    for (const item of items) {
+      for (const [value, limit] of [
+        [item.title, 500], [item.description, 64 * 1024],
+        ...(item.acceptance ?? []).map((criterion) => [criterion, 2000]),
+      ]) {
+        assert(Buffer.byteLength(value) <= limit, `${item.kind} exceeds ${limit} UTF-8 bytes`)
+        assert(!value.includes('�') && value.isWellFormed(), 'truncation preserves Unicode')
+      }
+    }
+    assert.equal(items.at(-1).acceptance.length, 1)
+  }
+}
+
+// Generated IDs remain distinct and the repaired hierarchy resolves within the batch.
+{
+  for (const [name, input] of [
+    ['items.md', '# 商店\n## 支払い\n### 確認\n### 返金\n### 確認\n## 請求\n### 確認'],
+    ['items.json', JSON.stringify([{ title: '商店', kind: 'epic', children: [
+      { title: '支払い', kind: 'feature', children: [{ title: '確認' }, { title: '確認' }] },
+      { title: '請求', kind: 'feature', children: [{ title: '返金' }] },
+    ] }])],
+  ]) {
+    const items = storyImport.parseFile(name, input)
+    assert.equal(new Set(items.map((item) => item.externalId)).size, items.length, name)
+    assert.deepEqual(storyImport.parseFile(name, input), items)
+    const byId = new Map(items.map((item) => [item.externalId, item]))
+    assert(items.filter((item) => item.kind === 'story').every((item) => byId.get(item.parent)?.kind === 'feature'))
+  }
+
+  const header = 'Issue Key,Issue Id,Issue Type,Summary,Parent\n'
+  const rows = 'X-1,100,Epic,Epic,\nX-2,200,Initiative,Initiative,\nX-3,300,Feature,Known,100\nX-4,400,Feature,Wrong kind,200\nX-5,500,Feature,Missing,999'
+  const items = storyImport.parseFile('items.csv', header + rows)
+  const find = (id) => items.find((item) => item.externalId === id)
+  assert.equal(find('X-3').parent, 'X-1')
+  assert.equal(find(find('X-4').parent).kind, 'epic')
+  assert.equal(find('X-4').parent, find('X-5').parent)
+
+  const noId = 'Title,Kind,Parent\n'
+  const before = storyImport.parseFile('items.csv', noId + '確認,Story,\n返金,Story,\n確認,Story,')
+  const after = storyImport.parseFile('items.csv', noId + '追加,Story,\n確認,Story,\n返金,Story,\n確認,Story,')
+  assert.equal(new Set(before.map((item) => item.externalId)).size, before.length)
+  assert.deepEqual(after.slice(1), before)
+}
+
+// The extension frame sends one request even for a batch above the old 500-item split.
+{
+  const source = readFileSync(new URL('../apps/desktop/src/extensions/bootstrap.js', import.meta.url), 'utf8')
+  const calls = []
+  const window = {}
+  let receive
+  const parent = {
+    postMessage(message) {
+      calls.push(message)
+      queueMicrotask(() => receive({
+        source: parent,
+        data: { patchbay: 1, reply: message.id, error: 'Invalid last item' },
+      }))
+    },
+  }
+  runInNewContext(source, {
+    window, parent, setTimeout, clearTimeout,
+    addEventListener: (name, listener) => {
+      assert.equal(name, 'message')
+      receive = listener
+    },
+  })
+  const items = Array.from({ length: 502 }, (_, i) => ({ externalId: String(i), kind: 'story' }))
+  await assert.rejects(window.patchbay.stories.upsert(items), /Invalid last item/)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].method, 'stories.upsert')
+  assert.equal(calls[0].args[0], items)
+}

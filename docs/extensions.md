@@ -63,7 +63,7 @@ These terminals appear in the dock without changing the saved project. Place com
 `contributes.menus["component/actions"]`, `contributes.menus.toolbar` (listed under **Project**),
 `contributes.menus["stories/toolbar"]` (buttons in the story board header, in both the regular
 views and Chat), or `contributes.menus["stories/item"]` (buttons in a board item's editor; the
-command receives that item as its first argument).
+command receives that item as its first argument and requires `stories:read`).
 Optional `when` clauses support `&&`, `||`, `!`, parentheses, `==`, `!=`, `component.kind`, `component.id`,
 `component.hasTerminal('id')`, `component.hasFile('file')`, `view`, and, for `stories/item`,
 `story.kind`, `story.source` (the importing extension's id) and `story.imported`. Unknown or malformed
@@ -106,12 +106,12 @@ with the extension's handler. HTML may use inline styles and scripts, with no ne
 
 `stories.upsert(items)` imports tracker items. Each item has an `externalId`, matched within
 the importing extension, so importing again updates the same cards. Imports replace the title,
-description, acceptance criteria, parent and tracker link; status, components, order and
-worktree or Auto links stay Patchbay's. Epics come first, then features, then stories; a
-feature's `parent` must name an imported epic, and a story whose parent was never imported is
-unassigned. Each batch applies whole; the API sends large imports in parent-first batches under
-the 1 MiB message limit. Imported cards show their tracker id, and the editor links back to the
-tracker. An extension can only update items it imported.
+description, acceptance criteria and tracker link. A supplied parent updates the board grouping.
+Status, components, order, worktree links and Auto links stay Patchbay's. Epics come first, then
+features, then stories. A feature's `parent` must name an imported epic, and a story that names a
+parent that was never imported is unassigned. Each call applies all or none of its items, up to
+2,000 items and a 64 MiB serialized message. Imported cards show their tracker id, and the editor
+links back to the tracker. An extension can only update items it imported.
 
 Extension frames still have no network access. `http.fetch` goes through the native broker,
 which allows GET, POST and HEAD to the origins in the manifest's `network` list
@@ -123,7 +123,9 @@ after 25 seconds. Extensions can't set `Authorization`, cookie, host, proxy or f
 `secrets.prompt(name)` opens Patchbay's own credential dialog. The value goes straight to the
 OS keychain and is never returned to the extension. `http.fetch({ auth: { secret, scheme } })`
 asks the broker to add it as `Authorization` (`bearer`, `basic` with a `username`, or `raw`),
-only for the request's original origin.
+only for the request's original origin. The prompt shows the current server list. When the
+list changes, enter the credential again to approve it for that list. This also applies to
+credentials saved before server approval was recorded.
 
 ## Example and validation
 

@@ -1017,6 +1017,9 @@ export interface MenuContribution {
   command: string
   when?: string | null
 }
+export const STORY_ITEM_MENU = 'stories/item'
+export const STORIES_READ_PERMISSION = 'stories:read'
+
 export type ViewLocation = 'inspector' | 'dock' | 'rail'
 export interface ViewContribution {
   id: string

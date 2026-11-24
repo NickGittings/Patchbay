@@ -4575,7 +4575,13 @@ async fn extension_http_fetch(
     main_only(&window)?;
     let extensions = state.extensions.clone();
     blocking(move || {
-        let hosts = extensions.get().network_hosts(&extension_id).map_err(err)?;
+        let registry = extensions.get();
+        if request.auth.is_some() {
+            registry
+                .allowed(&extension_id, Some("secrets"))
+                .map_err(err)?;
+        }
+        let hosts = registry.network_hosts(&extension_id).map_err(err)?;
         patchbay_core::net::fetch(&extension_id, &hosts, &request).map_err(|e| format!("{e:#}"))
     })
     .await
@@ -4589,15 +4595,30 @@ async fn extension_secret_set(
     extension_id: String,
     name: String,
     value: String,
+    hosts: Vec<String>,
 ) -> CmdResult<()> {
     main_only(&window)?;
     let extensions = state.extensions.clone();
     blocking(move || {
-        extensions
-            .get()
+        let registry = extensions.get();
+        registry
             .allowed(&extension_id, Some("secrets"))
             .map_err(err)?;
-        patchbay_core::secrets::set(&extension_id, &name, &value).map_err(err)
+        let current = registry.network_hosts(&extension_id).map_err(err)?;
+        let displayed = hosts
+            .iter()
+            .map(|host| patchbay_core::net::HostPattern::parse(host))
+            .collect::<anyhow::Result<std::collections::BTreeSet<_>>>()
+            .map_err(err)?;
+        if current
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .ne(&displayed)
+        {
+            return Err("Approved servers changed. Reopen the credential prompt.".into());
+        }
+        patchbay_core::secrets::set(&extension_id, &name, &value, &current).map_err(err)
     })
     .await
 }
@@ -4612,11 +4633,12 @@ async fn extension_secret_has(
     main_only(&window)?;
     let extensions = state.extensions.clone();
     blocking(move || {
-        extensions
-            .get()
+        let registry = extensions.get();
+        registry
             .allowed(&extension_id, Some("secrets"))
             .map_err(err)?;
-        patchbay_core::secrets::has(&extension_id, &name).map_err(err)
+        let hosts = registry.network_hosts(&extension_id).map_err(err)?;
+        patchbay_core::secrets::has(&extension_id, &name, &hosts).map_err(err)
     })
     .await
 }

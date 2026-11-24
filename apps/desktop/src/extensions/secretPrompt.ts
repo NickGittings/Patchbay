@@ -6,6 +6,7 @@ export interface SecretRequest {
   extensionId: string
   extensionName: string
   name: string
+  hosts: string[]
   /** The extension's short label, such as "GitHub token". */
   label: string
   /** The extension's own explanation, shown as plain text. */

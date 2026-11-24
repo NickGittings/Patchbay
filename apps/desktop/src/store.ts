@@ -59,6 +59,8 @@ import {
   DEFAULT_NOTIFICATIONS,
   DEFAULT_USAGE,
   TASK_ROOT_SCOPE,
+  STORY_ITEM_MENU,
+  STORIES_READ_PERMISSION,
   isReviewAgentScope,
   showsInDock,
   sessionId,
@@ -814,8 +816,11 @@ const createState: StateCreator<State> = (set, get) => ({
     const active = extensions.extensions.filter((e) => e.enabled && !e.errors.length)
     const menus: Record<string, MenuContribution[]> = {}
     for (const e of active)
-      for (const [slot, entries] of Object.entries(e.manifest.contributes.menus))
+      for (const [slot, entries] of Object.entries(e.manifest.contributes.menus)) {
+        if (slot === STORY_ITEM_MENU && !e.manifest.permissions.includes(STORIES_READ_PERMISSION))
+          continue
         menus[slot] = [...(menus[slot] ?? []), ...entries]
+      }
     set({
       extensions,
       commands: active.flatMap((e) => e.manifest.contributes.commands),

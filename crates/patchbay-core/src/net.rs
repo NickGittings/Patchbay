@@ -32,7 +32,7 @@ const FORBIDDEN_HEADERS: &[&str] = &[
 /// An origin an extension may reach, from its manifest's `network` list or the user's
 /// approval: `https://host[:port]`, optionally `https://*.domain` for its subdomains.
 /// Plain `http` is allowed only for loopback hosts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct HostPattern {
     scheme: String,
     host: String,
@@ -213,9 +213,13 @@ fn check_request(request: &HttpRequest) -> Result<()> {
     Ok(())
 }
 
-fn authorization(extension: &str, auth: &HttpAuth) -> Result<String> {
-    let secret = secrets::get(extension, &auth.secret)?
-        .with_context(|| format!("No {} credential is saved yet", auth.secret))?;
+fn authorization(extension: &str, allowed: &[HostPattern], auth: &HttpAuth) -> Result<String> {
+    let secret = secrets::get(extension, &auth.secret, allowed)?.with_context(|| {
+        format!(
+            "Save the {} credential for the extension's current servers",
+            auth.secret
+        )
+    })?;
     Ok(match auth.scheme {
         AuthScheme::Bearer => format!("Bearer {secret}"),
         AuthScheme::Raw => secret,
@@ -267,7 +271,7 @@ pub fn fetch(
     let authorization = request
         .auth
         .as_ref()
-        .map(|auth| authorization(extension, auth))
+        .map(|auth| authorization(extension, allowed, auth))
         .transpose()?;
     let agent = agent();
     let mut method = request.method.clone();

@@ -12,7 +12,7 @@ function SecretForm({ request }: { request: PendingSecret }) {
     setBusy(true)
     setError(null)
     try {
-      await extensionSecretSet(request.extensionId, request.name, value)
+      await extensionSecretSet(request.extensionId, request.name, value, request.hosts)
       settleSecret(request.id, true)
     } catch (e) {
       setError(String(e))
@@ -45,8 +45,8 @@ function SecretForm({ request }: { request: PendingSecret }) {
       >
         {request.description && <p>{request.description}</p>}
         <p className="hint">
-          Patchbay sends this only with the extension&apos;s requests to its approved servers. The
-          extension never reads it.
+          Approve this credential for requests to {request.hosts.join(', ')}. Changes to these
+          servers require you to enter the credential again.
         </p>
         <label>
           {request.label}

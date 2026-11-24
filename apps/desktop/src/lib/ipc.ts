@@ -607,8 +607,12 @@ export interface ExtensionHttpResponse {
 }
 export const extensionHttpFetch = (extensionId: string, request: ExtensionHttpRequest) =>
   invoke<ExtensionHttpResponse>('extension_http_fetch', { extensionId, request })
-export const extensionSecretSet = (extensionId: string, name: string, value: string) =>
-  invoke<void>('extension_secret_set', { extensionId, name, value })
+export const extensionSecretSet = (
+  extensionId: string,
+  name: string,
+  value: string,
+  hosts: string[],
+) => invoke<void>('extension_secret_set', { extensionId, name, value, hosts })
 export const extensionSecretHas = (extensionId: string, name: string) =>
   invoke<boolean>('extension_secret_has', { extensionId, name })
 export const extensionSecretDelete = (extensionId: string, name: string) =>

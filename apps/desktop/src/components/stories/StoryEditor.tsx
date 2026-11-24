@@ -1,7 +1,13 @@
 import { useState } from 'react'
 import { projectStateOf, useStore } from '../../store'
 import { autoWorkspace } from '../../lib/autoState'
-import type { Story, StoryDraft, StoryStatus, StoryPatch } from '../../types'
+import {
+  STORY_ITEM_MENU,
+  type Story,
+  type StoryDraft,
+  type StoryStatus,
+  type StoryPatch,
+} from '../../types'
 import {
   autoStory,
   planStory,
@@ -137,7 +143,7 @@ export default function StoryEditor({
         <div className="story-source" role="group" aria-label="Tracker source">
           <p className="story-hint">
             Imported from {sourceName(item.source, extensions)}. Importing again replaces the title,
-            description, criteria and parent; status, components and worktree links stay here.
+            description and criteria. A tracker parent updates the grouping when supplied.
           </p>
           <div className="row">
             {item.source.url && (
@@ -150,13 +156,13 @@ export default function StoryEditor({
                 Open in tracker ↗
               </button>
             )}
-            <ExtensionMenu slot="stories/item" story={item} args={[item]} />
+            <ExtensionMenu slot={STORY_ITEM_MENU} story={item} args={[item]} />
           </div>
         </div>
       )}
       {item && !item.source && (
         <div className="story-source-actions row">
-          <ExtensionMenu slot="stories/item" story={item} args={[item]} />
+          <ExtensionMenu slot={STORY_ITEM_MENU} story={item} args={[item]} />
         </div>
       )}
       <form

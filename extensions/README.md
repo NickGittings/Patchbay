@@ -42,8 +42,11 @@ Hosts, commands, views, subscriptions, badges and delayed results retain their o
 
 Types other than epic and feature become stories. A story directly under an epic goes under a
 feature named after that epic, and a feature without an epic goes under an "Imported" epic.
-Items without an id are identified by their titles, so importing the same file again updates
-them. Fixtures are in `story-import/fixture`.
+CSV rows without an ID use their kind, parent and title, so inserting an unrelated row preserves
+their identities. For rows that share all three, the importer counts occurrences within that group.
+Include explicit IDs when you want edits to those fields to update the same cards. CSV rows
+previously imported with row-number IDs are matched by kind and title when the match is
+unambiguous. Supply the old ID explicitly for ambiguous rows. Fixtures are in `story-import/fixture`.
 
 ## GitHub Issues and Linear
 

@@ -3,16 +3,11 @@
 let pb;
 let disposables = [];
 
-const KINDS = { epic: "epic", feature: "feature" };
+const KINDS = new Map([["epic", "epic"], ["feature", "feature"]]);
+const encoder = new TextEncoder();
 /** Tracker item types become board kinds; anything else (story, task, bug, PBI…) is a story. */
 export function kindOf(value) {
-  return (
-    KINDS[
-      String(value ?? "")
-        .trim()
-        .toLowerCase()
-    ] ?? "story"
-  );
+  return KINDS.get(String(value ?? "").trim().toLowerCase()) ?? "story";
 }
 const slug = (value) =>
   String(value)
@@ -20,6 +15,26 @@ const slug = (value) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 60) || "item";
+function hash(value) {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of encoder.encode(value))
+    hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);
+  return hash.toString(16).padStart(16, "0");
+}
+
+/** Reserve generated IDs without colliding with other items or explicit tracker IDs. */
+function idAllocator(reserved = []) {
+  const used = new Set(reserved);
+  return (preferred) => {
+    const base = encoder.encode(preferred).length <= 240
+      ? preferred
+      : `file:${hash(preferred)}`;
+    let id = base;
+    for (let suffix = 2; used.has(id); suffix++) id = `${base}~${suffix}`;
+    used.add(id);
+    return id;
+  };
+}
 /** `- [ ] criterion` lines (or plain lines when `plain`) as acceptance criteria. */
 export function criteria(text, plain = false) {
   if (Array.isArray(text)) return text.map(String).filter((c) => c.trim());
@@ -41,29 +56,32 @@ export function criteria(text, plain = false) {
 export function normalize(items, source = "import") {
   const byId = new Map(items.map((item) => [item.externalId, item]));
   const out = [...items];
-  const added = new Set();
-  const add = (item) => {
-    if (added.has(item.externalId) || byId.has(item.externalId)) return;
-    added.add(item.externalId);
-    out.push(item);
-  };
-  for (const item of out.slice()) {
-    const parent = item.parent ? byId.get(item.parent) : undefined;
+  const allocate = idAllocator(byId.keys());
+  const features = new Map();
+  let importedEpic;
+  for (const item of items) {
+    const parent = byId.get(item.parent);
     if (item.kind === "story" && parent?.kind === "epic") {
-      const feature = `${parent.externalId}/feature`;
-      add({
-        externalId: feature,
-        kind: "feature",
-        title: parent.title,
-        parent: parent.externalId,
-      });
+      let feature = features.get(parent.externalId);
+      if (!feature) {
+        feature = allocate(`${parent.externalId}/feature`);
+        features.set(parent.externalId, feature);
+        out.push({
+          externalId: feature,
+          kind: "feature",
+          title: parent.title,
+          parent: parent.externalId,
+        });
+      }
       item.parent = feature;
-    } else if (item.kind === "story" && parent?.kind === "story") {
+    } else if (item.kind === "story" && parent?.kind !== "feature") {
       item.parent = null;
-    } else if (item.kind === "feature" && !item.parent) {
-      const epic = `${source}:epic`;
-      add({ externalId: epic, kind: "epic", title: "Imported" });
-      item.parent = epic;
+    } else if (item.kind === "feature" && parent?.kind !== "epic") {
+      if (!importedEpic) {
+        importedEpic = allocate(`${source}:epic`);
+        out.push({ externalId: importedEpic, kind: "epic", title: "Imported" });
+      }
+      item.parent = importedEpic;
     } else if (item.kind === "epic") {
       item.parent = null;
     }
@@ -71,15 +89,19 @@ export function normalize(items, source = "import") {
   return out;
 }
 
+const explicitId = (raw) => raw.externalId ?? raw.id ?? raw.key;
+const titleOf = (raw) => String(raw.title ?? raw.summary ?? raw.name ?? "").trim();
+const childrenOf = (raw) => raw.children ?? raw.features ?? raw.stories ?? [];
+
 function item(raw, fallbackId) {
-  const title = String(raw.title ?? raw.summary ?? raw.name ?? "").trim();
+  const title = titleOf(raw);
   if (!title) return null;
   const url =
     typeof raw.url === "string" && /^https?:\/\//.test(raw.url)
       ? raw.url
       : null;
   return {
-    externalId: String(raw.externalId ?? raw.id ?? raw.key ?? fallbackId),
+    externalId: String(explicitId(raw) ?? fallbackId()),
     kind: kindOf(raw.kind ?? raw.type),
     title,
     parent: raw.parent == null || raw.parent === "" ? null : String(raw.parent),
@@ -101,19 +123,27 @@ export function parseJson(text) {
     : (data.items ?? data.epics ?? data.stories ?? []);
   if (!Array.isArray(roots))
     throw new Error('Expected an array of items or { "items": [...] }');
+  const reserved = [];
+  const reserve = (raw) => {
+    if (!raw || typeof raw !== "object" || !titleOf(raw)) return;
+    const id = explicitId(raw);
+    if (id != null) reserved.push(String(id));
+    for (const child of childrenOf(raw)) reserve(child);
+  };
+  roots.forEach(reserve);
+  const allocate = idAllocator(reserved);
   const out = [];
-  const walk = (raw, parent, path) => {
+  const walk = (raw, parent) => {
     if (!raw || typeof raw !== "object") return;
     const parsed = item(
       { ...raw, parent: raw.parent ?? parent },
-      `json:${path}/${slug(raw.title ?? raw.name ?? "")}`,
+      () => allocate(`json:${parent ?? ""}/${slug(titleOf(raw))}`),
     );
     if (!parsed) return;
     out.push(parsed);
-    for (const child of raw.children ?? raw.features ?? raw.stories ?? [])
-      walk(child, parsed.externalId, parsed.externalId);
+    for (const child of childrenOf(raw)) walk(child, parsed.externalId);
   };
-  roots.forEach((raw) => walk(raw, null, ""));
+  roots.forEach((raw) => walk(raw, null));
   return out;
 }
 
@@ -175,27 +205,36 @@ export function parseCsv(text) {
   const [header, ...rows] = csvRows(text.replace(/^﻿/, ""));
   if (!header) return [];
   const names = header.map((h) => h.trim().toLowerCase());
-  const column = (key) =>
-    COLUMNS[key].map((n) => names.indexOf(n)).find((i) => i >= 0) ?? -1;
-  const at = Object.fromEntries(
-    Object.keys(COLUMNS).map((key) => [key, column(key)]),
-  );
-  if (at.title < 0) throw new Error("The CSV needs a Title or Summary column");
-  return rows.flatMap((row, i) => {
-    const value = (key) => (at[key] >= 0 ? (row[at[key]] ?? "").trim() : "");
-    const parsed = item(
-      {
-        id: value("id") || undefined,
-        kind: value("kind"),
-        title: value("title"),
-        parent: value("parent") || null,
-        description: value("description"),
-        acceptance: criteria(value("acceptance"), true),
-        url: value("url"),
-      },
-      `csv:${slug(value("title"))}-${i + 1}`,
-    );
-    return parsed ? [parsed] : [];
+  const at = Object.fromEntries(Object.entries(COLUMNS).map(([key, columns]) => [
+    key, columns.map((name) => names.indexOf(name)).filter((i) => i >= 0),
+  ]));
+  if (!at.title.length) throw new Error("The CSV needs a Title or Summary column");
+  const values = (row, key) => at[key].map((i) => (row[i] ?? "").trim()).filter(Boolean);
+  const records = rows.map((row) => {
+    const value = (key) => values(row, key)[0] ?? "";
+    return {
+      ids: values(row, "id"),
+      kind: kindOf(value("kind")),
+      title: value("title"),
+      parent: value("parent") || null,
+      description: value("description"),
+      acceptance: value("acceptance"),
+      url: value("url"),
+    };
+  }).filter((row) => row.title);
+  const canonicalIds = new Set(records.flatMap((row) => row.ids.slice(0, 1)));
+  const aliases = new Map();
+  for (const row of records)
+    for (const alias of row.ids.slice(1))
+      if (!canonicalIds.has(alias))
+        aliases.set(alias, aliases.has(alias) && aliases.get(alias) !== row.ids[0] ? null : row.ids[0]);
+  const allocate = idAllocator(canonicalIds);
+  return records.map((row) => {
+    const parent = aliases.get(row.parent) ?? row.parent;
+    return item({ ...row, id: row.ids[0], parent }, () => {
+      const key = JSON.stringify([row.kind, parent, row.title]);
+      return allocate(`csv:${slug(row.title)}~${hash(key)}`);
+    });
   });
 }
 
@@ -206,6 +245,7 @@ export function parseCsv(text) {
 export function parseMarkdown(text) {
   const out = [];
   const stack = [];
+  const allocate = idAllocator();
   let current = null;
   const finish = () => {
     if (!current) return;
@@ -228,15 +268,20 @@ export function parseMarkdown(text) {
     stack.length = depth - 1;
     const parent = stack[depth - 2] ?? null;
     const title = heading[2].trim();
-    const externalId = `md:${[...stack.map((s) => s.slug), slug(title)].join("/")}`;
+    if (!title) {
+      current = null;
+      continue;
+    }
+    const path = parent ? `${parent.slice(3)}/` : "/".repeat(depth - 1);
+    const externalId = allocate(`md:${path}${slug(title)}`);
     const item = {
       externalId,
       kind,
       title,
-      parent: parent?.externalId ?? null,
+      parent,
       description: "",
     };
-    stack[depth - 1] = { slug: slug(title), externalId };
+    stack[depth - 1] = externalId;
     out.push(item);
     current = { item, lines: [] };
   }

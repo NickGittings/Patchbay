@@ -220,8 +220,8 @@ export interface Patchbay {
     /** The project's board (per-user, shared by its worktrees). */
     list(): Promise<Story[]>;
     /** Create or update this extension's imported items. Text fields follow the tracker;
-     * status, components, order and worktree links stay Patchbay's. Large imports are sent
-     * parent-first in batches, each applied whole. */
+     * an omitted parent keeps the board's grouping. Status, components, order and worktree links
+     * stay Patchbay's. Each call applies all or none of its items (up to 2,000 and 64 MiB). */
     upsert(items: ExternalStoryItem[]): Promise<StoryImportReport>;
     onDidChange(fn: (stories: Story[]) => void): Disposable;
   };
@@ -231,11 +231,12 @@ export interface Patchbay {
   http: { fetch(request: HttpRequest): Promise<HttpResponse> };
   /** Requires secrets. Values live in the OS keychain and are never returned to extensions. */
   secrets: {
-    /** Ask the person for a value in Patchbay's own dialog; true once it is saved. */
+    /** Ask the person for a value for the current network allowlist; true once it is saved. */
     prompt(
       name: string,
       options?: { label?: string; description?: string },
     ): Promise<boolean>;
+    /** True when a value was approved for the current network allowlist. */
     has(name: string): Promise<boolean>;
     delete(name: string): Promise<void>;
   };

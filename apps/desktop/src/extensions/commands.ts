@@ -1,5 +1,5 @@
 import { useStore } from '../store'
-import type { Story } from '../types'
+import { STORY_ITEM_MENU, type Story } from '../types'
 import { executeExtensionCommand } from './host'
 import { evaluateWhen } from './when'
 import { commandEnabled, useWhenContext } from './whenContext'
@@ -21,9 +21,15 @@ export function useExtensionCommands(
     if (!command || !commandEnabled(command, context)) return []
     return [{ id: entry.command, title: command.title }]
   })
-  const run = (id: string) =>
+  const run = (id: string) => {
+    if (
+      slot === STORY_ITEM_MENU &&
+      !useStore.getState().menus[slot]?.some((entry) => entry.command === id)
+    )
+      return
     void executeExtensionCommand(id, args, context.component?.id).catch((e) =>
       useStore.getState().setMessage(String(e), undefined, undefined, 'error'),
     )
+  }
   return { entries, run }
 }

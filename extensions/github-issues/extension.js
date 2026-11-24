@@ -12,7 +12,21 @@ const TOKEN = "token";
 const DEFAULT_API = "https://api.github.com";
 /** Most issues one import reads (10 pages of 100). */
 export const MAX_ISSUES = 1000;
-const DESCRIPTION_LIMIT = 60 * 1024;
+const TITLE_LIMIT = 500;
+const DESCRIPTION_LIMIT = 64 * 1024;
+const CRITERION_LIMIT = 2000;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+
+/** Fit the board's UTF-8 limits without splitting a code point. */
+function clip(text, limit) {
+  const bytes = encoder.encode(text);
+  if (bytes.length <= limit) return text;
+  const suffix = "…";
+  let end = limit - encoder.encode(suffix).length;
+  while ((bytes[end] & 0xc0) === 0x80) end--;
+  return decoder.decode(bytes.subarray(0, end)) + suffix;
+}
 
 const escape = (value) =>
   String(value).replace(
@@ -57,10 +71,9 @@ export function taskList(body) {
     .split(/\r?\n/)
     .map((line) => line.match(/^\s*[-*]\s+\[[ xX]\]\s+(.+)$/)?.[1]?.trim())
     .filter(Boolean)
-    .slice(0, 100);
+    .slice(0, 100)
+    .map((line) => clip(line, CRITERION_LIMIT));
 }
-const clip = (text, max) =>
-  text.length > max ? `${text.slice(0, max)}\n\n…` : text;
 
 /** Board items for a repository's issues (pull requests are skipped). */
 export function toItems(repo, issues, htmlBase = "https://github.com") {
@@ -69,7 +82,7 @@ export function toItems(repo, issues, htmlBase = "https://github.com") {
     {
       externalId: epic,
       kind: "epic",
-      title: repo,
+      title: clip(repo, TITLE_LIMIT),
       url: `${htmlBase}/${repo}`,
       description: "",
     },
@@ -85,9 +98,9 @@ export function toItems(repo, issues, htmlBase = "https://github.com") {
         milestones.set(parent, {
           externalId: parent,
           kind: "feature",
-          title: String(milestone.title || `Milestone ${milestone.number}`),
+          title: clip(String(milestone.title ?? "").trim() || `Milestone ${milestone.number}`, TITLE_LIMIT),
           parent: epic,
-          description: String(milestone.description ?? ""),
+          description: clip(String(milestone.description ?? ""), DESCRIPTION_LIMIT),
           url: milestone.html_url ?? null,
         });
     }
@@ -95,7 +108,7 @@ export function toItems(repo, issues, htmlBase = "https://github.com") {
     items.push({
       externalId: `${repo}#${issue.number}`,
       kind: "story",
-      title: String(issue.title || `Issue ${issue.number}`).slice(0, 500),
+      title: clip(String(issue.title ?? "").trim() || `Issue ${issue.number}`, TITLE_LIMIT),
       parent,
       description: clip(body, DESCRIPTION_LIMIT),
       acceptance: taskList(body),

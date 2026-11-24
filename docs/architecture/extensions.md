@@ -35,19 +35,25 @@
   it); the null-Origin rejection is defense in depth. Keep capability remote origins absent. Visible views use separate sandboxed, CSP-restricted frames.
 - Integrations: core `stories::upsert_external` imports `ExternalItem`s matched on
   `Story.source` (`extension`, `external_id`), parent-first, all or nothing, replacing only
-  tracker text. Core `net` holds `HostPattern` (manifest `network` plus the user's
+  tracker text and any supplied tracker parent. Core `net` holds `HostPattern` (manifest `network` plus the user's
   `approved_hosts` in `extensions.json`, through `Registry::network_hosts`) and `fetch`
   (`ureq`, platform roots, manual redirects re-checked against the allowlist, credentials only
   for the original origin, no cookies). Core `secrets` keeps values in the keychain under
-  `app.patchbay.extensions`; only `net::fetch` reads them. Adapter commands
+  `app.patchbay.extensions`, scoped to the canonical set of hosts the credential prompt showed.
+  The adapter checks the displayed set against the current registry when saving. A credential
+  saved for a different set or before host scoping needs to be entered again. Only `net::fetch`
+  receives the secret value. Adapter commands
   `extension_stories_list`/`_upsert`, `extension_file_pick`, `extension_http_fetch`,
   `extension_secret_set`/`_has`/`_delete`, `set_extension_hosts` and `story_source_open`
   ↔ `lib/ipc.ts`. `extension_secret_set` is called only by `SecretPromptHost`, never with an
   extension-supplied value. Host `apiTimeout` (mirrored in `bootstrap.js`) gives interactive
-  calls ten minutes and network calls 40 seconds. Rail views are utility panels
+  calls ten minutes and network calls 40 seconds. Commands from extensions with `stories:write`
+  have 15 minutes. `stories.upsert` sends one request with up to 2,000 items and a 64 MiB
+  message limit, and the board commits it in one transaction. Rail views are utility panels
   `ext:<viewId>` (`lib/rail.ts` `extensionPanel`); `WorkspaceRail` closes one whose view
   disappears. `stories/toolbar` and `stories/item` render in `StoryBoard`/`StoryEditor`,
-  shared by Chat and the regular views.
+  shared by Chat and the regular views. Only extensions with `stories:read` get
+  `stories/item` placements and the item argument.
 - `when.ts` parses declarative clauses without eval. `whenContext.ts` fetches filename sets through
   `list_dir`. Runtime extension terminals, badges, and rendered view HTML live only in UI state.
   Ad-hoc commands never mutate `patchbay.json`. Reload/disable/project switch disposes code hosts.

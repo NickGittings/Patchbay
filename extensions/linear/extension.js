@@ -12,7 +12,21 @@ const KEY = "apiKey";
 const ENDPOINT = "https://api.linear.app/graphql";
 /** Most issues one import reads (10 pages of 100). */
 export const MAX_ISSUES = 1000;
-const DESCRIPTION_LIMIT = 60 * 1024;
+const TITLE_LIMIT = 500;
+const DESCRIPTION_LIMIT = 64 * 1024;
+const CRITERION_LIMIT = 2000;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+
+/** Fit the board's UTF-8 limits without splitting a code point. */
+function clip(text, limit) {
+  const bytes = encoder.encode(text);
+  if (bytes.length <= limit) return text;
+  const suffix = "…";
+  let end = limit - encoder.encode(suffix).length;
+  while ((bytes[end] & 0xc0) === 0x80) end--;
+  return decoder.decode(bytes.subarray(0, end)) + suffix;
+}
 
 const escape = (value) =>
   String(value).replace(
@@ -48,10 +62,9 @@ export function checklist(text) {
     .split(/\r?\n/)
     .map((line) => line.match(/^\s*[-*]\s+\[[ xX]\]\s+(.+)$/)?.[1]?.trim())
     .filter(Boolean)
-    .slice(0, 100);
+    .slice(0, 100)
+    .map((line) => clip(line, CRITERION_LIMIT));
 }
-const clip = (text, max) =>
-  text.length > max ? `${text.slice(0, max)}\n\n…` : text;
 
 /** Board items for a team's issues. */
 export function toItems(team, issues) {
@@ -72,8 +85,8 @@ export function toItems(team, issues) {
             ? {
                 externalId: epic,
                 kind: "epic",
-                title: String(initiative.name),
-                description: String(initiative.description ?? ""),
+                title: clip(String(initiative.name ?? "").trim() || "Initiative", TITLE_LIMIT),
+                description: clip(String(initiative.description ?? ""), DESCRIPTION_LIMIT),
                 url: initiative.url ?? null,
               }
             : {
@@ -88,9 +101,9 @@ export function toItems(team, issues) {
         features.set(parent, {
           externalId: parent,
           kind: "feature",
-          title: String(project.name),
+          title: clip(String(project.name ?? "").trim() || "Project", TITLE_LIMIT),
           parent: epic,
-          description: String(project.description ?? ""),
+          description: clip(String(project.description ?? ""), DESCRIPTION_LIMIT),
           url: project.url ?? null,
         });
     }
@@ -98,7 +111,7 @@ export function toItems(team, issues) {
     stories.push({
       externalId: String(issue.identifier || issue.id),
       kind: "story",
-      title: String(issue.title || issue.identifier).slice(0, 500),
+      title: clip(String(issue.title ?? "").trim() || String(issue.identifier || issue.id), TITLE_LIMIT),
       parent,
       description: clip(description, DESCRIPTION_LIMIT),
       acceptance: checklist(description),
