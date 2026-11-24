@@ -73,6 +73,7 @@ pub fn resolve_destination(
                     destination: task.worktree.clone(),
                     destination_branch: destination_branch.into(),
                     heads: None,
+                    completed: false,
                 };
                 save_restoration(root, &record)?;
                 checked_tree(&git::worktrees(root), &task.worktree, "destination")?
@@ -135,6 +136,8 @@ struct Restoration {
     destination_branch: String,
     // Pinned before the first destructive step, retained for safe retries.
     heads: Option<(String, String)>,
+    #[serde(default)]
+    completed: bool,
 }
 
 const RESTORATION_PREFIX: &str = "merge-";
@@ -173,15 +176,14 @@ fn read_restoration(file: &Path) -> Result<Option<Restoration>> {
     }
 }
 
-// A partial cleanup can remove the destination before restoring the original checkout.
-// The saved request still pins the refs to verify, even when Git no longer lists that path.
+// After the original checkout switches branches, only a saved request can identify the merge.
 fn pending_restoration(
     root: &Path,
     source: &Worktree,
     source_branch: &str,
     destination_branch: &str,
 ) -> Result<Option<Restoration>> {
-    if !(source.main || source.current) {
+    if !(source.main || source.current) || source.branch.as_deref() != Some(destination_branch) {
         return Ok(None);
     }
     let entries = match std::fs::read_dir(crate::tasks::store_dir(root)?) {
@@ -197,6 +199,7 @@ fn pending_restoration(
         if name.starts_with(RESTORATION_PREFIX)
             && name.ends_with(RESTORATION_SUFFIX)
             && let Some(record) = read_restoration(&entry.path())?
+            && !record.completed
             && record.heads.is_some()
             && record.source == source.path
             && record.source_branch == source_branch
@@ -347,6 +350,11 @@ fn restore_original(project: &Project, request: &MergeRequest) -> Result<()> {
         git::run(git::git(root).args(["branch", "-d", "--", &request.source_branch])).context(
             "Original folder restored; retry cleanup to delete the merged feature branch",
         )?;
+    }
+    if !record.completed {
+        // Keep the exact request available for cleanup retries after an uncertain reply.
+        record.completed = true;
+        save_restoration(root, &record)?;
     }
     Ok(())
 }
@@ -1096,13 +1104,21 @@ mod tests {
                 MergeOutcome::AlreadyIntegrated
             );
             let branch = || branch_outcome(root, &request.source, "feature", "main");
-            assert_eq!(branch().unwrap(), MergeOutcome::AlreadyIntegrated);
+            assert_eq!(branch().unwrap(), MergeOutcome::Merged);
             if move_ref {
                 fs::write(root.join("file.txt"), "new change").unwrap();
                 git::run(git::git(root).args(["commit", "-qam", "changed feature"])).unwrap();
-                assert!(branch().unwrap_err().to_string().contains("during cleanup"));
+                assert_eq!(branch().unwrap(), MergeOutcome::NotMerged);
+                assert!(
+                    outcome(&f.project, &request)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("during cleanup")
+                );
                 assert!(cleanup(&f.project, &request).is_err());
             } else {
+                git::run(git::git(root).args(["switch", "main"])).unwrap();
+                assert_eq!(branch().unwrap(), MergeOutcome::AlreadyIntegrated);
                 cleanup(&f.project, &request).unwrap();
                 assert_eq!(
                     git::run(git::git(root).args(["branch", "--show-current"])).unwrap(),
@@ -1124,7 +1140,27 @@ mod tests {
         );
         assert!(!Path::new(&request.destination).exists());
         assert!(!git::branches(root).unwrap().contains(&"feature".into()));
+        assert!(restoration(root, &request).unwrap().unwrap().completed);
         cleanup(&f.project, &request).unwrap();
+    }
+
+    #[test]
+    fn branch_outcome_ignores_old_restorations_after_reusing_a_branch_name() {
+        let (f, request) = primary_request();
+        let root = Path::new(&f.project.root);
+        integrate(&request);
+        cleanup(&f.project, &request).unwrap();
+        // Older versions left completed records with pinned heads and no completion flag.
+        let mut legacy = restoration(root, &request).unwrap().unwrap();
+        legacy.completed = false;
+        save_restoration(root, &legacy).unwrap();
+        git::run(git::git(root).args(["switch", "-c", "feature"])).unwrap();
+        fs::write(root.join("file.txt"), "new work on feature").unwrap();
+        git::run(git::git(root).args(["commit", "-qam", "new work on feature"])).unwrap();
+        assert_eq!(
+            branch_outcome(root, &request.source, "feature", "main").unwrap(),
+            MergeOutcome::NotMerged
+        );
     }
 
     #[test]

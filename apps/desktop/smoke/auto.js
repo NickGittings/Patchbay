@@ -217,6 +217,20 @@
       )
       return start && !start.disabled
     })
+    const rounds = document.querySelector('.auto-content input[type="number"]')
+    const start = document.querySelector('.auto-content .auto-start')
+    const setRounds = (value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(rounds, value)
+      rounds.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const previousRounds = rounds.value
+    setRounds('')
+    await until('Start disabled while Fix rounds is empty', () => start.disabled)
+    rounds.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+    assert(rounds.value === '' && start.disabled, 'Leaving an empty Fix rounds enabled Start')
+    setRounds('0')
+    await until('Start enabled with zero Fix rounds', () => !start.disabled)
+    setRounds(previousRounds)
     assert(
       [...document.querySelectorAll('.auto-content select')].some(
         (s) => s.value === 'auto-fixture',
@@ -354,7 +368,7 @@
       goal: 'Finish the fixture task',
       effort: 'light',
       device: 'auto-fixture',
-      merge: { mode: 'ask', destinationBranch: '' },
+      merge: { mode: 'ask', destinationBranch: 'main' },
     })
     assert(folderRun()?.baseCommit === startHead, 'In-place run did not pin its Start commit')
     await until('in-place run to Done', () => {

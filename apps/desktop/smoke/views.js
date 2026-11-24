@@ -694,6 +694,34 @@
       'a stopped task counts as failed',
     )
 
+    click(viewButton('Navigation'))
+    state().select('unrelated')
+    const componentAgent = smoke.sessionId('unrelated', 'agent')
+    const escapedAgent = CSS.escape(componentAgent)
+    const componentTab = `.terminal-dock [data-dock-session="${escapedAgent}"]`
+    const dockedTab = await until('component agent dock tab', () => query(componentTab))
+    click(await until('Navigation Agents tab', agentsTab))
+    click(
+      await until('component agent Terminal button', () =>
+        query(`.agent-canvas [data-session="${escapedAgent}"] [aria-label^="View "]`),
+      ),
+    )
+    await until('existing component tab active', () => query(`${componentTab}.active`))
+    assert(query(componentTab) === dockedTab, 'Agents replaced the existing dock tab')
+    assert(
+      [...query('.terminal-dock .dock-actions').querySelectorAll('button')].some(
+        (b) => b.textContent === 'New conversation',
+      ),
+      'Agents removed the component terminal controls',
+    )
+    smoke.stopTerminal(componentAgent)
+    await until('agent exited while still pinned', () => !state().sessions[componentAgent]?.running)
+    click(await until('close agent terminal', () => query('[title="Close this agent terminal"]')))
+    await until('agent terminal closed', () => query('[title="Close this exited terminal"]'))
+    assert(state().dockKept.includes(componentAgent), 'Closing the agent removed its pinned tab')
+    assert(query(componentTab) === dockedTab, 'Closing the agent removed its dock tab')
+    click(viewButton('Build'))
+
     const scopeBefore = [...state().highlighted]
     const plansBefore = { ...state().planStartedWith }
     state().loadProject(project)
@@ -850,7 +878,7 @@
     state().setActiveSession(null)
     smoke.store.setState({ inspector: null })
     await smoke.report(
-      'PASS views: navigation actions, inspector files, component search, changes handoff, scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity, multi-component implementation, peers',
+      'PASS views: navigation actions, Agents canvas and dock, inspector files, component search, changes handoff, scope, context, restart, scrollback, shortcuts, implementation, changes, review, merge selection, status, workspace continuity, multi-component implementation, peers',
     )
   } catch (e) {
     await smoke.report(`FAIL views: ${e?.message ?? e} ${e?.stack ?? ''}`)

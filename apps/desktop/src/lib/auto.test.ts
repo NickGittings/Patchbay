@@ -1452,6 +1452,30 @@ test('stopping during merge preflight does not resolve a destination checkout', 
   })
 })
 
+test('stopping during destination resolution does not launch a merge agent', async () => {
+  load()
+  vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+  let finish!: (request: Awaited<ReturnType<typeof ipc.mergeDestinationResolve>>) => void
+  vi.mocked(ipc.mergeDestinationResolve).mockReturnValueOnce(
+    new Promise((resolve) => (finish = resolve)),
+  )
+  setRun({ stage: 'merge' })
+  await withFollower(async () => {
+    await flush()
+    expect(ipc.mergeDestinationResolve).toHaveBeenCalledOnce()
+    stopAuto('p', 't')
+    finish({
+      source: tree.path,
+      sourceBranch: 'feature',
+      destination: '/p/main',
+      destinationBranch: 'main',
+    })
+    await flush()
+    expect(autoRun('p', 't')?.status).toBe('stopped')
+    expect(jobs.startMerge).not.toHaveBeenCalled()
+  })
+})
+
 test('Auto recognizes merged work when the destination branch has no checkout', async () => {
   load()
   vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
@@ -1492,7 +1516,10 @@ test('the default branch in the project folder runs in place against its HEAD', 
   const preview = await autoSnapshot('p', null, run({ runId: '', merge: inPlaceSettings.merge }))
   expect(preview).toMatchObject({ inPlace: true, base: 'start' })
   vi.mocked(ipc.gitReview).mockResolvedValue({ changes: {}, affected: [] })
-  await startAuto('p', null, inPlaceSettings)
+  await startAuto('p', null, {
+    ...inPlaceSettings,
+    merge: { mode: 'ask', destinationBranch: 'main' },
+  })
   expect(autoRun('p', null)).toMatchObject({
     baseCommit: 'start',
     branch: 'main',
@@ -2162,6 +2189,30 @@ test('a waiting merge gate notices a hand merge into a branch without a checkout
     expect(jobs.startMerge).not.toHaveBeenCalled()
   })
 })
+
+test.each(['', 'deleted'])(
+  'the merge gate pauses for an unavailable destination %j',
+  async (destinationBranch) => {
+    load()
+    vi.mocked(ipc.gitWorktrees).mockResolvedValue([tree])
+    vi.mocked(ipc.mergeBranchOutcome).mockRejectedValue(new Error('fatal: invalid branch'))
+    setRun({
+      stage: 'mergeGate',
+      status: 'waitingOnYou',
+      merge: { mode: 'ask', destinationBranch },
+    })
+    await withFollower(async () => {
+      await flush()
+      expect(autoRun('p', 't')).toMatchObject({
+        stage: 'mergeGate',
+        status: 'paused',
+        pauseKind: 'needsUser',
+        reason: 'Choose a different local destination branch',
+      })
+      expect(ipc.mergeBranchOutcome).not.toHaveBeenCalled()
+    })
+  },
+)
 
 test.each(['validate', 'mergeGate', 'done'] as const)(
   '%s refuses to start without an agent preset before reading Git',

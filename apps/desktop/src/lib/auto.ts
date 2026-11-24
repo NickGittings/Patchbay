@@ -882,14 +882,14 @@ export async function startAuto(projectId: string, task: string | null, settings
     }
     const snapshot = await autoSnapshot(projectId, task, run, true)
     const { source, worktrees, branches } = snapshot
-    if (run.merge.destinationBranch)
-      assertMergeDestination(run.merge.destinationBranch, source, branches)
     if (snapshot.inPlace) {
       if (settings.stage === 'merge' || settings.stage === 'mergeGate')
         throw new Error('Auto runs in place here, with no merge; choose another starting stage')
       run.baseCommit = snapshot.base
       run.merge = IN_PLACE_MERGE
-    } else if (!run.merge.destinationBranch) {
+    } else if (run.merge.destinationBranch) {
+      assertMergeDestination(run.merge.destinationBranch, source, branches)
+    } else {
       run.merge = {
         ...run.merge,
         destinationBranch: defaultMergeDestination(source, worktrees, branches),
@@ -1975,9 +1975,12 @@ async function approvalOutcome(
   if (controller.gateRequest?.key !== key) {
     const worktrees = await gitWorktrees(projectId)
     const { source } = await sourceWorktree(projectId, task, worktrees, run.branch)
-    const request = checkedOutMergeRequest({ source, worktrees }, run.merge.destinationBranch)
-    if (!request)
-      return mergeBranchOutcome(projectId, source.path, source.branch, run.merge.destinationBranch)
+    const { destinationBranch } = run.merge
+    const request = checkedOutMergeRequest({ source, worktrees }, destinationBranch)
+    if (!request) {
+      assertMergeDestination(destinationBranch, source, await gitBranches(projectId))
+      return mergeBranchOutcome(projectId, source.path, source.branch, destinationBranch)
+    }
     controller.gateRequest = { key, request }
   }
   return mergeOutcome(project, controller.gateRequest.request)
@@ -2098,6 +2101,7 @@ async function drive(projectId: string, task: string | null) {
         // Resolve worktrees again after a missing checkout or branch switch, and show the
         // failure beside the wait's own reason while retrying for temporary Git errors.
         controller.gateRequest = undefined
+        if (e instanceof AutoConfigurationError) throw e
         const latest = autoRun(projectId, task)
         const gateError = e instanceof Error ? e.message : String(e)
         if (
@@ -2831,9 +2835,9 @@ async function drive(projectId: string, task: string | null) {
           }
         }
         if (destination) checkOwner(destination)
-        // Resolution may create a checkout. Treat it as part of the in-flight launch once
-        // preflight passes, so Pause can track the launch and Stop can retire its late reply.
+        // Resolution may create a checkout and finish after Pause or Stop.
         const request = await resolveAutoMergeRequest(project, snapshot.source, run)
+        if (!live() || !useStore.getState().serviceConnected || !driveable(projectId, task)) return
         checkOwner(
           worktrees.find((w) => w.path === request.destination) ?? { path: request.destination },
         )

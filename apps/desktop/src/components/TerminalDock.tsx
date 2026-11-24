@@ -23,21 +23,23 @@ export default function TerminalDock({
   const revealed = useStore((s) => s.dockReveal)
   const extensionViews = useExtensionViews('dock', revealed)
   const dockTabs = useDockTabs()
-  // Agent cards can open any recorded session, including agents launched in another view.
-  const tabs = agentTerminal
+  // Keep the normal dock tab when it already shows the requested session.
+  const extraAgent =
+    agentTerminal && !dockTabs.some((t) => t.sid === agentTerminal.id) ? agentTerminal : undefined
+  const tabs = extraAgent
     ? [
-        ...dockTabs.filter((t) => t.sid !== agentTerminal.id),
+        ...dockTabs,
         {
-          sid: agentTerminal.id,
-          componentId: agentTerminal.metadata.componentId,
+          sid: extraAgent.id,
+          componentId: extraAgent.metadata.componentId,
           terminal: {
-            id: agentTerminal.metadata.terminalId,
-            name: agentTerminal.metadata.name,
-            kind: agentTerminal.metadata.kind,
-            command: agentTerminal.spec.command,
+            id: extraAgent.metadata.terminalId,
+            name: extraAgent.metadata.name,
+            kind: extraAgent.metadata.kind,
+            command: extraAgent.spec.command,
           },
-          label: agentTerminal.metadata.name,
-          task: agentTerminal.metadata.task ?? null,
+          label: extraAgent.metadata.name,
+          task: extraAgent.metadata.task ?? null,
         },
       ]
     : dockTabs
@@ -47,7 +49,7 @@ export default function TerminalDock({
   const setActiveSession = useStore((s) => s.setActiveSession)
   const dropFromDock = useStore((s) => s.dropFromDock)
   const active = tabs.find((t) => t.sid === activeSession) ?? tabs[0] ?? null
-  const openedAgent = !!active && active.sid === agentTerminal?.id
+  const openedAgent = !!active && active.sid === extraAgent?.id
   const session = active ? sessions[active.sid] : undefined
   // With no terminal to show, show an extension's view rather than an empty terminal.
   const view = extensionViews.selected ?? (active ? null : (extensionViews.views[0]?.id ?? null))
@@ -117,10 +119,14 @@ export default function TerminalDock({
             {(openedAgent || !session?.running) && (
               <button
                 className="dock-close"
-                title={openedAgent ? 'Close this agent terminal' : 'Close this exited terminal'}
+                title={
+                  active.sid === agentTerminal?.id
+                    ? 'Close this agent terminal'
+                    : 'Close this exited terminal'
+                }
                 onClick={() => {
-                  dropFromDock(active.sid)
-                  if (openedAgent) onCloseAgent()
+                  if (active.sid === agentTerminal?.id) onCloseAgent()
+                  else dropFromDock(active.sid)
                 }}
               >
                 Close

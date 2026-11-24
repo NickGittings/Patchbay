@@ -8,7 +8,7 @@ import { profileHookProvider } from './agentProfiles'
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
-import { defaultAutoEffort } from './autoSettings'
+import { autoOverrides, defaultAutoEffort } from './autoSettings'
 import {
   LEAD_RECIPIENT,
   type Project,
@@ -734,10 +734,11 @@ async function driveLeadRequests(team: ChatTeam) {
             ? { goal: stories!.storyGoal(story, projectStateOf(team.projectId)?.stories ?? []) }
             : {}),
           device,
-        }
+        } as import('./auto').AutoSettings
         if (settings.merge.mode !== 'ask')
           throw new Error('Lead-started Auto requires merge approval')
-        await auto.startAuto(team.projectId, team.task, settings as import('./auto').AutoSettings)
+        settings.overrides = autoOverrides(state.simpleMode, settings.overrides)
+        await auto.startAuto(team.projectId, team.task, settings)
         // Linked once the run started, as the Auto panel does.
         if (story) await stories!.linkAutoStory(team.projectId, team.task, story.id)
       } else if (request.action === 'pauseAuto') auto.pauseAuto(team.projectId, team.task)

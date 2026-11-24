@@ -13,3 +13,8 @@ Cleanup can restore the original checkout to the destination branch when Patchba
 Branch actions and restoration share `git::owning_worktree`, which assigns sessions to their deepest registered worktree even if a component's launch directory was removed. After confirmation and stopping writers, branch actions send `session::Request::BranchApply` (protocol 26): the service rechecks writers and applies the Git mutation under its launch operation lock, returning `NeedsStop` if a new writer appeared. Cleanup dialogs offer Retry validation after a failed preview, so clearing a dirty destination does not require dismissing the pending cleanup.
 
 Merge cleanup uses `session::Request::MergeCleanup` (protocol 27) after stopping affected sessions. Under the same launch lock, the service validates cleanup again, refuses any new or still-stopping affected writer, and performs removal, restoration and branch deletion. Stops and graph-action cancellation happen before taking this lock; cleanup metadata retirement remains in the desktop adapter after the mutation.
+
+Successful restoration marks its ownership record complete. The exact cleanup request can still be
+retried, while branch-only status checks use live Git state when the source branch is checked out.
+After an interrupted restoration has already switched the original folder to the destination
+branch, branch-only status can use the pending record to verify the pinned refs.

@@ -10,7 +10,6 @@ import {
   type AgentRole,
   type AutoRun,
   type AutoStage,
-  type EffortSettings,
   type Severity,
 } from '../../types'
 import {
@@ -30,7 +29,7 @@ import {
 } from '../../lib/auto'
 import { ROLE_LABELS, roleDevice, roleDevices } from '../../lib/agentRoles'
 import { agentDevices } from '../../lib/plan'
-import { defaultAutoEffort, integrated, MAX_ROUNDS } from '../../lib/autoSettings'
+import { autoOverrides, defaultAutoEffort, integrated, MAX_ROUNDS } from '../../lib/autoSettings'
 import { defaultMergeDestination, mergeDestinations } from '../../lib/reviewAgents'
 import { SEVERITIES } from '../../types'
 import {
@@ -264,12 +263,7 @@ export default function AutoDialog({
   const merge: AutoRun['merge'] = inPlaceSnapshot
     ? IN_PLACE_MERGE
     : { mode, destinationBranch: destination, cleanup: cleanupChoice }
-  // Simple mode keeps Light's severity and validation; only the round count is the user's.
-  const runOverrides: Partial<EffortSettings> = simple
-    ? overrides.maxRounds === undefined
-      ? {}
-      : { maxRounds: overrides.maxRounds }
-    : overrides
+  const runOverrides = autoOverrides(simple, overrides)
   const settings = { ...EFFORT[effort], ...runOverrides }
   const decision =
     snapshot &&
@@ -349,7 +343,6 @@ export default function AutoDialog({
               min={0}
               max={MAX_ROUNDS}
               value={roundsEmpty ? '' : settings.maxRounds}
-              onBlur={() => setRoundsEmpty(false)}
               onChange={(e) => {
                 const rounds = e.target.valueAsNumber
                 setRoundsEmpty(!Number.isFinite(rounds))
@@ -522,6 +515,7 @@ export default function AutoDialog({
         disabled={
           loading ||
           starting ||
+          roundsEmpty ||
           !integration ||
           (!inPlaceSnapshot && !destinations.some(({ branch }) => branch === destination)) ||
           !goal.trim() ||

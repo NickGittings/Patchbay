@@ -8,9 +8,10 @@ Auto launch controls in Full and Simple mode expose two independent, default-off
 while another worktree is selected as long as their project remains open. Their briefing tells
 agents to make reasonable decisions, resolve routine problems and save required artifacts while
 preserving command permissions. Full mode uses Standard effort with Advanced overrides. Simple mode
-uses Light effort with a configurable fix budget. Clearing Fix rounds while editing keeps the last
-valid value. Both modes can select either merge setting. A Chat lead's `startAuto` uses the same
-mode default unless the request explicitly sets an effort.
+uses Light effort and applies only the fix budget override, including when a Chat lead inherits
+settings from the previous run. Clearing Fix rounds disables Start until the field has a value.
+Both modes can select either merge setting. A Chat lead's `startAuto` uses the same mode default
+unless the request explicitly sets an effort.
 
 The existing controller serializes autonomous recovery with launching and scheduling. It recovers
 missing plans, unreadable review artifacts, incomplete stages and interrupted owned sessions.
@@ -39,13 +40,15 @@ With automatic merge disabled, execution waits at Ready to merge for approval.
 
 Auto offers every other local branch as a merge destination. The dialog and the Chat lead's
 `startAuto` request default to the open checkout's branch when eligible, then local `main` or
-`master`. Start rejects an explicit destination that is missing or is the source branch. When
+`master`. Runs that merge require an existing destination distinct from the source. When
 inferring the next stage of previously reviewed or merged work, Auto checks integration even if
 the destination has no checkout, so the dialog can leave an already integrated goal blank. The
-merge stage and approval wait use the same fallback to recognize a merge done by hand. Before
+merge stage and approval wait use the same fallback to recognize a merge done by hand. An approval
+wait with a missing destination pauses for the user to choose a local branch. Before
 resolving the destination checkout, Auto refreshes task ownership and checks that the run can
 still launch and no other Auto run holds the checkout. Resolution uses the same path as manual
-merges, and Auto publishes task changes once it returns (see [Worktrees](worktrees.md)).
+merges. Auto publishes task changes once it returns and rechecks that the run can launch before
+starting the agent (see [Worktrees](worktrees.md)).
 
 A worktree with no branch to review against, the project folder on its default (`main`/`master`)
 or only branch (not a detached HEAD), runs Auto in place: plan → implement → validate → review ⇄
@@ -104,7 +107,8 @@ Navigation offers **Map**, **Stories** and **Agents**. Agents uses the same canv
 including the active worktree's running agents, team assignments and shared planners from Plan.
 The map stays mounted with its viewport and selection and is inert while Agents is open.
 An agent card's Terminal button opens the exact recorded session in Navigation's dock without
-switching views or worktrees. Closing that dock tab leaves the agent running.
+switching views or worktrees. Existing dock tabs retain their controls. Closing an agent terminal
+opened from the canvas preserves its pinned dock tab if one exists and leaves running agents active.
 
 Review groups task/branch and comparison context with verdict and findings above its file list;
 the full worktree path is disclosed on demand. Review and component Changes use `PanelStatus`
