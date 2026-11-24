@@ -1,6 +1,9 @@
 import type { ChatStepperItem } from '../lib/simpleFlow'
 import './auto/auto.css'
 
+/** States whose note says why you're needed or why work halted: shown, not left to a hover. */
+const NOTE_SHOWN = ['ready', 'attention', 'stopped', 'failed']
+
 const STAGE_LABELS = {
   plan: 'Plan',
   build: 'Build',
@@ -11,6 +14,8 @@ const STAGE_LABELS = {
 /**
  * Plan → Build → Review → Merge, as Chat, the Auto panel and the Plan and Review views all show
  * it (`stageModel`). `restore` turns the stage waiting on you into a link back to its actions.
+ * A note shows beside its stage when the stage waits on you or halted; otherwise it is a tooltip,
+ * still read by screen readers.
  */
 export default function StageStrip({
   items,
@@ -25,36 +30,40 @@ export default function StageStrip({
 }) {
   return (
     <ol className={['auto-stepper', className].filter(Boolean).join(' ')} aria-label={label}>
-      {items.map((item) => (
-        <li
-          key={item.stage}
-          aria-current={
-            ['current', 'ready', 'attention', 'stopped', 'failed'].includes(item.state)
-              ? 'step'
-              : undefined
-          }
-          data-state={item.state}
-          title={item.note}
-        >
-          {restore && ['ready', 'attention'].includes(item.state) ? (
-            // A dismissed card comes back from the stage it was about.
-            <button
-              className="chat-stepper-restore"
-              aria-label={restore.label}
-              title={restore.label}
-              onClick={restore.onRestore}
-            >
-              {STAGE_LABELS[item.stage]}
-              {item.note && <small> · {item.note}</small>}
-            </button>
-          ) : (
-            <span>
-              {STAGE_LABELS[item.stage]}
-              {item.note && <small> · {item.note}</small>}
-            </span>
-          )}
-        </li>
-      ))}
+      {items.map((item) => {
+        const name = STAGE_LABELS[item.stage]
+        const note = item.note && (
+          <small className={NOTE_SHOWN.includes(item.state) ? undefined : 'stage-note-hidden'}>
+            {` · ${item.note}`}
+          </small>
+        )
+        return (
+          <li
+            key={item.stage}
+            aria-current={
+              ['current', 'ready', 'attention', 'stopped', 'failed'].includes(item.state)
+                ? 'step'
+                : undefined
+            }
+            data-state={item.state}
+            title={item.note}
+          >
+            {restore && ['ready', 'attention'].includes(item.state) ? (
+              // A dismissed card comes back from the stage it was about.
+              <button className="chat-stepper-restore" onClick={restore.onRestore}>
+                {name}
+                {note}
+                <small className="stage-note-hidden">{` · ${restore.label}`}</small>
+              </button>
+            ) : (
+              <span>
+                {name}
+                {note}
+              </span>
+            )}
+          </li>
+        )
+      })}
     </ol>
   )
 }

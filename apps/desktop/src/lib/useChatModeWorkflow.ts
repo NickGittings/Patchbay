@@ -21,7 +21,7 @@ import { roleDevice, roleDevices } from './agentRoles'
 import { simpleReviewRequest } from './simpleReview'
 import { launchBuild, launchFix, launchMerge, launchReview } from './launchStage'
 import { gitBranches, gitWorktrees } from './ipc'
-import { mergeNow, resumeAuto, pauseAuto, autoRun } from './auto'
+import { mergeNow, resumeAuto, autoRun } from './auto'
 import { controlTeam, resetLead, type ChatTeam } from './chatTeams'
 import { chatRecipient, chatHandoff } from './chat'
 import { unfinished } from './autoSettings'
@@ -343,6 +343,5 @@ export function useChatModeWorkflow({
     clearHistory,
     startFresh,
     openAuto,
-    pauseAuto: () => pauseAuto(projectId, task),
   }
 }

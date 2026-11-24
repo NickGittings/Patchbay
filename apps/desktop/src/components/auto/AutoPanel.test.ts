@@ -139,7 +139,9 @@ test('the run’s stages read as Chat’s, with fixing as a pass inside Review',
   mock.state.auto = { ...mock.state.auto!, stage: 'fix' }
   const html = renderToStaticMarkup(createElement(AutoPanel, { onIntegrations: () => {} }))
   expect(html).toContain('aria-label="Run stages"')
-  expect(html).toMatch(/data-state="current"[^>]*><span>Review<small> · Fixing/)
+  expect(html).toMatch(
+    /data-state="current" title="Fixing"><span>Review<small class="stage-note-hidden"> · Fixing<\/small><\/span>/,
+  )
   expect(html).not.toContain('Implement')
 })
 

@@ -491,23 +491,15 @@ export default function ChatMode({
         </div>
       )}
       {(state.step !== 'idle' || autoActive || autoHalt) && (
-        <div className="chat-progress">
-          <StageStrip
-            items={stepper}
-            className="chat-stepper"
-            restore={
-              cardDismissed && state.prompt?.actions.length
-                ? { label: `Show ${stepHeading} actions`, onRestore: restoreCard }
-                : undefined
-            }
-          />
-          {autoActive && <button onClick={workflow.openAuto}>Open Auto</button>}
-          {autoActive && (
-            <button className="chat-auto-pause" onClick={workflow.pauseAuto}>
-              Pause Auto
-            </button>
-          )}
-        </div>
+        <StageStrip
+          items={stepper}
+          className="chat-stepper"
+          restore={
+            cardDismissed && state.prompt?.actions.length
+              ? { label: `Show ${stepHeading} actions`, onRestore: restoreCard }
+              : undefined
+          }
+        />
       )}
       {team && (
         <ChatCoordinationAlerts key={team.id} team={team} openTerminal={openWorkerTerminal} />

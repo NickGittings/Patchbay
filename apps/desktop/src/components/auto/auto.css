@@ -247,6 +247,7 @@
   list-style: none;
 }
 .auto-stepper li {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -315,9 +316,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A stage's note beside its name: regular weight within the bold current stage. */
 .auto-stepper small {
   font-size: inherit;
   font-weight: 400;
+}
+/* A note left to the tooltip still reaches screen readers. */
+.auto-stepper .stage-note-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 /* The strip above the Plan and Review views' own controls. */
 .view-stepper {

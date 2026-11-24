@@ -218,7 +218,7 @@ export default function SimpleComposer({
     !recipient || autoActive
       ? {
           label: autoActive
-            ? 'Pause Auto to resume manual coding'
+            ? 'Pause work from the ••• menu to resume manual coding'
             : team
               ? 'Send to reconnect'
               : s.project && chatPreset(s.project.id, s.activeTask)
