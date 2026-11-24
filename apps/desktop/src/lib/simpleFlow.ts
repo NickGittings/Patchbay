@@ -9,6 +9,8 @@ import type { ChatTeam } from './chatTeams'
 import { savedStage } from './leadStageRun'
 import { reviewerBusy } from './review'
 import {
+  autoBeforeReset,
+  findingsBeforeReset,
   launchOrigin,
   workflowLog,
   recordStage,
@@ -97,7 +99,8 @@ export function flow(
             state?.state === 'ended' ||
             (state?.state === 'idle' && !!state.authoritative)))))
   const working = !!own && !ended
-  const auto = snapshot.auto
+  // A run that ended before the main checkout returned to main worked a finished branch.
+  const auto = autoBeforeReset(snapshot.auto, snapshot.simple) ? null : snapshot.auto
   // Auto's own launches are its run, not work that came after it.
   const manualAfterAuto =
     auto?.status === 'done' &&
@@ -248,7 +251,9 @@ export function flow(
     }
   }
   if (model.stage === 'review' && own && ended) {
-    const verdict = snapshot.findings?.verdict
+    const verdict = findingsBeforeReset(snapshot.simple, snapshot.findings)
+      ? undefined
+      : snapshot.findings?.verdict
     if (!verdict)
       return {
         step: 'reviewed',

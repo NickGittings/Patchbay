@@ -21,6 +21,7 @@ import {
 import type { AutoRun, ReviewFindings, SessionRecord, SessionState, WorkflowState } from '../types'
 import type { FlowAction } from './simpleFlow'
 import type { ChatTeam } from './chatTeams'
+import { stageModel } from './stageModel'
 
 type Workflow = NonNullable<ChatTeam['requests']>[number]
 const worktree = { projectId: 'p', task: 't', path: '/t', branch: 'feature' }
@@ -991,5 +992,87 @@ describe('lead-started stages', () => {
     // A step with nothing to offer has nothing to hold back.
     const working = flow({ ...built, sessions: { '@task': session('working') } })
     expect(forLead(working, true)).toBe(working)
+  })
+})
+
+describe('a return to main', () => {
+  const merged = () => {
+    const s = snapshot('@merge', 'ended')
+    s.sessions['@merge'].running = false
+    s.outcome = 'merged'
+    s.findings = { ...findings(false), startedMs: 15 }
+    s.plan = { text: 'Old feature plan', cut: false, savedMs: 25 }
+    s.auto = {
+      status: 'done',
+      stage: 'done',
+      log: [{ atMs: 20, text: 'Done' }],
+      merge: { destinationBranch: 'main' },
+    } as AutoRun
+    s.simple!.log.push({
+      id: 'merge',
+      kind: 'action',
+      action: 'merge',
+      stage: 'merge',
+      atMs: 12,
+      sessionId: '@merge',
+      generation: 1,
+    })
+    return s
+  }
+  test('without a reset, the finished branch still shows as merged', () => {
+    expect(flow(merged()).step).toBe('merged')
+  })
+  test('starts over at Plan: old merges, Auto runs, plans and verdicts no longer count', () => {
+    const s = merged()
+    s.simple!.workflowResetMs = 30
+    const model = thread(s, s.worktree)
+    expect(model.records).toEqual([])
+    expect(model.stage).toBe('plan')
+    expect(model.planReady).toBe(false)
+    expect(flow(s, model)).toMatchObject({ step: 'idle' })
+    expect(stageModel({ snapshot: s, model })).toMatchObject({ visible: false, autoCurrent: false })
+  })
+  test('an agent still running from the old branch keeps its stage', () => {
+    const s = merged()
+    s.sessions['@merge'] = session('working')
+    s.simple!.workflowResetMs = 30
+    expect(thread(s, s.worktree).records.map((r) => r.id)).toEqual(['@merge'])
+  })
+  test('a review running at the reset keeps the verdict it writes after it', () => {
+    const s = snapshot('@review', 'ended')
+    s.simple!.workflowResetMs = 30
+    s.findings = { ...findings(false), startedMs: 15, modifiedMs: 40 }
+    expect(flow(s).prompt?.text).toBe('2 issues found. Fix them?')
+    s.findings = { ...findings(false), startedMs: 15, modifiedMs: 20 }
+    expect(flow(s).prompt?.text).toBe('Review ended without a verdict. Review again?')
+  })
+  test('an agent that replied after the reset keeps its stage once it stops', () => {
+    const s = merged()
+    s.simple!.workflowResetMs = 30
+    s.sessions['@merge'] = {
+      ...s.sessions['@merge'],
+      replies: [{ sequence: 1, atMs: 40, turn: null, text: 'Merged' }],
+    }
+    expect(thread(s, s.worktree).records.map((r) => r.id)).toEqual(['@merge'])
+  })
+  test('work started after the reset counts again', () => {
+    const s = merged()
+    s.simple!.workflowResetMs = 30
+    s.records = [...s.records, { ...record('@plan'), snapshot: { startedMs: 35 } } as SessionRecord]
+    s.sessions['@plan'] = session('working')
+    s.simple!.log.push({
+      id: 'next',
+      kind: 'prompt',
+      stage: 'plan',
+      atMs: 35,
+      sessionId: '@plan',
+      generation: 1,
+      text: 'Next feature',
+      mentions: [],
+    })
+    expect(flow(s).step).toBe('planning')
+    s.sessions['@plan'] = { ...session('ended'), running: false }
+    s.plan = { text: 'New plan', cut: false, savedMs: 38 }
+    expect(flow(s).step).toBe('planReady')
   })
 })
