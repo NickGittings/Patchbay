@@ -135,6 +135,7 @@ mod tests {
                 manifest,
                 enabled: true,
                 errors: vec![],
+                approved_hosts: vec![],
             }],
             errors: vec![],
         };

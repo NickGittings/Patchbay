@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useStore } from '../store'
-export function useExtensionViews(location: 'inspector' | 'dock', reset?: unknown) {
+import type { ViewLocation } from '../types'
+export function useExtensionViews(location: ViewLocation, reset?: unknown) {
   const registry = useStore((s) => s.extensions)
   const views = registry.extensions
     .filter((e) => e.enabled && !e.errors.length)

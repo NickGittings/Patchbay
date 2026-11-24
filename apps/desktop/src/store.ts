@@ -59,6 +59,8 @@ import {
   DEFAULT_NOTIFICATIONS,
   DEFAULT_USAGE,
   TASK_ROOT_SCOPE,
+  STORY_ITEM_MENU,
+  STORIES_READ_PERMISSION,
   isReviewAgentScope,
   showsInDock,
   sessionId,
@@ -77,9 +79,10 @@ function sessionScope(s: Pick<State, 'runtimeTerminals' | 'sessionRecords'>, id:
   )
 }
 
-/** The rail's utility panels, one open at a time. */
+/** The rail's utility panels, one open at a time. `ext:<viewId>` is an extension's rail view. */
 export type UtilityPanel =
-  'project' | 'worktree' | 'auto' | 'activity' | 'stack' | 'sessions' | 'usage'
+  'project' | 'worktree' | 'auto' | 'activity' | 'stack' | 'sessions' | 'usage' | ExtensionPanel
+export type ExtensionPanel = `ext:${string}`
 export type FlowNode = Node<ComponentData, 'component'>
 export type FlowEdge = Edge<{ label?: string | null; detection?: DetectionProvenance }>
 /** The project and worktree whose Chat a reveal request is for. */
@@ -813,8 +816,11 @@ const createState: StateCreator<State> = (set, get) => ({
     const active = extensions.extensions.filter((e) => e.enabled && !e.errors.length)
     const menus: Record<string, MenuContribution[]> = {}
     for (const e of active)
-      for (const [slot, entries] of Object.entries(e.manifest.contributes.menus))
+      for (const [slot, entries] of Object.entries(e.manifest.contributes.menus)) {
+        if (slot === STORY_ITEM_MENU && !e.manifest.permissions.includes(STORIES_READ_PERMISSION))
+          continue
         menus[slot] = [...(menus[slot] ?? []), ...entries]
+      }
     set({
       extensions,
       commands: active.flatMap((e) => e.manifest.contributes.commands),

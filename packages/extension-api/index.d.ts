@@ -38,6 +38,76 @@ export interface Project {
     label?: string | null
   }[]
 }
+export type StoryKind = "epic" | "feature" | "story";
+export type StoryStatus =
+  "backlog" | "planned" | "building" | "reviewing" | "merging" | "done";
+/** A board item. `source` is set on items an extension imported. */
+export interface Story {
+  id: string;
+  kind: StoryKind;
+  parent: string | null;
+  title: string;
+  description: string;
+  acceptance: string[];
+  components: string[];
+  task: string | null;
+  status: StoryStatus;
+  createdMs: number;
+  order: number;
+  source?: {
+    extension: string;
+    externalId: string;
+    url?: string | null;
+  } | null;
+}
+/**
+ * One tracker item to import. Items are matched on `externalId` within the importing extension,
+ * so importing again updates them. `parent` names another item's `externalId`. Epics have no
+ * parent, features need an epic, and stories may belong to a feature (an unknown parent leaves
+ * a story unassigned).
+ */
+export interface ExternalStoryItem {
+  externalId: string;
+  kind: StoryKind;
+  title: string;
+  parent?: string | null;
+  description?: string;
+  acceptance?: string[];
+  /** An http(s) link back to the tracker item. */
+  url?: string | null;
+}
+export interface StoryImportReport {
+  created: number;
+  updated: number;
+  unchanged: number;
+}
+export interface HttpRequest {
+  url: string;
+  method?: "GET" | "POST" | "HEAD";
+  /** No Authorization, Cookie, Host, Proxy-* or framing headers. */
+  headers?: [string, string][];
+  /** POST only; at most 1 MiB. */
+  body?: string;
+  /**
+   * The broker adds `Authorization` from a keychain secret (see `secrets`), and only for the
+   * request's own origin: `bearer` sends `Bearer <secret>`, `basic` sends
+   * `Basic base64(<username>:<secret>)`, and `raw` sends the secret as is.
+   */
+  auth?: {
+    secret: string;
+    scheme: "bearer" | "basic" | "raw";
+    username?: string;
+  };
+}
+export interface HttpResponse {
+  status: number;
+  /** The final URL after allowed redirects. */
+  url: string;
+  /** Lower-cased names; `set-cookie` is dropped. */
+  headers: [string, string][];
+  /** At most 4 MiB of text. */
+  body: string;
+}
 export interface WebviewView {
   render(html: string): Promise<void>
   postMessage(message: unknown): Promise<void>
@@ -134,8 +204,42 @@ export interface Patchbay {
       repos: Record<string, string>
     }>
   }
-  /** Requires files:read; project-relative paths, canonical allowed-root checks, 32 KiB limit. */
-  files: { read(relPath: string): Promise<string> }
+  /** read requires files:read: project-relative paths, canonical allowed-root checks, 32 KiB.
+   * pick requires files:pick: the person chooses a file (at most 1 MiB) in a native dialog;
+   * null when they cancel. */
+  files: {
+    read(relPath: string): Promise<string>;
+    pick(options?: {
+      title?: string;
+      /** Extensions without dots, such as ['csv', 'json']. */
+      extensions?: string[];
+    }): Promise<{ name: string; text: string } | null>;
+  };
+  /** list and onDidChange require stories:read; upsert requires stories:write. */
+  stories: {
+    /** The project's board (per-user, shared by its worktrees). */
+    list(): Promise<Story[]>;
+    /** Create or update this extension's imported items. Text fields follow the tracker;
+     * an omitted parent keeps the board's grouping. Status, components, order and worktree links
+     * stay Patchbay's. Each call applies all or none of its items (up to 2,000 and 64 MiB). */
+    upsert(items: ExternalStoryItem[]): Promise<StoryImportReport>;
+    onDidChange(fn: (stories: Story[]) => void): Disposable;
+  };
+  /** Requires network. Only origins in the manifest's `network` list or approved by the person
+   * in Settings → Extensions, checked again on every redirect. HTTP errors resolve with their
+   * status; disallowed or failed requests reject. 25-second deadline. */
+  http: { fetch(request: HttpRequest): Promise<HttpResponse> };
+  /** Requires secrets. Values live in the OS keychain and are never returned to extensions. */
+  secrets: {
+    /** Ask the person for a value for the current network allowlist; true once it is saved. */
+    prompt(
+      name: string,
+      options?: { label?: string; description?: string },
+    ): Promise<boolean>;
+    /** True when a value was approved for the current network allowlist. */
+    has(name: string): Promise<boolean>;
+    delete(name: string): Promise<void>;
+  };
 }
 export declare const patchbay: Patchbay
 declare global {

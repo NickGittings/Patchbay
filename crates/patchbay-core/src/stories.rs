@@ -3,6 +3,7 @@ use crate::{context::ContextSection, git, tasks, workspace};
 use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     path::Path,
     sync::Mutex,
@@ -13,7 +14,7 @@ use std::{
 static LOCK: Mutex<()> = Mutex::new(());
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StoryKind {
     Epic,
@@ -65,6 +66,47 @@ pub struct Story {
     pub completed_head: Option<String>,
     pub created_ms: u64,
     pub order: u32,
+    /// The tracker item an extension imported this from. Re-importing updates its text;
+    /// workflow fields (status, worktree and run links, components, order) stay Patchbay's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<StorySource>,
+}
+
+/// Where an imported item came from, matched on `(extension, external_id)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorySource {
+    pub extension: String,
+    pub external_id: String,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// One tracker item an extension imports. `parent` names another item's `external_id`,
+/// in this batch or imported earlier by the same extension.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalItem {
+    pub external_id: String,
+    pub kind: StoryKind,
+    pub title: String,
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub acceptance: Vec<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// What an import changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportReport {
+    pub created: usize,
+    pub updated: usize,
+    pub unchanged: usize,
 }
 
 impl Story {
@@ -226,18 +268,37 @@ fn clean_acceptance(acceptance: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn now_ms() -> Result<u64> {
+    Ok(u64::try_from(
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+    )?)
+}
+
+fn new_id(created_ms: u64) -> String {
+    format!(
+        "s{created_ms:x}{:x}{:x}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn next_order(stories: &[Story]) -> u32 {
+    stories
+        .iter()
+        .map(|s| s.order)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
 /// Create a board item.
 /// # Errors
 /// Fails for an invalid title, parent, or store write.
 pub fn create(root: &Path, draft: StoryDraft) -> Result<Story> {
     modify(root, |stories| {
-        let created_ms = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
+        let created_ms = now_ms()?;
         let item = Story {
-            id: format!(
-                "s{created_ms:x}{:x}{:x}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ),
+            id: new_id(created_ms),
             kind: draft.kind,
             parent: draft.parent,
             title: draft.title.trim().into(),
@@ -251,16 +312,236 @@ pub fn create(root: &Path, draft: StoryDraft) -> Result<Story> {
             previous_status: None,
             completed_head: None,
             created_ms,
-            order: stories
-                .iter()
-                .map(|s| s.order)
-                .max()
-                .unwrap_or(0)
-                .saturating_add(1),
+            order: next_order(stories),
+            source: None,
         };
         validate(&item, stories)?;
         stories.push(item.clone());
         Ok(item)
+    })
+}
+
+/// Most items one import may carry.
+pub const IMPORT_LIMIT: usize = 2000;
+const EXTERNAL_ID_LIMIT: usize = 256;
+const TITLE_LIMIT: usize = 500;
+const DESCRIPTION_LIMIT: usize = 64 * 1024;
+const ACCEPTANCE_LIMIT: usize = 100;
+const CRITERION_LIMIT: usize = 2000;
+
+fn check_external(item: &ExternalItem) -> Result<()> {
+    let label = || format!("Imported item {:?}", item.external_id);
+    ensure!(
+        !item.external_id.is_empty()
+            && item.external_id.len() <= EXTERNAL_ID_LIMIT
+            && !item.external_id.chars().any(char::is_control),
+        "{}: needs an id of at most {EXTERNAL_ID_LIMIT} bytes without control characters",
+        label()
+    );
+    ensure!(
+        !item.title.trim().is_empty() && item.title.len() <= TITLE_LIMIT,
+        "{}: needs a title of at most {TITLE_LIMIT} bytes",
+        label()
+    );
+    ensure!(
+        item.description.len() <= DESCRIPTION_LIMIT,
+        "{}: description exceeds {} KiB",
+        label(),
+        DESCRIPTION_LIMIT / 1024
+    );
+    ensure!(
+        item.acceptance.len() <= ACCEPTANCE_LIMIT
+            && item.acceptance.iter().all(|a| a.len() <= CRITERION_LIMIT),
+        "{}: at most {ACCEPTANCE_LIMIT} acceptance criteria of {CRITERION_LIMIT} bytes each",
+        label()
+    );
+    if let Some(url) = &item.url {
+        crate::extensions::preview_url(url).with_context(label)?;
+    }
+    Ok(())
+}
+
+fn csv_fallback_slug(id: &str) -> Option<&str> {
+    let (slug, hash) = id.strip_prefix("csv:")?.split_once('~')?;
+    let hash = hash.split('~').next()?;
+    (hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(slug)
+}
+
+// The first file importer used csv:<slug>-<row number>. Adopt old IDs only when a
+// new CSV fallback ID and an existing card match unambiguously by kind and title.
+fn legacy_csv_ids(
+    extension: &str,
+    items: &[ExternalItem],
+    stories: &[Story],
+) -> HashMap<String, String> {
+    if extension != "patchbay.story-import" {
+        return HashMap::new();
+    }
+    let incoming: HashSet<&str> = items.iter().map(|item| item.external_id.as_str()).collect();
+    let existing: HashSet<&str> = stories
+        .iter()
+        .filter_map(|story| story.source.as_ref())
+        .filter(|source| source.extension == extension)
+        .map(|source| source.external_id.as_str())
+        .collect();
+    let mut counts = HashMap::new();
+    for item in items
+        .iter()
+        .filter(|item| csv_fallback_slug(&item.external_id).is_some())
+    {
+        *counts.entry((item.kind, item.title.trim())).or_insert(0) += 1;
+    }
+
+    items
+        .iter()
+        .filter_map(|item| {
+            let slug = csv_fallback_slug(&item.external_id)?;
+            let title = item.title.trim();
+            if counts[&(item.kind, title)] != 1 || existing.contains(item.external_id.as_str()) {
+                return None;
+            }
+            let mut candidates = stories.iter().filter_map(|story| {
+                let source = story
+                    .source
+                    .as_ref()
+                    .filter(|src| src.extension == extension)?;
+                if story.kind != item.kind
+                    || story.title != title
+                    || incoming.contains(source.external_id.as_str())
+                {
+                    return None;
+                }
+                let (old_slug, row) = source.external_id.strip_prefix("csv:")?.rsplit_once('-')?;
+                (old_slug == slug && row.parse::<usize>().is_ok_and(|row| row > 0))
+                    .then_some(&source.external_id)
+            });
+            let old = candidates.next()?;
+            candidates
+                .next()
+                .is_none()
+                .then(|| (item.external_id.clone(), old.clone()))
+        })
+        .collect()
+}
+
+/// Create or update items an extension imported, matched on their source. Epics come
+/// first, then features, then stories, so each batch may name its own parents. Imports
+/// replace text (title, description, acceptance, link) and leave workflow alone.
+/// An existing item's parent is kept when the tracker omits it.
+/// A story whose parent was never imported is unassigned; a feature's epic must exist.
+/// The whole batch applies or none of it does.
+/// # Errors
+/// Fails for an invalid item, a duplicate or changed-kind id, a missing epic, or store I/O.
+pub fn upsert_external(
+    root: &Path,
+    extension: &str,
+    items: Vec<ExternalItem>,
+) -> Result<ImportReport> {
+    ensure!(
+        items.len() <= IMPORT_LIMIT,
+        "An import may carry at most {IMPORT_LIMIT} items"
+    );
+    let mut seen = HashSet::new();
+    for item in &items {
+        check_external(item)?;
+        ensure!(
+            seen.insert(item.external_id.as_str()),
+            "Imported item {:?} appears twice",
+            item.external_id
+        );
+    }
+    let rank = |kind: StoryKind| match kind {
+        StoryKind::Epic => 0,
+        StoryKind::Feature => 1,
+        StoryKind::Story => 2,
+    };
+    let mut items = items;
+    items.sort_by_key(|item| rank(item.kind));
+    let from = |s: &Story, external_id: &str| {
+        s.source
+            .as_ref()
+            .is_some_and(|src| src.extension == extension && src.external_id == external_id)
+    };
+    modify(root, |stories| {
+        let previous_ids = legacy_csv_ids(extension, &items, stories);
+        let matches = |story: &Story, external_id: &str| {
+            from(story, external_id)
+                || previous_ids
+                    .get(external_id)
+                    .is_some_and(|old| from(story, old))
+        };
+        let created_ms = now_ms()?;
+        let mut report = ImportReport::default();
+        for item in items {
+            let parent = match &item.parent {
+                None => None,
+                Some(external) => {
+                    let found = stories
+                        .iter()
+                        .find(|s| matches(s, external))
+                        .map(|s| s.id.clone());
+                    ensure!(
+                        found.is_some() || item.kind == StoryKind::Story,
+                        "{:?} names parent {external:?}, which hasn't been imported",
+                        item.title
+                    );
+                    found
+                }
+            };
+            let source = Some(StorySource {
+                extension: extension.into(),
+                external_id: item.external_id.clone(),
+                url: item.url.clone(),
+            });
+            if let Some(index) = stories.iter().position(|s| matches(s, &item.external_id)) {
+                let existing = &stories[index];
+                ensure!(
+                    existing.kind == item.kind,
+                    "{:?} was imported as a {:?} and can't become a {:?}; delete it first",
+                    item.title,
+                    existing.kind,
+                    item.kind
+                );
+                let mut updated = existing.clone();
+                updated.title = item.title.trim().into();
+                updated.description = item.description;
+                updated.acceptance = clean_acceptance(item.acceptance);
+                if item.parent.is_some() {
+                    updated.parent = parent;
+                }
+                updated.source = source;
+                if updated == *existing {
+                    report.unchanged += 1;
+                    continue;
+                }
+                validate(&updated, stories)?;
+                stories[index] = updated;
+                report.updated += 1;
+            } else {
+                let created = Story {
+                    id: new_id(created_ms),
+                    kind: item.kind,
+                    parent,
+                    title: item.title.trim().into(),
+                    description: item.description,
+                    acceptance: clean_acceptance(item.acceptance),
+                    components: vec![],
+                    task: None,
+                    task_head: None,
+                    auto_run_id: None,
+                    status: StoryStatus::Backlog,
+                    previous_status: None,
+                    completed_head: None,
+                    created_ms,
+                    order: next_order(stories),
+                    source,
+                };
+                validate(&created, stories)?;
+                stories.push(created);
+                report.created += 1;
+            }
+        }
+        Ok(report)
     })
 }
 
@@ -585,13 +866,11 @@ pub fn section(stories: &[Story], id: &str) -> Result<ContextSection> {
         let _ = writeln!(body, "{}\n", ancestry.join(" → "));
     }
     fn append(body: &mut String, item: &Story, stories: &[Story], depth: usize) {
-        let _ = writeln!(
-            body,
-            "{} {}\n\n{}\n",
-            "#".repeat(depth + 3),
-            item.title,
-            item.description
-        );
+        let _ = writeln!(body, "{} {}\n", "#".repeat(depth + 3), item.title);
+        if let Some(url) = item.source.as_ref().and_then(|s| s.url.as_ref()) {
+            let _ = writeln!(body, "Tracker: {url}\n");
+        }
+        let _ = writeln!(body, "{}\n", item.description);
         for criterion in &item.acceptance {
             let _ = writeln!(body, "- [ ] {criterion}");
         }
@@ -646,6 +925,7 @@ mod tests {
             completed_head: None,
             created_ms,
             order,
+            source: None,
         }
     }
 
@@ -1335,6 +1615,253 @@ mod tests {
         remove(&root, &item.id, true).unwrap();
         assert!(planner_section(&root, Some(&item.id)).unwrap().is_none());
         assert!(planner_section(&root, None).unwrap().is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn repo() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("patchbay-stories-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("init")
+                .arg(&root)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        root
+    }
+
+    fn external(id: &str, kind: StoryKind, parent: Option<&str>, title: &str) -> ExternalItem {
+        ExternalItem {
+            external_id: id.into(),
+            kind,
+            title: title.into(),
+            parent: parent.map(Into::into),
+            description: format!("{title} body"),
+            acceptance: vec![" Works ".into(), String::new()],
+            url: Some(format!("https://tracker.example/{id}")),
+        }
+    }
+
+    #[test]
+    fn import_creates_hierarchy_then_updates_text_without_duplicating() {
+        let root = repo();
+        let local = create(&root, draft(StoryKind::Story, None, "Local")).unwrap();
+        // Children before parents: the import orders epics, features, then stories.
+        let batch = vec![
+            external("issue-1", StoryKind::Story, Some("milestone-1"), "Issue"),
+            external(
+                "issue-2",
+                StoryKind::Story,
+                Some("never-imported"),
+                "Orphan",
+            ),
+            external("milestone-1", StoryKind::Feature, Some("repo"), "Milestone"),
+            external("repo", StoryKind::Epic, None, "Repo"),
+        ];
+        let report = upsert_external(&root, "acme.tracker", batch.clone()).unwrap();
+        assert_eq!(
+            report,
+            ImportReport {
+                created: 4,
+                updated: 0,
+                unchanged: 0
+            }
+        );
+        let board = load(&root).unwrap();
+        let by = |id: &str| {
+            board
+                .iter()
+                .find(|s| s.source.as_ref().is_some_and(|src| src.external_id == id))
+                .unwrap()
+        };
+        assert_eq!(
+            by("issue-1").parent.as_deref(),
+            Some(by("milestone-1").id.as_str())
+        );
+        assert_eq!(
+            by("milestone-1").parent.as_deref(),
+            Some(by("repo").id.as_str())
+        );
+        assert_eq!(by("issue-2").parent, None);
+        assert_eq!(by("issue-1").acceptance, ["Works"]);
+        assert!(board.iter().any(|s| s.id == local.id && s.source.is_none()));
+
+        // Workflow edits survive a re-import; tracker text is replaced.
+        let issue = by("issue-1").id.clone();
+        update(
+            &root,
+            &issue,
+            StoryPatch {
+                title: Some("Edited locally".into()),
+                components: Some(vec!["api".into()]),
+                status: Some(StoryStatus::Building),
+                ..StoryPatch::default()
+            },
+        )
+        .unwrap();
+        let mut again = batch;
+        again[0].title = "Issue renamed".into();
+        let report = upsert_external(&root, "acme.tracker", again).unwrap();
+        assert_eq!(
+            report,
+            ImportReport {
+                created: 0,
+                updated: 1,
+                unchanged: 3
+            }
+        );
+        let board = load(&root).unwrap();
+        assert_eq!(board.len(), 5);
+        let item = board.iter().find(|s| s.id == issue).unwrap();
+        assert_eq!(item.title, "Issue renamed");
+        assert_eq!(item.components, ["api"]);
+        assert_eq!(item.status, StoryStatus::Building);
+        // Another extension's ids are its own.
+        upsert_external(
+            &root,
+            "other.tracker",
+            vec![external("issue-1", StoryKind::Story, None, "Other")],
+        )
+        .unwrap();
+        assert_eq!(load(&root).unwrap().len(), 6);
+        let section = section(&load(&root).unwrap(), &issue).unwrap().body;
+        assert!(section.contains("Tracker: https://tracker.example/issue-1"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reimport_keeps_local_parent_until_tracker_names_one() {
+        let root = repo();
+        let epic = create(&root, draft(StoryKind::Epic, None, "Local epic")).unwrap();
+        let feature = create(
+            &root,
+            draft(StoryKind::Feature, Some(&epic.id), "Local feature"),
+        )
+        .unwrap();
+        let issue = external("issue", StoryKind::Story, None, "Issue");
+        upsert_external(&root, "acme.tracker", vec![issue.clone()]).unwrap();
+        let id = load(&root)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.source.is_some())
+            .unwrap()
+            .id;
+        update(
+            &root,
+            &id,
+            StoryPatch {
+                parent: Some(feature.id.clone()),
+                ..StoryPatch::default()
+            },
+        )
+        .unwrap();
+        let report = upsert_external(&root, "acme.tracker", vec![issue.clone()]).unwrap();
+        assert_eq!(report.unchanged, 1);
+        assert_eq!(
+            load(&root)
+                .unwrap()
+                .into_iter()
+                .find(|s| s.id == id)
+                .unwrap()
+                .parent,
+            Some(feature.id)
+        );
+        let mut issue = issue;
+        issue.parent = Some("remote-feature".into());
+        upsert_external(
+            &root,
+            "acme.tracker",
+            vec![
+                issue,
+                external(
+                    "remote-feature",
+                    StoryKind::Feature,
+                    Some("remote-epic"),
+                    "Tracker feature",
+                ),
+                external("remote-epic", StoryKind::Epic, None, "Tracker epic"),
+            ],
+        )
+        .unwrap();
+        let board = load(&root).unwrap();
+        let issue = board.iter().find(|s| s.id == id).unwrap();
+        let parent = board
+            .iter()
+            .find(|s| Some(&s.id) == issue.parent.as_ref())
+            .unwrap();
+        assert_eq!(parent.title, "Tracker feature");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn csv_reimport_adopts_an_unambiguous_row_number_id() {
+        let root = repo();
+        let extension = "patchbay.story-import";
+        let old = external("csv:first-1", StoryKind::Story, None, "First");
+        upsert_external(&root, extension, vec![old]).unwrap();
+        let id = load(&root).unwrap().pop().unwrap().id;
+
+        let report = upsert_external(
+            &root,
+            extension,
+            vec![
+                external("csv:new~1234567890abcdef", StoryKind::Story, None, "New"),
+                external(
+                    "csv:first~1234567890abcdef",
+                    StoryKind::Story,
+                    None,
+                    "First",
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!((report.created, report.updated), (1, 1));
+        let board = load(&root).unwrap();
+        let first = board.iter().find(|story| story.title == "First").unwrap();
+        assert_eq!(first.id, id);
+        assert_eq!(
+            first.source.as_ref().unwrap().external_id,
+            "csv:first~1234567890abcdef"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn import_is_all_or_nothing() {
+        let root = repo();
+        let ok = external("ok", StoryKind::Epic, None, "Fine");
+        let mut no_title = external("blank", StoryKind::Story, None, " ");
+        no_title.title = " ".into();
+        let mut bad_url = external("url", StoryKind::Story, None, "Bad url");
+        bad_url.url = Some("file:///etc/passwd".into());
+        for bad in [
+            vec![ok.clone(), no_title],
+            vec![ok.clone(), bad_url],
+            vec![ok.clone(), ok.clone()],
+            vec![
+                ok.clone(),
+                external("f", StoryKind::Feature, Some("missing"), "No epic"),
+            ],
+            vec![
+                ok.clone(),
+                external("e", StoryKind::Epic, Some("ok"), "Nested epic"),
+            ],
+        ] {
+            assert!(upsert_external(&root, "acme.tracker", bad).is_err());
+        }
+        assert!(load(&root).unwrap().is_empty());
+        upsert_external(&root, "acme.tracker", vec![ok]).unwrap();
+        assert!(
+            upsert_external(
+                &root,
+                "acme.tracker",
+                vec![external("ok", StoryKind::Story, None, "Kind changed")]
+            )
+            .is_err()
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

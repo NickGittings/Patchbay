@@ -580,3 +580,12 @@ export async function completeAutoStories(projectId: string, task: string | null
       ),
     })
 }
+
+/** The display name of the extension an item was imported by, or its id once it's gone. */
+export function sourceName(
+  source: NonNullable<Story['source']>,
+  registry: { extensions: { id: string; manifest: { displayName?: string | null } }[] },
+) {
+  const extension = registry.extensions.find((e) => e.id === source.extension)
+  return extension?.manifest.displayName ?? source.extension
+}

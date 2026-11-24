@@ -26,6 +26,10 @@ const paths: Record<string, string> = {
   issues: 'm12 3 10 18H2Z M12 9v5 M12 17h.01',
   changes: 'M14 3H5v18h14V8Z M14 3v5h5 M8 12h8 M8 16h5',
   running: 'M3 4h18v16H3Z m4 4 4 4-4 4 M13 16h4',
+  extension:
+    'M10 4a2 2 0 1 1 4 0v2h4v4h2a2 2 0 1 1 0 4h-2v6h-5v-2a2 2 0 1 0-4 0v2H4v-6h2a2 2 0 1 0 0-4H4V6h6Z',
+  cloud: 'M7 18a5 5 0 1 1 1-9.9A6 6 0 0 1 19.5 10 4 4 0 0 1 18 18Z',
+  import: 'M12 3v12 m-5-5 5 5 5-5 M4 17v3h16v-3',
 }
 export default function RailIcon({ name, size = 21 }: { name: string; size?: number }) {
   return (

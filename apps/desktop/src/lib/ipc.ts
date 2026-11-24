@@ -570,6 +570,55 @@ export const extensionSessionsList = (
   })
 export const extensionUrlOpen = (extensionId: string, projectId: string, url: string) =>
   invoke<void>('extension_url_open', { extensionId, projectId, url })
+export const extensionStoriesList = (extensionId: string, projectId: string) =>
+  invoke<Story[]>('extension_stories_list', { extensionId, projectId })
+export const extensionStoriesUpsert = (
+  extensionId: string,
+  projectId: string,
+  items: import('../types').ExternalStoryItem[],
+) =>
+  invoke<import('../types').StoryImportReport>('extension_stories_upsert', {
+    extensionId,
+    projectId,
+    items,
+  })
+export const extensionFilePick = (
+  extensionId: string,
+  title: string | null,
+  extensions: string[],
+) =>
+  invoke<{ name: string; text: string } | null>('extension_file_pick', {
+    extensionId,
+    title,
+    extensions,
+  })
+export interface ExtensionHttpRequest {
+  url: string
+  method?: 'GET' | 'POST' | 'HEAD'
+  headers?: [string, string][]
+  body?: string | null
+  auth?: { secret: string; scheme: 'bearer' | 'basic' | 'raw'; username?: string } | null
+}
+export interface ExtensionHttpResponse {
+  status: number
+  url: string
+  headers: [string, string][]
+  body: string
+}
+export const extensionHttpFetch = (extensionId: string, request: ExtensionHttpRequest) =>
+  invoke<ExtensionHttpResponse>('extension_http_fetch', { extensionId, request })
+export const extensionSecretSet = (
+  extensionId: string,
+  name: string,
+  value: string,
+  hosts: string[],
+) => invoke<void>('extension_secret_set', { extensionId, name, value, hosts })
+export const extensionSecretHas = (extensionId: string, name: string) =>
+  invoke<boolean>('extension_secret_has', { extensionId, name })
+export const extensionSecretDelete = (extensionId: string, name: string) =>
+  invoke<void>('extension_secret_delete', { extensionId, name })
+export const setExtensionHosts = (id: string, hosts: string[]) =>
+  invoke<ExtensionRegistry>('set_extension_hosts', { id, hosts })
 
 /** The task a fix for review session `sessionId` runs in; `null` for the project folder. */
 export const reviewFixTask = (sessionId: string, projectId: string) =>
@@ -827,6 +876,8 @@ export const storyRemove = (projectId: string, id: string, cascade: boolean) =>
   invoke<void>('story_remove', { projectId, id, cascade })
 export const storyCompleteAuto = (projectId: string, task: string, runId: string) =>
   invoke<Story[]>('story_complete_auto', { projectId, task, runId })
+export const storySourceOpen = (projectId: string, id: string) =>
+  invoke<void>('story_source_open', { projectId, id })
 
 export const usageRead = () => invoke<import('../types').Usage>('usage_read')
 export const usageStatusLineCheck = (sourceOverride?: string) =>

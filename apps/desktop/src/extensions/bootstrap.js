@@ -6,13 +6,21 @@
   const listeners = new Map()
   const providers = new Map()
   const views = new Map()
+  // Longer than the host's own deadlines (`apiTimeout` in host.ts), so its error arrives first.
+  const timeout = (method) => {
+    if (method === 'files.pick' || method === 'secrets.prompt') return 10 * 60000 + 5000
+    if (method === 'commands.execute') return 15 * 60000 + 15000
+    if (method === 'stories.upsert') return 2 * 60000 + 5000
+    if (method === 'http.fetch') return 45000
+    return 35000
+  }
   const call = (method, ...args) =>
     new Promise((resolve, reject) => {
       const id = ++next
       const timer = setTimeout(() => {
         pending.delete(id)
         reject(new Error('Patchbay API timeout'))
-      }, 15000)
+      }, timeout(method))
       pending.set(id, { resolve, reject, timer })
       parent.postMessage({ patchbay: 1, id, method, args }, '*')
     })
@@ -65,7 +73,21 @@
       set: (key, value) => call('storage.set', key, value),
     },
     git: { status: () => call('git.status') },
-    files: { read: (path) => call('files.read', path) },
+    files: {
+      read: (path) => call('files.read', path),
+      pick: (options) => call('files.pick', options ?? {}),
+    },
+    stories: {
+      list: () => call('stories.list'),
+      upsert: (items) => call('stories.upsert', items),
+      onDidChange: (fn) => on('stories', fn),
+    },
+    http: { fetch: (request) => call('http.fetch', request) },
+    secrets: {
+      prompt: (name, options) => call('secrets.prompt', name, options ?? {}),
+      has: (name) => call('secrets.has', name),
+      delete: (name) => call('secrets.delete', name),
+    },
   }
   window.patchbay = api
   addEventListener('message', async (event) => {

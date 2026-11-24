@@ -5,9 +5,85 @@ import {
   reloadExtensions,
   revealExtensionsDir,
   setExtensionEnabled,
+  setExtensionHosts,
 } from '../lib/ipc'
+import type { Extension } from '../types'
 import { refreshExtensions } from '../extensions/host'
 import { useState } from 'react'
+
+/** Plain-language names for manifest permissions, so people can see what they grant. */
+const PERMISSION_LABELS: Record<string, string> = {
+  terminals: 'Run commands in terminals',
+  'project:read': 'Read the map and Git status',
+  'files:read': 'Read project files',
+  'files:pick': 'Read files you choose',
+  'sessions:read': 'See terminal URLs',
+  'urls:open': 'Open links in your browser',
+  'stories:read': 'Read the story board',
+  'stories:write': 'Import items into the story board',
+  network: 'Reach approved servers',
+  secrets: 'Use credentials you save in the keychain',
+}
+
+/** The user's extra origins for an extension that uses the network, such as an on-prem server. */
+function ApprovedHosts({
+  extension,
+  busy,
+  perform,
+}: {
+  extension: Extension
+  busy: boolean
+  perform: (work: () => Promise<unknown>) => Promise<void>
+}) {
+  const [draft, setDraft] = useState('')
+  const save = (hosts: string[], onSaved?: () => void) =>
+    perform(async () => {
+      const registry = await setExtensionHosts(extension.id, hosts)
+      onSaved?.()
+      await refreshExtensions(registry)
+    })
+  return (
+    <div className="extension-hosts">
+      <small>
+        Servers: {[...extension.manifest.network, ...extension.approvedHosts].join(', ') || 'none'}
+      </small>
+      {extension.approvedHosts.map((host) => (
+        <div className="row" key={host}>
+          <code>{host}</code>
+          <button
+            disabled={busy}
+            aria-label={`Remove ${host}`}
+            onClick={() => void save(extension.approvedHosts.filter((h) => h !== host))}
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault()
+          const submitted = draft
+          if (!submitted.trim()) return
+          void save([...extension.approvedHosts, submitted.trim()], () =>
+            setDraft((current) => (current === submitted ? '' : current)),
+          )
+        }}
+      >
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="https://tracker.example.com"
+          aria-label={`Approve another server for ${extension.id}`}
+          spellCheck={false}
+        />
+        <button type="submit" disabled={busy || !draft.trim()}>
+          Approve server
+        </button>
+      </form>
+    </div>
+  )
+}
 
 export default function ExtensionsPanel() {
   const open = useStore((s) => s.extensionsPanelOpen)
@@ -95,6 +171,15 @@ export default function ExtensionsPanel() {
             </div>
             <div>{extension.id}</div>
             <small title={extension.dir}>Local folder: {extension.dir}</small>
+            {extension.manifest.permissions.length > 0 && (
+              <small>
+                Can:{' '}
+                {extension.manifest.permissions.map((p) => PERMISSION_LABELS[p] ?? p).join(' · ')}
+              </small>
+            )}
+            {extension.manifest.permissions.includes('network') && !extension.errors.length && (
+              <ApprovedHosts extension={extension} busy={busy} perform={perform} />
+            )}
             {extension.errors.map((message) => (
               <SettingsFeedback error key={message}>
                 {message}

@@ -1,0 +1,5 @@
+Issue key,Issue Type,Summary,Parent,Description,Acceptance Criteria
+SHOP-1,Epic,Checkout,,Let people buy what is in their cart.,
+SHOP-2,Story,Pay by card,SHOP-1,"Card payments, through the existing provider.","A declined card shows the provider's message
+Successful payment empties the cart"
+SHOP-3,Bug,"Totals round ""wrong""",,Rounding is off by a cent.,

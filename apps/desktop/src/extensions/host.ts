@@ -3,15 +3,41 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import * as ipc from '../lib/ipc'
 import { fnv1a } from '../lib/hash'
 import { projectFrom, useStore } from '../store'
-import type { Component, ContextSection, Extension, ExtensionBadge, Project } from '../types'
+import {
+  STORIES_READ_PERMISSION,
+  type Component,
+  type ContextSection,
+  type Extension,
+  type ExtensionBadge,
+  type Project,
+} from '../types'
 import { serveContextRequests, setContextCollector } from './context'
 import { MAIN_WINDOW_LABEL } from '../lib/mainWindow'
+import { promptSecret } from './secretPrompt'
 
 const TIMEOUT = 10000
 /** Commands may legitimately wait on slow tools (docker, builds). */
 const COMMAND_TIMEOUT = 60000
+/** An import may include a file picker or several sequential network requests. */
+const IMPORT_COMMAND_TIMEOUT = 15 * 60000
+const STORY_UPSERT_TIMEOUT = 2 * 60000
+const STORY_UPSERT_LIMIT = 64 * 1024 * 1024
+const STORY_UPSERT_METHOD = 'stories.upsert'
+const STORIES_WRITE_PERMISSION = 'stories:write'
 /** API calls such as `terminals.run` poll for up to 8s after spawning. */
 const API_TIMEOUT = 30000
+/** Calls that wait on the person (a file dialog, a credential prompt). */
+const INTERACTIVE_TIMEOUT = 10 * 60000
+/** The native broker gives up on a request after 25 seconds. */
+const NETWORK_TIMEOUT = 40000
+/** How long the host waits on `method` before failing the call. Mirrored in `bootstrap.js`. */
+export function apiTimeout(method: string) {
+  if (method === 'files.pick' || method === 'secrets.prompt') return INTERACTIVE_TIMEOUT
+  if (method === 'http.fetch') return NETWORK_TIMEOUT
+  if (method === STORY_UPSERT_METHOD) return STORY_UPSERT_TIMEOUT
+  if (method === 'commands.execute') return IMPORT_COMMAND_TIMEOUT + TIMEOUT
+  return API_TIMEOUT
+}
 /** Consecutive request timeouts before an unresponsive host is stopped. */
 const MAX_TIMEOUTS = 3
 /** Distinct `terminals.run` sessions one extension may keep. */
@@ -101,6 +127,10 @@ function request(
     send(runtime, { method: 'call', id, target, key, args })
   })
 }
+function requestCommand(runtime: Runtime, id: string, args: unknown[]) {
+  const imports = runtime.extension.manifest.permissions.includes(STORIES_WRITE_PERMISSION)
+  return request(runtime, 'command', id, args, imports ? IMPORT_COMMAND_TIMEOUT : COMMAND_TIMEOUT)
+}
 function shutdown(runtime: Runtime, failed = true) {
   if (runtime.disposed) return
   runtime.disposed = true
@@ -166,6 +196,17 @@ function retireStale() {
     runtimes.delete(runtimeKey(runtime.projectId, runtime.taskId, runtime.extension.id))
     void deactivate(runtime)
   }
+}
+/** Tell current hosts that may read the board about its latest state. */
+function notifyStories() {
+  const { stories } = useStore.getState()
+  for (const runtime of runtimes.values())
+    if (
+      isCurrent(runtime) &&
+      !runtime.disposed &&
+      runtime.extension.manifest.permissions.includes(STORIES_READ_PERMISSION)
+    )
+      send(runtime, { method: 'event', event: 'stories', value: stories })
 }
 function notify(runtime: Runtime, events = { project: true, selection: true }) {
   if (!runtime.extension.manifest.permissions.includes('project:read')) return
@@ -349,7 +390,7 @@ export async function executeExtensionCommand(
   }
   const runtime = await activateExtension(extension, project, taskId)
   if (!runtime?.commands.has(id)) throw new Error(`Command ${id} was not registered`)
-  return request(runtime, 'command', id, args, COMMAND_TIMEOUT)
+  return requestCommand(runtime, id, args)
 }
 /** Short stable name for a command, so repeating a `terminals.run` reuses its session. */
 const runKey = (command: string) => fnv1a(command).toString(16)
@@ -436,7 +477,7 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
       if (target?.id === id && !command?.run) {
         // Never wait on our own activation from inside it.
         if (!runtime.commands.has(text(0))) throw new Error(`Command ${text(0)} is not registered`)
-        return request(runtime, 'command', text(0), commandArgs, COMMAND_TIMEOUT)
+        return requestCommand(runtime, text(0), commandArgs)
       }
       return executeExtensionCommand(
         text(0),
@@ -498,6 +539,60 @@ async function api(runtime: Runtime, method: string, args: unknown[]): Promise<u
       viewFrames.get(view)?.contentWindow?.postMessage({ patchbay: 1, value: args[1] }, '*')
       return null
     }
+    case 'stories.list':
+      permission(runtime, STORIES_READ_PERMISSION)
+      if (!runtime.projectId) throw new Error('Open a project first')
+      return ipc.extensionStoriesList(id, runtime.projectId)
+    case STORY_UPSERT_METHOD: {
+      permission(runtime, STORIES_WRITE_PERMISSION)
+      if (!runtime.projectId) throw new Error('Open a project first')
+      if (!Array.isArray(args[0])) throw new Error('Invalid argument')
+      const report = await ipc.extensionStoriesUpsert(
+        id,
+        runtime.projectId,
+        args[0] as import('../types').ExternalStoryItem[],
+      )
+      // Loaded lazily: the board's module graph is large, and the host is imported early.
+      void import('../lib/stories').then((m) => m.refreshStories(runtime.projectId))
+      return report
+    }
+    case 'files.pick': {
+      permission(runtime, 'files:pick')
+      const options = (args[0] ?? {}) as { title?: unknown; extensions?: unknown }
+      const title = typeof options.title === 'string' ? options.title.slice(0, 120) : null
+      const extensions = Array.isArray(options.extensions)
+        ? options.extensions.filter((e): e is string => typeof e === 'string').slice(0, 16)
+        : []
+      return ipc.extensionFilePick(id, title, extensions)
+    }
+    case 'http.fetch': {
+      permission(runtime, 'network')
+      const request = args[0]
+      if (!request || typeof request !== 'object' || Array.isArray(request))
+        throw new Error('Invalid argument')
+      return ipc.extensionHttpFetch(id, request as ipc.ExtensionHttpRequest)
+    }
+    case 'secrets.prompt': {
+      permission(runtime, 'secrets')
+      permission(runtime, 'network')
+      const hosts = [...runtime.extension.manifest.network, ...runtime.extension.approvedHosts]
+      if (!hosts.length) throw new Error('Approve a server before saving a credential')
+      const options = (args[1] ?? {}) as { label?: unknown; description?: unknown }
+      return promptSecret({
+        extensionId: id,
+        hosts,
+        extensionName: runtime.extension.manifest.displayName ?? id,
+        name: text(0, 64),
+        label: typeof options.label === 'string' && options.label.trim() ? options.label : text(0),
+        description: typeof options.description === 'string' ? options.description : undefined,
+      })
+    }
+    case 'secrets.has':
+      permission(runtime, 'secrets')
+      return ipc.extensionSecretHas(id, text(0, 64))
+    case 'secrets.delete':
+      permission(runtime, 'secrets')
+      return ipc.extensionSecretDelete(id, text(0, 64))
     case 'window.showMessage':
       if (isCurrent(runtime)) s.setMessage(text(0, 2048))
       return null
@@ -560,7 +655,21 @@ async function onMessage(event: MessageEvent) {
   }
   const message = event.data
   if (runtime.disposed) return
-  if (encoded.length > 1024 * 1024) {
+  const isImport =
+    message.reply === undefined &&
+    message.method === STORY_UPSERT_METHOD &&
+    runtime.extension.manifest.permissions.includes(STORIES_WRITE_PERMISSION)
+  if (isImport) {
+    if (
+      encoded.length > STORY_UPSERT_LIMIT ||
+      (encoded.length > STORY_UPSERT_LIMIT / 3 &&
+        new TextEncoder().encode(encoded).length > STORY_UPSERT_LIMIT)
+    ) {
+      if (Number.isSafeInteger(message.id))
+        send(runtime, { reply: message.id, error: 'The story import exceeds 64 MiB' })
+      return
+    }
+  } else if (encoded.length > 1024 * 1024) {
     shutdown(runtime)
     return
   }
@@ -610,7 +719,10 @@ async function onMessage(event: MessageEvent) {
     const result = await Promise.race([
       api(runtime, message.method, message.args),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('API call timed out')), API_TIMEOUT)
+        timer = setTimeout(
+          () => reject(new Error('API call timed out')),
+          apiTimeout(message.method),
+        )
       }),
     ])
     if (!runtime.disposed) send(runtime, { reply: message.id, result: result ?? null })
@@ -770,6 +882,7 @@ export function startExtensionHost() {
     return collectContext(projectFromState(entry.state), ids, undefined, task)
   })
   const unsubscribe = useStore.subscribe((s, previous) => {
+    if (s.stories !== previous.stories) notifyStories()
     if (
       s.project !== previous.project ||
       s.activeTask !== previous.activeTask ||
