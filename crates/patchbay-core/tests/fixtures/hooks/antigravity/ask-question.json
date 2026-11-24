@@ -1,0 +1,29 @@
+{
+  "artifactDirectoryPath": "/home/patchbay/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000003",
+  "conversationId": "00000000-0000-4000-8000-000000000003",
+  "cwd": "/workspace/patchbay-fixture",
+  "hookEventName": "PreToolUse",
+  "lastUserInput": "Ask me to pick a color, Blue or Red, before continuing.",
+  "modelName": "gemini-3.1-pro-low",
+  "stepIdx": 2,
+  "toolCall": {
+    "args": {
+      "questions": [
+        {
+          "is_multi_select": false,
+          "options": [
+            "Blue",
+            "Red"
+          ],
+          "question": "Pick a color"
+        }
+      ]
+    },
+    "id": "00000000-0000-4000-8000-000000000004",
+    "name": "ask_question"
+  },
+  "transcriptPath": "/home/patchbay/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000003/.system_generated/logs/transcript_full.jsonl",
+  "workspacePaths": [
+    "/workspace/patchbay-fixture"
+  ]
+}

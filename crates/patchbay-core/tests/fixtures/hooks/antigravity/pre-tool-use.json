@@ -1,0 +1,20 @@
+{
+  "artifactDirectoryPath": "/home/patchbay/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "cwd": "/workspace/patchbay-fixture",
+  "hookEventName": "PreToolUse",
+  "lastUserInput": "Read validation.txt and report its exact contents.",
+  "modelName": "gemini-3.1-pro-low",
+  "stepIdx": 2,
+  "toolCall": {
+    "args": {
+      "Path": "/workspace/patchbay-fixture/validation.txt"
+    },
+    "id": "00000000-0000-4000-8000-000000000002",
+    "name": "read_file"
+  },
+  "transcriptPath": "/home/patchbay/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001/.system_generated/logs/transcript_full.jsonl",
+  "workspacePaths": [
+    "/workspace/patchbay-fixture"
+  ]
+}

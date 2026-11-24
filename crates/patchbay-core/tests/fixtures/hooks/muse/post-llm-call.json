@@ -1,0 +1,27 @@
+{
+  "hook_event_name": "PostLLMCall",
+  "provider": "model.unknown.response",
+  "request_id": "00000000-0000-4000-8000-000000000002:0:1",
+  "attempt": 1,
+  "step": 0,
+  "status": "success",
+  "response_id": "muse-tui-echo",
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cached_tokens": 0,
+    "reasoning_tokens": 0
+  },
+  "finish_reason": null,
+  "error": null,
+  "output_text_preview": "echo: Reply with PATCHBAY_VALIDATION",
+  "tool_call_count": 0,
+  "message_count": 2,
+  "tool_count": 24,
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "turn_id": "00000000-0000-4000-8000-000000000002",
+  "cwd": "/workspace/patchbay-fixture",
+  "transcript_path": null,
+  "model": "unknown",
+  "permission_mode": "default"
+}
