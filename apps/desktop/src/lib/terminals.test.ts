@@ -21,6 +21,7 @@ vi.mock('@xterm/addon-fit', () => ({
     fit() {}
   },
 }))
+vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class {} }))
 vi.mock('./navigation', () => ({ openTerminalReference: vi.fn(), terminalReferences: () => [] }))
 vi.mock('./ipc', () => ({
   terminalResize: vi.fn(async () => {}),
@@ -143,4 +144,44 @@ test('hidden inline hosts cannot reclaim the registry and visible hosts retain t
   expect(ownsTerminalHost('session', dock as unknown as HTMLElement)).toBe(true)
   expect(term.open).toHaveBeenCalledOnce()
   expect(terminalText('session').text).toContain('retained scrollback')
+})
+
+test('fits send a PTY size only when it changes, unless a claim forces it', async () => {
+  const { resizesToSend } = await import('./terminals')
+  expect(resizesToSend(undefined, 80, 24)).toEqual([{ cols: 80, rows: 24 }])
+  expect(resizesToSend({ cols: 80, rows: 24 }, 80, 24)).toEqual([])
+  expect(resizesToSend({ cols: 80, rows: 24 }, 81, 24)).toEqual([{ cols: 81, rows: 24 }])
+  expect(resizesToSend({ cols: 80, rows: 24 }, 80, 24, { force: true })).toEqual([
+    { cols: 80, rows: 24 },
+  ])
+  // A pending redraw waits for a claim, since only the authoritative viewer resizes the PTY.
+  expect(resizesToSend({ cols: 80, rows: 24 }, 80, 24, { redraw: true })).toEqual([])
+})
+
+test('a forced fit after a replay nudges the width so the program repaints', async () => {
+  vi.useFakeTimers()
+  try {
+    const { fit, requestRedraw } = await import('./terminals')
+    output('replayed')
+    const term = observed.terminals[0]
+    vi.spyOn(term, 'open').mockImplementation(() => {})
+    const rect = { width: 100, height: 100, top: 0, left: 0, bottom: 100, right: 100 }
+    const host = { isConnected: true, getBoundingClientRect: () => rect, replaceChildren: vi.fn() }
+    attach('session', host as unknown as HTMLElement, { focus: false })
+    const { cols, rows } = term
+    vi.mocked(ipc.terminalResize).mockClear()
+    fit('session')
+    expect(ipc.terminalResize).not.toHaveBeenCalled()
+    requestRedraw('session')
+    fit('session', { force: true })
+    expect(ipc.terminalResize).toHaveBeenLastCalledWith('session', cols - 1, rows)
+    vi.advanceTimersByTime(100)
+    expect(ipc.terminalResize).toHaveBeenLastCalledWith('session', cols, rows)
+    vi.mocked(ipc.terminalResize).mockClear()
+    fit('session', { force: true })
+    expect(ipc.terminalResize).toHaveBeenCalledOnce()
+    expect(ipc.terminalResize).toHaveBeenCalledWith('session', cols, rows)
+  } finally {
+    vi.useRealTimers()
+  }
 })

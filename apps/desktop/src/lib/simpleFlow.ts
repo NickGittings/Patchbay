@@ -19,18 +19,21 @@ import {
   type SimpleWorktree,
 } from './simple'
 
-export type SimpleStep =
-  | 'idle'
-  | 'planning'
-  | 'planReady'
-  | 'building'
-  | 'built'
-  | 'reviewing'
-  | 'reviewed'
-  | 'fixing'
-  | 'fixed'
-  | 'merging'
-  | 'merged'
+/** Every step, mirrored by the backend's `LEAD_STEPS` for `team-status`; paired tests pin both. */
+export const SIMPLE_STEPS = [
+  'idle',
+  'planning',
+  'planReady',
+  'building',
+  'built',
+  'reviewing',
+  'reviewed',
+  'fixing',
+  'fixed',
+  'merging',
+  'merged',
+] as const
+export type SimpleStep = (typeof SIMPLE_STEPS)[number]
 export type FlowAction =
   | 'build'
   | 'plan'
@@ -459,9 +462,10 @@ export function forLead(state: SimpleFlow, deciding: boolean): SimpleFlow {
   return { ...state, prompt: undefined, waitingOn: LEAD_RECIPIENT }
 }
 /**
- * The step Chat shows. The lead decides it, except that Auto runs its own stages, and a stage
- * launched after the lead last spoke (a step-card button while it was idle) is newer news. Chats
- * whose lead hasn't set a status keep the step derived from their agents.
+ * The step Chat shows. The lead decides it, except that Auto runs its own stages, a stage
+ * launched from a step-card button after the lead last spoke is newer news, and a confirmed
+ * merge is final whatever the lead said before it. Chats whose lead hasn't set a status keep the
+ * step derived from their agents.
  */
 export function chatStatus(
   derived: SimpleStep,
@@ -478,8 +482,13 @@ export function chatStatus(
   const superseded =
     !lead ||
     autoRunning ||
+    derived === 'merged' ||
     workflowLog(simple).some(
-      (e) => e.kind === 'action' && STAGE_LAUNCHES.includes(e.action) && e.atMs > lead.atMs,
+      (e) =>
+        e.kind === 'action' &&
+        launchOrigin(e) !== 'lead' &&
+        STAGE_LAUNCHES.includes(e.action) &&
+        e.atMs > lead.atMs,
     )
   return superseded ? { step: derived } : { step: lead.step, note: lead.note ?? undefined }
 }

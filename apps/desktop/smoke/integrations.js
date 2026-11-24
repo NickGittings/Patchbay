@@ -137,7 +137,12 @@
     const text = await smoke.extensionFileRead('patchbay.docker', 'scope.txt', projectId, task.id)
     assert(text.trim() === 'main', 'task file read failed')
     state().setActiveTask(null)
-    await until('retained main host', () => document.body.contains(mainHost))
+    // Leaving a task retires the hosts of the task left (the main one when the task opened, then
+    // the task's own), and the main task gets a fresh host.
+    await until('task hosts retired and a fresh main host', () => {
+      const hosts = document.querySelectorAll('iframe[data-extension-host="patchbay.docker"]')
+      return !mainHost.isConnected && hosts.length === 1
+    })
     assert(state().sessions[sid]?.running, 'task switch stopped main server')
     await smoke.executeExtensionCommand('patchbay.docker.refresh').catch(() => {})
     const html = state().extensionViews['patchbay.docker.panel']
@@ -147,7 +152,7 @@
     )
     await smoke.terminalReset()
     await smoke.report(
-      'PASS integrations: user-driven preview, native summaries and permission/URL denial, task worktree launches/reads, separate retained hosts, explicit Docker state',
+      'PASS integrations: user-driven preview, native summaries and permission/URL denial, task worktree launches/reads, separate task hosts retired on switch, explicit Docker state',
     )
   } catch (error) {
     await smoke.report(`FAIL integrations: ${error.message}; app: ${state().message}`)

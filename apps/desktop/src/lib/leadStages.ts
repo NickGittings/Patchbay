@@ -15,6 +15,7 @@ import { agentTurnEnded } from './review'
 import { fixReviewFindings } from './reviewHandoff'
 import {
   defaultMergeDestination,
+  mergeDestinationRunning,
   reviewAgentRecords,
   reviewWorktreeBusy,
   startMerge,
@@ -79,13 +80,13 @@ async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<Launche
       ? await stories.findStory(team.projectId, storyId)
       : undefined
   if (!story && (typeof goal !== 'string' || !goal.trim())) throw new Error('Say what to plan')
-  const { devices, agentRoles, sessions } = useStore.getState()
-  const device = roleDevice(devices, agentRoles, 'plan')
+  const { sessions } = useStore.getState()
+  const device = requireRoleDevice('plan')
   const sessionId = plannerSessionId(device.id, team.projectId, team.task)
   // Starting over would replace a conversation someone may still be using.
   if (sessions[sessionId]?.running)
     throw new Error('A planner is already running in this worktree. Ask the user how to proceed.')
-  const components = strings(request.settings.components)
+  const components = leadComponents(team, request.settings.components)
   const requestId =
     stories && story
       ? // The same briefing and status as the board's Plan, in the team's worktree.
@@ -107,6 +108,16 @@ async function startLeadPlan(team: ChatTeam, request: Workflow): Promise<Launche
   const launched = { sessionId, requestId }
   await recordLead(team, 'plan', launched)
   return launched
+}
+
+/**
+ * The map components a lead named for its planner, without ones no longer on the map. None left
+ * (or none named) keeps the worktree's highlighted components, or the story's.
+ */
+function leadComponents(team: ChatTeam, named: unknown): string[] | undefined {
+  const project = projectOf(team.projectId)
+  const ids = (strings(named) ?? []).filter((id) => project?.components.some((c) => c.id === id))
+  return ids.length ? ids : undefined
 }
 
 async function startLeadBuild(team: ChatTeam): Promise<LaunchedStage> {
@@ -159,12 +170,16 @@ async function startLeadMerge(team: ChatTeam, request: Workflow): Promise<Launch
   // The merge agent works in the destination, which Auto may own too.
   const target = worktrees.find((w) => w.branch === destination)
   if (target) refuseWhileAutoRuns(team.projectId, taskOfWorktree(target, team.projectId))
-  const { devices, agentRoles } = useStore.getState()
+  const { sessionRecords, sessions } = useStore.getState()
+  if (target && mergeDestinationRunning(sessionRecords, sessions, target.path))
+    throw new Error(
+      'A merge agent is already running in this destination. Ask the user how to proceed.',
+    )
   const started = await startMerge({
     project,
     source,
     destinationBranch: destination,
-    device: roleDevice(devices, agentRoles, 'merge'),
+    device: requireRoleDevice('merge'),
     commitSource: strings(request.settings.commitSource) ?? 'report',
   })
   if (started.kind === 'uncommitted')
@@ -175,6 +190,14 @@ async function startLeadMerge(team: ChatTeam, request: Workflow): Promise<Launch
   const { request: merge, sessionId: sid, requestId } = started
   await recordLead(team, 'merge', { sessionId: sid, requestId }, merge)
   return { sessionId: sid, requestId, merge }
+}
+
+/** The preset a role launches with; a project without agent presets has none. */
+function requireRoleDevice(role: 'plan' | 'merge') {
+  const { devices, agentRoles } = useStore.getState()
+  const device = roleDevice(devices, agentRoles, role) as ReturnType<typeof roleDevice> | undefined
+  if (!device) throw new Error(`Choose an agent for the ${role} role first`)
+  return device
 }
 
 function launchStage(team: ChatTeam, request: Workflow) {
@@ -207,6 +230,9 @@ export async function startLeadStage(team: ChatTeam, request: Workflow) {
     id: request.id,
     state: 'running',
     result: JSON.stringify(run),
+  }).catch((error) => {
+    // A merge that finished the task while launching completes its request first.
+    if (!String(error).includes('Request already claimed or finished')) throw error
   })
 }
 

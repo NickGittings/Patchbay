@@ -79,12 +79,15 @@ export default function SimpleComposer({
   records,
   terminalRecord,
   openTerminal,
+  hidden,
 }: {
   scopeKey: string
   stage: SimpleStage
   records: SessionRecord[]
   terminalRecord?: SessionRecord
   openTerminal: (r: SessionRecord) => void
+  /** The terminal panel covers it; it stays mounted so its draft and errors survive. */
+  hidden?: boolean
 }) {
   const s = useStore(
     useShallow((s) => ({
@@ -583,7 +586,7 @@ export default function SimpleComposer({
   }, [confirmed, unconfirmedId, settled])
   const queuedSession = useStore((s) => (ui.queued ? s.sessions[ui.queued.sessionId] : undefined))
   return (
-    <div className="simple-composer">
+    <div className="simple-composer" hidden={hidden}>
       {exhausted.map(({ provider, key, window }) => (
         <p className="simple-usage-warning" role="status" key={`${provider}:${key}`}>
           {providerName(provider)} {windowName(key)} usage exhausted (

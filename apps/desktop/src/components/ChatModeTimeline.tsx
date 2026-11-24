@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { useStore } from '../store'
 import { useChatFollow } from '../lib/useChatFollow'
 import { chatReplyId } from '../lib/chatNavigation'
-import { useChatIdentity } from '../lib/chatIdentity'
 import { sections, type thread, type TimelineItem, type SimpleState } from '../lib/simple'
 import type { SimpleFlow } from '../lib/simpleFlow'
 import type { useSimpleData } from '../lib/useSimpleData'
@@ -12,7 +11,6 @@ import { reviewState, useRunningReviewLanes } from '../lib/reviewAgents'
 import Markdown from './findings/Markdown'
 import FindingsPanel, { VerdictBadge, SeverityCounts } from './findings/FindingsPanel'
 import SimpleAgent from './SimpleAgent'
-import TerminalPane from './TerminalPane'
 import ChatQuestion from './ChatQuestion'
 import type { chatInputRequests } from '../lib/chat'
 
@@ -33,8 +31,6 @@ interface TimelineProps {
   findings: Reader['findings']
   pending: string
   failure: string
-  drawerRecord: SessionRecord | undefined
-  drawerShown: boolean
   openFile: (path: string, line?: number) => void
   openDiff: (file: SimpleDiff) => void
 }
@@ -53,13 +49,10 @@ export default function ChatModeTimeline({
   findings,
   pending,
   failure,
-  drawerRecord,
-  drawerShown,
   openFile,
   openDiff,
 }: TimelineProps) {
   const inputKey = JSON.stringify(questions)
-  const drawerIdentity = useChatIdentity(drawerRecord)
   const runningReview = useRunningReviewLanes(source?.branch)
   const grouped = sections(items, model.records)
   const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
@@ -230,25 +223,6 @@ export default function ChatModeTimeline({
         )}
         {failure && <p role="alert">{failure}</p>}
       </div>
-      {/* Beside the thread, not in it: the terminal stays put while messages scroll. */}
-      {drawerShown && drawerRecord && (
-        <div className="simple-terminal-drawer" aria-label={`${drawerIdentity.role} terminal`}>
-          <p>{drawerIdentity.title}</p>
-          <TerminalPane
-            key={drawerRecord.id}
-            componentId={drawerRecord.metadata.componentId}
-            terminal={{
-              id: drawerRecord.metadata.terminalId,
-              name: drawerRecord.metadata.name,
-              kind: 'agent',
-              command: drawerRecord.spec.command,
-            }}
-            task={drawerRecord.metadata.task ?? null}
-            existingSessionId={drawerRecord.id}
-            focus={false}
-          />
-        </div>
-      )}
       {!following && (
         <div className="simple-jump">
           <button onClick={jump}>

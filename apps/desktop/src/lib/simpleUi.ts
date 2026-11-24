@@ -55,6 +55,8 @@ export interface SimpleUi {
   queued?: QueuedPrompt
   terminal: 'closed' | 'user' | 'input'
   terminalSession?: { id: string; generation?: number; pinned?: boolean }
+  /** The terminal panel fills Chat instead of the composer's place. Not persisted. */
+  terminalMaximized?: boolean
   inputRequest?: string
 }
 
@@ -88,7 +90,7 @@ export function inputDrawer(
   // whose record is gone renders nothing, so it closes rather than holding the drawer.
   const pin = ui.terminal === 'user' && ui.terminalSession?.pinned ? ui.terminalSession : undefined
   if (pin && !recordIds.includes(pin.id))
-    ui = { ...ui, terminal: 'closed', terminalSession: undefined }
+    ui = { ...ui, terminal: 'closed', terminalSession: undefined, terminalMaximized: false }
   const pinned = pin && ui.terminalSession === pin
   if (!pinned && ui.terminal !== 'closed' && ui.terminalSession) {
     const session = sessions[ui.terminalSession.id]
@@ -111,7 +113,8 @@ export function inputDrawer(
     }
   }
   if (pinned) return ui
-  if (ui.terminal === 'input') return { ...ui, terminal: 'closed', terminalSession: undefined }
+  if (ui.terminal === 'input')
+    return { ...ui, terminal: 'closed', terminalSession: undefined, terminalMaximized: false }
   return ui.terminalSession ? { ...ui, terminalSession: undefined } : ui
 }
 export const emptySimpleUi = (): SimpleUi => ({

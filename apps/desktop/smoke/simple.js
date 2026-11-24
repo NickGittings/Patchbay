@@ -317,11 +317,17 @@
       'open drawer keeps the selected Planner',
       () =>
         document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm') &&
-        button('Hide Lead terminal'),
+        document.querySelector('.simple-composer[hidden]'),
     )
     assert(state().simple.selectedAgent === planner, 'workflow changed selected agent')
-    click(button('Hide Lead terminal'))
+    const draft = document.querySelector('.simple-composer textarea').value
+    click(button('Close terminal', document.querySelector('.chat-terminal-panel')))
     await until('drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
+    assert(
+      !document.querySelector('.simple-composer[hidden]') &&
+        document.querySelector('.simple-composer textarea').value === draft,
+      'closing the terminal did not restore the composer and its draft',
+    )
     assert(document.querySelector('details.simple-section:not([open])'), 'earlier plan is expanded')
     const builder = state().simple.log.findLast((e) => e.action === 'implement').sessionId
     // A worktree with no stored layout must still reveal into the panel currently on screen.
@@ -547,7 +553,7 @@
       document.querySelector('.simple-terminal-drawer[aria-label="Reviewer terminal"] .xterm'),
     )
     assert(state().simple.selectedAgent === planner, 'reviewer View changed selected agent')
-    click(button('Hide Reviewer terminal'))
+    click(button('Close terminal', document.querySelector('.chat-terminal-panel')))
     await until('reviewer drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
     let flashed = false
     const monitor = new MutationObserver(() => {
@@ -644,7 +650,7 @@
       assert(!state().revealed, 'external planner reveal was not consumed')
       assert(state().activeTask === task, 'external planner View changed chats')
       inChat()
-      click(button('Hide Lead terminal'))
+      click(button('Close terminal', document.querySelector('.chat-terminal-panel')))
       await until(
         'external planner hidden',
         () => !document.querySelector('.simple-terminal-drawer'),
