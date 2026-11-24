@@ -133,6 +133,7 @@ function ToastCard({ card }: { card: Notice }) {
       <NoticeContent kind={card.kind} heading={card.heading}>
         <span className="toast-text">{card.message}</span>
       </NoticeContent>
+      {cardAction?.also && <button onClick={cardAction.also.run}>{cardAction.also.label}</button>}
       {cardAction && <button onClick={cardAction.run}>{cardAction.label}</button>}
       <button
         className="toast-close"

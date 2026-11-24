@@ -164,7 +164,7 @@ pub fn component_context(
             out.push('\n');
         }
     }
-    out.push_str(&implementation_actions(Shell::current()));
+    out.push_str(&implementation_actions(Shell::current(), project));
     out.push_str(
         "\nStay focused on this component. Read related components for context, but only \
          change them when asked.\n",
@@ -866,9 +866,10 @@ pub fn plan_context(
     out
 }
 
-/// How implementation agents run checks and environments, in the syntax of the shell they use.
-fn implementation_actions(shell: Shell) -> String {
-    format!(
+/// How implementation agents run checks and environments, in the syntax of the shell they use,
+/// and whether this worktree's instance can run beside others (`Project.instances`).
+fn implementation_actions(shell: Shell, project: &Project) -> String {
+    let mut out = format!(
         "\nAfter changing a component, run its configured affected-component checks with {}. When downstream checks are unnecessary, use {} to validate only selected components. Report missing validators explicitly. Start configured environments when needed with {}, and stop them with {}. Use {}, {} and {} for configured IDs, sessions and preview URLs. These commands stay bound to your launch project and task. Do not install dependencies or copy environment files automatically.\n",
         shell.agent_command("validate <componentId>"),
         shell.agent_command("validate-selected <componentId> [componentId…]"),
@@ -877,7 +878,43 @@ fn implementation_actions(shell: Shell) -> String {
         shell.agent_command("context"),
         shell.agent_command("status"),
         shell.agent_command("logs <sessionId>"),
-    )
+    );
+    out.push_str(
+        "\nEnvironment start and validate run this checkout's own instance of the app: its \
+         terminals get PATCHBAY_INSTANCE (0 in the main checkout, 1, 2, … in worktrees) and \
+         PATCHBAY_INSTANCE_ID, which configured commands use for their own ports and names.",
+    );
+    match &project.instances {
+        Some(i) if i.parallel_safe => out.push_str(
+            " Worktrees may start environments and validate at the same time as each other.",
+        ),
+        Some(i) if i.detected => out.push_str(
+            " Only one environment start or validation runs at a time across this project's \
+             checkouts; if one is busy, retry when it finishes.",
+        ),
+        _ => out.push_str(
+            " Until run & test detection has run for this project, validate and environment \
+             start set the project up on first use when the user allows it, which can take a \
+             few minutes; when they return a hint instead, tell the user run & test isn't set \
+             up. Either way, don't hand-roll servers or tests in the shell meanwhile. After \
+             that, one environment start or validation runs at a time unless parallel \
+             instances were found safe.",
+        ),
+    }
+    if let Some(notes) = project
+        .instances
+        .as_ref()
+        .map(|i| i.notes.trim())
+        .filter(|n| !n.is_empty())
+    {
+        let _ = write!(
+            out,
+            " Parallel-instance notes: {}",
+            notes.replace('\n', " ")
+        );
+    }
+    out.push('\n');
+    out
 }
 
 /// Implementation instructions for one agent coordinating the complete selected scope.
@@ -903,7 +940,7 @@ pub fn implementation_context(
         out,
         "\nCoordinate and implement the complete selected scope, {instructions}."
     );
-    out.push_str(&implementation_actions(Shell::current()));
+    out.push_str(&implementation_actions(Shell::current(), project));
     append_sections(&mut out, sections);
     out
 }
@@ -2295,7 +2332,8 @@ pub fn session_spec_with(
         .ok_or_else(|| anyhow!("unknown terminal {terminal_id}"))?;
 
     preflight_codex_network(terminal, Scope::Component(component), policy)?;
-    let mut env = BTreeMap::from([(COMPONENT_ENV.to_string(), component.name.clone())]);
+    let mut env = crate::tasks::instance_env(Path::new(&project.root), task);
+    env.insert(COMPONENT_ENV.to_string(), component.name.clone());
     let mut command = terminal.command.trim().to_string();
     let mut notice = None;
     let mut context_dirs = Vec::new();
@@ -2827,10 +2865,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn implementation_briefing_states_instances_and_first_use_setup() {
+        let mut p = project();
+        let text = implementation_actions(Shell::Unix, &p);
+        assert!(text.contains("PATCHBAY_INSTANCE (0 in the main checkout"));
+        assert!(text.contains("set the project up on first use"));
+        assert!(text.contains("don't hand-roll servers or tests"));
+        p.instances = Some(crate::model::Instances {
+            parallel_safe: false,
+            notes: "Blocker: postgres uses a fixed database name".into(),
+            detected: true,
+        });
+        let text = implementation_actions(Shell::Unix, &p);
+        assert!(text.contains("runs at a time across this project's checkouts"));
+        assert!(text.contains("fixed database name"));
+        assert!(!text.contains("first use"));
+        p.instances = Some(crate::model::Instances {
+            parallel_safe: true,
+            notes: String::new(),
+            detected: true,
+        });
+        assert!(implementation_actions(Shell::Unix, &p).contains("at the same time as each other"));
+        assert!(
+            implementation_context(&p, &[], &[], None).contains("at the same time as each other")
+        );
+    }
+
+    #[test]
     fn agent_commands_are_spelled_for_the_agents_shell() {
-        let unix = implementation_actions(Shell::Unix);
+        let unix = implementation_actions(Shell::Unix, &project());
         assert!(unix.contains("`\"$PATCHBAY_CLI\" agent validate <componentId>`"));
-        let windows = implementation_actions(Shell::Windows);
+        let windows = implementation_actions(Shell::Windows, &project());
         assert!(windows.contains("`& $env:PATCHBAY_CLI agent validate <componentId>`"));
         assert!(windows.contains("`\"%PATCHBAY_CLI%\" agent validate <componentId>`"));
         assert!(!windows.contains("\"$PATCHBAY_CLI\""));
@@ -2899,6 +2964,7 @@ mod tests {
     fn project() -> Project {
         Project {
             worktree_setup: None,
+            instances: None,
             schema_version: 2,
             name: "demo".into(),
             root: "/repo".into(),

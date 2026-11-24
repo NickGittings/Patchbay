@@ -49,14 +49,19 @@ fn write(root: &Path, id: &str, setup: Setup) -> Result<Setup> {
         Ok(setup)
     })
 }
-/// Enable only this exact command, in the uncommitted common git directory.
+/// Enable only this exact command, in the uncommitted common git directory. Returns the
+/// command enabled before, so an Undo can put it back.
 /// # Errors
 /// Fails if the local store cannot be written.
-pub fn enable(root: &Path, command: &str) -> Result<()> {
+pub fn enable(root: &Path, command: &str) -> Result<Option<String>> {
     let dir = tasks::store_dir(root)?;
+    let file = dir.join("setup-enabled.json");
+    let previous = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<String>(&b).ok());
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("setup-enabled.json"), serde_json::to_vec(command)?)?;
-    Ok(())
+    std::fs::write(file, serde_json::to_vec(command)?)?;
+    Ok(previous)
 }
 /// # Errors
 /// Fails when the store is unavailable.
@@ -169,11 +174,12 @@ pub fn action(
         id: sid.clone(),
         command: setup.command.clone(),
         cwd: task.worktree.clone().into(),
-        env: [
-            ("PATCHBAY_PROJECT_ROOT".into(), project.root.clone()),
-            ("PATCHBAY_WORKTREE_ROOT".into(), task.worktree),
-        ]
-        .into(),
+        env: {
+            let mut env = tasks::instance_env(Path::new(&task.worktree), Some(id));
+            env.insert(tasks::PROJECT_ROOT_ENV.into(), project.root.clone());
+            env.insert(tasks::WORKTREE_ROOT_ENV.into(), task.worktree.clone());
+            env
+        },
         purpose: crate::pty::LaunchPurpose::Ordinary,
         resume_command: None,
         rerun_on_resume: false,
@@ -197,6 +203,62 @@ pub fn action(
         spec,
     })?;
     Ok(Some(setup))
+}
+/// Turn off locally enabled preparation (Undo of an automatic run & test setup).
+/// # Errors
+/// Fails if the local store cannot be changed.
+pub fn disable(root: &Path) -> Result<()> {
+    match std::fs::remove_file(tasks::store_dir(root)?.join("setup-enabled.json")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
+/// Run `command` as task `id`'s preparation now, recording it on a task created before it
+/// was configured, and wait up to `wait` for it to end. The command must be enabled. One
+/// that fails or outlives `wait` is stopped and marked skipped, so it never gates the
+/// worktree's agent launches ([`require_ready`]); the worktree's setup status offers a retry.
+/// # Errors
+/// Fails if the command isn't enabled, the task is gone, or the service fails.
+pub fn run_now(
+    project: &Project,
+    project_id: &str,
+    id: &str,
+    command: &str,
+    call: &mut impl FnMut(Request) -> Result<serde_json::Value>,
+    wait: std::time::Duration,
+) -> Result<Setup> {
+    let root = Path::new(&project.root);
+    {
+        let _guard = LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = tasks::stored(root, id)?.setup;
+        if let Some(done) = current
+            .as_ref()
+            .filter(|s| s.command == command && s.status == Status::Ready)
+        {
+            return Ok(done.clone());
+        }
+        let fresh = current
+            .as_ref()
+            .is_none_or(|s| s.command != command || s.status != Status::Preparing);
+        if fresh {
+            write(root, id, Setup::new(command.into()))?;
+        }
+    }
+    let deadline = std::time::Instant::now() + wait;
+    let mut setup = action(project, project_id, id, "start", call)?
+        .ok_or_else(|| anyhow::anyhow!("Worktree setup is unavailable"))?;
+    while setup.status == Status::Preparing && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        setup = read(root, id, call)?.ok_or_else(|| anyhow::anyhow!("Worktree setup vanished"))?;
+    }
+    if setup.status != Status::Ready {
+        setup = action(project, project_id, id, "skip", call)?
+            .ok_or_else(|| anyhow::anyhow!("Worktree setup vanished"))?;
+    }
+    Ok(setup)
 }
 /// # Errors
 /// Fails until setup succeeded or the user explicitly bypassed it.

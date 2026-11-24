@@ -79,6 +79,8 @@ struct AppState {
 #[derive(Default)]
 struct ProjectAccess {
     agent_project: RwLock<Option<Project>>,
+    /// The user turned off "Let agents set up run & test automatically" (workspace layout).
+    auto_setup_off: std::sync::atomic::AtomicBool,
     maintenance: Mutex<Option<PendingPreview>>,
     access: Arc<Access>,
     watcher: watch::GitWatcher,
@@ -1680,9 +1682,16 @@ async fn worktree_setup_enable(
     project_id: String,
     state: State<'_, AppState>,
     command: String,
-) -> CmdResult<()> {
+) -> CmdResult<Option<String>> {
     let (root, _) = task_repo(&state, &project_id)?;
     blocking(move || patchbay_core::worktree_setup::enable(&root, &command).map_err(err)).await
+}
+
+/// Turn off locally enabled worktree preparation (Undo of an automatic setup).
+#[tauri::command]
+async fn worktree_setup_disable(project_id: String, state: State<'_, AppState>) -> CmdResult<()> {
+    let (root, _) = task_repo(&state, &project_id)?;
+    blocking(move || patchbay_core::worktree_setup::disable(&root).map_err(err)).await
 }
 
 /// Create a branch and worktree beside the repo, and a task for them.
@@ -2178,8 +2187,9 @@ async fn map_agent_start(
     .await
 }
 
-/// Launch the agent that proposes the project's local stack, at the project root,
-/// beside dependency detection. `terminal` is the chosen agent preset.
+/// Launch the run & test detection agent, at the project root, beside dependency detection.
+/// `terminal` is the chosen agent preset; `stack_id` targets a stack to replace and
+/// `component_ids` narrows the checks it proposes.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn stack_agent_start(
@@ -2190,8 +2200,10 @@ async fn stack_agent_start(
     terminal: TerminalSpec,
     request_id: String,
     resume: Option<bool>,
-    mut stack_id: Option<String>,
+    stack_id: Option<String>,
     new_detection: Option<bool>,
+    component_ids: Option<Vec<String>>,
+    auto: Option<bool>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let scoped = state.project(&project_id)?;
@@ -2199,72 +2211,32 @@ async fn stack_agent_start(
     let bridge = state.service.clone();
     let agent_server = state.agent_commands.lock().unwrap().clone();
     blocking(move || {
-        // Start/restart from a retained terminal must keep its target after a webview reload.
-        // Explicit new detection is allowed to clear it and build an additive briefing.
-        if stack_id.is_none() && !new_detection.unwrap_or(false) {
+        let mut launch = patchbay_core::stack_proposals::Launch {
+            stack_id,
+            component_ids: component_ids.unwrap_or_default(),
+            auto: auto.unwrap_or(false),
+        };
+        // Start/restart from a retained terminal must keep its target and selection after a
+        // webview reload. Explicit new detection may clear them for an additive briefing.
+        if !new_detection.unwrap_or(false)
+            && launch.stack_id.is_none()
+            && launch.component_ids.is_empty()
+            && !launch.auto
+        {
             let id = model::task_session_id(
                 &project_id,
                 model::MAP_SCOPE,
                 patchbay_core::stack_proposals::STACK_TERMINAL,
                 None,
             );
-            stack_id = bridge.call(patchbay_core::session::Request::StackSelection { id })?;
+            launch = bridge.call(patchbay_core::session::Request::DetectionLaunch { id })?;
+            // A restart by hand is reviewed, unless an agent still waits for this detection.
+            launch.auto &= patchbay_core::auto_setup::running(&project_id);
         }
         let project = access.restrict(project, &[]).map_err(err)?;
-        let (job, mut spec) = patchbay_core::stack_proposals::prepare_for(
-            &project,
-            &terminal,
-            stack_id.as_deref(),
-            &AllowAll,
-        )
-        .map_err(err)?;
-        let mut metadata = service::metadata(&project_id, &project, model::MAP_SCOPE, &job);
-        // The preset, so a restart launches the same agent.
-        metadata.lane = Some(terminal.id);
-        agent_commands::inject(agent_server, &project_id, None, &mut spec);
-        bridge.launch(spec, metadata, request_id, resume.unwrap_or(false))
-    })
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-async fn validation_agent_start(
-    window: WebviewWindow,
-    state: State<'_, AppState>,
-    project_id: String,
-    project: Project,
-    terminal: TerminalSpec,
-    request_id: String,
-    resume: Option<bool>,
-    mut component_ids: Vec<String>,
-) -> CmdResult<String> {
-    main_only(&window)?;
-    let scoped = state.project(&project_id)?;
-    let access = scoped.access.snapshot();
-    let bridge = state.service.clone();
-    let agent_server = state.agent_commands.lock().unwrap().clone();
-    blocking(move || {
-        // Ordinary starts also restart retained terminals after a desktop reload,
-        // when the webview no longer has the discovery's component selection.
-        if component_ids.is_empty() {
-            let id = model::task_session_id(
-                &project_id,
-                model::MAP_SCOPE,
-                patchbay_core::validation_proposals::VALIDATION_TERMINAL,
-                None,
-            );
-            component_ids =
-                bridge.call(patchbay_core::session::Request::ValidationSelection { id })?;
-        }
-        let project = access.restrict(project, &component_ids).map_err(err)?;
-        let (job, mut spec) = patchbay_core::validation_proposals::prepare(
-            &project,
-            &terminal,
-            &component_ids,
-            &AllowAll,
-        )
-        .map_err(err)?;
+        let (job, mut spec) =
+            patchbay_core::stack_proposals::prepare_for(&project, &terminal, &launch, &AllowAll)
+                .map_err(err)?;
         let mut metadata = service::metadata(&project_id, &project, model::MAP_SCOPE, &job);
         // The preset, so a restart launches the same agent.
         metadata.lane = Some(terminal.id);
@@ -2667,11 +2639,19 @@ async fn graph_group_stop(
 #[tauri::command]
 async fn graph_validation_cancel(
     project_id: String,
+    task: Option<String>,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> CmdResult<bool> {
     main_only(&window)?;
-    service(&state, Request::ActionCancel { project_id }).await
+    service(
+        &state,
+        Request::ActionCancel {
+            project_id,
+            checkout: Some(patchbay_core::session::Checkout { task }),
+        },
+    )
+    .await
 }
 
 /// Run a session service request on a blocking worker, never the main thread.
@@ -3430,6 +3410,9 @@ pub fn run() {
                 merge_agent_start,
                 map_agent_start,
                 stack_agent_start,
+                worktree_setup_disable,
+                agent_commands::auto_setup_set,
+                agent_commands::auto_setup_report,
                 merge_branch_outcome,
                 merge_outcome,
                 merge_cleanup,
@@ -3448,7 +3431,6 @@ pub fn run() {
                 agent_commands::proposal_read,
                 agent_commands::map_links_read,
                 agent_commands::map_links_clear,
-                validation_agent_start,
                 agent_commands::validation_proposal_read,
                 agent_commands::validation_proposal_clear,
                 agent_commands::stack_proposal_read,
@@ -4021,6 +4003,11 @@ async fn project_relink(
     scoped.watcher.stop();
     let relinked = Arc::new(ProjectAccess {
         agent_project: RwLock::new(scoped.agent_project.read().unwrap().clone()),
+        auto_setup_off: std::sync::atomic::AtomicBool::new(
+            scoped
+                .auto_setup_off
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ),
         maintenance: Mutex::default(),
         access: scoped.access.clone(),
         watcher: watch::GitWatcher::default(),

@@ -13,7 +13,7 @@ use crate::git::{self, git, nearest_repo, run};
 use crate::model::Project;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
@@ -23,6 +23,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const STORE_VERSION: u32 = 1;
+/// This checkout's app instance: 0 for the main checkout, else the task's [`Task::instance`].
+pub const INSTANCE_ENV: &str = "PATCHBAY_INSTANCE";
+/// `main`, or the task id.
+pub const INSTANCE_ID_ENV: &str = "PATCHBAY_INSTANCE_ID";
+/// The main checkout's root.
+pub const PROJECT_ROOT_ENV: &str = "PATCHBAY_PROJECT_ROOT";
+/// The root of the checkout the terminal runs in.
+pub const WORKTREE_ROOT_ENV: &str = "PATCHBAY_WORKTREE_ROOT";
 
 /// Serializes read-modify-write cycles of the store within this process.
 static LOCK: Mutex<()> = Mutex::new(());
@@ -56,6 +64,22 @@ pub struct Task {
     /// The project is open in this worktree. Recomputed on every listing.
     #[serde(default)]
     pub current: bool,
+    /// This worktree's app instance (`PATCHBAY_INSTANCE`): the lowest number from 1 no other
+    /// task holds, so parallel copies can derive their own ports and names. The main
+    /// checkout is 0; a task saved before instances existed gets one the next time the
+    /// store is written ([`modify`]).
+    #[serde(default)]
+    pub instance: u32,
+}
+
+/// Number every task without an instance, lowest free first.
+fn assign_instances(tasks: &mut [Task]) {
+    let mut used: HashSet<u32> = tasks.iter().map(|t| t.instance).collect();
+    for task in tasks.iter_mut().filter(|t| t.instance == 0) {
+        let free = (1..).find(|n| !used.contains(n)).unwrap_or(u32::MAX);
+        used.insert(free);
+        task.instance = free;
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -168,8 +192,54 @@ pub(crate) fn modify<T>(
     let _guard = lock();
     let mut store = load(&file)?;
     let out = change(&mut store.tasks)?;
+    assign_instances(&mut store.tasks);
     save(&file, &mut store)?;
     Ok(out)
+}
+
+/// `PATCHBAY_INSTANCE` and friends for a terminal of the checkout at `root`: 0 and `main`
+/// without a task, else the task's instance (assigned now for a legacy task) and id, with
+/// the main checkout and this worktree. Best effort: variables that can't be worked out
+/// are left out, so a launch never fails for them.
+#[must_use]
+pub fn instance_env(root: &Path, task: Option<&str>) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    let Some(id) = task else {
+        let root = root.display().to_string();
+        env.insert(INSTANCE_ENV.into(), "0".into());
+        env.insert(INSTANCE_ID_ENV.into(), "main".into());
+        env.insert(PROJECT_ROOT_ENV.into(), root.clone());
+        env.insert(WORKTREE_ROOT_ENV.into(), root);
+        return env;
+    };
+    env.insert(INSTANCE_ID_ENV.into(), id.into());
+    let Ok(task) = stored(root, id) else {
+        return env;
+    };
+    let main = git::worktrees(root)
+        .into_iter()
+        .find(|w| w.main)
+        .map(|w| w.path);
+    // A task attached to the main checkout shares the main instance.
+    let instance = if main.as_deref() == Some(task.worktree.as_str()) {
+        Some(0)
+    } else if task.instance == 0 {
+        modify(root, |tasks| {
+            Ok(tasks.iter().find(|t| t.id == id).map(|t| t.instance))
+        })
+        .ok()
+        .flatten()
+    } else {
+        Some(task.instance)
+    };
+    if let Some(instance) = instance {
+        env.insert(INSTANCE_ENV.into(), instance.to_string());
+    }
+    if let Some(main) = main {
+        env.insert(PROJECT_ROOT_ENV.into(), main);
+    }
+    env.insert(WORKTREE_ROOT_ENV.into(), task.worktree);
+    env
 }
 
 /// The tasks of the repo containing `root` (canonical), oldest first.
@@ -418,6 +488,7 @@ fn create_inner(root: &Path, draft: TaskDraft, require_existing: bool) -> Result
         created_ms: now_ms(),
         missing: false,
         current: false,
+        instance: 0,
     };
     let saved = modify(root, |tasks| {
         tasks.push(task.clone());
@@ -472,6 +543,7 @@ pub fn attach(
         created_ms: now_ms(),
         missing: false,
         current: false,
+        instance: 0,
     };
     let id = modify(root, |tasks| {
         if let Some(existing) = tasks.iter().find(|t| t.worktree == tree.path) {
@@ -1290,5 +1362,49 @@ mod tests {
             *sessions.calls.lock().unwrap(),
             vec![(dirty.id.clone(), false), (dirty.id.clone(), true)]
         );
+    }
+
+    #[test]
+    fn instances_are_the_lowest_free_number_and_main_is_zero() {
+        let f = Fixture::new();
+        let Some(root) = f.repo() else { return };
+        let draft = |branch: &str| TaskDraft {
+            title: branch.into(),
+            branch: branch.into(),
+            base: None,
+            components: vec![],
+        };
+        let one = create(&root, draft("one")).unwrap();
+        let two = create(&root, draft("two")).unwrap();
+        assert_eq!((one.instance, two.instance), (1, 2));
+        // A legacy task (no number) gets the lowest free one on the next write.
+        modify(&root, |tasks| {
+            tasks.retain(|t| t.id != one.id);
+            for t in tasks.iter_mut() {
+                t.instance = 0;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(stored(&root, &two.id).unwrap().instance, 1);
+        let three = create(&root, draft("three")).unwrap();
+        assert_eq!(three.instance, 2);
+
+        let main = instance_env(&root, None);
+        assert_eq!(main[INSTANCE_ENV], "0");
+        assert_eq!(main[INSTANCE_ID_ENV], "main");
+        assert_eq!(main[PROJECT_ROOT_ENV], main[WORKTREE_ROOT_ENV]);
+        let task = instance_env(Path::new(&three.worktree), Some(&three.id));
+        assert_eq!(task[INSTANCE_ENV], "2");
+        assert_eq!(task[INSTANCE_ID_ENV], three.id);
+        assert_eq!(task[PROJECT_ROOT_ENV], root.display().to_string());
+        assert_eq!(task[WORKTREE_ROOT_ENV], three.worktree);
+        // A task of the main checkout runs the main instance.
+        let attached = attach(&root, &root.display().to_string(), None, vec![]).unwrap();
+        assert_eq!(instance_env(&root, Some(&attached.id))[INSTANCE_ENV], "0");
+        // Unknown tasks still name themselves, without failing the launch.
+        let unknown = instance_env(&root, Some("gone"));
+        assert_eq!(unknown[INSTANCE_ID_ENV], "gone");
+        assert!(!unknown.contains_key(INSTANCE_ENV));
     }
 }

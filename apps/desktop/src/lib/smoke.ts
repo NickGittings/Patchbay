@@ -80,6 +80,7 @@ import { graphActionPlan } from './ipc'
 import { createTask, refreshTasks, removeTask, tasksSettled } from './tasks'
 import { branchRefreshScheduled } from './mainWorktree'
 import { useDependencies } from './dependencies'
+import { useStackProposals } from './stackAgent'
 import { mapLinksRead, stackProposalRead } from './ipc'
 
 import { sessionId } from '../types'
@@ -227,6 +228,7 @@ const hooks = {
   applyMapReview,
   maintenance: useMaintenance,
   dependencies: useDependencies,
+  stackProposals: useStackProposals,
   mapLinksRead,
   stackProposalRead,
   removeComponents,

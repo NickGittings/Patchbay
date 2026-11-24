@@ -47,6 +47,7 @@ pub mod agent_bridge;
 pub mod agent_commands;
 pub mod agent_hooks;
 pub mod agent_questions;
+pub mod auto_setup;
 pub mod session;
 pub mod stack_proposals;
 mod submissions;

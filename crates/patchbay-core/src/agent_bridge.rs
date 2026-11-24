@@ -71,9 +71,8 @@ pub enum Role {
 pub enum Proposes {
     /// Dependency detection (`link_proposals::MAP_TERMINAL`).
     Links,
-    /// Stack detection (`stack_proposals::STACK_TERMINAL`).
+    /// Run & test detection (`stack_proposals::STACK_TERMINAL`): stack, checks and isolation.
     Stack,
-    Validation,
     /// Any other terminal at `MAP_SCOPE`.
     Nothing,
 }
@@ -106,7 +105,6 @@ impl Role {
             crate::model::MAP_SCOPE => Self::Mapper(match terminal_id {
                 crate::link_proposals::MAP_TERMINAL => Proposes::Links,
                 crate::stack_proposals::STACK_TERMINAL => Proposes::Stack,
-                crate::validation_proposals::VALIDATION_TERMINAL => Proposes::Validation,
                 _ => Proposes::Nothing,
             }),
             _ => Self::Component,
@@ -191,10 +189,11 @@ pub enum Action {
     ProposeLinks {
         proposal: crate::link_proposals::LinkProposal,
     },
-    /// A local stack a detection agent proposes for the user to review.
+    /// Retired standalone validation discovery; refused with a pointer to `ProposeStack`.
     ProposeValidation {
-        proposal: crate::validation_proposals::ValidationProposal,
+        proposal: Value,
     },
+    /// How to run and test the project, as a detection agent proposes it for review.
     ProposeStack {
         proposal: crate::stack_proposals::StackProposal,
     },
@@ -234,6 +233,23 @@ impl Response {
             },
         }
     }
+}
+
+thread_local! {
+    /// The connection whose request this thread is handling, for [`progress`].
+    static CONNECTION: std::cell::RefCell<Option<TcpStream>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A progress line `{"progress": text}` sent ahead of the response to the request this
+/// thread is handling; the CLI prints it to stderr. Nothing happens outside a request.
+pub fn progress(text: &str) {
+    CONNECTION.with(|connection| {
+        if let Some(stream) = connection.borrow_mut().as_mut() {
+            let _ = serde_json::to_writer(&mut *stream, &serde_json::json!({ "progress": text }))
+                .map_err(std::io::Error::from)
+                .and_then(|()| stream.write_all(b"\n"));
+        }
+    });
 }
 
 type Authenticate = dyn Fn(&str) -> Option<LaunchContext> + Send + Sync;
@@ -342,7 +358,10 @@ impl Server {
             );
             let context = authenticate(&request.token)
                 .context("Authentication failed; the agent session has ended or restarted")?;
-            handler(&context, request.action)
+            CONNECTION.with(|c| *c.borrow_mut() = stream.try_clone().ok());
+            let result = handler(&context, request.action);
+            CONNECTION.with(|c| *c.borrow_mut() = None);
+            result
         })());
         serde_json::to_writer(&mut stream, &response)?;
         stream.write_all(b"\n")?;
@@ -395,10 +414,23 @@ fn call_via(
     stream.write_all(b"\n").with_context(|| {
         format!("Could not finish sending request to Patchbay desktop at {address}; the request outcome is unknown")
     })?;
+    let mut reader = BufReader::new(stream.take(16 * LIMIT));
     let mut line = String::new();
-    BufReader::new(stream.take(16 * LIMIT))
-        .read_line(&mut line)
-        .with_context(|| format!("Could not read response from Patchbay desktop at {address} (response timeout: {} seconds); the request outcome is unknown", wait.as_secs_f64()))?;
+    // Progress lines come first, each read within the timeout; long waits keep reporting.
+    loop {
+        line.clear();
+        reader
+            .read_line(&mut line)
+            .with_context(|| format!("Could not read response from Patchbay desktop at {address} (response timeout: {} seconds); the request outcome is unknown", wait.as_secs_f64()))?;
+        match serde_json::from_str::<Value>(&line) {
+            Ok(Value::Object(o)) if o.len() == 1 && o.contains_key("progress") => {
+                if let Some(text) = o["progress"].as_str() {
+                    eprintln!("{text}");
+                }
+            }
+            _ => break,
+        }
+    }
     ensure!(
         !line.is_empty(),
         "Patchbay desktop at {address} closed the connection without a response; the request outcome is unknown. Reopen Patchbay and inspect the action status before retrying"
