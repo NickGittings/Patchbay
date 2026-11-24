@@ -1,4 +1,4 @@
-import { useContext, useMemo, useState } from 'react'
+import { useContext, useMemo, useState, type KeyboardEvent } from 'react'
 import { simpleKey, useSimpleUi } from '../../lib/simpleUi'
 import { SimpleChangesContext, SimpleWorktreeContext } from './simpleChanges'
 import { useChatAgents } from '../../lib/useChatAgents'
@@ -10,6 +10,7 @@ import { useStore } from '../../store'
 import type { AutoRun, Story, StoryDraft, StoryKind } from '../../types'
 import { STAGE_LABELS, STATUS_LABELS, unfinished } from '../../lib/autoSettings'
 import {
+  boardScope,
   filterStories,
   moveStory,
   PARENT_FILTERS,
@@ -20,6 +21,7 @@ import {
   STORY_FILTERS,
   storyStatuses,
   tree,
+  UNASSIGNED,
   type StoryFilter,
 } from '../../lib/stories'
 import { shortTitle } from '../../lib/shortTitle'
@@ -93,6 +95,36 @@ export function StoryViewTabs() {
   )
 }
 
+/** One level of the board's filter: its name opens the item, the ✕ widens the board a level. */
+function ScopeToken({
+  item,
+  onRemove,
+  onOpen,
+}: {
+  item: Story
+  onRemove?: () => void
+  onOpen: () => void
+}) {
+  return (
+    <span className={onRemove ? 'story-scope-token' : 'story-scope-token context'}>
+      <button className="story-scope-name" onClick={onOpen} title={`Open ${item.title}`}>
+        <i className={`story-dot ${item.kind}`} />
+        <span className="story-scope-title">{item.title}</span>
+      </button>
+      {onRemove && (
+        <button
+          className="story-scope-remove"
+          aria-label={`Remove ${item.title} filter`}
+          title="Remove filter"
+          onClick={onRemove}
+        >
+          ✕
+        </button>
+      )}
+    </span>
+  )
+}
+
 export default function StoryBoard() {
   const registry = useStore((s) => s.extensions)
   const { project, stories, tasks, taskWorkspaces, activeTask, auto, sessionRecords } = useStore(
@@ -144,22 +176,29 @@ export default function StoryBoard() {
     [stories, tasks, runs, projectId, sessionRecords],
   )
   const hierarchy = tree(stories)
-  const selectedEpic = hierarchy.epics.some((e) => e.item.id === epic) ? epic : null
-  const selectedFeature =
-    feature === 'unassigned' ||
-    hierarchy.epics.some((e) => e.features.some((f) => f.item.id === feature))
-      ? feature
-      : null
-  const visibleFeatures = hierarchy.epics
-    .filter((e) => !selectedEpic || e.item.id === selectedEpic)
-    .flatMap((e) => e.features)
-  const visibleStories =
-    selectedFeature === 'unassigned'
-      ? hierarchy.unassigned
-      : visibleFeatures
-          .filter((f) => !selectedFeature || f.item.id === selectedFeature)
-          .flatMap((f) => f.stories)
-          .concat(!selectedFeature && !selectedEpic ? hierarchy.unassigned : [])
+  const scope = boardScope(hierarchy, epic, feature)
+  const selectedEpic = scope.epic?.id ?? null
+  const selectedFeature = scope.unassigned ? UNASSIGNED : (scope.feature?.id ?? null)
+  const showAll = () => {
+    setEpic(null)
+    setFeature(null)
+  }
+  /**
+   * Escape widens the board back out while focus is on it, unless a field, the editor or an open
+   * dialog owns the key. Tooltips and menus that take Escape stop it before it reaches the board.
+   */
+  const escape = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || !scope.narrowed) return
+    const target = e.target as HTMLElement
+    if (target.closest('input, textarea, select, [contenteditable], .story-editor')) return
+    if (
+      document.querySelector(
+        'dialog[open], [role="dialog"], [role="alertdialog"], .extension-overlay',
+      )
+    )
+      return
+    showAll()
+  }
   const add = (kind: StoryKind) => {
     setSelected(null)
     setDraft({
@@ -168,7 +207,7 @@ export default function StoryBoard() {
       parent:
         kind === 'feature'
           ? (selectedEpic ?? hierarchy.epics[0]?.item.id)
-          : kind === 'story' && selectedFeature !== 'unassigned'
+          : kind === 'story' && selectedFeature !== UNASSIGNED
             ? selectedFeature
             : null,
     })
@@ -182,9 +221,15 @@ export default function StoryBoard() {
     }
     if (item.kind === 'feature') setFeature(item.id)
   }
+  /** Opens an item in the editor without changing what the board shows. */
+  const open = (item: Story) => {
+    setDraft(null)
+    setSelected(item.id)
+  }
   const item = stories.find((s) => s.id === selected)
-  const column = (kind: StoryKind, title: string, candidates: Story[], all: () => void) => {
+  const column = (kind: StoryKind, title: string, candidates: Story[], total: Story[]) => {
     const items = filterStories(candidates, statuses, filters[kind])
+    const everything = filterStories(total, statuses, filters[kind]).length
     // Hidden cards would make a filtered column's order ambiguous.
     const sortable = filters[kind] === 'all'
     return (
@@ -192,7 +237,10 @@ export default function StoryBoard() {
         <header>
           <div className="story-column-heading">
             <h3>
-              {title} <span>{items.length}</span>
+              {title}{' '}
+              <span>
+                {items.length < everything ? `${items.length} of ${everything}` : items.length}
+              </span>
             </h3>
             <select
               className="story-filter"
@@ -217,9 +265,6 @@ export default function StoryBoard() {
             + Add
           </button>
         </header>
-        <button className="story-all" onClick={all}>
-          All {title.toLowerCase()}
-        </button>
         <div className="story-cards">
           {items.map((item) => {
             const worktree = tasks.find((t) => t.id === item.task)
@@ -233,6 +278,7 @@ export default function StoryBoard() {
                 className={[
                   'story-card',
                   selected === item.id && 'selected',
+                  (item.id === scope.path?.id || item.id === selectedFeature) && 'scoping',
                   dragging === item.id && 'dragging',
                   dropAt?.id === item.id && (dropAt.after ? 'drop-after' : 'drop-before'),
                 ]
@@ -336,10 +382,11 @@ export default function StoryBoard() {
         </div>
         {kind === 'feature' && (
           <button
-            className={feature === 'unassigned' ? 'story-all active' : 'story-all'}
+            className={scope.unassigned ? 'story-all active' : 'story-all'}
+            aria-pressed={scope.unassigned}
             onClick={() => {
               setEpic(null)
-              setFeature('unassigned')
+              setFeature(UNASSIGNED)
             }}
           >
             Unassigned stories ·{' '}
@@ -350,7 +397,7 @@ export default function StoryBoard() {
     )
   }
   return (
-    <div className="story-board" aria-label="Story board">
+    <div className="story-board" aria-label="Story board" onKeyDown={escape}>
       <header className="story-board-header view-tabs-header">
         <StoryViewTabs />
         <div className="story-board-actions" role="group" aria-label="Story board actions">
@@ -359,29 +406,80 @@ export default function StoryBoard() {
       </header>
       <div className="story-board-body">
         <div className="story-board-content">
+          {scope.narrowed && (
+            <nav className="story-scope" aria-label="Board filter">
+              <span className="story-scope-label">Showing</span>
+              <ol>
+                {scope.path && (
+                  <li>
+                    <ScopeToken
+                      item={scope.path}
+                      // The feature's epic is context, not a filter of its own.
+                      // Removing the epic keeps a chosen feature, which still names it.
+                      onRemove={
+                        scope.epic
+                          ? () => {
+                              setEpic(null)
+                              // Only the feature on screen survives, not one the epic hid.
+                              setFeature(scope.feature?.id ?? null)
+                            }
+                          : undefined
+                      }
+                      onOpen={() => open(scope.path!)}
+                    />
+                  </li>
+                )}
+                {scope.feature && (
+                  <li>
+                    <ScopeToken
+                      item={scope.feature}
+                      onRemove={() => setFeature(null)}
+                      onOpen={() => open(scope.feature!)}
+                    />
+                  </li>
+                )}
+                {scope.unassigned && (
+                  <li>
+                    <span className="story-scope-token">
+                      <span className="story-scope-name">Unassigned stories</span>
+                      <button
+                        className="story-scope-remove"
+                        aria-label="Remove unassigned stories filter"
+                        title="Remove filter"
+                        onClick={() => setFeature(null)}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  </li>
+                )}
+              </ol>
+              <button className="story-scope-all" onClick={showAll} aria-keyshortcuts="Escape">
+                Show all
+              </button>
+            </nav>
+          )}
           <div className="story-columns">
             {column(
               'epic',
               'Epics',
               hierarchy.epics.map((e) => e.item),
-              () => {
-                setEpic(null)
-                setFeature(null)
-              },
+              hierarchy.epics.map((e) => e.item),
             )}
             {column(
               'feature',
               'Features',
-              visibleFeatures.map((f) => f.item),
-              () => {
-                setEpic(null)
-                setFeature(null)
-              },
+              scope.features,
+              hierarchy.epics.flatMap((e) => e.features.map((f) => f.item)),
             )}
-            {column('story', 'Stories', visibleStories, () => {
-              setEpic(null)
-              setFeature(null)
-            })}
+            {column(
+              'story',
+              'Stories',
+              scope.stories,
+              hierarchy.epics
+                .flatMap((e) => e.features.flatMap((f) => f.stories))
+                .concat(hierarchy.unassigned),
+            )}
           </div>
         </div>
         {projectId && (item || draft) && (

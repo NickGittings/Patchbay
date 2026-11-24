@@ -50,6 +50,46 @@ export function tree(stories: Story[]) {
   }
 }
 
+/** Stories that sit under no listed feature, as the board's feature filter names them. */
+export const UNASSIGNED = 'unassigned'
+
+/**
+ * What the board shows for a chosen epic and feature. Ids that no longer exist drop out, and a
+ * chosen feature brings its epic along as context so the filter reads as a path.
+ */
+export function boardScope(
+  hierarchy: ReturnType<typeof tree>,
+  epicId: string | null,
+  featureId: string | null,
+) {
+  const epicNode = hierarchy.epics.find((e) => e.item.id === epicId)
+  const featureParent = hierarchy.epics.find((e) => e.features.some((f) => f.item.id === featureId))
+  const featureNode = featureParent?.features.find((f) => f.item.id === featureId)
+  const unassigned = featureId === UNASSIGNED
+  // A feature outside the chosen epic can't be on screen, so the epic wins.
+  const feature = featureNode && (!epicNode || featureParent === epicNode) ? featureNode : undefined
+  const epic = epicNode ?? (feature ? featureParent : undefined)
+  const features = hierarchy.epics
+    .filter((e) => !epicNode || e === epicNode)
+    .flatMap((e) => e.features)
+  const stories = unassigned
+    ? hierarchy.unassigned
+    : feature
+      ? feature.stories
+      : features.flatMap((f) => f.stories).concat(epicNode ? [] : hierarchy.unassigned)
+  return {
+    /** The epic the user chose, which narrows the Features column. */
+    epic: epicNode?.item ?? null,
+    /** The epic shown for context: the chosen one, or the chosen feature's. */
+    path: epic?.item ?? null,
+    feature: feature?.item ?? null,
+    unassigned,
+    features: features.map((f) => f.item),
+    stories,
+    narrowed: !!epicNode || !!feature || unassigned,
+  }
+}
+
 /**
  * The board's top-to-bottom priority, mirrored by core `stories::board_order`: each epic, then its
  * features, each followed by its stories, and finally unassigned stories.

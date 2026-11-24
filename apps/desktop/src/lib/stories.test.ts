@@ -43,6 +43,8 @@ const {
   reorder,
   moveStory,
   launchStoryPlanner,
+  boardScope,
+  UNASSIGNED,
 } = await import('./stories')
 const ipc = await import('./ipc')
 const { startTerminal } = await import('./sessions')
@@ -812,4 +814,54 @@ test('moveStory shows the new order at once and reloads when the save fails', as
   await moveStory('p', 'a', 'b')
   expect(boardOrder(projectStateOf('p')!.stories).map((s) => s.id)).toEqual(['a', 'b'])
   expect(useStore.getState().message).toContain('The board changed')
+})
+
+const scopeItems = [
+  story('e1', 'epic'),
+  story('e2', 'epic', null, 1),
+  story('f1', 'feature', 'e1'),
+  story('f2', 'feature', 'e2'),
+  story('s1', 'story', 'f1'),
+  story('s2', 'story', 'f2'),
+  story('loose'),
+]
+const ids = (items: Story[]) => items.map((s) => s.id)
+
+test('board scope shows everything with nothing chosen', () => {
+  const scope = boardScope(tree(scopeItems), null, null)
+  expect(scope.narrowed).toBe(false)
+  expect(ids(scope.features)).toEqual(['f1', 'f2'])
+  expect(ids(scope.stories)).toEqual(['s1', 's2', 'loose'])
+})
+
+test('board scope narrows features and stories to a chosen epic', () => {
+  const scope = boardScope(tree(scopeItems), 'e1', null)
+  expect(scope.epic?.id).toBe('e1')
+  expect(scope.path?.id).toBe('e1')
+  expect(scope.feature).toBeNull()
+  expect(ids(scope.features)).toEqual(['f1'])
+  expect(ids(scope.stories)).toEqual(['s1'])
+})
+
+test('board scope names a chosen feature with its epic as context', () => {
+  const scope = boardScope(tree(scopeItems), null, 'f2')
+  expect(scope.epic).toBeNull()
+  expect(scope.path?.id).toBe('e2')
+  expect(scope.feature?.id).toBe('f2')
+  expect(ids(scope.features)).toEqual(['f1', 'f2'])
+  expect(ids(scope.stories)).toEqual(['s2'])
+})
+
+test('board scope shows unassigned stories on their own', () => {
+  const scope = boardScope(tree(scopeItems), null, UNASSIGNED)
+  expect(scope.unassigned).toBe(true)
+  expect(scope.narrowed).toBe(true)
+  expect(ids(scope.stories)).toEqual(['loose'])
+})
+
+test('board scope drops ids that no longer exist or sit outside the chosen epic', () => {
+  expect(boardScope(tree(scopeItems), 'gone', 'gone').narrowed).toBe(false)
+  const scope = boardScope(tree(scopeItems), 'e1', 'f2')
+  expect(scope.feature).toBeNull()
+  expect(ids(scope.stories)).toEqual(['s1'])
 })

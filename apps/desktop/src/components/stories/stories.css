@@ -337,3 +337,145 @@
 .story-source-actions {
   margin-bottom: 12px;
 }
+/* The board's filter: which epic or feature narrows the columns, and the way back out. */
+.story-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  backdrop-filter: blur(12px) saturate(160%);
+  font-size: var(--text-sm);
+  animation: story-scope-in 180ms ease-out;
+}
+@keyframes story-scope-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.story-scope-label {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.story-scope ol {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.story-scope li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.story-scope li + li::before {
+  content: '›';
+  color: var(--muted);
+}
+.story-scope-token {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 240px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.story-scope-token.context {
+  border-color: var(--border);
+  background: transparent;
+  color: var(--muted);
+}
+.story-scope-token button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.story-scope-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 4px 2px 9px;
+}
+.story-scope-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.story-scope-token.context .story-scope-name,
+span.story-scope-name {
+  padding-right: 9px;
+}
+.story-scope-remove {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin-right: 1px;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 10px;
+}
+.story-scope-remove:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.story-scope-token button:active,
+.story-scope-all:active {
+  transform: scale(0.97);
+  transition: transform 100ms ease-out;
+}
+.story-scope-all {
+  margin-left: auto;
+  padding: 3px 8px;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+/* The epic or feature narrowing the board, still marked after a story takes the selection. */
+.story-card.scoping {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.story-card.scoping.drop-before {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    0 -2px 0 var(--accent);
+}
+.story-card.scoping.drop-after {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    0 2px 0 var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .story-scope {
+    animation-name: story-scope-fade;
+  }
+  .story-scope-token button:active,
+  .story-scope-all:active {
+    transform: none;
+  }
+}
+@keyframes story-scope-fade {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .story-scope {
+    background: var(--panel);
+    backdrop-filter: none;
+  }
+}
