@@ -65,6 +65,7 @@ import { useNativeMenus } from './lib/nativeMenus'
 import { syncAgentProject, BRANCHES_CHANGED_EVENT, GIT_DIRTY_EVENT } from './lib/ipc'
 import { invalidateGitRefresh, requestGitRefresh } from './lib/git'
 import { cancelBranchRefreshes, scheduleBranchRefresh } from './lib/mainWorktree'
+import { watchMainBranch } from './lib/mainBranchReset'
 import { syncCurrentRoots } from './lib/access'
 import { listenForTerminals } from './lib/sessions'
 import { followAuto } from './lib/auto'
@@ -89,12 +90,15 @@ function useGitRefresh() {
       if (stopped || !projectStateOf(event.payload)?.project) return
       scheduleBranchRefresh(event.payload, (id) => void refreshTasks(id, { quiet: true }))
     })
+    // Returning the main checkout to main resets its Chat for the next piece of work.
+    const unwatchMainBranch = watchMainBranch()
     const report = (e: unknown) =>
       useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     void unlisten.catch(report)
     void unlistenBranches.catch(report)
     return () => {
       stopped = true
+      unwatchMainBranch()
       cancelBranchRefreshes()
       invalidateGitRefresh()
       for (const stop of [unlisten, unlistenBranches])

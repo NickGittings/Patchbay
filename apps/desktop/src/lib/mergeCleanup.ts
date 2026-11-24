@@ -28,6 +28,11 @@ export interface CleanupJob {
   contextPending?: boolean
 }
 
+/** Merge cleanup treats a merge into this branch as the end of its source's task. */
+export const TASK_END_BRANCH = 'main'
+export const mergeEndsTask = (request: Pick<MergeRequest, 'destinationBranch'>) =>
+  request.destinationBranch === TASK_END_BRANCH
+
 export function cleanupJobs(): CleanupJob[] {
   return (useStore.getState().workspaceSettings.mergeCleanupJobs as CleanupJob[] | undefined) ?? []
 }
@@ -117,7 +122,7 @@ export async function completeMergeChat(job: CleanupJob) {
   // A newer merge or a dismissed prompt may have replaced this job during the Git read.
   const current = cleanupJobs().find((j) => j.id === job.id && !j.handled)
   if (!current) return false
-  if (current.chatCleared || job.request.destinationBranch !== 'main') return true
+  if (current.chatCleared || !mergeEndsTask(job.request)) return true
   const state = projectStateOf(job.projectId)
   if (!state) return false
   const task = sourceChat(job)
@@ -138,7 +143,7 @@ export async function completeMergeChat(job: CleanupJob) {
  * After a deletion the team is already retired, so there is no lead left to replace.
  */
 export async function completeTaskContext(job: CleanupJob) {
-  if (job.request.destinationBranch !== 'main') return true
+  if (!mergeEndsTask(job.request)) return true
   const state = projectStateOf(job.projectId)
   if (!state) return false
   const task = sourceChat(job)

@@ -1,7 +1,14 @@
 import { LEAD_RECIPIENT, type AutoRun, type AutoStage } from '../types'
 import { chatAutoActive } from './chat'
 import type { ChatTeam } from './chatTeams'
-import { launchOrigin, thread, workflowLog, type SimpleState } from './simple'
+import {
+  autoBeforeReset,
+  findingsBeforeReset,
+  launchOrigin,
+  thread,
+  workflowLog,
+  type SimpleState,
+} from './simple'
 import {
   chatStatus,
   chatStepper,
@@ -45,7 +52,7 @@ export function autoCurrent(
   auto: Pick<AutoRun, 'status' | 'log'> | null | undefined,
   simple: SimpleState | null | undefined,
 ) {
-  if (!auto) return false
+  if (!auto || autoBeforeReset(auto, simple)) return false
   if (!['done', 'stopped', 'failed'].includes(auto.status)) return true
   const endedMs = auto.log.at(-1)?.atMs ?? 0
   return !workflowLog(simple).some(
@@ -92,7 +99,9 @@ export interface StageModelInput {
  */
 export function stageModel({ snapshot, model, team }: StageModelInput) {
   const threaded = model ?? thread(snapshot, snapshot.worktree)
-  const { auto, simple, sessions } = snapshot
+  const { simple, sessions } = snapshot
+  // Auto runs and verdicts from before a return to main belong to the finished branch.
+  const auto = autoBeforeReset(snapshot.auto, simple) ? null : snapshot.auto
   const flowed = flow(snapshot, threaded)
   // The lead decides what follows a stage it started; the card returns once it is done deciding.
   const derived = forLead(
@@ -118,7 +127,9 @@ export function stageModel({ snapshot, model, team }: StageModelInput) {
     current && (auto?.status === 'paused' || auto?.status === 'failed') ? auto.status : undefined
   // A stopped run hands the worktree back to you; any other current run shows as Auto shows it.
   const autoShown = !!auto && current && auto.status !== 'stopped'
-  const verdict = snapshot.findings?.verdict
+  const verdict = findingsBeforeReset(simple, snapshot.findings)
+    ? undefined
+    : snapshot.findings?.verdict
   const stepper = autoShown
     ? autoStepper(auto)
     : chatStepper(state.step, {

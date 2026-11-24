@@ -4,6 +4,7 @@ import type {
   MergeOutcome,
   PlanText,
   Review,
+  ReviewFindings,
   SessionRecord,
   SessionState,
   Verdict,
@@ -89,7 +90,44 @@ export interface SimpleState {
   }
   /** Text-free facts needed by workflow controls after clearing visible history. */
   retainedWorkflow?: SimpleEntry[]
+  /** The main checkout's last-seen branch, so a return to main is noticed across restarts. */
+  branch?: string
+  /** Stage work at or before this time belongs to a finished branch and no longer counts. */
+  workflowResetMs?: number
+  /** A return to main whose plan or lead reset still has to be retried. */
+  branchReset?: BranchReset
 }
+export const BRANCH_RESET_STEPS = ['plan', 'lead'] as const
+export type BranchResetStep = (typeof BRANCH_RESET_STEPS)[number]
+export interface BranchReset {
+  from: string
+  atMs: number
+  /** The reset before this one: merges started after it worked the branch that just finished. */
+  sinceMs?: number
+  pending: BranchResetStep[]
+}
+
+/** Whether something that happened at `atMs` came before the last workflow reset. */
+export const beforeReset = (simple: SimpleState | null | undefined, atMs: number | undefined) =>
+  simple?.workflowResetMs !== undefined && (atMs ?? 0) <= simple.workflowResetMs
+
+/**
+ * Findings last written before the last workflow reset belong to a finished branch. A reviewer
+ * still running at the reset writes its verdict after it, so that verdict counts.
+ */
+export const findingsBeforeReset = (
+  simple: SimpleState | null | undefined,
+  findings: Pick<ReviewFindings, 'startedMs' | 'modifiedMs'> | null | undefined,
+) => beforeReset(simple, findings ? Math.max(findings.startedMs ?? 0, findings.modifiedMs ?? 0) : 0)
+
+/** An Auto run that ended before the last workflow reset belongs to a finished branch. */
+export const autoBeforeReset = (
+  auto: Pick<AutoRun, 'status' | 'log'> | null | undefined,
+  simple: SimpleState | null | undefined,
+) =>
+  !!auto &&
+  ['done', 'stopped', 'failed'].includes(auto.status) &&
+  beforeReset(simple, auto.log.at(-1)?.atMs ?? 0)
 export const SIMPLE_VERSION = 2
 
 /** Logs from before origins name Chat or its lead, the only flows that logged launches then. */
@@ -293,6 +331,22 @@ export function restoredSimple(value: unknown): SimpleState | null {
     selectedAgent: typeof state.selectedAgent === 'string' ? state.selectedAgent : undefined,
     transferredFrom: typeof state.transferredFrom === 'string' ? state.transferredFrom : undefined,
     transferTarget: typeof state.transferTarget === 'string' ? state.transferTarget : undefined,
+    branch: typeof state.branch === 'string' && state.branch ? state.branch : undefined,
+    workflowResetMs: Number.isFinite(state.workflowResetMs) ? state.workflowResetMs : undefined,
+    branchReset:
+      state.branchReset &&
+      typeof state.branchReset.from === 'string' &&
+      Number.isFinite(state.branchReset.atMs) &&
+      Array.isArray(state.branchReset.pending)
+        ? {
+            from: state.branchReset.from,
+            atMs: state.branchReset.atMs,
+            sinceMs: Number.isFinite(state.branchReset.sinceMs)
+              ? state.branchReset.sinceMs
+              : undefined,
+            pending: BRANCH_RESET_STEPS.filter((step) => state.branchReset!.pending.includes(step)),
+          }
+        : undefined,
     clearBoundary:
       state.clearBoundary &&
       Number.isFinite(state.clearBoundary.atMs) &&
@@ -404,7 +458,8 @@ export function pendingLaunch(
     (e) =>
       e.kind === 'action' &&
       ['plan', 'implement', 'fix', 'review', 'merge'].includes(e.action) &&
-      e.sessionId,
+      e.sessionId &&
+      !beforeReset(snapshot.simple, e.atMs),
   )
   if (launch?.kind !== 'action' || now - launch.atMs >= LAUNCH_RECORD_GRACE_MS) return undefined
   const record = records.find((r) => r.id === launch.sessionId)
@@ -485,6 +540,9 @@ export const simpleStageOf = (stage: AutoStage | undefined): SimpleStage =>
 
 /** Start of this planning attempt, rather than a follow-up message within its turn. */
 export function planningStarted(snapshot: SimpleSnapshot, worktree?: SimpleWorktree) {
+  return Math.max(planAttemptStarted(snapshot, worktree), snapshot.simple?.workflowResetMs ?? 0)
+}
+function planAttemptStarted(snapshot: SimpleSnapshot, worktree?: SimpleWorktree) {
   const log = workflowLog(snapshot.simple)
   const start = log
     .filter(
@@ -578,16 +636,32 @@ export function retryMergeBranch(
   return merge?.kind === 'action' ? merge.request?.destinationBranch : undefined
 }
 
+/**
+ * A finished stage agent that last worked before the last workflow reset, on a branch that is
+ * gone. Running agents still count, as do ones that replied after it, such as a reviewer that was
+ * mid-run, and agents on the map, which outlive a chat's stages.
+ */
+function resetRecord(snapshot: SimpleSnapshot, record: SessionRecord) {
+  if (record.metadata.componentId === MAP_SCOPE) return false
+  const session = snapshot.sessions[record.id] ?? record.snapshot
+  const lastWorkedMs = Math.max(
+    session?.startedMs ?? stageSessionTime(record) ?? 0,
+    session?.replies?.at(-1)?.atMs ?? 0,
+  )
+  return !session?.running && beforeReset(snapshot.simple, lastWorkedMs)
+}
+
 /** One chronological conversation. Replies use journal identity, never terminal text. */
 export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
   const records = snapshot.records
-    .filter((r) =>
-      relatedSession(
-        r,
-        worktree,
-        (snapshot.sessions[r.id] ?? r.snapshot)?.generation,
-        snapshot.simple,
-      ),
+    .filter(
+      (r) =>
+        relatedSession(
+          r,
+          worktree,
+          (snapshot.sessions[r.id] ?? r.snapshot)?.generation,
+          snapshot.simple,
+        ) && !resetRecord(snapshot, r),
     )
     .sort(
       (a, b) => (stageSessionTime(a) ?? 0) - (stageSessionTime(b) ?? 0) || a.id.localeCompare(b.id),
@@ -662,7 +736,8 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
         (snapshot.lead === undefined ||
           e.sessionId !== snapshot.lead ||
           leadStageRuns.has(e.generation)) &&
-        ((e.kind === 'action' && stageActions.includes(e.action)) || e.kind === 'prompt'),
+        ((e.kind === 'action' && stageActions.includes(e.action)) || e.kind === 'prompt') &&
+        !beforeReset(snapshot.simple, e.atMs),
     )
     .at(-1)
   if (action && action.atMs >= (latest ? (stageSessionTime(latest) ?? 0) : 0)) stage = action.stage
