@@ -346,11 +346,10 @@
     await until('implementation agent', () => tiles('@task').length === 2)
     const agent = state().rootTerminals.find((t) => t.kind === 'agent')
     const agentSid = smoke.sessionId('@task', agent.id)
-    const agentHeader = query(`.terminal-tile[data-session="${agentSid}"] .terminal-tile-header`)
-    assert(
-      agentHeader?.querySelector('.hint')?.textContent === 'Builder ›',
-      'root agent tile does not name its role',
-    )
+    const agentHeader = await until('root agent tile names its role', () => {
+      const header = query(`.terminal-tile[data-session="${agentSid}"] .terminal-tile-header`)
+      return header?.querySelector('.hint')?.textContent === 'Builder ›' && header
+    })
     assert(!agentHeader.textContent.includes('Task root'), 'root agent tile says Task root')
     await until('automatic plan handoff', () => textOf(agentSid).includes('# Smoke handoff'))
     await until('planner stopped after handoff', () => !state().sessions[sid]?.running)
