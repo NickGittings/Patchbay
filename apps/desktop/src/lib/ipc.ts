@@ -872,13 +872,24 @@ export const mergeOutcome = (project: Project, request: import('../types').Merge
     request,
   })
 
-/** Pastes and submits a chat message for one generation, acknowledged. Never automatically retried. */
+/**
+ * Pastes and submits a message for one generation and waits for acknowledgment.
+ * Failures carry an `uncertain` delivery flag. Never automatically retried.
+ */
 export const terminalPrompt = (
   sessionId: string,
   generation: number,
   text: string,
   force?: boolean,
-) => invoke<void>('terminal_prompt', { sessionId, generation, text, force })
+) =>
+  invoke<void>('terminal_prompt', { sessionId, generation, text, force }).catch(
+    (error: unknown) => {
+      const failure = error as { message?: string; uncertain?: boolean } | null | undefined
+      throw Object.assign(new Error(failure?.message ?? String(error)), {
+        uncertain: failure?.uncertain === true,
+      })
+    },
+  )
 /** Chat's Interrupt: Esc for this process, after which its prompt reads as ready. */
 export const terminalInterrupt = (sessionId: string, generation: number) =>
   invoke<void>('terminal_interrupt', { sessionId, generation })

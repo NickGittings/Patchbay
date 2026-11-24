@@ -4,6 +4,7 @@ vi.mock('./chatTeams', () => ({
   completeAutoTask: vi.fn(async () => {}),
 }))
 vi.mock('./providerAuth', () => ({
+  authenticateInvocation: vi.fn(async () => {}),
   requireProviderAuth: vi.fn(async () => {}),
   requireDeviceAuth: vi.fn(async () => {}),
   ProviderSetupRequired: class extends Error {},
@@ -11,7 +12,12 @@ vi.mock('./providerAuth', () => ({
 vi.mock('@tauri-apps/api/webviewWindow', () => ({
   getCurrentWebviewWindow: () => ({ label: 'main' }),
 }))
+vi.mock('@tauri-apps/api/core', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tauri-apps/api/core')>()),
+  invoke: vi.fn(),
+}))
 import { beforeEach, afterEach, expect, test, vi } from 'vitest'
+import { invoke } from '@tauri-apps/api/core'
 import { useStore } from '../store'
 import { autoBlocker } from './workBlocker'
 import {
@@ -5145,6 +5151,25 @@ test('a refused continuation becomes an explicit pause and is never blindly retr
     await flush()
     expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'needsUser' })
     expect(autoRun('p', 't')?.reason).toContain('not confirmed')
+    expect(ipc.terminalPrompt).toHaveBeenCalledOnce()
+  })
+})
+
+test('a serialized continuation refusal appears in the pause reason', async () => {
+  autonomousPlanner()
+  const { terminalPrompt } = await vi.importActual<typeof ipc>('./ipc')
+  vi.mocked(ipc.terminalPrompt).mockImplementationOnce(terminalPrompt)
+  vi.mocked(invoke).mockRejectedValueOnce({
+    message: 'The agent is not at a ready prompt',
+    uncertain: false,
+  })
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'needsUser',
+      reason: 'Recovery continuation was not confirmed: The agent is not at a ready prompt',
+    })
     expect(ipc.terminalPrompt).toHaveBeenCalledOnce()
   })
 })

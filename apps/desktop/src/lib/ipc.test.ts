@@ -2,13 +2,32 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { extraContext } from '../extensions/context'
 import type { Kickoff, Project, TerminalSpec } from '../types'
-import { taskRootStart } from './ipc'
+import { taskRootStart, terminalPrompt } from './ipc'
 import { useStore } from '../store'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('../extensions/context', () => ({ extraContext: vi.fn(async () => []) }))
 
 beforeEach(() => vi.clearAllMocks())
+
+test.each([false, true])(
+  'terminalPrompt normalizes failures with uncertain=%s',
+  async (uncertain) => {
+    const message = 'The agent is not at a ready prompt'
+    vi.mocked(invoke).mockRejectedValueOnce({ message, uncertain })
+    const pending = terminalPrompt('session', 1, 'Continue')
+    await expect(pending).rejects.toBeInstanceOf(Error)
+    await expect(pending).rejects.toMatchObject({ message, uncertain })
+  },
+)
+
+test('terminalPrompt reports a string IPC rejection as an Error', async () => {
+  const message = 'IPC channel closed'
+  vi.mocked(invoke).mockRejectedValueOnce(message)
+  const pending = terminalPrompt('session', 1, 'Continue')
+  await expect(pending).rejects.toBeInstanceOf(Error)
+  await expect(pending).rejects.toMatchObject({ message, uncertain: false })
+})
 
 test('IPC keeps the original default project across the authentication await', async () => {
   const original = useStore.getState().project

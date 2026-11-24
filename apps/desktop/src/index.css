@@ -219,6 +219,9 @@ select:focus {
 }
 input[type='checkbox'],
 input[type='radio'] {
+  width: auto;
+  padding: 0;
+  flex: none;
   accent-color: var(--accent);
   box-shadow: none;
 }

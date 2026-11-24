@@ -533,9 +533,9 @@ export async function sendToSession({
           useSimpleUi.getState().patch(key, { unconfirmed: undefined })
           void settleLeadNotes(projectId, task, notes.ids)
         } catch (error) {
-          const failure = error as { uncertain?: boolean; message?: string }
+          const failure = error as { uncertain?: boolean } | null | undefined
           if (!failure?.uncertain) useSimpleUi.getState().patch(key, { unconfirmed: undefined })
-          throw new Error(failure?.message ?? String(error))
+          throw error
         }
       },
       onSubmit: (atMs) => {

@@ -1949,7 +1949,7 @@ async function recoverAuto(
         pauseAuto(
           projectId,
           task,
-          `Recovery continuation was not confirmed: ${String(e)}`,
+          `Recovery continuation was not confirmed: ${e instanceof Error ? e.message : String(e)}`,
           'needsUser',
         )
     }
@@ -2133,7 +2133,12 @@ async function recoverProviderRun(projectId: string, task: string | null, provid
         )
     } catch (e) {
       if (autoRun(projectId, task) === reserved)
-        pauseAuto(projectId, task, `Provider recovery needs attention: ${String(e)}`, 'needsUser')
+        pauseAuto(
+          projectId,
+          task,
+          `Provider recovery needs attention: ${e instanceof Error ? e.message : String(e)}`,
+          'needsUser',
+        )
       else {
         const status = autoRun(projectId, task)?.status
         if (status === 'paused' || status === 'stopped')
