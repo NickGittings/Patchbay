@@ -6,7 +6,7 @@ import {
   mergeDestinationRunning,
   reviewState,
 } from '../lib/reviewAgents'
-import { launchMerge, taskOfWorktree } from '../lib/launchStage'
+import { launchMerge, mergeAutoBlocker, taskOfWorktree } from '../lib/launchStage'
 import { useMergeSourceChanges } from '../lib/useMergeSourceChanges'
 import { useReviewFindings } from '../lib/useReviewFindings'
 import { useStore } from '../store'
@@ -20,6 +20,7 @@ export default function MergeAgentDialog({
   initialDestination,
   close,
   launched,
+  onError,
   onRequest,
   origin,
   task,
@@ -39,6 +40,7 @@ export default function MergeAgentDialog({
   initialDestination?: string
   close: () => void
   launched: (sid: string) => void
+  onError?: (error: Error) => void
 }) {
   // Capture this dialog's project so switching tabs cannot redirect a pending launch.
   const [project] = useState(() => useStore.getState().toProject())
@@ -56,6 +58,16 @@ export default function MergeAgentDialog({
   const sessions = useStore((s) => s.sessions)
   const destinations = mergeDestinations(source, worktrees, branches)
   const target = destinations.find((d) => d.branch === destination)
+  const sourceTask =
+    source?.path === active.path && task !== undefined
+      ? task
+      : source && taskOfWorktree(source, project.projectId)
+  const blockedMessage = useStore(
+    () => mergeAutoBlocker(project.projectId, sourceTask, target?.worktree)?.message,
+  )
+  const blocker = blockedMessage
+    ? mergeAutoBlocker(project.projectId, sourceTask, target?.worktree)
+    : undefined
   const sourceChanges = useMergeSourceChanges(project, source?.path, source?.branch)
   const changes = sourceChanges.changes
   const commitFirst = !!changes?.length
@@ -92,17 +104,15 @@ export default function MergeAgentDialog({
       )}
       ready={!!source?.branch && !!target?.branch && !!changes}
       running={mergeDestinationRunning(records, sessions, target?.worktree?.path ?? '')}
-      runningText="A merge agent is already running in this destination."
+      runningText={`A merge agent is running in ${target?.branch}. Finish the merge or stop that agent first.`}
+      blocker={blocker}
+      onError={onError}
       offlineText="Reconnect before starting a merge agent."
       hint="Merges the whole committed branch, resolves conflicts, and runs relevant checks before completing the local merge. The destination worktree must be clean; uncommitted source changes can be committed first. Leaves pushing to you."
       submitLabel={commitFirst ? 'Commit and merge' : undefined}
       launch={async ([device]) => {
         const requestId = crypto.randomUUID()
         try {
-          const sourceTask =
-            source!.path === active.path && task !== undefined
-              ? task
-              : taskOfWorktree(source!, project.projectId)
           const started = await launchMerge(origin, sourceTask, {
             project,
             source: source!,
@@ -139,6 +149,9 @@ export default function MergeAgentDialog({
                         ? 'Review findings are current.'
                         : 'Review findings exist; changed since review.'}
             </p>
+          )}
+          {!target && source && !destinations.length && (
+            <p role="status">Create another local branch before merging this worktree.</p>
           )}
           {sourceChanges.error && (
             <p className="file-tree-error" role="alert">

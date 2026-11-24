@@ -1,3 +1,4 @@
+import WorkFeedback from './WorkFeedback'
 import { useEffect } from 'react'
 import { useStore } from '../store'
 import { useChatFollow } from '../lib/useChatFollow'
@@ -30,7 +31,7 @@ interface TimelineProps {
   source: Reader['source']
   findings: Reader['findings']
   pending: string
-  failure: string
+  failure?: Error
   openFile: (path: string, line?: number) => void
   openDiff: (file: SimpleDiff) => void
 }
@@ -221,7 +222,7 @@ export default function ChatModeTimeline({
             Starting {pending === 'build' ? 'build' : pending}…
           </p>
         )}
-        {failure && <p role="alert">{failure}</p>}
+        {failure && <WorkFeedback error={failure} />}
       </div>
       {!following && (
         <div className="simple-jump">

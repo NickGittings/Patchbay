@@ -413,8 +413,78 @@
     smoke.store.setState({
       workspaceSettings: { ...state().workspaceSettings, autoKeepAwake: false },
     })
+    const autoControl = (label, root = document) =>
+      [...root.querySelectorAll('button')].find((button) => button.textContent.trim() === label)
+    const stopDialog = (label) => document.querySelector(`[role="dialog"][aria-label="${label}"]`)
+    const replacementTask = state().activeTask
+    const pausedRun = {
+      ...completedAuto,
+      status: 'paused',
+      goal: 'Previous Auto goal',
+      round: 2,
+      overrides: { maxRounds: 4 },
+      sessionId: undefined,
+      laneSessions: undefined,
+    }
+    smoke.store.setState({ auto: pausedRun })
+    const replace = await until('paused Auto offers replacement setup', () =>
+      autoControl('Stop and configure new run'),
+    )
+    assert(autoControl('Resume').classList.contains('primary'), 'Resume lost primary position')
+    replace.click()
+    const configure = await until('replacement-stop confirmation', () =>
+      stopDialog('Stop and configure new run'),
+    )
+    assert(configure.textContent.includes('Previous Auto goal'), 'Stop did not name its run')
+    assert(
+      configure.textContent.includes('zero fix rounds'),
+      'Stop did not explain the budget reset',
+    )
+    autoControl('Stop run', configure).click()
+    const goal = await until('prefilled replacement setup', () => {
+      const field = document.querySelector('.auto-goal-field textarea')
+      return field?.value === pausedRun.goal && field
+    })
+    assert(state().activeTask === replacementTask, 'Replacement setup switched worktrees')
+    assert(document.activeElement === goal, 'Replacement setup did not focus the goal')
+    assert(
+      document.querySelector('.auto-content select').selectedOptions[0].value === '',
+      'Replacement fixed the starting stage',
+    )
+    assert(
+      document.querySelector('.auto-content input[type="number"]').value === '4',
+      'Replacement lost its fix budget',
+    )
+    assert(
+      state().auto.status === 'stopped' && autoControl('Start'),
+      'Recovery launched a replacement',
+    )
+
+    // Chat can stop just Auto while there is no eligible coordination target.
+    smoke.store.setState({ auto: { ...pausedRun, runId: 'chat-stop-auto' } })
+    state().setSimpleMode(true)
+    const chat = await until('Chat with paused Auto', () => document.querySelector('.simple-chat'))
+    chat.querySelector('[aria-label="Chat menu"]').click()
+    const stopWork = await until('Chat Stop work for Auto alone', () =>
+      autoControl('Stop work', document.querySelector('[role="menu"]') ?? document),
+    )
+    stopWork.click()
+    const stop = await until('Auto-only Stop work confirmation', () => stopDialog('Stop work'))
+    assert(
+      stop.textContent.includes('Auto run') && !stop.textContent.includes('Sub-builder sessions'),
+      'Stop work listed the wrong targets',
+    )
+    autoControl('Stop work', stop).click()
+    await until(
+      'Auto-only Stop work outcome',
+      () =>
+        state().auto?.status === 'stopped' &&
+        document
+          .querySelector('[aria-label="Work command results"]')
+          ?.textContent.includes('Auto stopped'),
+    )
     await smoke.report(
-      'PASS Auto: review → fix → review → approval → merge → done; native Codex P-tag conversion and process exit, authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, autonomous recovery from a missing plan, background description planning/implementation/affected validation and automatic merge without switching worktrees or views, and an in-place run on main from plan to Done against its Start commit',
+      'PASS Auto: review → fix → review → approval → merge → done; native Codex P-tag conversion and process exit, authoritative turns, scoped commit, attention, verified Git outcome, delayed presets, paused restore, autonomous recovery from a missing plan, background description planning/implementation/affected validation and automatic merge without switching worktrees or views, an in-place run on main from plan to Done against its Start commit, paused-run replacement setup, and Chat Stop work for Auto alone',
     )
   } catch (e) {
     await smoke.report(

@@ -114,6 +114,47 @@
     await until('question names its originating agent', () =>
       document.querySelector('.chat-question-title')?.textContent.includes('Second agent'),
     )
+    // A waiting agent keeps the queued message from auto-delivering during handoff.
+    const scope = smoke.simpleKey(projectId, null)
+    smoke.simpleUi.getState().patch(scope, {
+      queued: {
+        sessionId: asking.id,
+        generation: 1,
+        text: 'Keep this message',
+        draft: 'Keep this message',
+        mentions: [],
+      },
+    })
+    const auto = button('Auto mode', document.querySelector('.simple-chat header'))
+    assert(auto && !auto.disabled, 'Chat Auto hid its handoff blocker')
+    auto.focus()
+    click(auto)
+    const handoff = await until('queued handoff blocker', () => confirmDialog('Hand off to Auto'))
+    assert(button('Cancel queued message', handoff), 'No queued-message recovery')
+    document.activeElement.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    )
+    await until('Escape dismisses handoff', () => !confirmDialog('Hand off to Auto'))
+    assert(document.activeElement === auto, 'Auto handoff did not return focus')
+    click(auto)
+    click(
+      button(
+        'Cancel queued message',
+        await until('queued handoff reopened', () => confirmDialog('Hand off to Auto')),
+      ),
+    )
+    await until(
+      'queued message returned to draft',
+      () =>
+        !confirmDialog('Hand off to Auto') &&
+        !smoke.simpleUi.getState().worktrees[scope]?.queued &&
+        document.querySelector('[aria-label="Message agent"]')?.value === 'Keep this message',
+    )
+    assert(
+      !state().auto && state().utilityPanel !== 'auto',
+      'Cancelling a queue started an Auto handoff',
+    )
+    smoke.simpleUi.getState().patch(scope, { draft: '' })
     click(await chatMenu('Clear chat'))
     const clear = await until('visible history confirmation', () => confirmDialog('Clear chat'))
     click(button('Cancel', clear))
@@ -495,11 +536,11 @@
     state().setSimpleMode(true)
     await until('chat restored to Navigation', () => document.querySelector('.simple-chat'))
     await smoke.report(
-      'PASS chat controls: follow/unread and remount/worktree resets, exact message/code copying and clipboard errors, semantic Markdown, keyboard/IME/mouse mentions, visible clearing, narrow panels, resize/hide/show and project tabs',
+      'PASS chat controls: queued Auto handoff and keyboard focus return, follow/unread and remount/worktree resets, exact message/code copying and clipboard errors, semantic Markdown, keyboard/IME/mouse mentions, visible clearing, narrow panels, resize/hide/show and project tabs',
     )
   } catch (e) {
     await smoke.report(
-      `FAIL chat controls: ${e.message} ${e.stack ?? ''} message=${state().message}`,
+      `FAIL chat controls: ${e.message ?? String(e)} ${e.stack ?? ''} message=${state().message}`,
     )
   }
 })()

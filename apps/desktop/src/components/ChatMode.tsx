@@ -19,15 +19,12 @@ import {
   usePresetProviders,
   type HookProvider,
 } from '../lib/agentHooks'
-import {
-  chatRecipient,
-  chatBusy,
-  chatAutoActive,
-  chatInputRequests,
-  withOfferedQuestions,
-} from '../lib/chat'
+import { chatRecipient, chatAutoActive, chatInputRequests, withOfferedQuestions } from '../lib/chat'
 import { listenAgentQuestions, useAgentQuestions, watchQuestions } from '../lib/agentQuestions'
 import { teamJobs, workerSession, workerStatus } from '../lib/chatProgress'
+import { workSelection, unavailableWork, type WorkCommand } from '../lib/chatWork'
+import { worktreeLabel } from '../lib/workBlocker'
+import WorkFeedback from './WorkFeedback'
 import { useChatModeWorkflow } from '../lib/useChatModeWorkflow'
 import { useChatIdentity } from '../lib/chatIdentity'
 import { stopTerminal } from '../lib/sessions'
@@ -46,6 +43,12 @@ import Dialog from './Dialog'
 import Menu, { MenuItem, MenuSeparator } from './Menu'
 import './auto/auto.css'
 import './simple.css'
+
+const WORK_PENDING: Record<WorkCommand, string> = {
+  pause: 'Pausing work',
+  continue: 'Continuing work',
+  stop: 'Stopping work',
+}
 
 export default function ChatMode({
   reader,
@@ -71,7 +74,16 @@ export default function ChatMode({
   const { data, source, worktrees, branches, files: changed, error, findings } = reader
   const stage = useStageModel(reader)!
   const { key, team, ui, model, flowSnapshot, launch, now, retryBranch, target, reviewBase } = stage
-  const [confirm, setConfirm] = useState<{ kind: 'clear' | 'fresh' | 'stop'; key: string }>()
+  const [confirm, setConfirm] = useState<
+    | { kind: 'clear' | 'fresh'; key: string }
+    | {
+        kind: 'stop'
+        key: string
+        selection: ReturnType<typeof workSelection>
+        tree?: string
+        branch?: string | null
+      }
+  >()
   if (confirm && confirm.key !== key) setConfirm(undefined)
   const closeConfirm = () => setConfirm(undefined)
   const projectId = s.project?.id ?? '',
@@ -95,6 +107,10 @@ export default function ChatMode({
       chatRef.current?.querySelector<HTMLTextAreaElement>('.simple-composer textarea')?.focus(),
   })
   const { pending, failure, dialog, setDialog, act, mergeStarted } = workflow
+  const blockedHandoff = workflow.handoffBlock
+  const workTarget = { projectId, task }
+  const stopSelection = workflow.selected('stop')
+  const workBlocked = !!pending || !!ui.pendingWorkflow || !!ui.pendingAction
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
   const identity = useChatIdentity(recipient)
   const { state, stepper, autoActive, autoHalt } = stage
@@ -203,45 +219,64 @@ export default function ChatMode({
       <header>
         <strong>Chat</strong>
         <ChatAgentPicker key={key} records={model.records} />
-        <button
-          disabled={
-            !!ui.pendingAction || !!ui.queued || chatBusy(recipient && s.sessions[recipient.id])
-          }
-          title="Finish or stop the current agent turn before handing off"
-          onClick={workflow.openAuto}
-        >
-          Auto mode
-        </button>
+        <button onClick={workflow.openAuto}>Auto mode</button>
         <Menu label="•••" triggerLabel="Chat menu" caret={false} align="right" portal>
-          {team && (
+          {(team || s.auto) && (
             <>
               <MenuItem
-                disabled={!!pending || team.state !== 'running'}
-                onClick={() => void workflow.pauseWork()}
+                disabled={workBlocked}
+                title={
+                  workflow.selected('pause').team || workflow.selected('pause').auto
+                    ? undefined
+                    : unavailableWork('pause', workTarget)
+                }
+                onClick={() => void workflow.work('pause')}
               >
                 Pause work
               </MenuItem>
               <MenuItem
-                disabled={!!pending || team.state === 'running'}
-                onClick={() => void workflow.continueWork()}
+                disabled={workBlocked}
+                title={
+                  workflow.selected('continue').team || workflow.selected('continue').auto
+                    ? undefined
+                    : unavailableWork('continue', workTarget)
+                }
+                onClick={() => void workflow.work('continue')}
               >
                 Continue work
               </MenuItem>
               <MenuItem
-                disabled={!!pending || team.state === 'stopped'}
-                onClick={() => setConfirm({ kind: 'stop', key })}
+                disabled={workBlocked}
+                title={
+                  stopSelection.team || stopSelection.auto
+                    ? undefined
+                    : unavailableWork('stop', workTarget)
+                }
+                onClick={() => {
+                  if (!stopSelection.team && !stopSelection.auto) void workflow.work('stop')
+                  else
+                    setConfirm({
+                      kind: 'stop',
+                      key,
+                      selection: stopSelection,
+                      tree: workflow.tree,
+                      branch: source?.branch,
+                    })
+                }}
               >
                 Stop work
               </MenuItem>
               <MenuSeparator />
-              <MenuItem
-                disabled={!!team.reset || !!ui.pendingAction || !!ui.pendingWorkflow}
-                title="Reset the lead’s provider context. Sub-builders and a concise work handoff are retained."
-                onClick={() => setConfirm({ kind: 'fresh', key })}
-              >
-                Clear lead context
-              </MenuItem>
             </>
+          )}
+          {team && (
+            <MenuItem
+              disabled={!!team.reset || !!ui.pendingAction || !!ui.pendingWorkflow}
+              title="Reset the lead’s provider context. Sub-builders and a concise work handoff are retained."
+              onClick={() => setConfirm({ kind: 'fresh', key })}
+            >
+              Clear lead context
+            </MenuItem>
           )}
           {recipient &&
             s.sessions[recipient.id]?.running &&
@@ -332,7 +367,7 @@ export default function ChatMode({
           </p>
         </Dialog>
       )}
-      {team && confirm?.kind === 'stop' && (
+      {confirm?.kind === 'stop' && (
         <Dialog
           title="Stop work"
           className="centered confirm-dialog"
@@ -344,10 +379,10 @@ export default function ChatMode({
               </button>
               <button
                 className="danger"
-                disabled={!!pending || team.state === 'stopped'}
+                disabled={workBlocked || source?.branch !== confirm.branch}
                 onClick={() => {
                   closeConfirm()
-                  void workflow.stopWork()
+                  void workflow.work('stop', confirm.selection, confirm.tree)
                 }}
               >
                 Stop work
@@ -355,8 +390,105 @@ export default function ChatMode({
             </>
           }
         >
-          <p>Stop the lead and sub-builders for this task? You can continue work later.</p>
+          <p>Stop work in {worktreeLabel(workTarget)}?</p>
+          <ul>
+            {confirm.selection.team && <li>Chat coordination and its Sub-builder sessions</li>}
+            {confirm.selection.auto && (
+              <li>Auto run “{confirm.selection.auto.goal}” and agents it launched</li>
+            )}
+          </ul>
+          {source?.branch !== confirm.branch && (
+            <p role="alert">
+              The branch changed. Close this confirmation and choose Stop work again.
+            </p>
+          )}
         </Dialog>
+      )}
+      {workflow.autoPrompt && (
+        <Dialog
+          title="Hand off to Auto"
+          subtitle={worktreeLabel(workTarget)}
+          className="centered confirm-dialog"
+          onClose={workflow.closeAutoPrompt}
+          footer={
+            <>
+              <button autoFocus onClick={workflow.closeAutoPrompt}>
+                Close
+              </button>
+              {blockedHandoff?.queued && (
+                <button className="primary" onClick={workflow.cancelAutoQueue}>
+                  Cancel queued message
+                </button>
+              )}
+              {blockedHandoff?.terminal && (
+                <button
+                  className="primary"
+                  onClick={() => {
+                    const record = s.sessionRecords.find((r) => r.id === workflow.handoffAgent?.id)
+                    if (record) {
+                      workflow.closeAutoPrompt()
+                      openWorkerTerminal(record)
+                    }
+                  }}
+                >
+                  Open terminal
+                </button>
+              )}
+              {blockedHandoff?.composer && (
+                <button
+                  onClick={() => {
+                    workflow.closeAutoPrompt()
+                    requestAnimationFrame(() =>
+                      chatRef.current
+                        ?.querySelector<HTMLTextAreaElement>('.simple-composer textarea')
+                        ?.focus(),
+                    )
+                  }}
+                >
+                  Go to composer
+                </button>
+              )}
+              {blockedHandoff?.interrupt && (
+                <button
+                  onClick={() => void workflow.interruptAutoHandoff(blockedHandoff.interrupt)}
+                >
+                  Interrupt turn
+                </button>
+              )}
+              {(!blockedHandoff ||
+                (s.auto && s.auto.status !== 'done' && s.auto.status !== 'stopped')) && (
+                <button className="primary" onClick={workflow.openAuto}>
+                  Open Auto
+                </button>
+              )}
+            </>
+          }
+        >
+          <p role="status">
+            {blockedHandoff?.message ?? 'Chat is ready. Open Auto to review the setup.'}
+          </p>
+          {failure && <WorkFeedback error={failure} />}
+        </Dialog>
+      )}
+      {Object.hasOwn(WORK_PENDING, pending) && (
+        <p className="chat-coordination" role="status">
+          {WORK_PENDING[pending as WorkCommand]} in {worktreeLabel(workTarget)}…
+        </p>
+      )}
+      {workflow.workOutcomes.length > 0 && (
+        <div className="chat-coordination" aria-label="Work command results">
+          {workflow.workOutcomes.map(({ target, result }) => (
+            <div key={target}>
+              {typeof result === 'string' ? (
+                <p role="status">
+                  {target ? `${target} ${result} in ${worktreeLabel(workTarget)}.` : result}
+                </p>
+              ) : (
+                <WorkFeedback error={result} label={target} />
+              )}
+            </div>
+          ))}
+        </div>
       )}
       {(state.step !== 'idle' || autoActive || autoHalt) && (
         <div className="chat-progress">
@@ -369,6 +501,7 @@ export default function ChatMode({
                 : undefined
             }
           />
+          {autoActive && <button onClick={workflow.openAuto}>Open Auto</button>}
           {autoActive && (
             <button className="chat-auto-pause" onClick={workflow.pauseAuto}>
               Pause Auto
@@ -392,7 +525,11 @@ export default function ChatMode({
           source={source}
           worktrees={worktrees}
           close={() => setDialog(undefined)}
-          launched={() => setDialog(undefined)}
+          onError={workflow.setFailure}
+          launched={() => {
+            workflow.setFailure()
+            setDialog(undefined)
+          }}
         />
       )}
       {source && dialog === 'merge' && (
@@ -406,7 +543,11 @@ export default function ChatMode({
           origin="chat"
           task={task}
           onRequest={mergeStarted}
-          launched={() => setDialog(undefined)}
+          onError={workflow.setFailure}
+          launched={() => {
+            workflow.setFailure()
+            setDialog(undefined)
+          }}
         />
       )}
       <ChatModeTimeline
@@ -423,7 +564,7 @@ export default function ChatMode({
         source={source}
         findings={findings}
         pending={pending}
-        failure={failure}
+        failure={dialog || workflow.autoPrompt ? undefined : failure}
         openFile={openFile}
         openDiff={(file) => useSimpleUi.getState().patch(key, { changes: true, diff: file })}
       />

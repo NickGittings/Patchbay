@@ -1,3 +1,5 @@
+import WorkFeedback from './WorkFeedback'
+import { workError } from '../lib/workBlocker'
 import { useRef, useState, type ReactNode } from 'react'
 import Dialog from './Dialog'
 import ReviewerPicker from './ReviewerPicker'
@@ -17,6 +19,8 @@ export default function AgentJobDialog({
   ready,
   running,
   runningText,
+  blocker,
+  onError,
   offlineText,
   hint,
   submitLabel,
@@ -36,6 +40,8 @@ export default function AgentJobDialog({
   ready: boolean
   running: boolean
   runningText: string
+  blocker?: Error
+  onError?: (error: Error) => void
   offlineText: string
   hint: ReactNode
   /** Replaces the default submit text when the launch does more than start the job. */
@@ -54,21 +60,24 @@ export default function AgentJobDialog({
   const [picked, setPicked] = useState<string[]>()
   const [changingAgents, setChangingAgents] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<Error>()
   const pending = useRef(false)
   const chosen = picked
     ? agents.filter((d) => picked.includes(d.id))
     : roleDevices(devices, roles, role)
   const device = chosen[0] as DeviceManifest | undefined
   const submit = async () => {
-    if (pending.current || !ready || !source?.branch || !device || !connected || running) return
+    if (pending.current || !ready || !source?.branch || !device || !connected || running || blocker)
+      return
     pending.current = true
     setBusy(true)
-    setError('')
+    setError(undefined)
     try {
       launched(await launch(chosen))
     } catch (e) {
-      setError(String(e))
+      const error = workError(e)
+      setError(error)
+      onError?.(error)
     } finally {
       pending.current = false
       setBusy(false)
@@ -84,14 +93,14 @@ export default function AgentJobDialog({
         }}
       >
         {sourceField ? (
-          sourceField({ busy, clearError: () => setError('') })
+          sourceField({ busy, clearError: () => setError(undefined) })
         ) : !compact ? (
           <label>
             Source branch <strong>{source?.branch}</strong>
             <code>{source?.path}</code>
           </label>
         ) : null}
-        {children({ busy, clearError: () => setError('') })}
+        {children({ busy, clearError: () => setError(undefined) })}
         {compact && (
           <p className="agent-job-summary">
             <span>Agents: {chosen.map((d) => d.name).join(', ') || 'None selected'}</span>{' '}
@@ -166,11 +175,7 @@ export default function AgentJobDialog({
         )}
         {running && <p role="status">{runningText}</p>}
         {!connected && <p role="status">{offlineText}</p>}
-        {error && (
-          <p className="file-tree-error" role="alert">
-            {error}
-          </p>
-        )}
+        {(blocker || error) && <WorkFeedback error={(blocker ?? error)!} onOpenAuto={close} />}
         <div className="row">
           <span className="spacer" />
           <button type="button" disabled={busy} onClick={close}>
@@ -179,7 +184,7 @@ export default function AgentJobDialog({
           <button
             type="submit"
             className="primary"
-            disabled={busy || !ready || !device || !connected || running}
+            disabled={busy || !ready || !device || !connected || running || !!blocker}
           >
             {busy ? 'Starting…' : (submitLabel ?? (compact ? `Start ${role}` : title))}
           </button>

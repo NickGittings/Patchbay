@@ -5,6 +5,8 @@ import { reviewFixTask } from './ipc'
 import { roleDevice } from './agentRoles'
 import { agentDevices } from './plan'
 import { startTerminal } from './sessions'
+import { reviewWorktreeBusy } from './review'
+import { refuseWhileAutoRuns } from './workBlocker'
 import { refreshTasks } from './tasks'
 import type { HandoffTarget } from './planHandoff'
 
@@ -52,6 +54,11 @@ export async function fixReviewFindings(
     throw new Error('Open the reviewed project first')
   if (!target && current.activeTask !== selectedTask)
     throw new Error('The selected worktree changed')
+  if (!auto) {
+    refuseWhileAutoRuns(projectId, task)
+    if (reviewWorktreeBusy(current.sessionRecords, current.sessions, record.spec.cwd))
+      throw new Error('Wait for the current review to finish before fixing its findings.')
+  }
   const previous = current.activeTask
   // Exact: a `null` here means no task holds the project folder, so nothing to redirect to.
   if (!target && previous !== task) current.setActiveTask(task, true)

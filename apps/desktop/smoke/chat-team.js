@@ -296,7 +296,13 @@
     state().setActiveTask(null)
     await until('original worktree team', () => agentCount() > 0)
     ;(await chatMenu('Stop work')).click()
-    button('Stop work', await until('stop confirmation', () => confirmDialog('Stop work'))).click()
+    const stop = await until('stop confirmation', () => confirmDialog('Stop work'))
+    assert(
+      stop.textContent.includes('Chat coordination and its Sub-builder sessions'),
+      'Stop did not name its Chat target',
+    )
+    assert(!stop.textContent.includes('Auto run'), 'Stop listed an ineligible Auto run')
+    button('Stop work', stop).click()
     await until('stopped team', () => team().state === 'stopped')
     assert(
       jobs().every((j) => j.task && j.summary),

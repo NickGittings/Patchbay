@@ -179,6 +179,15 @@ async function startLeadMerge(team: ChatTeam, request: Workflow): Promise<Launch
     project,
     source,
     destinationBranch: destination,
+    beforeResolve: () => {
+      refuseWhileAutoRuns(team.projectId, team.task)
+      if (target) refuseWhileAutoRuns(team.projectId, taskOfWorktree(target, team.projectId))
+    },
+    beforeLaunch: (request) => {
+      refuseWhileAutoRuns(team.projectId, team.task)
+      const checkout = target?.path === request.destination ? target : { path: request.destination }
+      refuseWhileAutoRuns(team.projectId, taskOfWorktree(checkout, team.projectId))
+    },
     device: requireRoleDevice('merge'),
     commitSource: strings(request.settings.commitSource) ?? 'report',
   })

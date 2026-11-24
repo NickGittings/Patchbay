@@ -1,10 +1,11 @@
 import { setAutoKeepAwake, useAutoPower } from '../../lib/autoPower'
 import { logSimple } from '../../lib/simpleActions'
 import { simpleStageOf, type SimpleAction } from '../../lib/simple'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from '../../store'
 import { parseSessionId, type ActionReport, type AutoRun } from '../../types'
 import {
+  autoRun,
   cancelAutoResume,
   scheduleAutoResume,
   setAutoUsageResume,
@@ -23,7 +24,14 @@ import { agentDevices } from '../../lib/plan'
 import { presetExhausted, useUsage } from '../../lib/usage'
 import AutoDialog from './AutoDialog'
 import type { HookProvider } from '../../lib/agentHooks'
-import { autoDraftKey, autoDrafts } from '../../lib/autoDrafts'
+import {
+  returnAfterAutoStop,
+  workError,
+  worktreeLabel,
+  worktreeIdentity,
+} from '../../lib/workBlocker'
+import Dialog from '../Dialog'
+import { autoDraftKey, autoDrafts, replacementAutoDraft } from '../../lib/autoDrafts'
 import { finished as ended, STATUS_LABELS, taskPassed } from '../../lib/autoSettings'
 import PanelContent from '../PanelContent'
 import { PanelDetails } from '../PanelSection'
@@ -106,6 +114,16 @@ export default function AutoPanel({
   const task = useStore((s) => s.activeTask)
   const draftVersion = useStore((s) => s.autoDraftVersion)
   const [error, setError] = useState('')
+  const [stopRequest, setStopRequest] = useState<{
+    run: AutoRun
+    tree?: string
+    configure: boolean
+  }>()
+  const [stopping, setStopping] = useState(false)
+  // The stopped run whose replacement setup should take focus once, not every later setup.
+  const [focusSetupFor, setFocusSetupFor] = useState<string>()
+  const draftKey = autoDraftKey(projectId, task)
+  const savedDraft = autoDrafts.get(draftKey)
   // Tied to the run and pause it came from, so a later pause or another worktree starts clean.
   const [scheduleError, setScheduleError] = useState<{ key: string; message: string }>()
   const [resumeTime, setResumeTime] = useState('')
@@ -115,7 +133,8 @@ export default function AutoPanel({
   const newRun =
     finished &&
     (newRunFor === JSON.stringify([projectId, task, run.runId]) ||
-      !!autoDrafts.get(autoDraftKey(projectId, task))?.story)
+      !!savedDraft?.story ||
+      savedDraft?.replacementFor === run.runId)
   // Run controls whose call is in flight, so a second press can't send one twice. Controls that
   // advance the run (merge, resume, skip) exclude each other; Pause and Stop stay available so
   // they can still cancel a slow Resume.
@@ -130,7 +149,7 @@ export default function AutoPanel({
     action: SimpleAction,
     fn: (id: string, task: string | null) => void | Promise<void>,
   ) => {
-    if (!projectId || blocked(action)) return
+    if (!projectId || blocked(action) || stopping) return
     setPending((current) => new Set(current).add(action))
     void Promise.resolve()
       .then(() => fn(projectId, task))
@@ -154,6 +173,57 @@ export default function AutoPanel({
       )
   }
   // Opens Power when sleep prevention can't do its job, so the warning isn't left collapsed.
+  const chooseStop = (configure: boolean) => {
+    if (!projectId || !run) return
+    setError('')
+    setStopRequest({ run, tree: worktreeIdentity({ projectId, task }), configure })
+  }
+  const confirmStop = async () => {
+    if (!projectId || !stopRequest || stopping) return
+    const target = { projectId, task }
+    const currentScope = () => {
+      const state = useStore.getState()
+      return (
+        !!stopRequest.tree &&
+        state.project?.id === projectId &&
+        state.activeTask === task &&
+        worktreeIdentity(target) === stopRequest.tree
+      )
+    }
+    setStopping(true)
+    try {
+      if (!currentScope())
+        throw new Error('The worktree changed. Open the intended Auto run and try again.')
+      await stopAuto(projectId, task, stopRequest.run, { replace: stopRequest.configure })
+      const stopped = autoRun(projectId, task)
+      if (simple)
+        logSimple(projectId, task, {
+          kind: 'action',
+          action: 'stopAuto',
+          stage: simpleStageOf(stopRequest.run.stage),
+        })
+      if (stopRequest.configure && stopped?.status === 'stopped') {
+        autoDrafts.set(draftKey, replacementAutoDraft(stopRequest.run, stopped.runId))
+        if (currentScope()) setFocusSetupFor(stopped.runId)
+      } else {
+        returnAfterAutoStop(target, stopRequest.run)
+        requestAnimationFrame(() => {
+          if (document.activeElement === document.body)
+            document.querySelector<HTMLButtonElement>('[data-auto-new-run]')?.focus()
+        })
+      }
+    } catch (e) {
+      setError(workError(e).message)
+    } finally {
+      setStopping(false)
+      setStopRequest(undefined)
+    }
+  }
+  // The setup dialog took focus on mount; a later remount of it must not take focus again.
+  const settingUp = !run || (newRun && !stopRequest)
+  useEffect(() => {
+    if (focusSetupFor && settingUp) setFocusSetupFor(undefined)
+  }, [focusSetupFor, settingUp])
   const powerProblem =
     keepAwake &&
     (['onBattery', 'powerUnknown', 'unavailable'].includes(power.status) || !!power.error)
@@ -179,13 +249,14 @@ export default function AutoPanel({
       )}
     </PanelDetails>
   )
-  if (!run || newRun)
+  if (settingUp)
     return (
       <PanelContent>
         <AutoDialog
           key={`${autoDraftKey(projectId, task)}/${draftVersion}`}
           onIntegrations={onIntegrations}
           simple={simple}
+          focusGoal={!!run && focusSetupFor === run.runId}
         />
         {powerSection}
       </PanelContent>
@@ -285,7 +356,7 @@ export default function AutoPanel({
                 className={
                   run.stage === 'mergeGate' && run.status === 'waitingOnYou' ? undefined : 'primary'
                 }
-                disabled={blocked('resumeAuto')}
+                disabled={blocked('resumeAuto') || stopping}
                 onClick={() => act('resumeAuto', (id, task) => resumeAuto(id, task))}
               >
                 {run.resumeTrigger ? 'Resume now' : 'Resume'}
@@ -294,6 +365,7 @@ export default function AutoPanel({
           )}
           {finished && (
             <button
+              data-auto-new-run
               className={run.status === 'failed' ? undefined : 'primary'}
               onClick={() => setNewRunFor(JSON.stringify([projectId, task, run.runId]))}
             >
@@ -301,20 +373,57 @@ export default function AutoPanel({
             </button>
           )}
           {['paused', 'failed', 'waitingOnYou'].includes(run.status) && (
-            <button disabled={blocked('skipStage')} onClick={() => act('skipStage', skipStage)}>
+            <button
+              disabled={blocked('skipStage') || stopping}
+              onClick={() => act('skipStage', skipStage)}
+            >
               {run.stage === 'scan' ? 'Continue with available findings' : 'Skip stage'}
+            </button>
+          )}
+          {run.status === 'paused' && (
+            <button disabled={stopping} onClick={() => chooseStop(true)}>
+              Stop and configure new run
             </button>
           )}
           {stoppable && (
             <button
               className="auto-stop"
-              disabled={blocked('stopAuto')}
-              onClick={() => act('stopAuto', stopAuto)}
+              disabled={blocked('stopAuto') || stopping}
+              onClick={() => chooseStop(false)}
             >
               Stop
             </button>
           )}
         </div>
+        {stopRequest && projectId && (
+          <Dialog
+            title={stopRequest.configure ? 'Stop and configure new run' : 'Stop Auto run'}
+            className="centered confirm-dialog"
+            onClose={() => setStopRequest(undefined)}
+            dismissible={!stopping}
+            footer={
+              <>
+                <button autoFocus onClick={() => setStopRequest(undefined)} disabled={stopping}>
+                  Cancel
+                </button>
+                <button className="danger" onClick={() => void confirmStop()} disabled={stopping}>
+                  {stopping ? 'Stopping Auto…' : 'Stop run'}
+                </button>
+              </>
+            }
+          >
+            <p>
+              Stop “{stopRequest.run.goal}” in {worktreeLabel({ projectId, task })}? This can end
+              the agents Auto launched.
+            </p>
+            {stopRequest.configure && (
+              <p>
+                The replacement starts with zero fix rounds used. Review the setup and press Start
+                when ready.
+              </p>
+            )}
+          </Dialog>
+        )}
         {error && (
           <p className="auto-callout" data-tone="bad" role="alert">
             {error}
@@ -324,7 +433,7 @@ export default function AutoPanel({
           <section className="auto-group" aria-label="Resume">
             {run.status === 'paused' && run.pauseKind === 'usage' && (
               <ResumeOnAgent
-                disabled={blocked('resumeAuto')}
+                disabled={blocked('resumeAuto') || stopping}
                 onChoose={(device) =>
                   act('resumeAuto', (id, task) => resumeAutoWithAgent(id, task, device))
                 }

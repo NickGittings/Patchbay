@@ -107,12 +107,12 @@ test('duplicate launches share a scope lock and release it after failure', async
   expect(render().pending).toBe('build')
   reject(new Error('launch failed'))
   await idle()
-  expect(render().failure).toContain('launch failed')
+  expect(render().failure?.message).toContain('launch failed')
   vi.mocked(implementPlannerPlan).mockResolvedValue({ sessionId: 'builder' })
   render().act('build')
   await idle()
   expect(implementPlannerPlan).toHaveBeenCalledTimes(2)
-  expect(render().failure).toBe('')
+  expect(render().failure).toBeUndefined()
   // The lead hears of work started beside it, with the session whose finish must not wake it.
   expect(vi.mocked(noteLead).mock.calls.at(-1)?.slice(1, 3)).toEqual([
     'a build of the saved plan',
@@ -132,8 +132,8 @@ test('late failure stays scoped to its original chat', async () => {
   expect(render(other).pending).toBe('')
   reject(new Error('old launch failed'))
   await idle()
-  expect(render(other).failure).toBe('')
-  expect(render().failure).toContain('old launch failed')
+  expect(render(other).failure).toBeUndefined()
+  expect(render().failure?.message).toContain('old launch failed')
 })
 test('stale build and review actions do not launch in another worktree', async () => {
   const old = render()
@@ -141,12 +141,12 @@ test('stale build and review actions do not launch in another worktree', async (
   old.act('build')
   await idle()
   expect(implementPlannerPlan).not.toHaveBeenCalled()
-  expect(render().failure).toContain('worktree changed')
+  expect(render().failure?.message).toContain('worktree changed')
   vi.mocked(gitBranches).mockResolvedValue(['main'])
   old.act('review')
   await idle()
   expect(startSimpleReview).not.toHaveBeenCalled()
-  expect(render().failure).toContain('Choose Review')
+  expect(render().failure?.message).toContain('Choose Review')
 })
 test('partial review success logs started reviewers and surfaces remaining errors', async () => {
   vi.mocked(gitBranches).mockResolvedValue(['main'])
@@ -164,7 +164,7 @@ test('partial review success logs started reviewers and surfaces remaining error
     'request',
     { atRunStart: true },
   )
-  expect(render().failure).toBe('second reviewer failed')
+  expect(render().failure?.message).toBe('second reviewer failed')
   expect(retireStageAgents).toHaveBeenCalledWith('p', null, ['reviewer'], undefined)
 })
 test('a stage that fails to launch leaves the earlier agents running', async () => {
@@ -176,7 +176,7 @@ test('a stage that fails to launch leaves the earlier agents running', async () 
   })
   render().act('review')
   await idle()
-  expect(render().failure).toBe('no reviewer started')
+  expect(render().failure?.message).toBe('no reviewer started')
   expect(retireStageAgents).not.toHaveBeenCalled()
 })
 test('history confirmation rejects stale scopes and pending input', async () => {

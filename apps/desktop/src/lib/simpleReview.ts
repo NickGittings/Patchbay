@@ -32,6 +32,7 @@ export async function startSimpleReview(
   project: Project,
   request: ReviewRequest,
   devices: DeviceManifest[],
+  guard?: () => void,
 ) {
   if (!devices.length) throw new Error('Choose at least one agent')
   const initial = useStore.getState()
@@ -40,6 +41,7 @@ export async function startSimpleReview(
     const s = useStore.getState()
     if (s.project?.id !== project.projectId || s.activeTask !== task)
       throw new Error('The worktree changed. Choose Review again in the intended worktree.')
+    guard?.()
     return s
   }
   const records = initial.sessionRecords.filter(

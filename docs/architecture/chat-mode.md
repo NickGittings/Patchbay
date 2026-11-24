@@ -412,3 +412,18 @@ Review and Chat render component cards through the shared `ChangeGroupCard`.
 Groups start expanded; collapsing one preserves the open diff. File stepping and navigation
 counts include only expanded groups; selection resolution and aggregate totals retain all files. Local collapse resets when the conversation worktree changes. Map / Stories / Changes tabs, finding
 line links and file stepping retain their existing chat behavior. Recent commits live in the rail's Git panel; a commit chosen there opens in Changes (see [Worktrees](worktrees.md)).
+
+### Work controls and Auto handoff
+
+Chat's **Auto mode** button opens an existing run during agent activity. For a new handoff it
+shows the pending request, queued message, or blocking agent turn. **Cancel queued message**
+restores the text and mentions to the draft. An input wait links to the relevant terminal, and
+**Interrupt turn** uses the composer's readiness and authority checks. It rechecks the turn
+after terminal attachment. A handoff opens setup for review when the user proceeds.
+
+The Chat menu computes eligible **Pause work**, **Stop work**, and **Continue work** targets
+from both Chat coordination and Auto. The stop dialog names only the selected targets.
+Stopping Chat coordination ends the team's scheduling and its owned Sub-builder processes.
+The lead terminal has its own stop control. At confirmation the worktree and captured run or
+team identity are checked again. Each target gets its own result, and a refused continuation
+can point to a failed assignment, the relevant Auto run, or a lead-state refresh.

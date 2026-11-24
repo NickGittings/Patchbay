@@ -7,7 +7,11 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { projectStateOf, useStore } from '../store'
 import { REVIEW_SCOPE, TASK_ROOT_SCOPE, type DeviceManifest, type SessionRecord } from '../types'
 
-vi.mock('../store', () => ({ useStore: { getState: vi.fn() }, projectStateOf: vi.fn() }))
+vi.mock('../store', () => ({
+  useStore: { getState: vi.fn() },
+  projectStateOf: vi.fn(),
+  workspaceOf: vi.fn(() => ({})),
+}))
 vi.mock('./ipc', () => ({ reviewFixTask: vi.fn() }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn() }))
 vi.mock('./tasks', () => ({ refreshTasks: vi.fn() }))
@@ -56,6 +60,8 @@ const state = {
   activeTask: null as string | null,
   tasks: [{ id: 'feature' }] as { id: string; missing?: boolean }[],
   devices: [claude, codex],
+  sessionRecords: [],
+  sessions: {},
   agentRoles: {} as Record<string, string[]>,
   setActiveTask: vi.fn((task: string | null, _exact?: boolean) => {
     state.activeTask = task

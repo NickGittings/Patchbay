@@ -222,9 +222,10 @@ export function interruptible(session: SessionState | undefined, ready: boolean)
   )
 }
 /** Interrupt one process generation's turn under this window's terminal authority. */
-export async function interruptSession(sid: string, generation: number) {
+export async function interruptSession(sid: string, generation: number, checkTurn?: () => void) {
   await terminalAttach(sid, true)
   try {
+    checkTurn?.()
     await terminalInterrupt(sid, generation)
   } finally {
     if (!hasVisibleTerminal(sid)) await terminalDetach(sid).catch(() => {})

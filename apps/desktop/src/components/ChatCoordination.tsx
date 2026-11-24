@@ -81,7 +81,11 @@ export function ChatCoordinationAlerts({ team, openTerminal }: Props) {
       {work.failures.map((job) => (
         <p role="alert" key={job.id}>
           {job.terminal.name} · failed{job.error && <> · {job.error}</>}{' '}
-          <button disabled={busy} onClick={() => void act({ kind: 'retry', assignment: job.id })}>
+          <button
+            id={job.id}
+            disabled={busy}
+            onClick={() => void act({ kind: 'retry', assignment: job.id })}
+          >
             Retry work
           </button>
           <RetryOnAgent team={team} job={job} busy={busy} run={run} />

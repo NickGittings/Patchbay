@@ -165,6 +165,8 @@ export interface AutoRun {
   /** Stable worktree lease across controller resumes; new runs get a new identity. */
   ownershipId?: string
   status: 'running' | 'paused' | 'waitingOnYou' | 'stopped' | 'done' | 'failed'
+  /** A confirmed Stop is in progress or failed; its agents may still be running. */
+  stopPending?: boolean
   /** Allow this run to launch work while another worktree or project tab is selected. */
   background?: boolean
   /** Opt in to scheduling a continuation when the launch usage gate blocks. */
