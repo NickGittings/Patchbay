@@ -23,6 +23,12 @@
   }
   const button = (selector, title) =>
     [...document.querySelectorAll(`${selector} button`)].find((b) => b.textContent.trim() === title)
+  // The board's filter bar shows only while an epic or feature narrows it.
+  const showAll = (required = false) => {
+    const all = button('.story-scope', 'Show all')
+    if (required && !all) throw new Error('missing Show all while the board is narrowed')
+    if (all) click(all)
+  }
   const edit = (el, value) => {
     if (!el) throw new Error('missing form control')
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set.call(el, value)
@@ -278,12 +284,13 @@
       [...document.querySelectorAll('.story-card')].find(
         (b) => b.querySelector('.story-card-title')?.textContent.trim() === title,
       )
+    // A narrowed header reads 'shown of total'; the shown count leads.
     const counts = () =>
       [...document.querySelectorAll('.story-column h3 span')]
-        .map((el) => Number(el.textContent))
+        .map((el) => Number.parseInt(el.textContent, 10))
         .join()
     const filteredDirty = state().dirty
-    click(button('.story-column', 'All epics'))
+    showAll()
     edit(statusFilter(), 'planned')
     await until('Stories filtered independently', () => counts() === '2,3,3')
     assert(!card(filterSibling.title), 'Stories filter included a nonmatching sibling')
@@ -314,7 +321,11 @@
     edit(statusFilter(), 'active')
     await until('Active retains Unassigned navigation', () => counts() === '2,3,1')
     assert(card(filterUnassigned.title) && !card(story.title), 'filter reset Unassigned selection')
-    click(button('.story-column', 'All stories'))
+    assert(
+      query('.story-scope')?.textContent.includes('Unassigned stories'),
+      'board filter bar did not name Unassigned stories',
+    )
+    showAll(true)
     await until('all stories navigation restored', () => card(filterStory.title))
     chooseCard(filterStory.title)
     await until('filtered story editor', () => field('Title')?.value === filterStory.title)
@@ -760,7 +771,7 @@
         ),
       })
       // Clear the board filters so the new unassigned story is selectable.
-      click(button('.story-column', 'All epics'))
+      showAll()
       click(
         await until('merged story card', () =>
           [...document.querySelectorAll('.story-card')].find((b) =>
