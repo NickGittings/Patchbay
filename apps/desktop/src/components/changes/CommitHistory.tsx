@@ -39,15 +39,15 @@ function HistoryBrowser({
   selected,
   onSelect,
   initialRepo,
-  onRepo,
+  repoPicker = true,
 }: {
   worktree?: string
   selected: HistorySelection | null
   onSelect: (value: HistorySelection | null) => void
   /** The repository to show first when it is one of the listed ones. */
   initialRepo?: string
-  /** Called when the user picks another repository. */
-  onRepo?: (repo: string) => void
+  /** Whether the list offers its own repository picker; the Git panel has its own. */
+  repoPicker?: boolean
 }) {
   const project = useStore((s) => s.project?.id)
   const revision = useStore((s) => s.gitChanges)
@@ -128,13 +128,12 @@ function HistoryBrowser({
       </header>
       {open && (
         <>
-          {(repos?.length ?? 0) > 1 && (
+          {repoPicker && (repos?.length ?? 0) > 1 && (
             <select
               aria-label="History repository"
               value={repo}
               onChange={(e) => {
                 setRepo(e.target.value)
-                onRepo?.(e.target.value)
                 setLimit(50)
                 setPage(undefined)
                 onSelect(null)

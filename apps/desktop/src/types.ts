@@ -486,7 +486,9 @@ export interface SyncStatus {
   branch: string | null
   /** The remote-tracking branch, such as `origin/main`. */
   upstream: string | null
-  /** The remote fetch and push use. */
+  /** The configured upstream when its remote-tracking branch is gone (pruned or never fetched). */
+  missingUpstream: string | null
+  /** The remote fetch uses. */
   remote: string | null
   ahead: number
   behind: number

@@ -6,7 +6,10 @@ vi.mock('../store', () => ({
   useStore: create(() => ({
     project: { id: 'one' },
     activeTask: null as string | null,
-    tasks: [],
+    tasks: [
+      { id: 'task', current: false, worktree: '/wt' },
+      { id: 'here', current: true, worktree: '/repo' },
+    ],
     nodes: [],
     simpleMode: false,
     view: 'plan' as View,
@@ -33,6 +36,7 @@ const scope = { projectId: 'one', repo: '/repo' }
 const status = (ahead: number, behind: number): SyncStatus => ({
   branch: 'main',
   upstream: 'origin/main',
+  missingUpstream: null,
   remote: 'origin',
   ahead,
   behind,
@@ -82,19 +86,48 @@ test('push needs no confirmation and refreshes Git state afterwards', async () =
   vi.mocked(gitSync).mockResolvedValue(status(0, 0))
   expect(await runSync(scope, 'push')).toBe(true)
   expect(confirmAction).not.toHaveBeenCalled()
-  expect(gitSync).toHaveBeenCalledWith([], '/repo', 'push', undefined)
+  expect(gitSync).toHaveBeenCalledWith([], '/repo', 'push', undefined, 'one')
   expect(requestGitRefresh).toHaveBeenCalledWith('one')
-  expect(useGitSync.getState()[syncKey(scope)]).toEqual({ status: status(0, 0) })
+  expect(useGitSync.getState()[syncKey(scope)]).toMatchObject({ status: status(0, 0) })
+  expect(useGitSync.getState()[syncKey(scope)].busy).toBeUndefined()
 })
 
 test('a failed action keeps the last status and records its error', async () => {
   useGitSync.setState({ [syncKey(scope)]: { status: status(1, 1) } })
   vi.mocked(gitSync).mockRejectedValue('diverged')
   expect(await runSync(scope, 'pull', { quiet: true })).toBe(false)
-  expect(useGitSync.getState()[syncKey(scope)]).toEqual({
+  expect(useGitSync.getState()[syncKey(scope)]).toMatchObject({
     status: status(1, 1),
     error: 'diverged',
   })
+  // The Git refresh after a failure re-reads status; that must not hide the action's error.
+  vi.mocked(gitSyncStatus).mockResolvedValue(status(1, 1))
+  await refreshSyncStatus(scope)
+  expect(useGitSync.getState()[syncKey(scope)].error).toBe('diverged')
+})
+
+test('terminals of a task checked out in the project folder count for its pull', async () => {
+  store.setState({ sessionRecords: [record('here')] } as never)
+  vi.mocked(confirmAction).mockResolvedValue(false)
+  expect(await runSync(scope, 'pull')).toBe(false)
+  expect(confirmAction).toHaveBeenCalled()
+})
+
+test('an action started while the pull dialog was open keeps the pull from running', async () => {
+  store.setState({ sessionRecords: [record(null)] } as never)
+  const answer = deferred<boolean>()
+  vi.mocked(confirmAction).mockReturnValue(answer.promise)
+  const fetched = deferred<SyncStatus>()
+  vi.mocked(gitSync).mockReturnValueOnce(fetched.promise)
+  const pull = runSync(scope, 'pull')
+  const fetch = runSync(scope, 'fetch', { quiet: true })
+  answer.resolve(true)
+  expect(await pull).toBe(false)
+  expect(gitSync).toHaveBeenCalledTimes(1)
+  expect(useGitSync.getState()[syncKey(scope)].busy).toBe('fetch')
+  fetched.resolve(status(0, 0))
+  await fetch
+  expect(useGitSync.getState()[syncKey(scope)].busy).toBeUndefined()
 })
 
 test('a chosen commit opens in Review, or in Chat when Chat mode is on', () => {

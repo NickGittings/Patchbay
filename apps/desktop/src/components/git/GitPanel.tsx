@@ -33,9 +33,9 @@ export default function GitPanel() {
   const { scope, entry } = useSyncEntry()
   const repos = useSyncScope((s) => s.repos)
   const worktree = useStore(activeWorktree)
-  const task = useStore((s) => s.activeTask)
   const selected = useChosenCommit()
-  const { status, busy, error } = entry
+  const { status, busy } = entry
+  const error = entry.error ?? entry.statusError
   // Opening the panel fetches once when the last fetch is stale, so the counts mean something.
   const fetched = useRef<string | null>(null)
   const key = scope ? syncKey(scope) : null
@@ -46,7 +46,7 @@ export default function GitPanel() {
     fetched.current = key
     const last = status.lastFetchMs
     if (status.remote && (!last || Date.now() - last > AUTO_FETCH_MS))
-      void runSync(scope, 'fetch', { quiet: true, task })
+      void runSync(scope, 'fetch', { quiet: true })
   })
   useEffect(() => {
     if (loaded) fetchIfStale()
@@ -56,19 +56,42 @@ export default function GitPanel() {
     if (repos && !repos.length) return <p className="panel-empty">No Git repository.</p>
     return <PanelStatus compact kind="loading" message="Loading repository…" />
   }
-  const run = (action: SyncAction) => void runSync(scope, action, { task })
+  const run = (action: SyncAction) => void runSync(scope, action)
   const upstream = status?.upstream
   const branch = status?.branch
+  const missing = status?.missingUpstream
   const diverged = !!status && status.ahead > 0 && status.behind > 0
   return (
     <div className="git-panel">
       <section className="git-sync" aria-label="Sync with remote">
+        {(repos?.length ?? 0) > 1 && (
+          <select
+            aria-label="Repository"
+            value={scope.repo}
+            onChange={(e) => {
+              chooseRepo(e.target.value)
+              setChosenCommit(null)
+            }}
+          >
+            {repos?.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        )}
         <div className="git-sync-branch">
           <RailIcon name="branch" size={16} />
           <strong title={branch ?? 'Detached HEAD'}>{branch ?? 'Detached HEAD'}</strong>
           {status && (
-            <span className="git-sync-upstream" title={upstream ?? undefined}>
-              {upstream ? `→ ${upstream}` : status.remote ? 'Not published' : 'No remote'}
+            <span className="git-sync-upstream" title={upstream ?? missing ?? undefined}>
+              {upstream
+                ? `→ ${upstream}`
+                : missing
+                  ? `${missing} is gone`
+                  : status.remote
+                    ? 'Not published'
+                    : 'No remote'}
             </span>
           )}
         </div>
@@ -120,16 +143,23 @@ export default function GitPanel() {
           <button
             className="primary"
             disabled={
-              !!busy || !branch || !status?.remote || (!!upstream && !status?.ahead) || diverged
+              !!busy ||
+              !branch ||
+              !status?.remote ||
+              !!missing ||
+              (!!upstream && !status?.ahead) ||
+              diverged
             }
             title={
               !branch
                 ? 'Check out a branch to push'
-                : !status?.remote
-                  ? 'No remote is configured'
-                  : upstream
-                    ? `Push to ${upstream}`
-                    : `Publish ${branch} to ${status.remote}`
+                : missing
+                  ? `${missing} no longer exists; fetch, or push from a terminal`
+                  : !status?.remote
+                    ? 'No remote is configured'
+                    : upstream
+                      ? `Push to ${upstream}`
+                      : `Publish ${branch} to ${status.remote}`
             }
             onClick={() => run('push')}
           >
@@ -143,13 +173,11 @@ export default function GitPanel() {
         )}
       </section>
       <CommitHistory
+        key={scope.repo}
         worktree={worktree}
         selected={selected}
         initialRepo={scope.repo}
-        onRepo={(repo) => {
-          chooseRepo(repo)
-          setChosenCommit(null)
-        }}
+        repoPicker={false}
         // A null selection only resets the list on mount; it keeps the commit Review shows.
         onSelect={(value) => {
           if (value) showCommit(value)

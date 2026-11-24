@@ -24,7 +24,10 @@ export interface SyncScope {
 export interface SyncEntry {
   status?: SyncStatus
   busy?: SyncAction
+  /** The last action's failure, kept until the next action so status refreshes don't hide it. */
   error?: string
+  /** The last status read's failure, cleared by the next successful read. */
+  statusError?: string
 }
 
 export const syncKey = (scope: SyncScope) =>
@@ -44,27 +47,45 @@ const nextRequest = (key: string) => {
   return id
 }
 
+/** Per scope, the action that owns `busy`, so an older action never clears a newer one's flag. */
+const actions = new Map<string, number>()
+
+/** Git commands read the open project's map, so another project's scope waits until it's open. */
+const isOpen = (scope: SyncScope) => useStore.getState().project?.id === scope.projectId
+
 /** Read the scope's status from local refs. Failures keep the last status and record the error. */
 export async function refreshSyncStatus(scope: SyncScope) {
+  if (!isOpen(scope)) return
   const key = syncKey(scope)
   const id = nextRequest(key)
   try {
-    const status = await gitSyncStatus(componentPaths(), scope.repo, scope.worktree)
-    if (requests.get(key) === id) patch(key, { status, error: undefined })
+    const status = await gitSyncStatus(
+      componentPaths(),
+      scope.repo,
+      scope.worktree,
+      scope.projectId,
+    )
+    if (requests.get(key) === id) patch(key, { status, statusError: undefined })
   } catch (e) {
-    if (requests.get(key) === id) patch(key, { error: String(e) })
+    if (requests.get(key) === id) patch(key, { statusError: String(e) })
   }
 }
 
-/** Sessions of `projectId` running in `task`'s worktree (`null` for the project's own). */
-export function runningInWorktree(projectId: string, task: string | null) {
-  const { sessionRecords, sessions } = useStore.getState()
-  return sessionRecords.filter(
-    (r) =>
-      r.metadata.projectId === projectId &&
-      (r.metadata.task ?? null) === task &&
-      (sessions[r.id]?.running ?? sessionLive(r)),
-  ).length
+/**
+ * Sessions of `projectId` running in the checkout `worktree` names (`undefined` for the open
+ * one). A task whose branch is checked out in the project folder runs there too, and a session
+ * of a task no longer listed counts, since its folder is unknown.
+ */
+export function runningInWorktree(projectId: string, worktree: string | undefined) {
+  const { sessionRecords, sessions, tasks } = useStore.getState()
+  return sessionRecords.filter((r) => {
+    if (r.metadata.projectId !== projectId || !(sessions[r.id]?.running ?? sessionLive(r)))
+      return false
+    const id = r.metadata.task ?? null
+    if (id === null) return worktree === undefined
+    const task = tasks.find((t) => t.id === id)
+    return !task || (task.current ? undefined : task.worktree) === worktree
+  }).length
 }
 
 const DONE: Record<SyncAction, string> = {
@@ -80,12 +101,13 @@ const DONE: Record<SyncAction, string> = {
 export async function runSync(
   scope: SyncScope,
   action: SyncAction,
-  { quiet = false, task = null }: { quiet?: boolean; task?: string | null } = {},
+  { quiet = false }: { quiet?: boolean } = {},
 ) {
   const key = syncKey(scope)
-  if (useGitSync.getState()[key]?.busy) return false
+  const busy = () => !!useGitSync.getState()[key]?.busy
+  if (busy() || !isOpen(scope)) return false
   if (action === 'pull') {
-    const running = runningInWorktree(scope.projectId, task)
+    const running = runningInWorktree(scope.projectId, scope.worktree)
     if (
       running > 0 &&
       !(await confirmAction({
@@ -97,20 +119,31 @@ export async function runSync(
       }))
     )
       return false
+    // Another action may have started, or the project closed, while the dialog was open.
+    if (busy() || !isOpen(scope)) return false
   }
   const id = nextRequest(key)
+  const token = (actions.get(key) ?? 0) + 1
+  actions.set(key, token)
   patch(key, { busy: action, error: undefined })
+  const settle = (entry: Partial<SyncEntry>) =>
+    patch(key, actions.get(key) === token ? { ...entry, busy: undefined } : entry)
   try {
-    const status = await gitSync(componentPaths(), scope.repo, action, scope.worktree)
-    if (requests.get(key) === id) patch(key, { status, busy: undefined })
-    else patch(key, { busy: undefined })
+    const status = await gitSync(
+      componentPaths(),
+      scope.repo,
+      action,
+      scope.worktree,
+      scope.projectId,
+    )
+    settle(requests.get(key) === id ? { status, statusError: undefined } : {})
     if (!quiet) {
       const where = status.upstream ?? status.remote ?? 'the remote'
       useStore.getState().setMessage(`${DONE[action]} ${status.branch ?? 'HEAD'} · ${where}`, true)
     }
     return true
   } catch (e) {
-    patch(key, { busy: undefined, error: String(e) })
+    settle({ error: String(e) })
     if (!quiet) useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     return false
   } finally {
@@ -168,9 +201,11 @@ export function showCommit(selection: HistorySelection | null) {
 export const useSyncScope = create<{
   scope: SyncScope | null
   repos: string[] | null
+  /** The project and worktree `repos` lists, so a switch never pairs one with another's repo. */
+  reposFor: string | null
   /** The repository chosen per project and worktree, when not the first. */
   chosen: Record<string, string>
-}>(() => ({ scope: null, repos: null, chosen: {} }))
+}>(() => ({ scope: null, repos: null, reposFor: null, chosen: {} }))
 
 const contextKey = (projectId: string, worktree?: string) =>
   JSON.stringify([projectId, worktree ?? null])
@@ -194,25 +229,32 @@ export function useSyncTracking() {
   const revision = useStore((s) => s.gitChanges)
   const branch = useMainWorktree((s) => (projectId ? s[projectId]?.branch : undefined))
   const taskBranch = useStore((s) => s.tasks.find((t) => t.id === s.activeTask)?.branch)
-  const repos = useSyncScope((s) => s.repos)
-  const chosen = useSyncScope((s) =>
-    projectId ? s.chosen[contextKey(projectId, worktree)] : undefined,
-  )
+  const context = projectId ? contextKey(projectId, worktree) : null
+  const repos = useSyncScope((s) => (s.reposFor === context ? s.repos : null))
+  const chosen = useSyncScope((s) => (context ? s.chosen[context] : undefined))
   useEffect(() => {
-    useSyncScope.setState({ repos: null, scope: null })
-    if (!projectId) return
+    useSyncScope.setState({ repos: null, reposFor: null, scope: null })
+    if (!projectId || !context) return
     let alive = true
+    const listed = (result: string[]) => {
+      if (!alive) return
+      useSyncScope.setState({ repos: result, reposFor: context })
+      // A commit from a repository no longer on the map can't be read any more.
+      const choice = useCommitChoice.getState().choice
+      if (
+        choice?.projectId === projectId &&
+        choice.worktree === worktree &&
+        !result.includes(choice.selection.repo)
+      )
+        useCommitChoice.setState({ choice: null })
+    }
     void historyRequest<string[]>(worktree)
-      .then((result) => {
-        if (alive) useSyncScope.setState({ repos: result })
-      })
-      .catch(() => {
-        if (alive) useSyncScope.setState({ repos: [] })
-      })
+      .then(listed)
+      .catch(() => listed([]))
     return () => {
       alive = false
     }
-  }, [projectId, worktree, paths])
+  }, [projectId, worktree, context, paths])
   const repo = repos && (chosen && repos.includes(chosen) ? chosen : repos[0])
   useEffect(() => {
     useSyncScope.setState({ scope: projectId && repo ? { projectId, worktree, repo } : null })

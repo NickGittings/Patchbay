@@ -953,14 +953,16 @@ export const gitSyncStatus = (
   components: { id: string; path: string }[],
   repo: string,
   worktree?: string,
-) => invoke<SyncStatus>('git_sync_status', { components, worktree, repo })
+  projectId = useStore.getState().project?.id,
+) => invoke<SyncStatus>('git_sync_status', { components, worktree, repo, projectId })
 /** Fetch, fast-forward pull, or push a `gitHistory` repository's current branch. */
 export const gitSync = (
   components: { id: string; path: string }[],
   repo: string,
   action: SyncAction,
   worktree?: string,
-) => invoke<SyncStatus>('git_sync', { components, worktree, repo, action })
+  projectId = useStore.getState().project?.id,
+) => invoke<SyncStatus>('git_sync', { components, worktree, repo, action, projectId })
 
 export const mergeCleanup = (project: Project, request: import('../types').MergeRequest) =>
   invoke<void>('merge_cleanup', { projectId: project.projectId, project, request })

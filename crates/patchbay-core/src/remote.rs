@@ -6,7 +6,7 @@
 //! command that would ask for them fails with a message saying so.
 
 use crate::branches::ensure_no_operation;
-use crate::git::{common_dir, git, run};
+use crate::git::{git, run};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
@@ -26,7 +26,10 @@ pub struct SyncStatus {
     pub branch: Option<String>,
     /// The remote-tracking branch, such as `origin/main`.
     pub upstream: Option<String>,
-    /// The remote that fetch and push use: the upstream's remote, otherwise
+    /// The configured upstream, such as `origin/feature`, when its
+    /// remote-tracking branch does not exist (pruned, or never fetched).
+    pub missing_upstream: Option<String>,
+    /// The remote that fetch uses: the configured upstream's remote, otherwise
     /// `origin`, otherwise the only remote.
     pub remote: Option<String>,
     /// Commits on the branch that the upstream does not have.
@@ -56,6 +59,7 @@ pub fn sync_status(repo: &Path) -> Result<SyncStatus> {
         .ok()
         .filter(|b| !b.is_empty());
     let tracked = branch.as_deref().and_then(|b| tracked_remote(repo, b));
+    let merge = branch.as_deref().and_then(|b| merge_ref(repo, b));
     let upstream = tracked
         .as_ref()
         .and_then(|_| {
@@ -78,13 +82,18 @@ pub fn sync_status(repo: &Path) -> Result<SyncStatus> {
     } else {
         (0, 0)
     };
-    let remote = match upstream {
-        Some(_) => tracked,
-        None => default_remote(repo),
+    let missing_upstream = match (&tracked, &merge, &upstream) {
+        (Some(remote), Some(merge), None) => Some(format!(
+            "{remote}/{}",
+            merge.strip_prefix("refs/heads/").unwrap_or(merge)
+        )),
+        _ => None,
     };
+    let remote = tracked.or_else(|| default_remote(repo));
     Ok(SyncStatus {
         branch,
         upstream,
+        missing_upstream,
         remote,
         ahead,
         behind,
@@ -94,8 +103,10 @@ pub fn sync_status(repo: &Path) -> Result<SyncStatus> {
 
 /// Fetch from the remote, fast-forward to the upstream, or push the branch,
 /// then report the new status. Pull never merges or rebases, and push is
-/// never forced. Pushing a branch without an upstream publishes it and sets
-/// the upstream.
+/// never forced. Push only updates the remote branch of the same name, on
+/// the branch's push remote (`branch.<name>.pushRemote`, `remote.pushDefault`,
+/// then the upstream's remote). Pushing a branch without an upstream
+/// publishes it and sets the upstream.
 ///
 /// # Errors
 /// Fails without a remote, branch, or upstream the action needs, while a
@@ -117,10 +128,16 @@ pub fn sync(repo: &Path, action: SyncAction) -> Result<SyncStatus> {
                 .branch
                 .as_deref()
                 .context("Check out a branch before pulling")?;
-            let upstream = status
-                .upstream
-                .as_deref()
-                .with_context(|| format!("{branch} has no upstream to pull from"))?;
+            let upstream =
+                status
+                    .upstream
+                    .as_deref()
+                    .with_context(|| match &status.missing_upstream {
+                        Some(missing) => {
+                            format!("{branch} tracks {missing}, which no longer exists")
+                        }
+                        None => format!("{branch} has no upstream to pull from"),
+                    })?;
             ensure_no_operation(repo)?;
             fetch(repo, status.remote.as_deref().unwrap_or("origin"))?;
             run(git(repo).args(["merge", "--ff-only", "--no-edit", "@{upstream}"])).map_err(
@@ -144,31 +161,33 @@ pub fn sync(repo: &Path, action: SyncAction) -> Result<SyncStatus> {
                 .branch
                 .as_deref()
                 .context("Check out a branch before pushing")?;
-            let remote = status
-                .remote
-                .as_deref()
-                .context("No remote is configured")?;
-            if status.upstream.is_some() {
-                let target =
-                    run(git(repo).args(["config", "--get", &format!("branch.{branch}.merge")]))
-                        .ok()
-                        .filter(|t| t.starts_with("refs/heads/"))
-                        .context("The upstream branch is not a remote branch")?;
-                network(repo, &["push", "--", remote, &format!("HEAD:{target}")])
-                    .map_err(|e| push_error(e, remote))?;
-            } else {
-                network(
-                    repo,
-                    &[
-                        "push",
-                        "--set-upstream",
-                        "--",
-                        remote,
-                        &format!("HEAD:refs/heads/{branch}"),
-                    ],
-                )
-                .map_err(|e| push_error(e, remote))?;
+            if let Some(missing) = &status.missing_upstream {
+                bail!(
+                    "{branch} tracks {missing}, which no longer exists. Fetch, \
+                     or push it from a terminal."
+                );
             }
+            let remote = push_remote(repo, branch)
+                .or_else(|| status.remote.clone())
+                .context("No remote is configured")?;
+            let same_name = format!("refs/heads/{branch}");
+            let mut args = vec!["push"];
+            if let Some(upstream) = &status.upstream {
+                // Like `push.default=simple`: never move a remote branch of another name.
+                if status.remote.as_deref() == Some(remote.as_str())
+                    && merge_ref(repo, branch).as_deref() != Some(same_name.as_str())
+                {
+                    bail!(
+                        "{branch} tracks {upstream}, which has another name, so Push won't \
+                         update it. Push from a terminal to choose the remote branch."
+                    );
+                }
+            } else {
+                args.push("--set-upstream");
+            }
+            let refspec = format!("HEAD:{same_name}");
+            args.extend(["--", remote.as_str(), refspec.as_str()]);
+            network(repo, &args).map_err(|e| push_error(e, &remote))?;
         }
     }
     sync_status(repo)
@@ -184,6 +203,24 @@ fn tracked_remote(repo: &Path, branch: &str) -> Option<String> {
     run(git(repo).args(["config", "--get", &format!("branch.{branch}.remote")]))
         .ok()
         .filter(|r| !r.is_empty() && r != "." && !r.starts_with('-'))
+}
+
+/// The remote branch a branch merges from, such as `refs/heads/main`.
+fn merge_ref(repo: &Path, branch: &str) -> Option<String> {
+    run(git(repo).args(["config", "--get", &format!("branch.{branch}.merge")]))
+        .ok()
+        .filter(|m| !m.is_empty())
+}
+
+/// The remote Git pushes a branch to when it differs from the one it fetches from.
+fn push_remote(repo: &Path, branch: &str) -> Option<String> {
+    [
+        format!("branch.{branch}.pushRemote"),
+        "remote.pushDefault".into(),
+    ]
+    .iter()
+    .find_map(|key| run(git(repo).args(["config", "--get", key])).ok())
+    .filter(|r| !r.is_empty() && r != "." && !r.starts_with('-'))
 }
 
 fn default_remote(repo: &Path) -> Option<String> {
@@ -203,14 +240,10 @@ fn counts(out: &str) -> (u32, u32) {
     (parts.next().unwrap_or(0), parts.next().unwrap_or(0))
 }
 
+/// Git writes `FETCH_HEAD` per worktree, so a linked worktree has its own.
 fn last_fetch(repo: &Path) -> Option<u64> {
-    let modified = common_dir(repo)
-        .ok()?
-        .join("FETCH_HEAD")
-        .metadata()
-        .ok()?
-        .modified()
-        .ok()?;
+    let path = run(git(repo).args(["rev-parse", "--git-path", "FETCH_HEAD"])).ok()?;
+    let modified = repo.join(path).metadata().ok()?.modified().ok()?;
     u64::try_from(modified.duration_since(UNIX_EPOCH).ok()?.as_millis()).ok()
 }
 
@@ -454,6 +487,65 @@ mod tests {
             f.git("origin.git", &["rev-parse", "feature/x"]),
             f.git("a", &["rev-parse", "HEAD"])
         );
+    }
+
+    #[test]
+    fn push_never_moves_a_remote_branch_of_another_name() {
+        let f = Fixture::new();
+        f.git(
+            "a",
+            &["switch", "-q", "-c", "feat", "--track", "origin/main"],
+        );
+        f.commit("a", "feature");
+        let status = sync_status(&f.path("a")).unwrap();
+        assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+        let error = sync(&f.path("a"), SyncAction::Push)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("another name"), "{error}");
+        assert_eq!(f.git("origin.git", &["rev-list", "--count", "main"]), "1");
+    }
+
+    #[test]
+    fn push_follows_the_configured_push_remote() {
+        let f = Fixture::new();
+        f.git(".", &["init", "-q", "--bare", "-b", "main", "fork.git"]);
+        let fork = f.path("fork.git");
+        f.git("a", &["remote", "add", "fork", fork.to_str().unwrap()]);
+        f.git("a", &["config", "remote.pushDefault", "fork"]);
+        f.commit("a", "two");
+        sync(&f.path("a"), SyncAction::Push).unwrap();
+        assert_eq!(
+            f.git("fork.git", &["rev-parse", "main"]),
+            f.git("a", &["rev-parse", "HEAD"])
+        );
+        assert_eq!(f.git("origin.git", &["rev-list", "--count", "main"]), "1");
+    }
+
+    #[test]
+    fn a_pruned_upstream_is_reported_and_never_republished_elsewhere() {
+        let f = Fixture::new();
+        f.git("a", &["switch", "-q", "-c", "gone"]);
+        sync(&f.path("a"), SyncAction::Push).unwrap();
+        f.git("origin.git", &["branch", "-D", "gone"]);
+        sync(&f.path("a"), SyncAction::Fetch).unwrap();
+        let status = sync_status(&f.path("a")).unwrap();
+        assert_eq!(status.upstream, None);
+        assert_eq!(status.missing_upstream.as_deref(), Some("origin/gone"));
+        assert_eq!(status.remote.as_deref(), Some("origin"));
+        let error = sync(&f.path("a"), SyncAction::Push)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no longer exists"), "{error}");
+    }
+
+    #[test]
+    fn a_linked_worktree_reports_its_own_fetch_time() {
+        let f = Fixture::new();
+        f.git("a", &["worktree", "add", "-q", "-b", "wt", "../wt"]);
+        assert_eq!(sync_status(&f.path("wt")).unwrap().last_fetch_ms, None);
+        sync(&f.path("wt"), SyncAction::Fetch).unwrap();
+        assert!(sync_status(&f.path("wt")).unwrap().last_fetch_ms.is_some());
     }
 
     #[test]

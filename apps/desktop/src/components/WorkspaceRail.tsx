@@ -90,6 +90,7 @@ export default function WorkspaceRail() {
   useTaskActivities()
   useSyncTracking()
   const sync = useSyncEntry().entry
+  const syncError = sync.error ?? sync.statusError
   const ahead = sync.status?.ahead ?? 0
   const behind = sync.status?.behind ?? 0
   const syncCounts = [ahead && `↑${ahead}`, behind && `↓${behind}`].filter(Boolean).join(' ')
@@ -192,7 +193,7 @@ export default function WorkspaceRail() {
         aria-label={label}
         aria-description={status}
         aria-pressed={panel === id}
-        tooltip={`${label}: ${name}${status ? ` · ${status}` : ''}${id === 'activity' && count ? ` · ${count} need attention` : ''}${id === 'usage' && usageWarning ? ' · Usage limit warning' : ''}${id === 'git' && syncCounts ? ` · ${syncCounts}` : ''}${id === 'git' && sync.error ? ` · ${sync.error}` : ''}`}
+        tooltip={`${label}: ${name}${status ? ` · ${status}` : ''}${id === 'activity' && count ? ` · ${count} need attention` : ''}${id === 'usage' && usageWarning ? ' · Usage limit warning' : ''}${id === 'git' && syncCounts ? ` · ${syncCounts}` : ''}${id === 'git' && syncError ? ` · ${syncError}` : ''}`}
         disabled={!project && id !== 'project' && id !== 'sessions' && id !== 'usage'}
         onClick={() => togglePanel(id)}
       >
@@ -220,7 +221,7 @@ export default function WorkspaceRail() {
           <sup aria-label={`${count} need attention`}>{count}</sup>
         )}
         {id === 'git' &&
-          (sync.error ? (
+          (syncError ? (
             <sup aria-label="Last Git sync failed" data-status="error">
               !
             </sup>
