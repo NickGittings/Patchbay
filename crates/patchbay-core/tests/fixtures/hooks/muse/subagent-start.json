@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "SubagentStart",
+  "subagent_id": "goal-reminder",
+  "child_session_id": "00000000-0000-4000-8000-000000000003",
+  "session_id": "00000000-0000-4000-8000-000000000003",
+  "turn_id": "00000000-0000-4000-8000-000000000003",
+  "cwd": "/workspace/patchbay-fixture",
+  "transcript_path": null,
+  "model": "unknown",
+  "permission_mode": "default"
+}

@@ -1,0 +1,15 @@
+{
+  "hook_event_name": "PreLLMCall",
+  "provider": "model.unknown.response",
+  "request_id": "00000000-0000-4000-8000-000000000002:0:1",
+  "attempt": 1,
+  "step": 0,
+  "message_count": 1,
+  "tool_count": 24,
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "turn_id": "00000000-0000-4000-8000-000000000002",
+  "cwd": "/workspace/patchbay-fixture",
+  "transcript_path": null,
+  "model": "unknown",
+  "permission_mode": "default"
+}

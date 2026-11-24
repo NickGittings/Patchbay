@@ -1272,6 +1272,225 @@ pub(crate) fn atomic_replace(path: &Path, bytes: &[u8], executable: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn provider_capture(provider: &str, name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/hooks")
+            .join(provider)
+            .join(format!("{name}.json"));
+        let bytes = std::fs::read(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        serde_json::from_slice(&bytes).unwrap_or_else(|err| panic!("{}: {err}", path.display()))
+    }
+
+    fn assert_capture_fields(input: &Value, event: &str, fields: Value) {
+        for (key, value) in fields.as_object().unwrap() {
+            assert_eq!(input.get(key), Some(value), "{event}.{key}");
+        }
+    }
+
+    fn captured_id(input: &Value, field: &str) -> uuid::Uuid {
+        input[field]
+            .as_str()
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .unwrap_or_else(|| panic!("expected a UUID in {field}, got {}", input[field]))
+    }
+
+    #[test]
+    fn antigravity_captures_preserve_invocation_tool_and_stop_contracts() {
+        let cwd = "/workspace/patchbay-fixture";
+        let start = provider_capture("antigravity", "session-start");
+        let read_conversation = captured_id(&start, "conversationId");
+        for (name, event, fields) in [
+            ("session-start", "SessionStart", json!({})),
+            (
+                "pre-invocation",
+                "PreInvocation",
+                json!({"invocationNum": 0, "initialNumSteps": 1}),
+            ),
+            (
+                "post-invocation",
+                "PostInvocation",
+                json!({"invocationNum": 0, "initialNumSteps": 1}),
+            ),
+            ("pre-tool-use", "PreToolUse", json!({"stepIdx": 2})),
+            (
+                "post-tool-use",
+                "PostToolUse",
+                json!({"stepIdx": 2, "error": ""}),
+            ),
+            (
+                "stop",
+                "Stop",
+                json!({
+                    "executionNum": 0,
+                    "continuationActive": false,
+                    "fullyIdle": true,
+                    "terminationReason": "NO_TOOL_CALL",
+                    "error": "",
+                }),
+            ),
+            ("ask-question", "PreToolUse", json!({"stepIdx": 2})),
+        ] {
+            let input = provider_capture("antigravity", name);
+            let id = captured_id(&input, "conversationId");
+            let question = name == "ask-question";
+            assert_eq!(id != read_conversation, question, "{name} conversation");
+            let prompt = if question {
+                "Ask me to pick a color, Blue or Red, before continuing."
+            } else {
+                "Read validation.txt and report its exact contents."
+            };
+            let artifacts = format!("/home/patchbay/.gemini/antigravity-cli/brain/{id}");
+            assert_capture_fields(
+                &input,
+                name,
+                json!({
+                    "hookEventName": event,
+                    "cwd": cwd,
+                    "workspacePaths": [cwd],
+                    "artifactDirectoryPath": artifacts,
+                    "transcriptPath": format!("{artifacts}/.system_generated/logs/transcript_full.jsonl"),
+                    "lastUserInput": prompt,
+                    "modelName": "gemini-3.1-pro-low",
+                }),
+            );
+            assert_capture_fields(&input, name, fields);
+            if matches!(event, "PreToolUse" | "PostToolUse") {
+                let tool = &input["toolCall"];
+                captured_id(tool, "id");
+                let fields = if question {
+                    json!({
+                        "name": "ask_question",
+                        "args": {"questions": [{
+                            "question": "Pick a color",
+                            "options": ["Blue", "Red"],
+                            "is_multi_select": false,
+                        }]},
+                    })
+                } else {
+                    json!({"name": "read_file", "args": {"Path": format!("{cwd}/validation.txt")}})
+                };
+                assert_capture_fields(tool, name, fields);
+            }
+        }
+    }
+
+    #[test]
+    fn muse_captures_preserve_root_turn_and_child_session_identity() {
+        let start = provider_capture("muse", "session-start");
+        let root = captured_id(&start, "session_id");
+        let prompt = provider_capture("muse", "user-prompt-submit");
+        let turn = captured_id(&prompt, "turn_id");
+        let child_start = provider_capture("muse", "subagent-start");
+        let child = captured_id(&child_start, "child_session_id");
+        assert_ne!(root, child);
+        let pre_call = provider_capture("muse", "pre-llm-call");
+        let request_id = pre_call["request_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .unwrap();
+
+        for (name, event, session, turn, fields) in [
+            (
+                "session-start",
+                "SessionStart",
+                root,
+                None,
+                json!({"source": "startup"}),
+            ),
+            (
+                "user-prompt-submit",
+                "UserPromptSubmit",
+                root,
+                Some(turn),
+                json!({"prompt": "Reply with PATCHBAY_VALIDATION"}),
+            ),
+            (
+                "pre-llm-call",
+                "PreLLMCall",
+                root,
+                Some(turn),
+                json!({"request_id": request_id, "attempt": 1, "step": 0, "message_count": 1}),
+            ),
+            (
+                "post-llm-call",
+                "PostLLMCall",
+                root,
+                Some(turn),
+                json!({
+                    "request_id": request_id,
+                    "attempt": 1,
+                    "step": 0,
+                    "status": "success",
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cached_tokens": 0,
+                        "reasoning_tokens": 0,
+                    },
+                    "tool_call_count": 0,
+                    "error": null,
+                }),
+            ),
+            (
+                "stop",
+                "Stop",
+                root,
+                Some(turn),
+                json!({
+                    "stop_hook_active": false,
+                    "last_assistant_message": "echo: Reply with PATCHBAY_VALIDATION",
+                }),
+            ),
+            (
+                "subagent-start",
+                "SubagentStart",
+                child,
+                Some(child),
+                json!({"subagent_id": "goal-reminder", "child_session_id": child.to_string()}),
+            ),
+            (
+                "subagent-stop",
+                "SubagentStop",
+                child,
+                Some(child),
+                json!({
+                    "subagent_id": "goal-reminder",
+                    "child_session_id": child.to_string(),
+                    "stop_hook_active": false,
+                    "last_assistant_message": "echo: [observer prompt redacted]",
+                }),
+            ),
+            (
+                "session-end",
+                "SessionEnd",
+                root,
+                None,
+                json!({"reason": "other"}),
+            ),
+        ] {
+            let input = provider_capture("muse", name);
+            assert_eq!(captured_id(&input, "session_id"), session, "{name}");
+            if let Some(turn) = turn {
+                assert_eq!(captured_id(&input, "turn_id"), turn, "{name}");
+            } else {
+                assert!(input.get("turn_id").is_none(), "{name}");
+            }
+            assert_capture_fields(
+                &input,
+                name,
+                json!({
+                    "hook_event_name": event,
+                    "cwd": "/workspace/patchbay-fixture",
+                    "transcript_path": null,
+                    "model": "unknown",
+                    "permission_mode": "default",
+                }),
+            );
+            assert_capture_fields(&input, name, fields);
+        }
+    }
+
     #[test]
     fn captures_native_plans_before_approval_and_uses_approved_response() {
         let mut input = json!({
