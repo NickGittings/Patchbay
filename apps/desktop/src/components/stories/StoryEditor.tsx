@@ -1,7 +1,13 @@
 import { useState } from 'react'
 import { projectStateOf, useStore } from '../../store'
 import { autoWorkspace } from '../../lib/autoState'
-import type { Story, StoryDraft, StoryStatus, StoryPatch } from '../../types'
+import {
+  STORY_ITEM_MENU,
+  type Story,
+  type StoryDraft,
+  type StoryStatus,
+  type StoryPatch,
+} from '../../types'
 import {
   autoStory,
   planStory,
@@ -9,11 +15,13 @@ import {
   progressLabel,
   refreshStories,
   reopenStoryPatch,
+  sourceName,
   STORY_STATUSES,
   updateStory,
   type ResolvedStoryStatus,
 } from '../../lib/stories'
-import { storyCreate, storyRemove } from '../../lib/ipc'
+import { storyCreate, storyRemove, storySourceOpen } from '../../lib/ipc'
+import ExtensionMenu from '../../extensions/ExtensionMenu'
 import { shortTitle } from '../../lib/shortTitle'
 
 export default function StoryEditor({
@@ -33,6 +41,7 @@ export default function StoryEditor({
 }) {
   const stories = useStore((s) => s.stories)
   const nodes = useStore((s) => s.nodes)
+  const extensions = useStore((s) => s.extensions)
   const seed = item ?? draft!
   const kind = seed.kind
   const [title, setTitle] = useState(seed.title)
@@ -42,8 +51,11 @@ export default function StoryEditor({
   const [components, setComponents] = useState(seed.components ?? [])
   // An untouched status follows Plan/Auto and completion updates while the editor stays open.
   const [statusEdit, setStatusEdit] = useState<StoryStatus | null>(null)
+  const [parentEdit, setParentEdit] = useState<'active' | 'closed' | null>(null)
   const status = statusEdit ?? item?.status ?? 'backlog'
-  const automatic = !!progress && (progress.source !== 'saved' || progress.value === 'done')
+  const parentState = parentEdit ?? (item?.status === 'done' ? 'closed' : 'active')
+  const automatic =
+    kind === 'story' && !!progress && (progress.source !== 'saved' || progress.value === 'done')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -51,8 +63,20 @@ export default function StoryEditor({
   const parents = stories.filter((s) => s.kind === (kind === 'feature' ? 'epic' : 'feature'))
   const validParent = parents.some((s) => s.id === parent) ? parent : ''
   const ready = !!title.trim() && (kind !== 'feature' || !!validParent)
+  const reopen = (item: Story) =>
+    reopenStoryPatch(item, autoWorkspace(projectStateOf(projectId), item.task)?.auto)
   const save = async (statusPatch: StoryPatch = {}) => {
-    const nextStatus = automatic ? null : statusEdit
+    const change: StoryPatch =
+      kind === 'story'
+        ? automatic || statusEdit === null
+          ? {}
+          : { status: statusEdit }
+        : parentEdit === 'closed'
+          ? { status: 'done' }
+          : parentEdit === 'active' && item?.status === 'done'
+            ? reopen(item)
+            : {}
+    const patch = { ...change, ...statusPatch }
     const fields = {
       title,
       description,
@@ -60,18 +84,19 @@ export default function StoryEditor({
       acceptance: acceptance.map((a) => a.trim()).filter(Boolean),
       components,
     }
-    const saved = item
+    let saved = item
       ? await updateStory(projectId, item.id, {
           ...fields,
-          ...(nextStatus == null ? {} : { status: nextStatus }),
-          ...statusPatch,
+          ...patch,
         })
       : await storyCreate(projectId, { ...fields, kind, parent: validParent || null })
     if (!item) {
-      if (status !== 'backlog') await updateStory(projectId, saved.id, { status })
+      if (patch.status && patch.status !== 'backlog')
+        saved = await updateStory(projectId, saved.id, patch)
       await refreshStories(projectId)
     }
     if (!automatic || statusPatch.status !== undefined || statusPatch.reopen) setStatusEdit(null)
+    setParentEdit(null)
     onSaved(saved)
     return saved
   }
@@ -90,7 +115,7 @@ export default function StoryEditor({
         action === 'done'
           ? { status: 'done' }
           : action === 'reopen' && item
-            ? reopenStoryPatch(item, autoWorkspace(projectStateOf(projectId), item.task)?.auto)
+            ? reopen(item)
             : undefined,
       )
       if (action === 'plan') await planStory(projectId, saved)
@@ -114,6 +139,32 @@ export default function StoryEditor({
           ×
         </button>
       </header>
+      {item?.source && (
+        <div className="story-source" role="group" aria-label="Tracker source">
+          <p className="story-hint">
+            Imported from {sourceName(item.source, extensions)}. Importing again replaces the title,
+            description and criteria. A tracker parent updates the grouping when supplied.
+          </p>
+          <div className="row">
+            {item.source.url && (
+              <button
+                type="button"
+                onClick={() =>
+                  void storySourceOpen(projectId, item.id).catch((e) => setError(String(e)))
+                }
+              >
+                Open in tracker ↗
+              </button>
+            )}
+            <ExtensionMenu slot={STORY_ITEM_MENU} story={item} args={[item]} />
+          </div>
+        </div>
+      )}
+      {item && !item.source && (
+        <div className="story-source-actions row">
+          <ExtensionMenu slot={STORY_ITEM_MENU} story={item} args={[item]} />
+        </div>
+      )}
       <form
         onSubmit={(e) => {
           e.preventDefault()
@@ -198,13 +249,24 @@ export default function StoryEditor({
               ))}
             </div>
           </div>
-          {automatic && progress !== undefined ? (
+          {kind !== 'story' ? (
+            <label>
+              Status
+              <select
+                value={parentState}
+                onChange={(e) => setParentEdit(e.target.value === 'closed' ? 'closed' : 'active')}
+              >
+                <option value="active">Active</option>
+                <option value="closed">Closed</option>
+              </select>
+            </label>
+          ) : automatic && progress !== undefined ? (
             <div className="row">
               <span>Status</span>
               <span className={`chip story-status ${progress.value}`}>
                 {progressLabel(progress.value)}
               </span>
-              {progress.source === 'children' || progress.value !== 'done' ? (
+              {progress.value !== 'done' ? (
                 <button type="button" disabled={!ready} onClick={() => void act('done')}>
                   Mark done
                 </button>
@@ -220,7 +282,7 @@ export default function StoryEditor({
               <select value={status} onChange={(e) => setStatusEdit(e.target.value as StoryStatus)}>
                 {STORY_STATUSES.map((s) => (
                   <option key={s} value={s}>
-                    {s}
+                    {progressLabel(s)}
                   </option>
                 ))}
               </select>
@@ -228,28 +290,41 @@ export default function StoryEditor({
           )}
           {automatic && statusEdit !== null && (
             <p className="story-status-draft">
-              Unsaved status: {statusEdit}. You can save it when automatic progress ends.{' '}
+              Unsaved status: {progressLabel(statusEdit)}. You can save it when automatic progress
+              ends.{' '}
               <button type="button" onClick={() => setStatusEdit(null)}>
                 Discard status choice
               </button>
             </p>
           )}
-          <p className="story-hint">
-            {progress?.source === 'saved' && progress.value === 'done' ? (
-              'Completed work stays Done after cleanup.'
-            ) : progress?.source === 'children' ? (
-              'Following child progress. You can mark this item done at any time.'
-            ) : progress?.source === 'worktree' ? (
-              <>
-                Following worktree {shortTitle(progress.worktree.title)}. You can mark this item
-                done at any time.
-              </>
-            ) : progress?.source === 'auto' ? (
-              'The linked Auto run completed this story.'
+          {kind !== 'story' ? (
+            progress?.source === 'children' && progress.value === 'closed' ? (
+              <p className="story-hint">All children are complete, so the board shows Closed.</p>
             ) : (
-              'Worktree activity updates the card’s status. Completed work stays Done after cleanup.'
-            )}
-          </p>
+              progress?.value !== 'closed' && (
+                <p className="story-hint">
+                  Merging this {kind}’s own worktree or Auto run doesn’t close it. It closes when
+                  all its {kind === 'epic' ? 'features' : 'stories'} are done, or when you set
+                  Closed.
+                </p>
+              )
+            )
+          ) : (
+            <p className="story-hint">
+              {progress?.source === 'saved' && progress.value === 'done' ? (
+                'Completed work stays Done after cleanup.'
+              ) : progress?.source === 'worktree' ? (
+                <>
+                  Following worktree {shortTitle(progress.worktree.title)}. You can mark this item
+                  done at any time.
+                </>
+              ) : progress?.source === 'auto' ? (
+                'The linked Auto run completed this story.'
+              ) : (
+                'Worktree activity updates the card’s status. Completed work stays Done after cleanup.'
+              )}
+            </p>
+          )}
           <div className="story-editor-actions">
             <button type="submit" disabled={!ready}>
               Save

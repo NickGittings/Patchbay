@@ -17,14 +17,32 @@ pub const PROVIDER_ENV: &str = "PATCHBAY_REPORT_PROVIDER";
 pub const SECRET_GUARD_ENV: &str = "PATCHBAY_SECRET_GUARD";
 pub const JOURNAL_ENV: &str = "PATCHBAY_REPORT_DIR";
 const MARKER: &str = "Patchbay status v1";
+pub(crate) mod hook_event {
+    pub(crate) const SESSION_START: &str = "SessionStart";
+    pub(crate) const SESSION_END: &str = "SessionEnd";
+    pub(crate) const STOP: &str = "Stop";
+    pub(crate) const STOP_FAILURE: &str = "StopFailure";
+    pub(crate) const USER_PROMPT_SUBMIT: &str = "UserPromptSubmit";
+    pub(crate) const PRE_TOOL_USE: &str = "PreToolUse";
+    pub(crate) const POST_TOOL_USE: &str = "PostToolUse";
+    pub(crate) const POST_TOOL_USE_FAILURE: &str = "PostToolUseFailure";
+    pub(crate) const PERMISSION_REQUEST: &str = "PermissionRequest";
+    pub(crate) const NOTIFICATION: &str = "Notification";
+    pub(crate) const INTERRUPT: &str = "Interrupt";
+    pub(crate) const PRE_COMPACT: &str = "PreCompact";
+    pub(crate) const POST_COMPACT: &str = "PostCompact";
+    /// Journaled once Chat answered a permission request. Providers never send it.
+    pub(crate) const PERMISSION_DECIDED: &str = "PermissionDecided";
+}
+
 const EVENTS: &[&str] = &[
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "PermissionRequest",
-    "Stop",
-    "SessionEnd",
+    hook_event::SESSION_START,
+    hook_event::USER_PROMPT_SUBMIT,
+    hook_event::PRE_TOOL_USE,
+    hook_event::POST_TOOL_USE,
+    hook_event::PERMISSION_REQUEST,
+    hook_event::STOP,
+    hook_event::SESSION_END,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,8 +77,6 @@ pub struct HookEvent {
     pub usage_limit: bool,
 }
 
-/// Journaled by the reporter once Chat answered a `PermissionRequest`; no provider sends it.
-pub(crate) const PERMISSION_DECIDED: &str = "PermissionDecided";
 /// Questions relayed from one question tool call, and options per question.
 pub const QUESTION_LIMIT: usize = 4;
 pub const OPTION_LIMIT: usize = 6;
@@ -74,7 +90,10 @@ const HOOK_TIMEOUT: u64 = 3;
 
 fn hook_timeout(event: &str) -> u64 {
     // Both may wait for the user: a question's answer, or a tool approval.
-    if matches!(event, "PreToolUse" | "PermissionRequest") {
+    if matches!(
+        event,
+        hook_event::PRE_TOOL_USE | hook_event::PERMISSION_REQUEST
+    ) {
         QUESTION_HOOK_TIMEOUT
     } else {
         HOOK_TIMEOUT
@@ -229,7 +248,7 @@ fn answer_output(provider: Adapter, input: &Value, answers: &[String]) -> Option
             let mut updated = tool_input.as_object()?.clone();
             updated.insert("answers".into(), Value::Object(answers));
             json!({"hookSpecificOutput":{
-                "hookEventName":"PreToolUse",
+                "hookEventName":hook_event::PRE_TOOL_USE,
                 "permissionDecision":"allow",
                 "updatedInput":updated,
             }})
@@ -245,7 +264,7 @@ fn answer_output(provider: Adapter, input: &Value, answers: &[String]) -> Option
                 reason.push_str(answer);
             }
             json!({"hookSpecificOutput":{
-                "hookEventName":"PreToolUse",
+                "hookEventName":hook_event::PRE_TOOL_USE,
                 "permissionDecision":"deny",
                 "permissionDecisionReason":reason,
             }})
@@ -342,7 +361,7 @@ fn permission_output(answer: &str) -> Value {
         };
         json!({"behavior":"deny","message":message})
     };
-    json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":decision}})
+    json!({"hookSpecificOutput":{"hookEventName":hook_event::PERMISSION_REQUEST,"decision":decision}})
 }
 
 /// Codex hands approvals to an automatic reviewer when its configuration names one;
@@ -627,12 +646,12 @@ fn plan_signal(provider: Adapter, input: &Value) -> Option<PlanSignal<'_>> {
     };
     let exit_plan = input.get("tool_name").and_then(Value::as_str) == Some("ExitPlanMode");
     match input.get("hook_event_name")?.as_str()? {
-        "PreToolUse" | "PermissionRequest" if exit_plan => {
+        hook_event::PRE_TOOL_USE | hook_event::PERMISSION_REQUEST if exit_plan => {
             plan("tool_input").map(PlanSignal::Presented)
         }
-        "PostToolUse" if exit_plan => plan("tool_response").map(PlanSignal::Approved),
+        hook_event::POST_TOOL_USE if exit_plan => plan("tool_response").map(PlanSignal::Approved),
         // The dialog's own notification, and a new session, say nothing about it.
-        "Notification" | "SessionStart" => None,
+        hook_event::NOTIFICATION | hook_event::SESSION_START => None,
         _ => Some(PlanSignal::Moved),
     }
 }
@@ -682,20 +701,20 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
         return None;
     }
     let supported = EVENTS.contains(&event)
-        || (provider == Adapter::Codex && event == "Interrupt")
+        || (provider == Adapter::Codex && event == hook_event::INTERRUPT)
         || (provider == Adapter::Claude
             && matches!(
                 event,
-                "Notification"
-                    | "StopFailure"
-                    | "PostToolUseFailure"
-                    | "PreCompact"
-                    | "PostCompact"
+                hook_event::NOTIFICATION
+                    | hook_event::STOP_FAILURE
+                    | hook_event::POST_TOOL_USE_FAILURE
+                    | hook_event::PRE_COMPACT
+                    | hook_event::POST_COMPACT
             ));
     if !supported {
         return None;
     }
-    if event == "Notification"
+    if event == hook_event::NOTIFICATION
         && input.get("notification_type").and_then(Value::as_str) != Some("permission_prompt")
     {
         return None;
@@ -719,7 +738,11 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
     // Older providers without turn identity retain Active/Quiet fallback.
     if !matches!(
         event,
-        "SessionStart" | "SessionEnd" | "UserPromptSubmit" | "PreCompact" | "PostCompact"
+        hook_event::SESSION_START
+            | hook_event::SESSION_END
+            | hook_event::USER_PROMPT_SUBMIT
+            | hook_event::PRE_COMPACT
+            | hook_event::POST_COMPACT
     ) && turn.is_none()
     {
         return None;
@@ -755,12 +778,14 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
             _ => name,
         }),
         file_target: file_path.is_some(),
-        usage_limit: event == "StopFailure"
+        usage_limit: event == hook_event::STOP_FAILURE
             && matches!(
                 input.get("error").and_then(Value::as_str),
                 Some("rate_limit" | "billing_error")
             ),
-        questions: (event == "PreToolUse").then(|| questions(input)).flatten(),
+        questions: (event == hook_event::PRE_TOOL_USE)
+            .then(|| questions(input))
+            .flatten(),
         target: file_path
             .map(|s| s.chars().take(4096).collect())
             .or_else(|| {
@@ -770,7 +795,7 @@ fn normalize(provider: Adapter, input: &Value) -> Option<HookEvent> {
                     .as_str()
                     .map(|s| s.chars().take(120).collect())
             }),
-        reply: (event == "Stop")
+        reply: (event == hook_event::STOP)
             .then(|| {
                 let text = input.get("last_assistant_message")?.as_str()?;
                 let mut end = text.len().min(REPLY_LIMIT);
@@ -891,7 +916,7 @@ pub fn reporter(provider: &str) {
             event.session = session;
             event.generation = generation;
             let questions = event.questions.clone();
-            let permission = (event.event == "PermissionRequest").then(|| event.clone());
+            let permission = (event.event == hook_event::PERMISSION_REQUEST).then(|| event.clone());
             // Status first: handing over a plan or a question waits on the desktop,
             // and Chat shows a question from the reported status.
             if journal(&dir, event).is_ok() {
@@ -904,7 +929,7 @@ pub fn reporter(provider: &str) {
         {
             // The answer ends the input wait; no provider hook reports that until the
             // tool finishes.
-            decided.event = PERMISSION_DECIDED.into();
+            decided.event = hook_event::PERMISSION_DECIDED.into();
             decided.at_ms = crate::pty::now_ms();
             decided.message = None;
             let _ = journal(&dir, decided);
@@ -1180,13 +1205,13 @@ fn events(provider: Adapter) -> Vec<&'static str> {
     let mut events = EVENTS.to_vec();
     match provider {
         Adapter::Claude => events.extend([
-            "Notification",
-            "StopFailure",
-            "PostToolUseFailure",
-            "PreCompact",
-            "PostCompact",
+            hook_event::NOTIFICATION,
+            hook_event::STOP_FAILURE,
+            hook_event::POST_TOOL_USE_FAILURE,
+            hook_event::PRE_COMPACT,
+            hook_event::POST_COMPACT,
         ]),
-        Adapter::Codex => events.push("Interrupt"),
+        Adapter::Codex => events.push(hook_event::INTERRUPT),
     }
     events
 }

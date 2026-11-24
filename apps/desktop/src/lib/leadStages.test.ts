@@ -14,7 +14,10 @@ vi.mock('./ipc', () => ({
   mergeOutcome: vi.fn(async () => 'merged'),
 }))
 vi.mock('./sessions', () => ({ startTerminal: vi.fn(async () => 'launch') }))
-vi.mock('./simpleActions', () => ({ logLaunch: vi.fn(async () => {}) }))
+vi.mock('./stageRecord', () => ({
+  recordStageLaunch: vi.fn(async () => {}),
+  refuseWhileAutoRuns: vi.fn(),
+}))
 vi.mock('./chatTeams', () => ({ controlTeam: vi.fn(async () => {}) }))
 vi.mock('./agentRoles', () => ({ roleDevice: vi.fn(() => ({ id: 'planner' })) }))
 vi.mock('./planHandoff', () => ({
@@ -29,10 +32,16 @@ vi.mock('./reviewAgents', () => ({
   ]),
   reviewWorktreeBusy: vi.fn(() => false),
   defaultMergeDestination: vi.fn(() => 'main'),
-  startBranchMerge: vi.fn(async () => ({ request: mergeRequest, sid: 'merge' })),
+  // Reports the source's uncommitted changes the way the real preflight does.
+  startMerge: vi.fn(async (options: { commitSource?: unknown }) => {
+    const { mergeSourceChanges } = await import('./ipc')
+    const changes = await mergeSourceChanges({} as never, '', '')
+    return options.commitSource === 'report' && changes.length
+      ? { kind: 'uncommitted', changes }
+      : { kind: 'started', request: mergeRequest, sessionId: 'merge', requestId: 'merge-launch' }
+  }),
 }))
 vi.mock('./sessionList', () => ({ sessionTimeMs: vi.fn(() => 0) }))
-vi.mock('./stageLog', () => ({ logStageLaunch: vi.fn(async () => {}) }))
 vi.mock('../types', () => ({
   PLAN_SCOPE: '__plan__',
   REVIEW_SCOPE: '__review__',
@@ -42,6 +51,12 @@ vi.mock('../types', () => ({
 vi.mock('../store', () => ({
   useStore: { getState: vi.fn() },
   projectOf: vi.fn(() => ({ projectId: 'p' })),
+  projectStateOf: vi.fn(() => ({ stories: [] })),
+}))
+vi.mock('./stories', () => ({
+  findStory: vi.fn(async (_project: string, id: string) => ({ id, components: ['api'] })),
+  storyComponents: vi.fn(() => ['api']),
+  launchStoryPlanner: vi.fn(async () => 'story-launch'),
 }))
 import { useStore } from '../store'
 import { controlTeam, type ChatTeam } from './chatTeams'
@@ -49,8 +64,10 @@ import { mergeOutcome, mergeSourceChanges, planRead, terminalSnapshot } from './
 import { settleLeadStage, startLeadStage } from './leadStages'
 import { implementPlannerPlan } from './planHandoff'
 import { fixReviewFindings } from './reviewHandoff'
-import { reviewWorktreeBusy, startBranchMerge } from './reviewAgents'
+import { reviewWorktreeBusy, startMerge } from './reviewAgents'
 import { startTerminal } from './sessions'
+import { recordStageLaunch, refuseWhileAutoRuns } from './stageRecord'
+import { launchStoryPlanner } from './stories'
 
 const team = { id: 'team', projectId: 'p', task: 't1', target: '/p' } as ChatTeam
 const request = (
@@ -111,6 +128,35 @@ test('a plan starts the plan role with the request in its briefing', async () =>
   expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
 })
 
+test('a plan for a story gives its planner the story briefing in the team worktree', async () => {
+  await startLeadStage(team, request('startPlan', 'starting', null, { story: 's1' }))
+  expect(launchStoryPlanner).toHaveBeenCalledExactlyOnceWith(
+    'p',
+    't1',
+    'planner',
+    { id: 's1', components: ['api'] },
+    ['api'],
+    undefined,
+  )
+  expect(startTerminal).not.toHaveBeenCalled()
+  expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
+})
+
+test("a story plan keeps the user's goal and treats no components as the story's", async () => {
+  await startLeadStage(
+    team,
+    request('startPlan', 'starting', null, { story: 's1', goal: 'Skip CSV', components: [] }),
+  )
+  expect(launchStoryPlanner).toHaveBeenCalledExactlyOnceWith(
+    'p',
+    't1',
+    'planner',
+    { id: 's1', components: ['api'] },
+    ['api'],
+    'Skip CSV',
+  )
+})
+
 test('a plan never replaces a planner that is already running', async () => {
   withSessions({ plan: { running: true } })
   await expect(startLeadStage(team, planning)).rejects.toThrow('already running')
@@ -128,21 +174,23 @@ test('a finished planner reports whether it saved a plan', async () => {
 
 test('a merge goes to the default destination through the merge role', async () => {
   await startLeadStage(team, request('startMerge'))
-  expect(vi.mocked(startBranchMerge).mock.calls[0].slice(2, 3)).toEqual(['main'])
-  expect(vi.mocked(startBranchMerge).mock.calls[0][5]).toBeUndefined()
+  expect(startMerge).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ destinationBranch: 'main', commitSource: 'report' }),
+  )
   expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
 })
 
 test('a merge commits uncommitted changes only when they were approved', async () => {
   vi.mocked(mergeSourceChanges).mockResolvedValue([' M a.ts'])
   await expect(startLeadStage(team, request('startMerge'))).rejects.toThrow(' M a.ts')
-  expect(startBranchMerge).not.toHaveBeenCalled()
+  expect(recordStageLaunch).not.toHaveBeenCalled()
   await startLeadStage(
     team,
     request('startMerge', 'starting', null, { destination: 'dev', commitSource: [' M a.ts'] }),
   )
-  const call = vi.mocked(startBranchMerge).mock.calls[0]
-  expect([call[2], call[5]]).toEqual(['dev', [' M a.ts']])
+  expect(startMerge).toHaveBeenLastCalledWith(
+    expect.objectContaining({ destinationBranch: 'dev', commitSource: [' M a.ts'] }),
+  )
   vi.mocked(mergeSourceChanges).mockResolvedValue([])
 })
 
@@ -203,4 +251,22 @@ test('a stage whose session no longer exists fails', async () => {
   vi.mocked(terminalSnapshot).mockResolvedValueOnce(null)
   await settleLeadStage(team, running)
   expect(lastControl()).toMatchObject({ state: 'failed' })
+})
+
+test('the lead’s stages wait for an Auto run that owns the worktree', async () => {
+  vi.mocked(refuseWhileAutoRuns).mockImplementationOnce(() => {
+    throw new Error('Auto is running this worktree. Stop Auto or let it finish first.')
+  })
+  await expect(startLeadStage(team, request('startBuild'))).rejects.toThrow('Auto is running')
+  expect(implementPlannerPlan).not.toHaveBeenCalled()
+  expect(recordStageLaunch).not.toHaveBeenCalled()
+})
+
+test('the lead may still plan while Auto runs, as Chat and the Plan view may', async () => {
+  vi.mocked(refuseWhileAutoRuns).mockImplementation(() => {
+    throw new Error('Auto is running this worktree. Stop Auto or let it finish first.')
+  })
+  await startLeadStage(team, request('startPlan', 'starting', null, { goal: 'Next' }))
+  expect(lastControl()).toMatchObject({ kind: 'requestState', state: 'running' })
+  vi.mocked(refuseWhileAutoRuns).mockReset()
 })

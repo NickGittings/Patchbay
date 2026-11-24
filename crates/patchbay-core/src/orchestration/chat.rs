@@ -13,6 +13,9 @@ impl std::fmt::Display for DeliveryRefused {
 }
 impl std::error::Error for DeliveryRefused {}
 
+/// The reserved recipient for messages addressed to the team lead.
+pub const LEAD_RECIPIENT: &str = "lead";
+
 const MESSAGE_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,13 +132,73 @@ pub struct ScopeReservation {
     #[serde(default)]
     pub paths: Vec<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkflowAction {
+    StartAgent,
+    StartPlan,
+    StartBuild,
+    StartReview,
+    StartFix,
+    StartMerge,
+    StartCouncilReview,
+    StartAuto,
+    PauseAuto,
+    ResumeAuto,
+    StopAuto,
+    /// Saved by another Patchbay build; kept so the shared store still loads.
+    #[serde(other)]
+    Unknown,
+}
+
+impl WorkflowAction {
+    /// Worktree stages stay active until their agents finish, so they never overlap.
+    fn is_stage(self) -> bool {
+        matches!(
+            self,
+            Self::StartPlan
+                | Self::StartBuild
+                | Self::StartReview
+                | Self::StartFix
+                | Self::StartMerge
+                | Self::StartCouncilReview
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkflowState {
+    Queued,
+    Waiting,
+    Starting,
+    Running,
+    Completed,
+    Uncertain,
+    Failed,
+    /// Saved by another Patchbay build; kept so the shared store still loads.
+    #[serde(other)]
+    Unknown,
+}
+
+impl WorkflowState {
+    fn settled_label(self) -> Option<&'static str> {
+        match self {
+            Self::Completed => Some("completed"),
+            Self::Failed => Some("failed"),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowRequest {
     pub id: String,
-    pub action: String,
+    pub action: WorkflowAction,
     pub settings: serde_json::Value,
-    pub state: String,
+    pub state: WorkflowState,
     pub result: Option<String>,
     #[serde(default)]
     pub council: Option<(CouncilSettings, Vec<TerminalSpec>)>,
@@ -286,12 +349,23 @@ pub struct Team {
     pub finished: FinishedWork,
     pub error: Option<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OwnerKind {
+    Chat,
+    Auto,
+    /// Saved by another Patchbay build; kept so the shared store still loads.
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Owner {
     pub project_id: String,
     pub target: String,
-    pub kind: String,
+    pub kind: OwnerKind,
     pub id: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -368,7 +442,7 @@ pub enum Control {
     },
     RequestState {
         id: String,
-        state: String,
+        state: WorkflowState,
         result: Option<String>,
         /// Tell the lead with its next delivery rather than starting a turn.
         #[serde(default)]
@@ -525,8 +599,8 @@ fn ensure_available_to(
     ensure!(
         !store.owners.iter().any(|o| Path::new(&o.target) == target
             && !(o.project_id == project
-                && ((auto && (o.kind == "chat" || o.kind == "auto"))
-                    || (o.kind == "chat" && chat_team == Some(o.id.as_str()))))),
+                && ((auto && (o.kind == OwnerKind::Chat || o.kind == OwnerKind::Auto))
+                    || (o.kind == OwnerKind::Chat && chat_team == Some(o.id.as_str()))))),
         "This worktree is controlled by coordinated chat or Auto; stop its owner first"
     );
     Ok(())
@@ -558,7 +632,7 @@ pub fn auto_ownership(
             if s.owners.iter().any(|o| {
                 o.project_id == project
                     && o.target == target.to_string_lossy()
-                    && o.kind == "auto"
+                    && o.kind == OwnerKind::Auto
                     && o.id == id
             }) {
                 return Ok(());
@@ -574,12 +648,12 @@ pub fn auto_ownership(
             s.owners.push(Owner {
                 project_id: project.into(),
                 target: target.display().to_string(),
-                kind: "auto".into(),
+                kind: OwnerKind::Auto,
                 id: id.into(),
             });
         } else {
             s.owners
-                .retain(|o| !(o.project_id == project && o.kind == "auto" && o.id == id));
+                .retain(|o| !(o.project_id == project && o.kind == OwnerKind::Auto && o.id == id));
         }
         Ok(())
     })
@@ -697,7 +771,7 @@ pub fn initialize(
         s.owners.push(Owner {
             project_id: project.into(),
             target: t.target.clone(),
-            kind: "chat".into(),
+            kind: OwnerKind::Chat,
             id: t.id.clone(),
         });
         s.teams.push(t.clone());
@@ -738,7 +812,8 @@ pub fn retire_task(root: &Path, project: &str, task: Option<&str>) -> Result<Vec
                 clear_restart_notice(&mut r.error);
             }
         }
-        s.owners.retain(|o| !(o.kind == "chat" && o.id == t.id));
+        s.owners
+            .retain(|o| !(o.kind == OwnerKind::Chat && o.id == t.id));
         Ok(sessions.into_iter().collect())
     })
 }
@@ -790,7 +865,7 @@ fn append(
 }
 /// Queue a lead message that rides with its next delivery rather than starting a turn.
 fn append_passive(t: &mut Team, id: String, text: String) -> Result<()> {
-    append(t, id.clone(), "patchbay", "lead", None, text)?;
+    append(t, id.clone(), "patchbay", LEAD_RECIPIENT, None, text)?;
     if let Some(m) = t.messages.iter_mut().find(|m| m.id == id) {
         m.passive = true;
     }
@@ -818,7 +893,7 @@ fn actor(s: &Store, launch: &LaunchContext, records: &[Record]) -> Result<(usize
                         .is_none_or(|r| r.phase == ResetPhase::Queued),
                 "This lead was superseded or is being replaced"
             );
-            return Ok((i, "lead".into()));
+            return Ok((i, LEAD_RECIPIENT.into()));
         }
         if t.scopes
             .get(&launch.agent_session)
@@ -843,6 +918,25 @@ fn actor(s: &Store, launch: &LaunchContext, records: &[Record]) -> Result<(usize
     }
     Err(anyhow!("Session is not a current member of a chat team"))
 }
+
+/// Authorize a board edit with the same live lead ownership as workflow requests.
+pub(crate) fn with_lead<T>(
+    root: &Path,
+    launch: &LaunchContext,
+    records: &[Record],
+    edit: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let _guard = super::LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_, who) = actor(&load(root)?, launch, records)?;
+    ensure!(
+        who == LEAD_RECIPIENT,
+        "Only the lead or a planner can edit the story board"
+    );
+    edit()
+}
+
 /// Authenticated members derive their own team and task; caller-supplied team IDs are forbidden.
 pub fn command(
     root: &Path,
@@ -854,7 +948,7 @@ pub fn command(
     modify(root, |s| {
         let (index, who) = actor(s, launch, records)?;
         let mut t = s.teams[index].clone();
-        let lead = who == "lead";
+        let lead = who == LEAD_RECIPIENT;
         ensure!(
             lead || member(s, &t, &who).is_some()
                 || matches!(
@@ -883,7 +977,7 @@ pub fn command(
                         .unwrap_or(&to);
                     let recipient = record(records, &t.project_id, sid)?;
                     ensure!(
-                        to != "lead"
+                        to != LEAD_RECIPIENT
                             && recipient.id != t.lead.session_id
                             && recipient.metadata.kind == crate::TerminalKind::Agent,
                         "Choose an existing agent"
@@ -921,7 +1015,7 @@ pub fn command(
                     append(
                         &mut t,
                         format!("ask-{id}"),
-                        "lead",
+                        LEAD_RECIPIENT,
                         &to,
                         Some(to.clone()),
                         format!(
@@ -956,7 +1050,7 @@ pub fn command(
                         &mut t,
                         format!("reply-{id}"),
                         &who,
-                        "lead",
+                        LEAD_RECIPIENT,
                         Some(who.clone()),
                         format!(
                             "Response to information request {id} from {who} (reported; verify before claiming completion):\n{text}"
@@ -999,23 +1093,10 @@ pub fn command(
             } => {
                 ensure!(lead, "Only the lead can control workflows");
                 valid_id(&id)?;
-                ensure!(
-                    [
-                        "startAuto",
-                        "pauseAuto",
-                        "resumeAuto",
-                        "stopAuto",
-                        "startAgent",
-                        "startPlan",
-                        "startBuild",
-                        "startReview",
-                        "startFix",
-                        "startMerge",
-                        "startCouncilReview"
-                    ]
-                    .contains(&action.as_str()),
-                    "Unknown workflow action"
-                );
+                let action = WorkflowAction::deserialize(serde_json::Value::String(action))
+                    .ok()
+                    .filter(|a| *a != WorkflowAction::Unknown)
+                    .ok_or_else(|| anyhow!("Unknown workflow action"))?;
                 ensure!(
                     serde_json::to_vec(&settings)?.len() <= MESSAGE_LIMIT,
                     "Settings too large"
@@ -1026,26 +1107,48 @@ pub fn command(
                         "Request ID already used"
                     );
                 } else {
-                    if action == "startCouncilReview" {
+                    // A story id is checked once, when the request is made, so a replay of
+                    // the same request survives the story's later deletion.
+                    if let Some(story) = settings.get("story").filter(|v| !v.is_null()) {
+                        ensure!(
+                            matches!(
+                                action,
+                                WorkflowAction::StartPlan | WorkflowAction::StartAuto
+                            ),
+                            "Only startPlan and startAuto take a story"
+                        );
+                        // Auto links its story to the run's worktree; the project checkout has none.
+                        ensure!(
+                            action != WorkflowAction::StartAuto || t.task.is_some(),
+                            "Auto can take a story only in a worktree. Ask the user to start one."
+                        );
+                        let story = story.as_str().unwrap_or_default();
+                        ensure!(
+                            crate::stories::load(root)?.iter().any(|s| s.id == story),
+                            "Unknown story {story:?}. Run `agent stories` for the board's ids."
+                        );
+                    }
+                    if action == WorkflowAction::StartCouncilReview {
                         ensure!(t.council.enabled, "Review council is disabled");
                         t.council.validate(&t.presets)?;
                     }
-                    if STAGE_ACTIONS.contains(&action.as_str()) {
+                    if action.is_stage() {
                         ensure!(!stage_active(&t), STAGE_ACTIVE);
                         ensure!(settings.is_object(), "Stage settings must be an object");
                         ensure!(
-                            action != "startPlan"
+                            action != WorkflowAction::StartPlan
+                                || settings["story"].is_string()
                                 || settings["goal"]
                                     .as_str()
                                     .is_some_and(|goal| !goal.trim().is_empty()),
-                            "startPlan needs the user's request as goal"
+                            "startPlan needs the user's request as goal, or a story"
                         );
                         // Store immutable launch inputs separately from the caller's settings.
                     }
                     t.requests.push(WorkflowRequest {
                         id,
                         council_run: None,
-                        council: (action == "startCouncilReview").then(|| {
+                        council: (action == WorkflowAction::StartCouncilReview).then(|| {
                             (
                                 t.council.clone(),
                                 t.presets
@@ -1057,7 +1160,7 @@ pub fn command(
                         }),
                         action,
                         settings,
-                        state: "queued".into(),
+                        state: WorkflowState::Queued,
                         result: None,
                     });
                 }
@@ -1129,7 +1232,7 @@ pub fn command(
                 ensure!(
                     assignments
                         .iter()
-                        .all(|a| member(s, &t, &a.id).is_none() && a.id != "lead"),
+                        .all(|a| member(s, &t, &a.id).is_none() && a.id != LEAD_RECIPIENT),
                     "Assignment IDs must be unique across team rounds"
                 );
                 let tree = Path::new(&t.target);
@@ -1204,18 +1307,18 @@ pub fn command(
             }
             Command::Send { id, to, text } => {
                 ensure!(
-                    lead || to == "lead",
+                    lead || to == LEAD_RECIPIENT,
                     "Workers communicate only with their owning lead"
                 );
                 ensure!(
-                    to == "lead"
+                    to == LEAD_RECIPIENT
                         || member(s, &t, &to).is_some()
                         || (lead
                             && record(records, &t.project_id, &to)
                                 .is_ok_and(|r| r.metadata.task == t.task)),
                     "Recipient belongs to another team or does not exist"
                 );
-                if lead && to != "lead" && member(s, &t, &to).is_none() {
+                if lead && to != LEAD_RECIPIENT && member(s, &t, &to).is_none() {
                     let recipient = record(records, &t.project_id, &to)?;
                     ensure!(
                         recipient.metadata.kind == crate::TerminalKind::Agent,
@@ -1242,7 +1345,7 @@ pub fn command(
                     &who,
                     &to,
                     if lead {
-                        (to != "lead").then(|| to.clone())
+                        (to != LEAD_RECIPIENT).then(|| to.clone())
                     } else {
                         Some(who.clone())
                     },
@@ -1282,7 +1385,7 @@ pub fn command(
                     &mut t,
                     format!("report-{}", j.request_id),
                     &who,
-                    "lead",
+                    LEAD_RECIPIENT,
                     Some(who.clone()),
                     text,
                 )?;
@@ -1339,7 +1442,7 @@ pub fn command(
                     &mut t,
                     format!("result-{}", j.request_id),
                     &who,
-                    "lead",
+                    LEAD_RECIPIENT,
                     Some(who.clone()),
                     format!(
                         "Code result from {who}: {commit}\n{summary}\nIntegrate serially, verify, then checkpoint."
@@ -1547,7 +1650,7 @@ pub(super) fn reserve_check(s: &Store, project: &str, run: &str, job: &str) -> R
             .flat_map(|r| &r.jobs)
             .filter(|j| j.id != job && matches!(j.state, JobState::Launching | JobState::Running))
             .count();
-        ensure!(occupied < t.limit, "Worker concurrency limit reached");
+        ensure!(occupied < t.limit, "Sub-builder concurrency limit reached");
         let candidate = r.jobs.iter().find(|j| j.id == job).unwrap();
         if candidate.shared_worktree && candidate.result_kind == ResultKind::Code {
             ensure!(
@@ -1574,22 +1677,18 @@ pub(super) fn reserve_check(s: &Store, project: &str, run: &str, job: &str) -> R
     Ok(())
 }
 
-/// Workflow requests whose agents change this worktree's checkout or review it. Each stays active
-/// until its agents finish, so they never overlap.
-const STAGE_ACTIONS: [&str; 6] = [
-    "startPlan",
-    "startBuild",
-    "startFix",
-    "startReview",
-    "startCouncilReview",
-    "startMerge",
-];
 const STAGE_ACTIVE: &str = "A plan, build, fix, review or merge is already active in this worktree";
 
 fn stage_active(team: &Team) -> bool {
     team.requests.iter().any(|r| {
-        STAGE_ACTIONS.contains(&r.action.as_str())
-            && ["queued", "starting", "running", "waiting"].contains(&r.state.as_str())
+        r.action.is_stage()
+            && matches!(
+                r.state,
+                WorkflowState::Queued
+                    | WorkflowState::Starting
+                    | WorkflowState::Running
+                    | WorkflowState::Waiting
+            )
     })
 }
 
@@ -1662,15 +1761,19 @@ pub fn control(
                 let previous = t
                     .requests
                     .iter()
-                    .find(|r| r.id == id && r.action == "startCouncilReview" && r.state == "failed")
+                    .find(|r| {
+                        r.id == id
+                            && r.action == WorkflowAction::StartCouncilReview
+                            && r.state == WorkflowState::Failed
+                    })
                     .ok_or_else(|| anyhow!("No failed council to retry"))?;
                 let settings = previous.settings.clone();
                 t.council.validate(&t.presets)?;
                 t.requests.push(WorkflowRequest {
                     id: new_id(),
-                    action: "startCouncilReview".into(),
+                    action: WorkflowAction::StartCouncilReview,
                     settings,
-                    state: "queued".into(),
+                    state: WorkflowState::Queued,
                     result: None,
                     council_run: None,
                     council: Some((
@@ -1690,8 +1793,10 @@ pub fn control(
                 passive,
             } => {
                 ensure!(
-                    ["starting", "running", "waiting", "completed", "failed"]
-                        .contains(&state.as_str()),
+                    !matches!(
+                        state,
+                        WorkflowState::Queued | WorkflowState::Uncertain | WorkflowState::Unknown
+                    ),
                     "Invalid request state"
                 );
                 let request = t
@@ -1700,11 +1805,17 @@ pub fn control(
                     .find(|r| r.id == id)
                     .ok_or_else(|| anyhow!("Unknown request"))?;
                 ensure!(
-                    request.state == "queued"
-                        || request.state == "waiting"
-                        || (request.state == "starting" && state != "starting")
-                        || (request.state == "running"
-                            && ["running", "completed", "failed"].contains(&state.as_str())),
+                    match request.state {
+                        WorkflowState::Queued | WorkflowState::Waiting => true,
+                        WorkflowState::Starting => state != WorkflowState::Starting,
+                        WorkflowState::Running => {
+                            state == WorkflowState::Running || state.settled_label().is_some()
+                        }
+                        WorkflowState::Completed
+                        | WorkflowState::Failed
+                        | WorkflowState::Uncertain
+                        | WorkflowState::Unknown => false,
+                    },
                     "Request already claimed or finished"
                 );
                 ensure!(
@@ -1713,7 +1824,9 @@ pub fn control(
                         .is_none_or(|text| text.len() <= MESSAGE_LIMIT),
                     "Result too large"
                 );
-                if state == "running" && request.action == "startCouncilReview" {
+                if state == WorkflowState::Running
+                    && request.action == WorkflowAction::StartCouncilReview
+                {
                     let mut run =
                         serde_json::from_str(result.as_deref().context("Missing council state")?)?;
                     archive_council(root, &id, &mut run)?;
@@ -1721,12 +1834,13 @@ pub fn control(
                 }
                 // A lead review's progress survives restarts like a council's. Its findings stay
                 // in the regular review files, so there is nothing to archive.
-                if state == "running" && request.action == "startReview" {
+                if state == WorkflowState::Running && request.action == WorkflowAction::StartReview
+                {
                     request.council_run = Some(serde_json::from_str(
                         result.as_deref().context("Missing review state")?,
                     )?);
                 }
-                if ["completed", "failed"].contains(&state.as_str())
+                if state.settled_label().is_some()
                     && let Some(archive) = request
                         .council_run
                         .as_ref()
@@ -1737,15 +1851,15 @@ pub fn control(
                         result.unwrap_or_default()
                     ));
                 }
-                request.state = state.clone();
+                request.state = state;
                 request.result = result.clone();
-                if state != "starting" && state != "waiting" && state != "running" {
+                if let Some(outcome) = state.settled_label() {
                     let message = format!("workflow-{id}");
-                    let text = format!("Workflow {id}: {state}. {}", result.unwrap_or_default());
+                    let text = format!("Workflow {id}: {outcome}. {}", result.unwrap_or_default());
                     if passive {
                         append_passive(&mut t, message, text)?;
                     } else {
-                        append(&mut t, message, "patchbay", "lead", None, text)?;
+                        append(&mut t, message, "patchbay", LEAD_RECIPIENT, None, text)?;
                     }
                 }
             }
@@ -1807,7 +1921,7 @@ pub fn control(
                 {
                     ensure!(
                         !r.jobs.iter().any(|j| j.state == JobState::Failed),
-                        "Retry failed workers before resuming"
+                        "Retry failed sub-builders before resuming"
                     );
                     if r.error.as_deref() == Some(RESTART_NOTICE)
                         || r.jobs
@@ -1818,11 +1932,15 @@ pub fn control(
                         clear_restart_notice(&mut r.error);
                     }
                 }
-                if !s.owners.iter().any(|o| o.kind == "chat" && o.id == t.id) {
+                if !s
+                    .owners
+                    .iter()
+                    .any(|o| o.kind == OwnerKind::Chat && o.id == t.id)
+                {
                     s.owners.push(Owner {
                         project_id: project.into(),
                         target: t.target.clone(),
-                        kind: "chat".into(),
+                        kind: OwnerKind::Chat,
                         id: t.id.clone(),
                     });
                 }
@@ -1840,7 +1958,8 @@ pub fn control(
                     r.state = State::Stopped;
                     clear_restart_notice(&mut r.error);
                 }
-                s.owners.retain(|o| !(o.kind == "chat" && o.id == t.id));
+                s.owners
+                    .retain(|o| !(o.kind == OwnerKind::Chat && o.id == t.id));
             }
             Control::Retry {
                 assignment,
@@ -1848,7 +1967,7 @@ pub fn control(
             } => {
                 ensure!(
                     terminal.as_ref().is_none_or(supported),
-                    "Choose a supported worker preset"
+                    "Choose a supported sub-builder preset"
                 );
                 let r = s
                     .runs
@@ -1895,10 +2014,13 @@ pub fn control(
                     (1..=8).contains(&limit)
                         && !workers.is_empty()
                         && workers.iter().all(supported),
-                    "Choose supported Claude/Codex presets and 1–8 workers"
+                    "Choose supported Claude/Codex presets and 1–8 sub-builders"
                 );
                 let ids: HashSet<_> = workers.iter().map(|w| &w.id).collect();
-                ensure!(ids.len() == workers.len(), "Worker presets must be unique");
+                ensure!(
+                    ids.len() == workers.len(),
+                    "Sub-builder presets must be unique"
+                );
                 t.workers = workers;
                 t.limit = limit;
             }
@@ -1936,7 +2058,7 @@ pub fn control(
                         s.owners.push(Owner {
                             project_id: project.into(),
                             target: t.target.clone(),
-                            kind: "chat".into(),
+                            kind: OwnerKind::Chat,
                             id: t.id.clone(),
                         });
                         t.state = State::Running;
@@ -1996,7 +2118,7 @@ fn ensure_available_for_team(s: &Store, t: &Team) -> Result<()> {
     ensure!(
         !s.owners.iter().any(|o| o.target == t.target
             && !(o.project_id == t.project_id
-                && (o.kind == "auto" || (o.kind == "chat" && o.id == t.id)))),
+                && (o.kind == OwnerKind::Auto || (o.kind == OwnerKind::Chat && o.id == t.id)))),
         "Auto or another owner controls this worktree"
     );
     Ok(())
@@ -2013,7 +2135,7 @@ pub fn side_message(
         let t = team(s, project, id)?.clone();
         ensure!(
             member(s, &t, assignment).is_some(),
-            "Worker is outside this team"
+            "Sub-builder is outside this team"
         );
         let t = team(s, project, id)?;
         append(
@@ -2028,7 +2150,7 @@ pub fn side_message(
             t,
             format!("copy-{message_id}"),
             "user",
-            "lead",
+            LEAD_RECIPIENT,
             Some(assignment.into()),
             format!("Side-thread message to {assignment}:\n{text}"),
         )?;
@@ -2051,6 +2173,8 @@ const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. 
   - Fix: fix review findings with `startFix`, only when the user asks.
   - Merge: merge with `startMerge`, only when the user asks for it. A clean review is not permission to merge.
   - Investigation, and checks of the combined result, go to `report` workers. A complete plan → build → review → merge pipeline goes to `startAuto`.
+- For "what's next?", run `agent stories` and answer with its `next` item (its epic → feature, title and acceptance criteria), then offer to plan it or run Auto on it. Start work when the user asks and pass the item id as `story` to link and track it. Mention a linked worktree (`task`) when an item has one.
+- When the user describes new work without asking for a plan, build or Auto run, run `agent stories` first. Then propose an epic, features and stories with acceptance criteria, using existing epics and features as parents where they fit and components from `agent team`. If the request leaves the outcome, acceptance criteria, components or parent open, ask about those together in that same message and offer your best guess as the default. Do not ask about what the request or the board already answers. Create the items after the user agrees and report their ids. Edit or reprioritize board items when asked. Patchbay saves story progress as stages run. Set status by hand only when the user asks or when recording work that happened outside Patchbay.
 - Keep the chat status current with `agent team-status`: set it when you take on a request, when you start a stage and after each stage result. It is what the user sees as the state of the work.
 - Do not use provider-native subagents. Use only Patchbay-managed workers and configured presets.
 - Distinguish reported from verified results.
@@ -2066,14 +2190,17 @@ Run each command below as {cli}.
 - `agent team-delegate --id <unique-round-id> --file <json-array>`: create a round of isolated workers. Each assignment has a globally unique `id`, `instructions`, `components`, `dependencies`, `preset` and `resultKind` (`report` or `code`). Report workers inspect the committed baseline; compare their findings with local edits. Isolated code delegation needs a clean Git checkpoint.
 - `agent team-request --id <id> --action <startAgent|startPlan|startBuild|startReview|startFix|startMerge|startCouncilReview|startAuto|pauseAuto|resumeAuto|stopAuto> --file <settings-json>`: control existing workflows.
   - `startAgent` settings: `{preset: configured-preset-id, instructions: task, components: [component-ids], paths: [relative-file-or-directory-paths], resultKind: code or report}`. Role-to-preset mappings are in `team.agentRoles`; presets are in `team.presets` (or `team.workers` until the catalog loads).
-  - `startPlan` settings: `{goal: the-user's-request, components: optional-component-ids}`. Starts a planner under the plan role, which saves its plan for Plan and Build. Wait for its durable result. A failed result may mean the planner is waiting on a question.
+  - `startPlan` settings: `{goal: the-user's-request, story: optional-story-id, components: optional-component-ids}`. With `story`, `goal` may be omitted: the planner receives that item's story briefing and a story still in progress is saved as Planned. A `goal` beside a story reaches the planner as the user's extra direction. Starts a planner under the plan role, which saves its plan for Plan and Build. Wait for its durable result. A failed result may mean the planner is waiting on a question.
   - `startBuild` settings: `{}`. Starts one implementation agent for this worktree's saved plan. Wait for its durable result, then inspect the work.
   - `startReview` settings: `{base: optional-branch-name, focus: optional-review-focus}`. Starts the configured reviewers against `base`, else the branch's last review base, else its merge destination. The result names the base used. Wait for it, then report the verdict and findings. The full report is in Review. It does not authorize fixes or merges.
   - `startFix` settings: `{}`. Starts a fix agent on this worktree's latest finished review. Wait for its durable result, then inspect the work.
   - `startMerge` settings: `{destination: optional-branch-name, commitSource: optional-change-list}`. Starts a merge agent for this worktree's branch into `destination`, else the default merge destination. With uncommitted changes it fails and lists them: ask the user, and only if they agree retry under a new id with exactly those entries as `commitSource`. A confirmed merge needs no report from you, because Chat shows it.
   - Only one `startPlan`, `startBuild`, `startFix`, `startReview`, `startCouncilReview` or `startMerge` can be active at a time.
-  - `startAuto` accepts `goal`, `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`) and `stage`; omit fields to use app defaults. Never automatically enable merge approval bypass.
+  - `startAuto` accepts `goal`, `story` (a story id: the story's text becomes the goal and the story is linked to the run), `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`) and `stage`; omit fields to use app defaults. Never automatically enable merge approval bypass.
   - `startCouncilReview` settings: `{base: branch-name, focus: optional-review-focus}`, only when `team.council.enabled`. Use only this workflow for a council and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges.
+- `agent stories [--id <story-id>]`: the story board in priority order (each epic, its features and their stories, then unassigned stories), with `next`, the top Backlog story without linked work. Stories show their saved stage and epics and features show Active or Closed. `--id` adds that item's full briefing as `section`.
+- `agent story-create --kind <epic|feature|story> --title <title> [--parent <id>] [--description <text>] [--acceptance <criterion>]... [--component <id>]...`: create an item and get its saved record. A feature needs an epic. A story may belong to a feature or be unassigned.
+- `agent story-update <id> [--title <title>] [--description <text>] [--acceptance <criterion>]... [--parent <id>] [--order <number>] [--status <backlog|planned|building|reviewing|merging|done> | --close | --reopen]`: edit an item and get its saved record. Use `--close` or `--reopen` for a parent's status. Lower order values come first among siblings. Pass an empty parent to unassign a story, or an empty criterion to clear the list.
 - `agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...]`: record an existing agent's agreed components.
 - `agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>`: gather progress, blockers, findings and validation from EXISTING agents before launching more work. Requests and responses are durable in `team.informationRequests`. Busy agents receive questions at their next ready prompt and respond with `agent team-reply --id <request-id> --text <response>`.
 - `agent team-send --id <unique-id> --to <assignment-id> --text <message>`: route dependencies and messages. Workers contact only you.
@@ -2200,7 +2327,6 @@ fn recovery_text(s: &Store, t: &Team) -> Result<String> {
         excerpt(&compact, MESSAGE_LIMIT - notice.len() - 2)
     ))
 }
-const SETTLED_WORKFLOWS: [&str; 2] = ["completed", "failed"];
 /// Workers may still report. A failed assignment waits for a decision and is not running.
 fn round_active(r: &Run) -> bool {
     r.state != State::Stopped
@@ -2216,9 +2342,7 @@ fn team_active(s: &Store, t: &Team) -> bool {
         || t.information_requests
             .iter()
             .any(|r| r.response.is_none() && r.error.is_none())
-        || t.requests
-            .iter()
-            .any(|r| !SETTLED_WORKFLOWS.contains(&r.state.as_str()))
+        || t.requests.iter().any(|r| r.state.settled_label().is_none())
 }
 /// Work begun after the task finished belongs to the lead's current conversation.
 fn lead_moved_on(s: &Store, t: &Team, lead: &Record, since_ms: Option<u64>) -> bool {
@@ -2242,12 +2366,11 @@ fn complete_task(
 ) -> Result<()> {
     // The merge that finished this task may be the lead's own stage. It is done, so it neither
     // counts as open work nor needs reporting.
-    for r in t
-        .requests
-        .iter_mut()
-        .filter(|r| r.action == "startMerge" && ["starting", "running"].contains(&r.state.as_str()))
-    {
-        r.state = "completed".into();
+    for r in t.requests.iter_mut().filter(|r| {
+        r.action == WorkflowAction::StartMerge
+            && matches!(r.state, WorkflowState::Starting | WorkflowState::Running)
+    }) {
+        r.state = WorkflowState::Completed;
         r.result = Some("Merge confirmed.".into());
     }
     let lead = record(records, project, &t.lead.session_id).ok();
@@ -2309,7 +2432,7 @@ fn finish_task(t: &mut Team, runs: &[Run], records: &[Record]) {
     let settled: Vec<_> = t
         .requests
         .iter()
-        .filter(|r| SETTLED_WORKFLOWS.contains(&r.state.as_str()))
+        .filter(|r| r.state.settled_label().is_some())
         .map(|r| r.id.clone())
         .collect();
     t.finished.workflows.extend(settled);
@@ -2320,7 +2443,7 @@ fn finish_task(t: &mut Team, runs: &[Run], records: &[Record]) {
         .flat_map(|r| r.jobs.iter().map(|j| j.id.as_str()))
         .collect();
     for m in t.messages.iter_mut().filter(|m| {
-        m.recipient == "lead"
+        m.recipient == LEAD_RECIPIENT
             && m.state == DeliveryState::Pending
             && m.assignment
                 .as_deref()
@@ -2384,8 +2507,8 @@ pub fn reconcile(
             }
             if restoring {
                 for request in &mut t.requests {
-                    if request.state == "starting" {
-                        request.state = "uncertain".into();
+                    if request.state == WorkflowState::Starting {
+                        request.state = WorkflowState::Uncertain;
                         request.result = Some("Control interrupted after its durable claim. Inspect active agents and Auto before issuing another request.".into());
                     }
                 }
@@ -2430,7 +2553,7 @@ pub fn reconcile(
                     &mut t,
                     format!("ask-failed-{id}"),
                     "patchbay",
-                    "lead",
+                    LEAD_RECIPIENT,
                     None,
                     format!(
                         "Information request {id} was not answered: {reason}. Inspect its saved work and choose a follow-up; no replacement worker was launched."
@@ -2485,7 +2608,7 @@ pub fn reconcile(
                     if noted || record.metadata.component_id == crate::model::MERGE_SCOPE {
                         append_passive(&mut t, notice_id, notice)?;
                     } else {
-                        append(&mut t, notice_id, "patchbay", "lead", None, notice)?;
+                        append(&mut t, notice_id, "patchbay", LEAD_RECIPIENT, None, notice)?;
                     }
                     t.observed_agents.remove(&record.id);
                 } else if snapshot.running && !ready(record) {
@@ -2588,9 +2711,9 @@ pub fn reconcile(
                     (
                         format!("failed-{}", j.request_id),
                         j.id.clone(),
-                        j.error
-                            .clone()
-                            .unwrap_or_else(|| "Worker exited without an explicit result".into()),
+                        j.error.clone().unwrap_or_else(|| {
+                            "Sub-builder exited without an explicit result".into()
+                        }),
                     )
                 })
                 .collect();
@@ -2626,7 +2749,7 @@ pub fn reconcile(
                     &mut t,
                     id,
                     &assignment,
-                    "lead",
+                    LEAD_RECIPIENT,
                     Some(assignment.clone()),
                     format!(
                         "Worker {assignment} needs input: {question}. Use Sessions to open its terminal. Route its question and dependencies through the lead conversation. Automated delivery waits for a ready prompt."
@@ -2642,7 +2765,7 @@ pub fn reconcile(
                     &mut t,
                     id,
                     &assignment,
-                    "lead",
+                    LEAD_RECIPIENT,
                     Some(assignment.clone()),
                     format!(
                         "Worker {assignment} failed: {error}. Inspect it, then Retry or tell the user."
@@ -2717,7 +2840,7 @@ fn prepare_lead(
             s.owners.push(Owner {
                 project_id: project_id.into(),
                 target: t.target.clone(),
-                kind: "chat".into(),
+                kind: OwnerKind::Chat,
                 id: t.id.clone(),
             });
         }
@@ -3025,7 +3148,7 @@ pub fn replace_lead(
                 t.state = State::Paused;
             }
             t.error = Some(format!(
-                "Lead replacement unconfirmed: {e}. History and workers are preserved. Resume reconciles the same launch."
+                "Lead replacement unconfirmed: {e}. History and sub-builders are preserved. Resume reconciles the same launch."
             ));
         }
         Ok(())
@@ -3082,7 +3205,7 @@ fn deliver_at(
             if std::mem::take(&mut t.quiet_recovery) && !team_active(s, &t) {
                 append_passive(&mut t, new_id(), text)?;
             } else {
-                append(&mut t, new_id(), "patchbay", "lead", None, text)?;
+                append(&mut t, new_id(), "patchbay", LEAD_RECIPIENT, None, text)?;
             }
             t.recovery = false;
         }
@@ -3094,7 +3217,7 @@ fn deliver_at(
             .collect();
         // The durable reserve blocks another desktop drive even if the transport loses its reply.
         for recipient in recipients {
-            if recipient != "lead" && t.state != State::Running {
+            if recipient != LEAD_RECIPIENT && t.state != State::Running {
                 continue;
             }
             if t.messages.iter().any(|m| {
@@ -3103,7 +3226,7 @@ fn deliver_at(
             }) {
                 continue;
             }
-            let sid = if recipient == "lead" {
+            let sid = if recipient == LEAD_RECIPIENT {
                 Some(t.lead.session_id.clone())
             } else {
                 member(s, &t, &recipient)
@@ -3124,14 +3247,14 @@ fn deliver_at(
             if !ready(r) || limit_held(r, now_ms, &mut exhausted) {
                 continue;
             }
-            if recipient != "lead"
+            if recipient != LEAD_RECIPIENT
                 && member(s, &t, &recipient)
                     .is_some_and(|j| r.request_ids.last() != Some(&j.request_id))
             {
                 continue;
             }
             let generation = generation(r)?;
-            if recipient != "lead"
+            if recipient != LEAD_RECIPIENT
                 && member(s, &t, &recipient).is_none()
                 && t.scopes
                     .get(&recipient)
@@ -3139,7 +3262,7 @@ fn deliver_at(
             {
                 continue;
             }
-            if recipient == "lead" && generation != t.lead.generation {
+            if recipient == LEAD_RECIPIENT && generation != t.lead.generation {
                 continue;
             }
             let ready_since = r
@@ -3255,6 +3378,82 @@ mod tests {
     use super::*;
     use crate::pty::{SessionSpec, Snapshot};
     use crate::status::{AgentReport, AgentState, SessionStatus};
+
+    #[test]
+    fn persisted_chat_workflows_and_owners_round_trip_with_existing_wire_values() {
+        let actions = [
+            "startAgent",
+            "startPlan",
+            "startBuild",
+            "startReview",
+            "startFix",
+            "startMerge",
+            "startCouncilReview",
+            "startAuto",
+            "pauseAuto",
+            "resumeAuto",
+            "stopAuto",
+        ];
+        let states = [
+            "queued",
+            "waiting",
+            "starting",
+            "running",
+            "completed",
+            "uncertain",
+            "failed",
+        ];
+        let requests: Vec<_> = actions
+            .into_iter()
+            .zip(states.into_iter().cycle())
+            .map(|(action, state)| {
+                serde_json::json!({
+                    "id": action, "action": action, "state": state, "settings": {}, "result": null,
+                    "council": null, "councilRun": null
+                })
+            })
+            .collect();
+        let saved = serde_json::json!({
+            "teams": [{
+                "id": "team", "projectId": "p", "task": null, "target": "/repo",
+                "lead": {
+                    "sessionId": "lead-session", "generation": 1, "conversation": null,
+                    "preset": {"id": "codex", "name": "Codex", "kind": "agent", "command": "codex"}
+                },
+                "state": "running", "workers": [], "limit": 1, "rounds": [], "requests": requests,
+                "checkpoint": {"goal": "", "constraints": "", "decisions": "", "remaining": "", "validation": ""},
+                "messages": [], "deliveries": [], "recovery": false
+            }],
+            "owners": [
+                {"projectId": "p", "target": "/repo", "kind": "chat", "id": "team"},
+                {"projectId": "p", "target": "/other", "kind": "auto", "id": "run"}
+            ],
+            "runs": []
+        });
+        let store: Store = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(
+            store.teams[0].requests[0].action,
+            WorkflowAction::StartAgent
+        );
+        assert_eq!(store.teams[0].requests[0].state, WorkflowState::Queued);
+        assert_eq!(store.owners[0].kind, OwnerKind::Chat);
+        let resaved = serde_json::to_value(store).unwrap();
+        assert_eq!(
+            resaved["teams"][0]["requests"],
+            saved["teams"][0]["requests"]
+        );
+        assert_eq!(resaved["owners"], saved["owners"]);
+        // Another build's values still load instead of making the whole store unreadable.
+        let mut newer = saved;
+        newer["teams"][0]["requests"][0]["action"] = "startSomethingNew".into();
+        newer["teams"][0]["requests"][1]["state"] = "somethingNew".into();
+        newer["owners"][0]["kind"] = "somethingNew".into();
+        let store: Store = serde_json::from_value(newer).unwrap();
+        assert_eq!(store.teams[0].requests[0].action, WorkflowAction::Unknown);
+        assert_eq!(store.teams[0].requests[1].state, WorkflowState::Unknown);
+        assert_eq!(store.owners[0].kind, OwnerKind::Unknown);
+    }
+
     struct Fixture {
         dir: PathBuf,
         project: Project,
@@ -3727,9 +3926,9 @@ mod tests {
         f.cmd(request("one", "startReview")).unwrap();
         f.cmd(request("one", "startReview")).unwrap();
         assert!(f.cmd(request("two", "startReview")).is_err());
-        let state = |state: &str, result: &str| Control::RequestState {
+        let state = |state, result: &str| Control::RequestState {
             id: "one".into(),
-            state: state.into(),
+            state,
             result: Some(result.into()),
             passive: false,
         };
@@ -3742,13 +3941,17 @@ mod tests {
                 std::slice::from_ref(&f.lead),
             )
         };
-        apply(state("starting", "")).unwrap();
-        apply(state("running", r#"{"round":"r","members":[]}"#)).unwrap();
+        apply(state(WorkflowState::Starting, "")).unwrap();
+        apply(state(
+            WorkflowState::Running,
+            r#"{"round":"r","members":[]}"#,
+        ))
+        .unwrap();
         assert_eq!(
             f.state().requests[0].council_run.as_ref().unwrap()["round"],
             "r"
         );
-        apply(state("completed", "Reviewed")).unwrap();
+        apply(state(WorkflowState::Completed, "Reviewed")).unwrap();
         f.cmd(request("two", "startReview")).unwrap();
         assert_eq!(f.state().requests.len(), 2);
     }
@@ -3772,7 +3975,7 @@ mod tests {
             &f.team.id,
             Control::RequestState {
                 id: "build".into(),
-                state: "completed".into(),
+                state: WorkflowState::Completed,
                 result: Some("Finished".into()),
                 passive: false,
             },
@@ -3790,6 +3993,81 @@ mod tests {
         assert!(instructions.contains("agent team-status"));
         assert!(!instructions.to_lowercase().contains("continue locally"));
         assert!(!instructions.contains("trivial"));
+    }
+
+    #[test]
+    fn plan_and_auto_take_an_existing_story_in_place_of_a_goal() {
+        let f = Fixture::new();
+        let request = |id: &str, action: &str, settings| Command::Request {
+            id: id.into(),
+            action: action.into(),
+            settings,
+        };
+        assert!(
+            f.cmd(request(
+                "plan",
+                "startPlan",
+                serde_json::json!({"story": "missing"})
+            ))
+            .is_err()
+        );
+        let story = crate::stories::create(
+            &f.dir,
+            serde_json::from_value(serde_json::json!({"kind": "story", "title": "Import"}))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            f.cmd(request(
+                "review",
+                "startReview",
+                serde_json::json!({"story": story.id})
+            ))
+            .is_err()
+        );
+        f.cmd(request(
+            "plan",
+            "startPlan",
+            serde_json::json!({"story": story.id}),
+        ))
+        .unwrap();
+        // The fixture's chat is the project checkout, where Auto has no worktree to link.
+        assert!(
+            f.cmd(request(
+                "auto",
+                "startAuto",
+                serde_json::json!({"story": story.id}),
+            ))
+            .is_err()
+        );
+        // The request is checked once: replaying it after deletion stays idempotent.
+        crate::stories::remove(&f.dir, &story.id, false).unwrap();
+        f.cmd(request(
+            "plan",
+            "startPlan",
+            serde_json::json!({"story": story.id}),
+        ))
+        .unwrap();
+        let instructions = lead_instructions();
+        assert!(instructions.contains("agent stories"));
+        assert!(instructions.contains("story: optional-story-id"));
+    }
+
+    #[test]
+    fn lead_asks_before_breaking_down_new_work_but_not_before_plan_or_auto() {
+        let instructions = lead_instructions();
+        let rule = instructions
+            .lines()
+            .find(|l| l.starts_with("- When the user describes new work"))
+            .expect("story breakdown rule");
+        assert!(rule.contains("without asking for a plan, build or Auto run"));
+        assert!(rule.contains("run `agent stories` first"));
+        assert!(rule.contains("existing epics and features as parents"));
+        assert!(rule.contains("ask about those together in that same message"));
+        assert!(rule.contains("Create the items after the user agrees"));
+        assert!(
+            instructions.contains("Start the matching agent without asking permission to delegate")
+        );
     }
 
     #[test]
@@ -3813,7 +4091,7 @@ mod tests {
         }
         let settle = |id: &str, passive| Control::RequestState {
             id: id.into(),
-            state: "completed".into(),
+            state: WorkflowState::Completed,
             result: Some("Done".into()),
             passive,
         };
@@ -3854,7 +4132,7 @@ mod tests {
             &f.team.id,
             Control::RequestState {
                 id: "merge".into(),
-                state: "running".into(),
+                state: WorkflowState::Running,
                 result: None,
                 passive: false,
             },
@@ -3862,7 +4140,7 @@ mod tests {
         )
         .unwrap();
         let t = complete_task_reset(&f).unwrap();
-        assert_eq!(t.requests[0].state, "completed");
+        assert_eq!(t.requests[0].state, WorkflowState::Completed);
         assert!(t.reset.as_ref().is_some_and(|r| r.complete_task));
     }
 
@@ -3949,7 +4227,7 @@ mod tests {
         assert_eq!(f.state().requests.len(), 1);
         let claim = || Control::RequestState {
             id: "start".into(),
-            state: "starting".into(),
+            state: WorkflowState::Starting,
             result: None,
             passive: false,
         };
@@ -3972,7 +4250,7 @@ mod tests {
             .is_err()
         );
         reconcile(&f.dir, "p", std::slice::from_ref(&f.lead), true).unwrap();
-        assert_eq!(f.state().requests[0].state, "uncertain");
+        assert_eq!(f.state().requests[0].state, WorkflowState::Uncertain);
     }
     #[test]
     fn unknown_existing_writer_blocks_shared_launch() {
@@ -4734,7 +5012,7 @@ mod tests {
             super::super::Control::ContinueScan,
         ] {
             let error = super::super::control(&f.dir, "p", "round1", control).unwrap_err();
-            assert!(error.to_string().contains("Chat worker controls"));
+            assert!(error.to_string().contains("Chat Sub-builder controls"));
             assert_eq!(
                 serde_json::to_value(super::super::list(&f.dir, "p").unwrap()).unwrap(),
                 before

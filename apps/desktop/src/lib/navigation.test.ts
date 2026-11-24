@@ -2,15 +2,15 @@ import { beforeEach, expect, test, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   prefs: vi.fn(),
-  invoke: vi.fn(),
+  resolve: vi.fn(),
   external: vi.fn(),
   terminal: vi.fn(),
   message: vi.fn(),
 }))
-vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('./ipc', () => ({
   editorPreferences: mocks.prefs,
   editorOpen: mocks.external,
+  editorResolveTarget: mocks.resolve,
   terminalOpenReference: mocks.terminal,
 }))
 vi.mock('../store', () => ({
@@ -30,7 +30,7 @@ const { FILE_EDITOR_EVENT } = await import('./fileEditor')
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.prefs.mockResolvedValue({})
-  mocks.invoke.mockResolvedValue({ path: '/workspace/file.txt', isDir: false })
+  mocks.resolve.mockResolvedValue({ path: '/workspace/file.txt', isDir: false })
 })
 test('legacy preferences open files internally with captured worktree identity', async () => {
   const opened = vi.fn()
@@ -39,6 +39,7 @@ test('legacy preferences open files internally with captured worktree identity',
     { path: 'file.txt', line: 3 },
     { projectId: 'origin', task: null, worktree: '/tree' },
   )
+  expect(mocks.resolve).toHaveBeenCalledWith('file.txt', 'origin', null, '/tree')
   expect(mocks.external).not.toHaveBeenCalled()
   expect((opened.mock.calls[0][0] as CustomEvent).detail).toEqual({
     target: { path: '/workspace/file.txt', line: 3 },
@@ -52,7 +53,7 @@ test('external mode and folders hand off to the external editor', async () => {
   await openInEditor({ path: 'file.txt' })
   expect(mocks.external).toHaveBeenCalledWith({ path: 'file.txt' }, 'project', 'task', undefined)
   mocks.prefs.mockResolvedValue({ fileOpenMode: 'patchbay' })
-  mocks.invoke.mockResolvedValue({ path: '/workspace', isDir: true })
+  mocks.resolve.mockResolvedValue({ path: '/workspace', isDir: true })
   await openInEditor({ path: '.' })
   expect(mocks.external).toHaveBeenLastCalledWith({ path: '.' }, 'project', 'task', undefined)
 })
@@ -62,21 +63,16 @@ test('terminal references retain backend-resolved originating identity and posit
     projectId: 'original',
     task: null,
   }
-  mocks.invoke.mockResolvedValue(request)
+  mocks.terminal.mockResolvedValue(request)
   const opened = vi.fn()
   window.addEventListener(FILE_EDITOR_EVENT, opened, { once: true })
   await openTerminalReference('session', 'file:8:2', 4)
-  expect(mocks.invoke).toHaveBeenCalledWith('terminal_open_reference', {
-    sessionId: 'session',
-    generation: 4,
-    reference: 'file:8:2',
-    resolveOnly: true,
-  })
+  expect(mocks.terminal).toHaveBeenCalledWith('session', 4, 'file:8:2', true)
+  expect(mocks.terminal).toHaveBeenCalledTimes(1)
   expect((opened.mock.calls[0][0] as CustomEvent).detail).toEqual(request)
-  expect(mocks.terminal).not.toHaveBeenCalled()
 })
 test('unresolvable files report an error without opening an editor', async () => {
-  mocks.invoke.mockRejectedValue(new Error('Outside project'))
+  mocks.resolve.mockRejectedValue(new Error('Outside project'))
   await openInEditor({ path: '../secret' })
   expect(mocks.message).toHaveBeenCalledWith('Error: Outside project')
   expect(mocks.external).not.toHaveBeenCalled()

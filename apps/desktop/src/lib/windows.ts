@@ -7,6 +7,7 @@ import {
 } from '@tauri-apps/api/webviewWindow'
 import { projectFrom, useStore } from '../store'
 import type { Task } from '../types'
+import { MAIN_WINDOW_LABEL } from './mainWindow'
 
 /**
  * Join a component path (which may start with `../`) onto the root, resolving `.` and `..`.
@@ -43,7 +44,14 @@ const ACTIVE_EVENT = 'patchbay://active-window'
 /** Emitted by the backend with the label of a window that has closed. */
 const CLOSED_EVENT = 'patchbay://window-closed'
 /** DOM event on `window` whenever the active window changes, so panes can refit. */
-export const ACTIVE_CHANGED = 'patchbay:active-changed'
+export const ACTIVE_CHANGED_EVENT = 'patchbay:active-changed'
+
+/** Pop-out window state the backend keeps in the workspace document. */
+export type PanelSizes = Record<string, Record<string, number>>
+export type WindowTab = 'files' | 'changes'
+export const windowLayout = () => invoke<{ tab?: WindowTab; panels?: PanelSizes }>('window_layout')
+export const windowTab = (tab: WindowTab) => invoke<void>('window_tab', { tab })
+export const windowPanels = (panels: PanelSizes) => invoke<void>('window_panels', { panels })
 
 // Encoding code points avoids collisions between ids with different punctuation.
 // Must match `component_window_label` in src-tauri/src/lib.rs.
@@ -52,17 +60,17 @@ export const componentLabel = (id: string, projectId: string) =>
 
 const ownLabel = getCurrentWebviewWindow().label
 /** The window that most recently had focus, as last heard by this webview. */
-let activeLabel = 'main'
+let activeLabel = MAIN_WINDOW_LABEL
 
 const setActive = (label: string) => {
   if (label === activeLabel) return
   activeLabel = label
-  window.dispatchEvent(new Event(ACTIVE_CHANGED))
+  window.dispatchEvent(new Event(ACTIVE_CHANGED_EVENT))
 }
 
 /**
  * Track which window was focused last, across webviews. Call once per webview at startup.
- * Panes claim terminal authority when their window becomes active (`ACTIVE_CHANGED`).
+ * Panes claim terminal authority when their window becomes active (`ACTIVE_CHANGED_EVENT`).
  */
 export function trackActiveWindow() {
   const activate = () => {
@@ -74,7 +82,7 @@ export function trackActiveWindow() {
   if (document.hasFocus()) activate()
   void listen<string>(ACTIVE_EVENT, (e) => setActive(e.payload)).catch(() => {})
   void listen<string>(CLOSED_EVENT, (e) => {
-    if (e.payload === activeLabel) setActive('main')
+    if (e.payload === activeLabel) setActive(MAIN_WINDOW_LABEL)
   }).catch(() => {})
 }
 
@@ -84,7 +92,8 @@ export function trackActiveWindow() {
  */
 export function showsSession(metadata: { projectId: string; componentId: string }) {
   return (
-    ownLabel === 'main' || componentLabel(metadata.componentId, metadata.projectId) === ownLabel
+    ownLabel === MAIN_WINDOW_LABEL ||
+    componentLabel(metadata.componentId, metadata.projectId) === ownLabel
   )
 }
 const opening = new Map<string, Promise<void>>()
@@ -106,7 +115,11 @@ export function openComponentWindow(
     const project = useStore.getState().captureProjects()[projectId]
     if (!project) return
     // Built by the backend so macOS can turn Writing Tools off first (`writing_tools.rs`).
-    await invoke('window_open', { projectId, componentId, title: `${project.name} · ${name}` })
+    await invoke<void>('window_open', {
+      projectId,
+      componentId,
+      title: `${project.name} · ${name}`,
+    })
   })()
     .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
     .finally(() => opening.delete(label))

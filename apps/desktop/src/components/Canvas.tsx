@@ -172,12 +172,11 @@ function isValidConnection(c: Connection | Edge) {
     )
 }
 
-export default function Canvas() {
+export default function Canvas({ covered = false }: { covered?: boolean }) {
   const planningTask = usePlanningTask()
   const {
     project,
     planning,
-    storyBoard,
     boardToggle,
     highlighted,
     nodes,
@@ -191,7 +190,6 @@ export default function Canvas() {
     useShallow((s) => ({
       project: s.project,
       planning: s.simpleMode || s.view === 'plan',
-      storyBoard: s.storyBoard,
       boardToggle: s.simpleMode || s.view !== 'plan',
       highlighted: planningHighlights(s, planningTask),
       nodes: s.nodes,
@@ -298,7 +296,7 @@ export default function Canvas() {
         nodesConnectable={!planning}
         nodesDraggable={!planning}
         elementsSelectable={!planning}
-        deleteKeyCode={planning || storyBoard ? null : ['Backspace', 'Delete']}
+        deleteKeyCode={planning || covered ? null : ['Backspace', 'Delete']}
         defaultEdgeOptions={{ style: { strokeWidth: 2 } }}
       >
         <Background
@@ -307,7 +305,7 @@ export default function Canvas() {
           size={1}
           color="color-mix(in srgb, var(--border) 55%, transparent)"
         />
-        {boardToggle && (
+        {boardToggle && !covered && (
           <Panel position="top-left" className="view-tabs-panel">
             <StoryViewTabs />
           </Panel>

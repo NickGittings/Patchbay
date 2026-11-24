@@ -191,7 +191,7 @@
       () => smoke.workspaceDocument().settings.autoKeepAwake === true,
     )
     await until('idle power status', () =>
-      document.body.textContent.includes('Sleep prevention is idle.'),
+      document.querySelector('.auto-check[data-power="inactive"]'),
     )
     awakeToggle.click()
     await until(
@@ -217,6 +217,20 @@
       )
       return start && !start.disabled
     })
+    const rounds = document.querySelector('.auto-content input[type="number"]')
+    const start = document.querySelector('.auto-content .auto-start')
+    const setRounds = (value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(rounds, value)
+      rounds.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const previousRounds = rounds.value
+    setRounds('')
+    await until('Start disabled while Fix rounds is empty', () => start.disabled)
+    rounds.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+    assert(rounds.value === '' && start.disabled, 'Leaving an empty Fix rounds enabled Start')
+    setRounds('0')
+    await until('Start enabled with zero Fix rounds', () => !start.disabled)
+    setRounds(previousRounds)
     assert(
       [...document.querySelectorAll('.auto-content select')].some(
         (s) => s.value === 'auto-fixture',
@@ -354,7 +368,7 @@
       goal: 'Finish the fixture task',
       effort: 'light',
       device: 'auto-fixture',
-      merge: { mode: 'ask', destinationBranch: '' },
+      merge: { mode: 'ask', destinationBranch: 'main' },
     })
     assert(folderRun()?.baseCommit === startHead, 'In-place run did not pin its Start commit')
     await until('in-place run to Done', () => {
@@ -384,22 +398,17 @@
     })
     if (!document.querySelector('.auto-check input'))
       document.querySelector('.workspace-rail [aria-label="Auto mode"]').click()
-    const powerText = await until('scheduled power status', () => {
-      const text = document.body.textContent
-      return (
-        /Keeping device awake while plugged in|On battery:|Power source unknown:|Sleep prevention unavailable/.test(
-          text,
-        ) && text
-      )
+    const powerStatus = await until('scheduled power status', () => {
+      const status = document.querySelector('.auto-check')?.dataset.power
+      return status && status !== 'inactive' && status
     })
-    if (powerText.includes('Sleep prevention unavailable'))
-      throw new Error('Native sleep prevention unavailable')
+    if (powerStatus === 'unavailable') throw new Error('Native sleep prevention unavailable')
     console.log(
-      `Power smoke: ${powerText.includes('Keeping device awake') ? 'active on AC' : 'inactive on battery/unknown power'}`,
+      `Power smoke: ${powerStatus === 'active' ? 'active on AC' : 'inactive on battery/unknown power'}`,
     )
     smoke.store.setState({ auto: completedAuto })
     await until('power released after completed run', () =>
-      document.body.textContent.includes('Sleep prevention is idle.'),
+      document.querySelector('.auto-check[data-power="inactive"]'),
     )
     smoke.store.setState({
       workspaceSettings: { ...state().workspaceSettings, autoKeepAwake: false },

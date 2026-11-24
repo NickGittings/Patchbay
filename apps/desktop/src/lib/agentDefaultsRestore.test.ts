@@ -30,15 +30,19 @@ test.each([false, true])(
     const document: WorkspaceDocument = {
       version: 1,
       activeProject: 'safari',
-      settings: { chatAgent: 'codex' },
+      settings: { chatAgent: 'codex', implementSubagents: 5 },
       windows: {},
-      projects: ['krilo', 'safari'].map((id) => ({
+      projects: Object.entries({
+        krilo: { agentRoles: { review: ['codex'] }, implementSubagents: 3 },
+        safari: {},
+        missing: { view: 'plan', implementSubagents: 2 },
+      }).map(([id, layout]) => ({
         id,
         name: id,
         root: `/${id}`,
         savedFingerprint: 'fingerprint',
         draft: null,
-        layout: id === 'krilo' ? { agentRoles: { review: ['codex'] }, implementSubagents: 3 } : {},
+        layout,
       })),
     }
     let finish!: (value: Awaited<ReturnType<typeof ipc.workspaceLoad>>) => void
@@ -52,32 +56,36 @@ test.each([false, true])(
     if (edit) {
       useStore.setState({ workspaceSettings: { chatAgent: 'claude' } })
       useStore.getState().setAgentRoles({ review: ['claude'] })
-      useStore.getState().setImplementSubagents(5)
     }
     finish({
       document,
       errors: {},
-      opened: document.projects.map((p) => ({
-        id: p.id,
-        fingerprint: p.savedFingerprint,
-        detected: false,
-        locked: [],
-        project: { schemaVersion: 4, name: p.name, root: p.root, components: [], links: [] },
-      })),
+      opened: document.projects
+        .filter((p) => p.id !== 'missing')
+        .map((p) => ({
+          id: p.id,
+          fingerprint: p.savedFingerprint,
+          detected: false,
+          locked: [],
+          project: { schemaVersion: 4, name: p.name, root: p.root, components: [], links: [] },
+        })),
     })
     await loading
     const roles = { review: [edit ? 'claude' : 'codex'] }
     expect(useStore.getState().agentRoles).toEqual(roles)
-    expect(useStore.getState().implementSubagents).toBe(edit ? 5 : 3)
     useStore.getState().activateProject('krilo')
     expect(useStore.getState().agentRoles).toEqual(roles)
     await vi.advanceTimersByTimeAsync(500)
     const saved = vi.mocked(ipc.workspaceSave).mock.calls.at(-1)![0]
     expect(saved.settings).toMatchObject({
       agentRoles: roles,
-      implementSubagents: edit ? 5 : 3,
       chatAgent: edit ? 'claude' : 'codex',
     })
-    expect(saved.projects.every((p) => !('agentRoles' in p.layout))).toBe(true)
+    expect(saved.settings).not.toHaveProperty('implementSubagents')
+    expect(saved.projects.find((p) => p.id === 'missing')?.layout).toEqual({ view: 'plan' })
+    for (const { layout } of saved.projects) {
+      expect(layout).not.toHaveProperty('agentRoles')
+      expect(layout).not.toHaveProperty('implementSubagents')
+    }
   },
 )

@@ -28,6 +28,9 @@ import {
   taskRemove,
   taskUpdate,
 } from './ipc'
+import { MAIN_WINDOW_LABEL } from './mainWindow'
+
+const TASK_ACTIVITY_EVENT = 'patchbay://task-activity'
 
 type Snapshot = Pick<ReturnType<typeof useStore.getState>, 'tasks' | 'activeTask'>
 
@@ -47,7 +50,7 @@ export function activeWorktree(s: Snapshot): string | undefined {
 /** Each project's latest task list request, and the newest one whose list was applied. */
 const requested = new Map<string, number>()
 const applied = new Map<string, number>()
-const pending = new Map<string, Promise<void>>()
+const pending = new Map<string, Promise<{ error: unknown } | undefined>>()
 
 /**
  * Reload a project's task list from the backend (main window only; pop-outs get it broadcast). A
@@ -55,21 +58,22 @@ const pending = new Map<string, Promise<void>>()
  * than one already applied may miss a worktree created since, which would drop it as the active
  * task and prune its draft, so it is ignored; callers return once the newest request settles.
  * `quiet` refreshes (background watcher signals) keep a failure to themselves instead of
- * repeating the error with every signal.
+ * repeating the error with every signal. `requireSuccess` propagates a failed refresh to callers
+ * that need this request or a later one to have applied a fresh list before acting.
  */
 export async function refreshTasks(
   projectId = useStore.getState().project?.id,
-  { quiet = false }: { quiet?: boolean } = {},
+  { quiet = false, requireSuccess = false }: { quiet?: boolean; requireSuccess?: boolean } = {},
 ) {
-  if (getCurrentWebviewWindow().label !== 'main' || !projectId) return
+  if (getCurrentWebviewWindow().label !== MAIN_WINDOW_LABEL || !projectId) return
   const seq = (requested.get(projectId) ?? 0) + 1
   requested.set(projectId, seq)
   const request = (async () => {
     try {
       const tasks = await taskList(projectId)
       if (seq <= (applied.get(projectId) ?? 0)) return
-      applied.set(projectId, seq)
       applyTasks(projectId, tasks)
+      applied.set(projectId, seq)
     } catch (e) {
       const s = useStore.getState()
       if (
@@ -79,15 +83,13 @@ export async function refreshTasks(
         s.tasks.length
       )
         s.setMessage(String(e), undefined, undefined, 'error')
+      return { error: e }
     }
   })()
   pending.set(projectId, request)
-  let settled = request
-  await settled
-  while (pending.get(projectId) !== settled) {
-    settled = pending.get(projectId)!
-    await settled
-  }
+  const failure = await request
+  await tasksSettled(projectId)
+  if (requireSuccess && failure && (applied.get(projectId) ?? 0) < seq) throw failure.error
 }
 
 /** Resolves once `projectId`'s task list requests, including any started meanwhile, settle. */
@@ -140,7 +142,7 @@ function activateTaskIn(projectId: string, task: string | null) {
  * not a task switch.
  */
 export function followActiveTask() {
-  const listener = listen<import('../types').TaskActivity>('patchbay://task-activity', (event) =>
+  const listener = listen<import('../types').TaskActivity>(TASK_ACTIVITY_EVENT, (event) =>
     applyTaskActivity(event.payload),
   )
   // The task last sent to each project's backend, so a slow earlier call can't leave the

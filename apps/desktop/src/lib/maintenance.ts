@@ -1,7 +1,13 @@
 import type { NoticeKind } from './notificationHistory'
 import { create } from 'zustand'
 import { projectOf, useStore } from '../store'
-import type { MapEdit, MapIssue, Project, ReconciliationPreview } from '../types'
+import {
+  BUILTIN_SOURCE,
+  type MapEdit,
+  type MapIssue,
+  type Project,
+  type ReconciliationPreview,
+} from '../types'
 import {
   applyReconciliation,
   cleanupComponentScopes,
@@ -215,7 +221,7 @@ export function startMaintenanceChecks() {
   }
 }
 export const provenanceLabel = (detector?: string) =>
-  detector === 'builtin'
+  detector === BUILTIN_SOURCE
     ? 'Built-in detector'
     : detector === 'manual'
       ? 'Manual'

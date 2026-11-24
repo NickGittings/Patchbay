@@ -12,7 +12,7 @@ import type { HandoffTarget } from './planHandoff'
  * Launch a fresh implementation agent in the reviewed worktree to address its findings. The
  * backend resolves the worktree, branch and task from the review session's own record, and refuses
  * a fix it wouldn't launch before anything here changes. Auto passes its brief and preset. Returns
- * the launched session's id and the launch request that started its run.
+ * the launched session's id, the launch request that started its run, and the task it works in.
  */
 export async function fixReviewFindings(
   record: SessionRecord,
@@ -81,5 +81,5 @@ export async function fixReviewFindings(
   const after = useStore.getState()
   if (after.project?.id === projectId && after.activeTask === task && presentation === 'follow')
     after.setView('implementation')
-  return { sessionId: sessionId(TASK_ROOT_SCOPE, id, task, projectId), requestId }
+  return { sessionId: sessionId(TASK_ROOT_SCOPE, id, task, projectId), requestId, task }
 }

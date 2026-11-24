@@ -543,7 +543,11 @@
       'failed build reported',
       () => !state().graphActionBusy && /exited before|failed/i.test(state().message ?? ''),
     )
-    assert(!state().sessions[mainSid]?.running, 'failed build launched app')
+    // The action error and the terminal's exit event arrive independently.
+    await until('failed build terminal exited with code 1', () => {
+      const session = state().sessions[mainSid]
+      return session?.running === false && session.exitCode === 1
+    })
     // Startup errors may reject before returning a report. Exercise unsuccessful report
     // feedback with that terminal, keeping terminal navigation real.
     smoke.store.setState({

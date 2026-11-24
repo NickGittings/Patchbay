@@ -26,9 +26,44 @@ pub struct ExtensionManifest {
     pub activation_events: Vec<String>,
     #[serde(default)]
     pub permissions: Vec<String>,
+    /// Origins the `network` permission may reach, such as `https://api.github.com`.
+    #[serde(default)]
+    pub network: Vec<String>,
     #[serde(default)]
     pub contributes: Contributes,
 }
+
+/// Every permission a manifest may request.
+pub const PERMISSIONS: &[&str] = &[
+    "terminals",
+    "project:read",
+    "files:read",
+    "files:pick",
+    "sessions:read",
+    "urls:open",
+    "stories:read",
+    "stories:write",
+    "network",
+    "secrets",
+];
+/// Menu slots extensions may contribute commands to.
+pub const MENU_SLOTS: &[&str] = &[
+    "component/actions",
+    "toolbar",
+    "stories/toolbar",
+    "stories/item",
+];
+/// Built-in rail icons a rail view may name (`RailIcon.tsx`).
+pub const RAIL_ICONS: &[&str] = &[
+    "extension",
+    "issues",
+    "plan",
+    "tests",
+    "changes",
+    "cloud",
+    "import",
+    "activity",
+];
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Engines {
     pub patchbay: String,
@@ -97,12 +132,17 @@ pub struct ViewContribution {
     pub id: String,
     pub title: String,
     pub location: ViewLocation,
+    /// A built-in rail icon name for `rail` views ([`RAIL_ICONS`]).
+    #[serde(default)]
+    pub icon: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ViewLocation {
     Inspector,
     Dock,
+    /// A Tools button on the workspace rail that opens the view as a utility panel.
+    Rail,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,6 +152,9 @@ pub struct Extension {
     pub manifest: ExtensionManifest,
     pub enabled: bool,
     pub errors: Vec<String>,
+    /// Extra origins the user approved for `network`, such as an on-premises server.
+    #[serde(default)]
+    pub approved_hosts: Vec<String>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,6 +165,9 @@ pub struct Registry {
 #[derive(Default, Serialize, Deserialize)]
 struct Settings {
     disabled: HashSet<String>,
+    /// User-approved network origins per extension id.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    hosts: HashMap<String, Vec<String>>,
 }
 
 #[must_use]
@@ -179,17 +225,15 @@ pub fn validate(dir: &Path) -> Result<ExtensionManifest> {
         resolve_asset(dir, main)?;
     }
     for permission in &manifest.permissions {
-        if ![
-            "terminals",
-            "project:read",
-            "files:read",
-            "sessions:read",
-            "urls:open",
-        ]
-        .contains(&permission.as_str())
-        {
+        if !PERMISSIONS.contains(&permission.as_str()) {
             bail!("unknown permission {permission}");
         }
+    }
+    if !manifest.network.is_empty() && !manifest.permissions.iter().any(|p| p == "network") {
+        bail!("network origins require the network permission");
+    }
+    for origin in &manifest.network {
+        crate::net::HostPattern::parse(origin)?;
     }
     let c = &manifest.contributes;
     for list in [
@@ -219,11 +263,18 @@ pub fn validate(dir: &Path) -> Result<ExtensionManifest> {
             }
         }
     }
+    for view in &c.views {
+        if let Some(icon) = &view.icon
+            && !RAIL_ICONS.contains(&icon.as_str())
+        {
+            bail!("view {} names unknown icon {icon}", view.id);
+        }
+    }
     if c.context.iter().any(|section| !relative(&section.file)) {
         bail!("context files must be relative to the component");
     }
     for (slot, menus) in &c.menus {
-        if !["component/actions", "toolbar"].contains(&slot.as_str()) {
+        if !MENU_SLOTS.contains(&slot.as_str()) {
             bail!("unknown menu slot {slot}");
         }
         for menu in menus {
@@ -272,6 +323,13 @@ pub fn resolve_asset(dir: &Path, path: &str) -> Result<PathBuf> {
 /// Read each child independently; broken extensions remain visible with errors.
 #[must_use]
 pub fn load_from(dir: &Path, disabled: &HashSet<String>) -> Registry {
+    load_with(dir, disabled, &HashMap::new())
+}
+fn load_with(
+    dir: &Path,
+    disabled: &HashSet<String>,
+    hosts: &HashMap<String, Vec<String>>,
+) -> Registry {
     let mut registry = Registry::default();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -316,10 +374,18 @@ pub fn load_from(dir: &Path, disabled: &HashSet<String>) -> Registry {
             manifest: parsed.unwrap_or_default(),
             enabled: false,
             errors: vec![],
+            approved_hosts: vec![],
         };
         match validate(&dir) {
             Ok(manifest) => {
                 extension.manifest = manifest;
+                extension.approved_hosts = hosts
+                    .get(&extension.id)
+                    .into_iter()
+                    .flatten()
+                    .filter(|h| crate::net::HostPattern::parse(h).is_ok())
+                    .cloned()
+                    .collect();
                 if !ids.insert(extension.id.clone()) {
                     extension
                         .errors
@@ -354,20 +420,34 @@ fn contribution_keys(c: &Contributes) -> Vec<(&'static str, String)> {
         .chain(c.views.iter().map(|d| ("view", d.id.clone())))
         .collect()
 }
-fn persist_enabled(path: &Path, id: &str, enabled: bool) -> Result<()> {
+fn edit_settings(path: &Path, edit: impl FnOnce(&mut Settings)) -> Result<()> {
     let mut settings: Settings = match std::fs::read_to_string(path) {
         Ok(text) => serde_json::from_str(&text)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
         Err(e) => return Err(e.into()),
     };
-    if enabled {
-        settings.disabled.remove(id);
-    } else {
-        settings.disabled.insert(id.into());
-    }
+    edit(&mut settings);
     std::fs::create_dir_all(path.parent().context("missing settings parent")?)?;
     std::fs::write(path, serde_json::to_vec_pretty(&settings)?)?;
     Ok(())
+}
+fn persist_enabled(path: &Path, id: &str, enabled: bool) -> Result<()> {
+    edit_settings(path, |settings| {
+        if enabled {
+            settings.disabled.remove(id);
+        } else {
+            settings.disabled.insert(id.into());
+        }
+    })
+}
+fn persist_hosts(path: &Path, id: &str, hosts: Vec<String>) -> Result<()> {
+    edit_settings(path, |settings| {
+        if hosts.is_empty() {
+            settings.hosts.remove(id);
+        } else {
+            settings.hosts.insert(id.into(), hosts);
+        }
+    })
 }
 
 impl Registry {
@@ -384,8 +464,9 @@ impl Registry {
                 errors.push(format!("extension settings: {e}"));
                 Settings::default()
             });
-        let mut registry = user_extensions_dir()
-            .map_or_else(Self::default, |dir| load_from(&dir, &settings.disabled));
+        let mut registry = user_extensions_dir().map_or_else(Self::default, |dir| {
+            load_with(&dir, &settings.disabled, &settings.hosts)
+        });
         registry.errors.extend(errors);
         registry
     }
@@ -468,6 +549,52 @@ impl Registry {
             bail!("{kind} id {id} is already contributed by an enabled extension");
         }
         Ok(())
+    }
+    /// Replace the user-approved network origins of an extension that uses `network`.
+    /// # Errors
+    /// Fails for an unknown extension, one without the permission, an invalid origin,
+    /// or settings I/O.
+    pub fn set_hosts(&mut self, id: &str, hosts: Vec<String>) -> Result<()> {
+        let extension = self
+            .extensions
+            .iter()
+            .find(|e| e.id == id)
+            .context("unknown extension")?;
+        if !extension
+            .manifest
+            .permissions
+            .iter()
+            .any(|p| p == "network")
+        {
+            bail!("extension doesn't use the network");
+        }
+        let mut cleaned = vec![];
+        for host in hosts {
+            let host = host.trim().trim_end_matches('/').to_owned();
+            crate::net::HostPattern::parse(&host)?;
+            if !cleaned.contains(&host) {
+                cleaned.push(host);
+            }
+        }
+        if cleaned.len() > 16 {
+            bail!("approve at most 16 origins");
+        }
+        persist_hosts(&settings_path()?, id, cleaned)?;
+        *self = Self::load();
+        Ok(())
+    }
+    /// Origins an active extension with `network` may reach: its manifest's, then the user's.
+    /// # Errors
+    /// Fails for unknown or disabled extensions or a missing permission.
+    pub fn network_hosts(&self, id: &str) -> Result<Vec<crate::net::HostPattern>> {
+        let extension = self.allowed(id, Some("network"))?;
+        Ok(extension
+            .manifest
+            .network
+            .iter()
+            .chain(&extension.approved_hosts)
+            .filter_map(|h| crate::net::HostPattern::parse(h).ok())
+            .collect())
     }
     /// The active extension `id`, if it holds `permission` (when one is required).
     /// # Errors
@@ -1062,7 +1189,37 @@ mod tests {
     fn first_party_manifests_load_with_separate_permissions() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions");
         let registry = load_from(&root, &HashSet::new());
-        assert_eq!(registry.active().count(), 2);
+        assert_eq!(
+            registry.active().count(),
+            5,
+            "{:?}",
+            registry
+                .extensions
+                .iter()
+                .map(|e| (&e.id, &e.errors))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            registry
+                .allowed("patchbay.story-import", Some("stories:write"))
+                .is_ok()
+        );
+        assert!(
+            registry
+                .allowed("patchbay.story-import", Some("network"))
+                .is_err()
+        );
+        for (id, origin) in [
+            (
+                "patchbay.github-issues",
+                "https://api.github.com/repos/a/b/issues",
+            ),
+            ("patchbay.linear", "https://api.linear.app/graphql"),
+        ] {
+            let hosts = registry.network_hosts(id).unwrap();
+            assert!(crate::net::allowed_url(&hosts, origin).is_ok(), "{id}");
+            assert!(crate::net::allowed_url(&hosts, "https://example.com/").is_err());
+        }
         assert!(
             registry
                 .allowed("patchbay.preview", Some("sessions:read"))
@@ -1358,5 +1515,94 @@ mod tests {
         let big = std::fs::File::create(dir.join("big.bin")).unwrap();
         big.set_len(ASSET_LIMIT + 1).unwrap();
         assert!(read_asset(&dir, "big.bin").is_err());
+    }
+
+    #[test]
+    fn integration_manifests_declare_network_origins_story_menus_and_rail_views() {
+        let f = Fixture::new();
+        let main = |dir: &Path| std::fs::write(dir.join("main.js"), "").unwrap();
+        main(&f.manifest(
+            "tracker",
+            serde_json::json!({
+                "main": "main.js",
+                "permissions": ["network", "secrets", "stories:read", "stories:write", "files:pick"],
+                "network": ["https://api.github.com", "https://*.atlassian.net"],
+                "contributes": {
+                    "commands": [{"id": "acme.tracker.import", "title": "Import"}],
+                    "menus": {
+                        "stories/toolbar": [{"command": "acme.tracker.import"}],
+                        "stories/item": [{"command": "acme.tracker.import"}]
+                    },
+                    "views": [{"id": "acme.tracker.panel", "title": "Tracker", "location": "rail", "icon": "issues"}]
+                }
+            }),
+        ));
+        let registry = load_from(&f.0, &HashSet::new());
+        assert!(
+            registry.extensions[0].errors.is_empty(),
+            "{:?}",
+            registry.extensions[0].errors
+        );
+        let hosts = registry.network_hosts("acme.docker").unwrap();
+        assert_eq!(hosts.len(), 2);
+        assert!(crate::net::allowed_url(&hosts, "https://acme.atlassian.net/x").is_ok());
+        assert!(
+            registry
+                .allowed("acme.docker", Some("stories:write"))
+                .is_ok()
+        );
+
+        for (folder, extra) in [
+            (
+                "no-permission",
+                serde_json::json!({"network": ["https://api.github.com"]}),
+            ),
+            (
+                "http-origin",
+                serde_json::json!({"permissions": ["network"], "network": ["http://api.github.com"]}),
+            ),
+            (
+                "unknown-icon",
+                serde_json::json!({"contributes": {"views": [{"id": "v", "title": "V", "location": "rail", "icon": "rocket"}]}}),
+            ),
+            (
+                "unknown-slot",
+                serde_json::json!({"main": "main.js", "contributes": {"commands": [{"id": "c", "title": "C"}], "menus": {"stories/nowhere": [{"command": "c"}]}}}),
+            ),
+        ] {
+            let f = Fixture::new();
+            main(&f.manifest(folder, extra));
+            let registry = load_from(&f.0, &HashSet::new());
+            assert!(!registry.extensions[0].errors.is_empty(), "{folder}");
+        }
+        // An extension without `network` has no origins at all.
+        let f = Fixture::new();
+        f.manifest("offline", serde_json::json!({}));
+        assert!(
+            load_from(&f.0, &HashSet::new())
+                .network_hosts("acme.docker")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn approved_hosts_load_only_when_valid() {
+        let f = Fixture::new();
+        f.manifest("tracker", serde_json::json!({"permissions": ["network"]}));
+        let hosts = HashMap::from([(
+            "acme.docker".to_owned(),
+            vec![
+                "https://tfs.corp.example:8443".to_owned(),
+                "ftp://bad".to_owned(),
+            ],
+        )]);
+        let registry = load_with(&f.0, &HashSet::new(), &hosts);
+        assert_eq!(
+            registry.extensions[0].approved_hosts,
+            ["https://tfs.corp.example:8443"]
+        );
+        let allowed = registry.network_hosts("acme.docker").unwrap();
+        assert!(crate::net::allowed_url(&allowed, "https://tfs.corp.example:8443/tfs").is_ok());
+        assert!(crate::net::allowed_url(&allowed, "https://tfs.corp.example/tfs").is_err());
     }
 }

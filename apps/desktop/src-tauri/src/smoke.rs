@@ -71,6 +71,13 @@ pub fn window<'a>(
     let builder = builder
         .initialization_script("window.__patchbaySmokeRun = true;")
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+    // Shown by [`conceal`] once it can't be seen, so it never flashes on screen.
+    #[cfg(target_os = "macos")]
+    let builder = if foreground() {
+        builder
+    } else {
+        builder.visible(false)
+    };
     // Every instance of the app otherwise shares one WebKit store, so parallel runs (and the
     // developer's own `tauri dev`) would see each other's localStorage. Keyed by the run's state
     // dir, which the launchers create per run, so an app restarted within a run keeps its store.
@@ -83,6 +90,30 @@ pub fn window<'a>(
     let builder = builder.data_directory(std::path::PathBuf::from(state).join("webview"));
     builder
 }
+
+/// Shows a window built through [`window`] without putting anything on the user's screen: fully
+/// transparent and click-through. It stays ordered in rather than hidden or off-screen, because
+/// WebKit would then report `document.visibilityState` as hidden and terminals only attach while
+/// visible. Screenshot runs keep a regular window; does nothing outside a smoke run.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub fn conceal(window: &tauri::WebviewWindow) {
+    if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() || foreground() {
+        return;
+    }
+    let _ = window.set_ignore_cursor_events(true);
+    if let Ok(ns_window) = window.ns_window() {
+        // SAFETY: `ns_window` is the live `NSWindow` of a window just built on the main thread
+        // (macOS builds webview windows there); `setAlphaValue:` takes a `CGFloat` (f64).
+        if let Some(ns_window) = unsafe { ns_window.cast::<objc2::runtime::AnyObject>().as_ref() } {
+            let _: () = unsafe { objc2::msg_send![ns_window, setAlphaValue: 0.0_f64] };
+        }
+    }
+    let _ = window.show();
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn conceal(_window: &tauri::WebviewWindow) {}
 
 /// A UUID-shaped identifier (version 4 bits set) stable for one state dir.
 #[cfg(target_os = "macos")]

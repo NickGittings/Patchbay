@@ -2,6 +2,7 @@ import type { NoticeKind } from './notificationHistory'
 import { create } from 'zustand'
 import { appendToMap, projectOf, projectStateOf, useStore, type MessageAction } from '../store'
 import {
+  BUILTIN_SOURCE,
   MAP_AGENT_TERMINAL,
   MAP_SCOPE,
   sessionId,
@@ -23,7 +24,7 @@ export interface FoundLink {
   target: string
   label?: string | null
   reason?: string
-  detector: 'builtin' | 'agent'
+  detector: typeof BUILTIN_SOURCE | 'agent'
 }
 
 export type DependencyDialog =
@@ -190,7 +191,7 @@ async function scan(projectId: string): Promise<FoundLink[]> {
     source: l.source,
     target: l.target,
     label: l.label,
-    detector: 'builtin',
+    detector: BUILTIN_SOURCE,
   }))
 }
 

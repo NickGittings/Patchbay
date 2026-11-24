@@ -1,8 +1,9 @@
 /// <reference types="vitest/config" />
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
+import { DEFAULT_DEV_PORT, DEV_PORT_ENV } from './scripts/dev-port.mjs'
 
-// Tauri expects a fixed port and must not have Vite watching the Rust side.
+// Vite must not watch the Rust side. `scripts/tauri.mjs` picks the port when 1420 is taken.
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
@@ -24,7 +25,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 1420,
+    port: Number(process.env[DEV_PORT_ENV]) || DEFAULT_DEV_PORT,
     strictPort: true,
     watch: { ignored: ['**/src-tauri/**'] },
   },

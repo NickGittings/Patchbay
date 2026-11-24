@@ -18,6 +18,8 @@ const DEFAULT_SIZE: (u16, u16) = (120, 30);
 /// How often running sessions' status files, activity and health are checked.
 const MONITOR_TICK: Duration = Duration::from_millis(250);
 const COMMAND_ENV: &str = "PATCHBAY_LAUNCH_COMMAND";
+/// The Vite port a debug desktop app was launched with (`apps/desktop/scripts/tauri.mjs`).
+pub const DEV_PORT_ENV: &str = "PATCHBAY_DEV_PORT";
 
 /// Retained launch intent; existing sessions keep their ordinary startup behavior.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -957,6 +959,8 @@ impl PtyManager {
         for key in crate::agent_bridge::BRIDGE_ENV {
             cmd.env_remove(key);
         }
+        // A nested `tauri dev` would otherwise reuse this app's (occupied) Vite port.
+        cmd.env_remove(DEV_PORT_ENV);
         // User launch options cannot redirect the private reporter transport.
         for (k, v) in spec.env.iter().filter(|(k, _)| {
             !k.eq_ignore_ascii_case(COMMAND_ENV)

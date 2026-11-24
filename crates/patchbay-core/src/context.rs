@@ -8,7 +8,6 @@ use crate::model::{
 use crate::policy::{Policy, Scope};
 use crate::pty::SessionSpec;
 use anyhow::{Context, Result, anyhow};
-use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -107,9 +106,7 @@ impl AutoBrief {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Kickoff {
-    ImplementPlan {
-        subagents: Option<u8>,
-    },
+    ImplementPlan,
     FixFindings,
     Plan,
     PlanStory,
@@ -1081,7 +1078,7 @@ fn command_len(shell: Shell, command: &str, env: &BTreeMap<String, String>) -> u
 /// [`Briefing::reserve`] for a root agent: its longest kickoff, quoted.
 /// Kickoff prompts hold no `%`, so the environment can't change their length.
 fn root_reserve(shell: Shell) -> usize {
-    [&*implement_prompt(Some(MAX_SUBAGENTS)), FIX_FINDINGS_PROMPT]
+    [IMPLEMENT_PROMPT, FIX_FINDINGS_PROMPT]
         .iter()
         .map(|prompt| {
             command_len(
@@ -2117,19 +2114,6 @@ const PLAN_REQUEST_PROMPT: &str = "Plan the request in the Plan request section 
 
 /// The first prompt of an agent started by Implement.
 const IMPLEMENT_PROMPT: &str = "Implement the shared plan in your Patchbay briefing. Follow its requirements and applied assignments, run the relevant checks, and report the results.";
-/// Maximum parallel subagents requested by an implementation kickoff.
-pub const MAX_SUBAGENTS: u8 = 8;
-/// Minimum count that enables parallel implementation subagents.
-pub const MIN_SUBAGENTS: u8 = 2;
-
-fn implement_prompt(subagents: Option<u8>) -> Cow<'static, str> {
-    match subagents.unwrap_or(0).min(MAX_SUBAGENTS) {
-        n if n < MIN_SUBAGENTS => Cow::Borrowed(IMPLEMENT_PROMPT),
-        n => Cow::Owned(format!(
-            "{IMPLEMENT_PROMPT} If your tool supports subagents, split independent parts of the plan, such as separate components or applied assignments, across up to {n} parallel subagents, keep any one file to a single subagent, then integrate their work and run the checks yourself."
-        )),
-    }
-}
 
 const FIX_FINDINGS_PROMPT: &str = "Address the review findings in your Patchbay briefing. Fix the ones that still apply; for any already resolved or that you disagree with, say why instead of changing code. Run the relevant checks and report each finding's outcome.";
 
@@ -2219,11 +2203,11 @@ fn root_session_spec(
             }
         }
         let prompt = kickoff.map(|k| match k {
-            Kickoff::ImplementPlan { subagents } => implement_prompt(subagents),
-            Kickoff::FixFindings => Cow::Borrowed(FIX_FINDINGS_PROMPT),
-            Kickoff::Plan => Cow::Borrowed(PLAN_PROMPT),
-            Kickoff::PlanStory => Cow::Borrowed(STORY_PROMPT),
-            Kickoff::PlanRequest => Cow::Borrowed(PLAN_REQUEST_PROMPT),
+            Kickoff::ImplementPlan => IMPLEMENT_PROMPT,
+            Kickoff::FixFindings => FIX_FINDINGS_PROMPT,
+            Kickoff::Plan => PLAN_PROMPT,
+            Kickoff::PlanStory => STORY_PROMPT,
+            Kickoff::PlanRequest => PLAN_REQUEST_PROMPT,
         });
         // Implement's Restart has no kickoff, so a root start budgets for the longest one.
         let reserve = if purpose == crate::pty::LaunchPurpose::Chat {
@@ -2241,7 +2225,7 @@ fn root_session_spec(
             file: &file,
             text: &briefing,
             dirs,
-            prompt: prompt.as_deref(),
+            prompt,
             reserve,
         };
         notice = brief_network_agent(
@@ -2853,7 +2837,7 @@ mod tests {
             "Stage: fix"
         );
         assert_eq!(
-            stage(auto.root_section(Some(super::Kickoff::ImplementPlan { subagents: None }))),
+            stage(auto.root_section(Some(super::Kickoff::ImplementPlan))),
             "Stage: implement"
         );
         assert_eq!(stage(auto.root_section(None)), "Stage: implement");
@@ -3404,7 +3388,7 @@ mod tests {
                 None,
                 &AllowAll,
                 &sections,
-                Some(Kickoff::ImplementPlan { subagents: None }),
+                Some(Kickoff::ImplementPlan),
             )
             .unwrap();
             assert!(spec.command.contains("Implement the shared plan"));
@@ -3427,7 +3411,7 @@ mod tests {
                 None,
                 &AllowAll,
                 &[],
-                Some(Kickoff::ImplementPlan { subagents: None }),
+                Some(Kickoff::ImplementPlan),
             )
             .unwrap();
             assert_eq!(
@@ -3439,27 +3423,11 @@ mod tests {
     }
 
     #[test]
-    fn implementation_prompt_requests_bounded_parallel_subagents() {
-        for count in [None, Some(0), Some(1)] {
-            assert_eq!(implement_prompt(count), IMPLEMENT_PROMPT);
-        }
-        assert!(implement_prompt(Some(3)).contains("up to 3 parallel subagents"));
-        assert!(implement_prompt(Some(3)).starts_with(IMPLEMENT_PROMPT));
-        assert_eq!(
-            implement_prompt(Some(u8::MAX)),
-            implement_prompt(Some(MAX_SUBAGENTS))
-        );
-        assert!(implement_prompt(Some(u8::MAX)).contains("up to 8 parallel subagents"));
-    }
-
-    #[test]
     fn kickoff_prompts_hold_no_cmd_sensitive_characters() {
         // Prompts are bare quoted arguments, which npm and pnpm cmd shims expand
         // inside `IF (...)` blocks, unlike the TOML-escaped instructions.
-        let subagents = implement_prompt(Some(MAX_SUBAGENTS));
         for prompt in [
             IMPLEMENT_PROMPT,
-            &subagents,
             FIX_FINDINGS_PROMPT,
             PLAN_PROMPT,
             STORY_PROMPT,
@@ -3472,14 +3440,8 @@ mod tests {
     }
 
     #[test]
-    fn subagent_limits_match_the_frontend() {
-        // Pinned in `apps/desktop/src/types.test.ts` too.
-        assert_eq!((MIN_SUBAGENTS, MAX_SUBAGENTS), (2, 8));
-    }
-
-    #[test]
-    fn implementation_subagent_prompt_is_one_argument_in_both_shells() {
-        let prompt = implement_prompt(Some(3));
+    fn implementation_prompt_is_one_argument_in_both_shells() {
+        let prompt = IMPLEMENT_PROMPT;
         assert!(!prompt.contains(['\r', '\n']));
         for shell in [Shell::Unix, Shell::Windows] {
             for provider in ["claude", "codex"] {
@@ -3489,13 +3451,13 @@ mod tests {
                     file: Path::new("briefing.md"),
                     text: "Shared plan: fix login",
                     dirs: &[],
-                    prompt: Some(&prompt),
+                    prompt: Some(prompt),
                     reserve: 0,
                 };
                 assert!(brief_agent(&mut command, &briefing, shell, &mut env).is_none());
                 assert!(!command.contains(['\r', '\n']), "{command}");
                 let words = command_tokens(&command, shell).unwrap();
-                assert_eq!(words.last().unwrap(), &*prompt);
+                assert_eq!(words.last().unwrap(), prompt);
             }
         }
     }
@@ -3503,13 +3465,14 @@ mod tests {
     #[test]
     fn kickoffs_deserialize_the_frontend_tagged_shape() {
         for (json, kickoff) in [
+            // Saved kickoffs with the legacy subagents field must still load.
             (
                 serde_json::json!({"kind": "implementPlan", "subagents": 3}),
-                Kickoff::ImplementPlan { subagents: Some(3) },
+                Kickoff::ImplementPlan,
             ),
             (
                 serde_json::json!({"kind": "implementPlan"}),
-                Kickoff::ImplementPlan { subagents: None },
+                Kickoff::ImplementPlan,
             ),
             (
                 serde_json::json!({"kind": "fixFindings"}),
@@ -3527,11 +3490,11 @@ mod tests {
     }
 
     #[test]
-    fn implementation_subagents_change_only_the_kickoff_prompt() {
+    fn implementation_kickoff_does_not_change_the_restart_command() {
         for provider in ["claude", "codex"] {
             let mut terminal = planner();
             // Launches below intentionally share a file, but no other test may write it.
-            terminal.id = format!("subagents-{provider}-{}", uuid::Uuid::new_v4());
+            terminal.id = format!("implementation-{provider}-{}", uuid::Uuid::new_v4());
             terminal.command = provider.into();
             let sections = [ContextSection {
                 title: "Shared plan".into(),
@@ -3549,22 +3512,13 @@ mod tests {
                 )
                 .unwrap()
             };
-            let plain = spec(Some(Kickoff::ImplementPlan { subagents: None }));
+            let plain = spec(Some(Kickoff::ImplementPlan));
             let text = std::fs::read_to_string(&plain.env[CONTEXT_ENV]).unwrap();
-            let parallel = spec(Some(Kickoff::ImplementPlan { subagents: Some(3) }));
-            assert_eq!(
-                text,
-                std::fs::read_to_string(&parallel.env[CONTEXT_ENV]).unwrap()
-            );
-            assert_eq!(plain.env, parallel.env);
-            assert_eq!(plain.id, parallel.id);
             let mut plain_words = command_tokens(&plain.command, Shell::current()).unwrap();
-            let mut parallel_words = command_tokens(&parallel.command, Shell::current()).unwrap();
             assert_eq!(plain_words.pop().unwrap(), IMPLEMENT_PROMPT);
-            assert_eq!(parallel_words.pop().unwrap(), implement_prompt(Some(3)));
-            // In particular, Codex's inline briefing is identical.
-            assert_eq!(plain_words, parallel_words);
             let restart = spec(None);
+            assert_eq!(plain.id, restart.id);
+            assert_eq!(plain.env, restart.env);
             assert_eq!(
                 text,
                 std::fs::read_to_string(&restart.env[CONTEXT_ENV]).unwrap()
@@ -3574,7 +3528,7 @@ mod tests {
                 plain_words
             );
             // Every start resumes without a kickoff prompt, so Restart's fingerprint matches.
-            for launch in [&plain, &parallel, &restart] {
+            for launch in [&plain, &restart] {
                 assert_eq!(launch.resume_command.as_ref(), Some(&restart.command));
             }
         }
@@ -3944,7 +3898,7 @@ mod tests {
                 None,
                 &AllowAll,
                 &[],
-                Some(Kickoff::ImplementPlan { subagents: None }),
+                Some(Kickoff::ImplementPlan),
             )
             .unwrap(),
             merge_agent_spec(
@@ -4574,9 +4528,18 @@ mod tests {
         ] {
             // Fits with the ordinary Implement prompt, but not with the longest kickoff.
             let base = format!("codex -c {}", shell.quote("developer_instructions=\"\""));
-            let text = "x".repeat(budget - 350);
-            let subagents = implement_prompt(Some(3));
-            for prompt in [None, Some(IMPLEMENT_PROMPT), Some(&*subagents)] {
+            let mut empty = base.clone();
+            let briefing = Briefing {
+                file,
+                text: "",
+                dirs: &[],
+                prompt: None,
+                reserve: 0,
+            };
+            assert!(brief_agent(&mut empty, &briefing, shell, &mut BTreeMap::new()).is_none());
+            let inline_overhead = command_len(shell, &empty, &BTreeMap::new());
+            let text = "x".repeat(budget - inline_overhead - root_reserve(shell) + 1);
+            for prompt in [None, Some(IMPLEMENT_PROMPT), Some(FIX_FINDINGS_PROMPT)] {
                 let briefing = Briefing {
                     file,
                     text: &text,

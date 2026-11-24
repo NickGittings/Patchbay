@@ -46,7 +46,10 @@ dedicated folder outside a repository for other local extensions and their stora
 
 Manifests require `name`, `publisher`, a semantic `version`, and `engines.patchbay` (for example,
 `"^0.1.0"`). `contributes` can declare devices, detectors, commands, menu placements, agent
-context files, and Inspector/dock views. Each contribution id must be unique within its type
+context files, and Inspector, dock or rail views. A `rail` view adds a button under
+**Extensions** on the workspace rail that opens the view as a utility panel; its optional
+`icon` names a built-in rail icon (`extension`, `issues`, `plan`, `tests`, `changes`, `cloud`,
+`import`, `activity`). Each contribution id must be unique within its type
 across installed extensions; use `<publisher>.<name>.<id>` for commands and views. Devices
 load in built-in → extension → user order. Detectors claim folders after built-in manifest
 recognition; rescanning preserves all existing edits. Context files are component-relative,
@@ -57,9 +60,13 @@ limited to 32 KiB, and checked against the same allowed roots as the file tree.
 **Cmd/Ctrl+Shift+P** focuses the top-bar search with Commands first. Commands with a `run` block create a temporary
 terminal at the selected component, using the existing session, policy, and PTY launch path.
 These terminals appear in the dock without changing the saved project. Place commands in
-`contributes.menus["component/actions"]` or `contributes.menus.toolbar` (listed under **Project**).
+`contributes.menus["component/actions"]`, `contributes.menus.toolbar` (listed under **Project**),
+`contributes.menus["stories/toolbar"]` (buttons in the story board header, in both the regular
+views and Chat), or `contributes.menus["stories/item"]` (buttons in a board item's editor; the
+command receives that item as its first argument and requires `stories:read`).
 Optional `when` clauses support `&&`, `||`, `!`, parentheses, `==`, `!=`, `component.kind`, `component.id`,
-`component.hasTerminal('id')`, `component.hasFile('file')`, and `view`. Unknown or malformed
+`component.hasTerminal('id')`, `component.hasFile('file')`, `view`, and, for `stories/item`,
+`story.kind`, `story.source` (the importing extension's id) and `story.imported`. Unknown or malformed
 expressions hide the contribution.
 
 ## Runtime and sandbox
@@ -80,8 +87,10 @@ network/IPC connections; asset requests are canonicalized inside their extension
 The API declarations are in [`packages/extension-api/index.d.ts`](../packages/extension-api/index.d.ts).
 Use `project:read` for project/selection snapshots, Git status, and badge/context providers;
 `terminals` for terminal launches; `files:read` for bounded project file reads;
-`sessions:read` for component task-terminal URL summaries; and the separate `urls:open`
-permission for native-validated HTTP/HTTPS browser opening. `workspace.get` reports the
+`sessions:read` for component task-terminal URL summaries; the separate `urls:open`
+permission for native-validated HTTP/HTTPS browser opening; `files:pick` for a file the person
+chooses in a native dialog (at most 1 MiB); `stories:read` and `stories:write` for the story
+board; `network` for brokered HTTP; and `secrets` for keychain credentials. `workspace.get` reports the
 host’s stable project/task identity. Commands and file reads use that task’s worktree. Storage is
 per extension under `~/.patchbay/extension-data/` (alongside an overridden registry). No raw
 filesystem or network API is exposed. `terminals.run` returns captured output and exit status,
@@ -92,6 +101,31 @@ Context and badge providers have a two-second response deadline. Views use
 `views.registerWebviewView(id, { resolve(view), onMessage(message) })`; `view.render(html)`
 mounts sandboxed HTML, and `patchbayView.postMessage` / `patchbayView.onMessage` communicate
 with the extension's handler. HTML may use inline styles and scripts, with no network access.
+
+## Story board, network and secrets
+
+`stories.upsert(items)` imports tracker items. Each item has an `externalId`, matched within
+the importing extension, so importing again updates the same cards. Imports replace the title,
+description, acceptance criteria and tracker link. A supplied parent updates the board grouping.
+Status, components, order, worktree links and Auto links stay Patchbay's. Epics come first, then
+features, then stories. A feature's `parent` must name an imported epic, and a story that names a
+parent that was never imported is unassigned. Each call applies all or none of its items, up to
+2,000 items and a 64 MiB serialized message. Imported cards show their tracker id, and the editor
+links back to the tracker. An extension can only update items it imported.
+
+Extension frames still have no network access. `http.fetch` goes through the native broker,
+which allows GET, POST and HEAD to the origins in the manifest's `network` list
+(`https://host[:port]` or `https://*.domain`; plain `http` only for localhost) plus origins the
+person approves under **Settings → Extensions**, for example an on-premises server. Every
+redirect is checked against the same list, responses are capped at 4 MiB, and requests time out
+after 25 seconds. Extensions can't set `Authorization`, cookie, host, proxy or framing headers.
+
+`secrets.prompt(name)` opens Patchbay's own credential dialog. The value goes straight to the
+OS keychain and is never returned to the extension. `http.fetch({ auth: { secret, scheme } })`
+asks the broker to add it as `Authorization` (`bearer`, `basic` with a `username`, or `raw`),
+only for the request's original origin. The prompt shows the current server list. When the
+list changes, enter the credential again to approve it for that list. This also applies to
+credentials saved before server approval was recorded.
 
 ## Example and validation
 
@@ -107,5 +141,5 @@ PATCHBAY_EXTENSIONS_DIR="$PWD/examples/extensions" cargo run -p patchbay-cli -- 
 ```
 
 Run `npm run smoke:extensions` from `apps/desktop` to check the example inside the desktop app,
-including the iframe IPC sandbox. Project-local extensions, marketplace/URL installs, and
-extension views in pop-out windows are future work.
+including the iframe IPC sandbox. Project-local extensions, marketplace/URL installs,
+extension views in pop-out windows, and writing back to trackers are future work.

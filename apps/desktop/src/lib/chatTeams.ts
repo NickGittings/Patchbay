@@ -8,7 +8,15 @@ import { profileHookProvider } from './agentProfiles'
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
-import type { Project, SessionRecord, TerminalSpec } from '../types'
+import { autoOverrides, defaultAutoEffort } from './autoSettings'
+import {
+  LEAD_RECIPIENT,
+  type Project,
+  type SessionRecord,
+  type TerminalSpec,
+  type WorkflowAction,
+  type WorkflowState,
+} from '../types'
 import type { ProviderRun } from './orchestration'
 import { LEAD_STAGE_ACTIONS } from './leadStageRun'
 import { clearedSimple } from './simple'
@@ -16,6 +24,8 @@ import type { SimpleStep } from './simpleFlow'
 import { logSimple } from './simpleActions'
 import { claimAgentChat, selectChatAgent } from './agentChats'
 import { simpleKey, useSimpleUi } from './simpleUi'
+
+const chatTeams = (projectId: string) => invoke<ChatTeam[]>('chat_teams', { projectId })
 
 /** Mirrors core `orchestration::RESTART_NOTICE`, set when a restart pauses a team. */
 export const RESTART_NOTICE = 'Paused after restart'
@@ -53,9 +63,9 @@ export interface ChatTeam {
   rounds: string[]
   requests?: {
     id: string
-    action: string
+    action: WorkflowAction
     settings: Record<string, unknown>
-    state: string
+    state: WorkflowState
     result: string | null
     councilRun?: import('./council').CouncilRun
     council?: [CouncilSettings, TerminalSpec[]]
@@ -109,7 +119,13 @@ export type TeamControl =
       roles: Record<string, string[]>
       council?: CouncilSettings
     }
-  | { kind: 'requestState'; id: string; state: string; result: string | null; passive?: boolean }
+  | {
+      kind: 'requestState'
+      id: string
+      state: Exclude<WorkflowState, 'queued' | 'uncertain'>
+      result: string | null
+      passive?: boolean
+    }
   | { kind: 'pause' | 'resume' | 'stop' | 'historyBoundary' }
   | { kind: 'block'; reason: string }
   | { kind: 'retry'; assignment: string; terminal?: TerminalSpec }
@@ -245,13 +261,13 @@ export function leadDeliveryPending(
     // A waiting passive message has no delivery coming, so it must not hold the user's prompt.
     (team.messages ?? []).some(
       (m) =>
-        m.recipient === 'lead' &&
+        m.recipient === LEAD_RECIPIENT &&
         m.state !== 'delivered' &&
         !((m.passive || held) && m.state === 'pending'),
     ) ||
     (team.deliveries ?? []).some(
       (d) =>
-        d.recipient === 'lead' &&
+        d.recipient === LEAD_RECIPIENT &&
         d.generation === generation &&
         d.readySince >= (session?.status?.agent?.sinceMs ?? 0),
     )
@@ -266,7 +282,7 @@ export function leadNotes(projectId: string, task: string | null, sid: string) {
   const waiting =
     team?.lead.sessionId === sid
       ? (team.messages ?? []).filter(
-          (m) => m.recipient === 'lead' && m.passive && m.state === 'pending',
+          (m) => m.recipient === LEAD_RECIPIENT && m.passive && m.state === 'pending',
         )
       : []
   const ids = waiting.map((m) => m.id)
@@ -389,7 +405,7 @@ export async function completeTeamTask(
   id: string,
   sinceMs?: number,
 ) {
-  const teams = await invoke<ChatTeam[]>('chat_teams', { projectId })
+  const teams = await chatTeams(projectId)
   const team = teams.find((t) => t.task === task)
   if (!team || team.state === 'stopped') return
   await controlTeam(team, { kind: 'completeTask', id, sinceMs })
@@ -520,7 +536,7 @@ export async function refreshChatTeams(projectId: string) {
       ),
     )
   }
-  const teams = await invoke<ChatTeam[]>('chat_teams', { projectId })
+  const teams = await chatTeams(projectId)
   useChatTeams.setState((s) => ({ teams: { ...s.teams, [projectId]: teams } }))
   for (const team of teams) {
     const available = planTerminals(useStore.getState().devices).filter(
@@ -617,6 +633,8 @@ export function autoOwnership(
 async function driveLeadRequests(team: ChatTeam) {
   if (team.state !== 'running' || team.reset) return
   for (const request of team.requests ?? []) {
+    // Another Patchbay build's action: leave it for that build instead of claiming it.
+    if (request.action === 'unknown') continue
     const reviewRound = ['startCouncilReview', 'startReview'].includes(request.action)
     const leadStage = LEAD_STAGE_ACTIONS.includes(request.action)
     if (leadStage && request.state === 'running') {
@@ -691,9 +709,16 @@ async function driveLeadRequests(team: ChatTeam) {
           typeof request.settings.device === 'string'
             ? request.settings.device
             : team.lead.preset.id
+        const { story: storyId, ...requested } = request.settings
+        // Loaded only for a story, the board's code and its imports aren't needed otherwise.
+        const stories = typeof storyId === 'string' ? await import('./stories') : undefined
+        const story =
+          stories && typeof storyId === 'string'
+            ? await stories.findStory(team.projectId, storyId)
+            : undefined
         const settings = {
           goal: team.checkpoint.goal,
-          effort: previous?.effort ?? 'standard',
+          effort: defaultAutoEffort(state.simpleMode),
           merge: previous?.merge ?? { mode: 'ask', destinationBranch: '' },
           overrides: previous?.overrides,
           agents: previous?.agents,
@@ -703,12 +728,19 @@ async function driveLeadRequests(team: ChatTeam) {
           autonomous: previous?.autonomous,
           background: previous?.background,
           resumeOnUsageReset: previous?.resumeOnUsageReset,
-          ...request.settings,
+          ...requested,
+          // A story's own text is the goal, as in the Auto panel, even beside a requested goal.
+          ...(story
+            ? { goal: stories!.storyGoal(story, projectStateOf(team.projectId)?.stories ?? []) }
+            : {}),
           device,
-        }
+        } as import('./auto').AutoSettings
         if (settings.merge.mode !== 'ask')
           throw new Error('Lead-started Auto requires merge approval')
-        await auto.startAuto(team.projectId, team.task, settings as import('./auto').AutoSettings)
+        settings.overrides = autoOverrides(state.simpleMode, settings.overrides)
+        await auto.startAuto(team.projectId, team.task, settings)
+        // Linked once the run started, as the Auto panel does.
+        if (story) await stories!.linkAutoStory(team.projectId, team.task, story.id)
       } else if (request.action === 'pauseAuto') auto.pauseAuto(team.projectId, team.task)
       else if (request.action === 'resumeAuto') await auto.resumeAuto(team.projectId, team.task)
       else if (request.action === 'stopAuto') auto.stopAuto(team.projectId, team.task)
@@ -751,12 +783,13 @@ export async function noteLead(
   what: string,
   sessions: string[],
   id: string = crypto.randomUUID(),
+  from = 'with Chat’s workflow buttons',
 ) {
   if (!team) return
   await controlTeam(team, {
     kind: 'note',
     id,
-    text: `The user started ${what} with Chat’s workflow buttons. It runs in its own agent: don’t start or repeat it, and take its result into account.`,
+    text: `The user started ${what} ${from}. It runs in its own agent: don’t start or repeat it, and take its result into account.`,
     sessions,
   }).catch(() => {})
 }

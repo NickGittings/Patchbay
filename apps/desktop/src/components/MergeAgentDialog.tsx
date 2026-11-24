@@ -5,8 +5,8 @@ import {
   mergeDestinations,
   mergeDestinationRunning,
   reviewState,
-  startBranchMerge,
 } from '../lib/reviewAgents'
+import { launchMerge, taskOfWorktree } from '../lib/launchStage'
 import { useMergeSourceChanges } from '../lib/useMergeSourceChanges'
 import { useReviewFindings } from '../lib/useReviewFindings'
 import { useStore } from '../store'
@@ -21,11 +21,17 @@ export default function MergeAgentDialog({
   close,
   launched,
   onRequest,
+  origin,
+  task,
   compact = false,
 }: {
   compact?: boolean
-  /** The started merge agent's request, session and when its launch began. */
-  onRequest?: (request: import('../types').MergeRequest, sid: string, requestId: string) => void
+  /** A merge agent started; it is already recorded in its worktree's chat. */
+  onRequest?: () => void
+  /** Which flow the dialog serves, recorded with the merge. */
+  origin: 'chat' | 'manual'
+  /** The opening source's task, when the caller knows it. */
+  task?: string | null
   source: Worktree
   worktrees: Worktree[]
   branches: string[]
@@ -93,16 +99,21 @@ export default function MergeAgentDialog({
       launch={async ([device]) => {
         const requestId = crypto.randomUUID()
         try {
-          const { request, sid } = await startBranchMerge(
+          const sourceTask =
+            source!.path === active.path && task !== undefined
+              ? task
+              : taskOfWorktree(source!, project.projectId)
+          const started = await launchMerge(origin, sourceTask, {
             project,
-            source!,
-            target!.branch,
+            source: source!,
+            destinationBranch: target!.branch,
             device,
             requestId,
-            ...(commitFirst ? [changes] : []),
-          )
-          onRequest?.(request, sid, requestId)
-          return sid
+            ...(commitFirst ? { commitSource: changes } : {}),
+          })
+          if (started.kind !== 'started') throw new Error('The merge did not start')
+          onRequest?.()
+          return started.sessionId
         } catch (e) {
           // The confirmed list may be what went stale; show the current one for the retry.
           sourceChanges.reload()

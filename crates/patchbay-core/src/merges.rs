@@ -73,6 +73,7 @@ pub fn resolve_destination(
                     destination: task.worktree.clone(),
                     destination_branch: destination_branch.into(),
                     heads: None,
+                    completed: false,
                 };
                 save_restoration(root, &record)?;
                 checked_tree(&git::worktrees(root), &task.worktree, "destination")?
@@ -135,11 +136,16 @@ struct Restoration {
     destination_branch: String,
     // Pinned before the first destructive step, retained for safe retries.
     heads: Option<(String, String)>,
+    #[serde(default)]
+    completed: bool,
 }
+
+const RESTORATION_PREFIX: &str = "merge-";
+const RESTORATION_SUFFIX: &str = ".json";
 
 fn restoration_file(root: &Path, destination: &str) -> Result<PathBuf> {
     Ok(crate::tasks::store_dir(root)?.join(format!(
-        "merge-{}.json",
+        "{RESTORATION_PREFIX}{}{RESTORATION_SUFFIX}",
         crate::workspace::session_id(destination, "cleanup", "ownership")
     )))
 }
@@ -152,17 +158,61 @@ fn save_restoration(root: &Path, record: &Restoration) -> Result<()> {
 }
 
 fn restoration(root: &Path, request: &MergeRequest) -> Result<Option<Restoration>> {
-    let text = match std::fs::read(restoration_file(root, &request.destination)?) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
+    let Some(record) = read_restoration(&restoration_file(root, &request.destination)?)? else {
+        return Ok(None);
     };
-    let record: Restoration = serde_json::from_slice(&text)?;
     Ok((record.source == request.source
         && record.source_branch == request.source_branch
         && record.destination == request.destination
         && record.destination_branch == request.destination_branch)
         .then_some(record))
+}
+
+fn read_restoration(file: &Path) -> Result<Option<Restoration>> {
+    match std::fs::read(file) {
+        Ok(text) => Ok(Some(serde_json::from_slice(&text)?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+// After the original checkout switches branches, only a saved request can identify the merge.
+fn pending_restoration(
+    root: &Path,
+    source: &Worktree,
+    source_branch: &str,
+    destination_branch: &str,
+) -> Result<Option<Restoration>> {
+    if !(source.main || source.current) || source.branch.as_deref() != Some(destination_branch) {
+        return Ok(None);
+    }
+    let entries = match std::fs::read_dir(crate::tasks::store_dir(root)?) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let mut pending = None;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(RESTORATION_PREFIX)
+            && name.ends_with(RESTORATION_SUFFIX)
+            && let Some(record) = read_restoration(&entry.path())?
+            && !record.completed
+            && record.heads.is_some()
+            && record.source == source.path
+            && record.source_branch == source_branch
+            && record.destination_branch == destination_branch
+        {
+            ensure!(
+                pending.is_none(),
+                "Multiple saved merge restorations match this branch"
+            );
+            pending = Some(record);
+        }
+    }
+    Ok(pending)
 }
 
 fn branch_head(root: &Path, branch: &str) -> Result<String> {
@@ -174,12 +224,7 @@ fn branch_head(root: &Path, branch: &str) -> Result<String> {
     ]))
 }
 
-fn validate_restoration(
-    project: &Project,
-    request: &MergeRequest,
-    record: &Restoration,
-) -> Result<()> {
-    let root = Path::new(&project.root);
+fn validate_restoration(root: &Path, request: &MergeRequest, record: &Restoration) -> Result<()> {
     let trees = git::worktrees(root);
     let mut source = checked_tree(&trees, &request.source, "source")?;
     ensure!(
@@ -215,7 +260,7 @@ fn validate_restoration(
     } else {
         ensure!(
             matches!(
-                outcome(project, request)?,
+                outcome_in(root, request)?,
                 MergeOutcome::Merged | MergeOutcome::AlreadyIntegrated
             ),
             "The source branch is not clean and fully integrated"
@@ -266,7 +311,7 @@ pub fn cleanup_preview(project: &Project, request: &MergeRequest) -> Result<Clea
     if source.main || source.current {
         let record = restoration(root, request)?.context(
             "Cannot restore this checkout automatically: destination ownership was not recorded. Release the destination branch and switch the original folder manually.")?;
-        validate_restoration(project, request, &record)?;
+        validate_restoration(root, request, &record)?;
         Ok(CleanupPreview {
             restore: true,
             retry: record.heads.is_some(),
@@ -285,7 +330,7 @@ pub fn cleanup_preview(project: &Project, request: &MergeRequest) -> Result<Clea
 fn restore_original(project: &Project, request: &MergeRequest) -> Result<()> {
     let root = Path::new(&project.root);
     let mut record = restoration(root, request)?.context("Destination ownership is missing")?;
-    validate_restoration(project, request, &record)?;
+    validate_restoration(root, request, &record)?;
     if record.heads.is_none() {
         record.heads = Some((
             branch_head(root, &request.source_branch)?,
@@ -305,6 +350,11 @@ fn restore_original(project: &Project, request: &MergeRequest) -> Result<()> {
         git::run(git::git(root).args(["branch", "-d", "--", &request.source_branch])).context(
             "Original folder restored; retry cleanup to delete the merged feature branch",
         )?;
+    }
+    if !record.completed {
+        // Keep the exact request available for cleanup retries after an uncertain reply.
+        record.completed = true;
+        save_restoration(root, &record)?;
     }
     Ok(())
 }
@@ -336,20 +386,24 @@ const OPERATION_MARKERS: [&str; 6] = [
 /// # Errors
 /// Fails for foreign, missing or changed worktrees, or Git errors.
 pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome> {
-    if let Some(record) = restoration(Path::new(&project.root), request)?
+    outcome_in(Path::new(&project.root), request)
+}
+
+fn outcome_in(root: &Path, request: &MergeRequest) -> Result<MergeOutcome> {
+    if let Some(record) = restoration(root, request)?
         && record.heads.is_some()
     {
-        validate_restoration(project, request, &record)?;
+        validate_restoration(root, request, &record)?;
         return Ok(MergeOutcome::AlreadyIntegrated);
     }
-    let trees = git::worktrees(Path::new(&project.root));
+    let trees = git::try_worktrees(root)?;
     let mut source = checked_tree(&trees, &request.source, "source")?;
     let mut destination = checked_tree(&trees, &request.destination, "destination")?;
     ensure!(
         source.path != destination.path,
         "Choose a different destination worktree"
     );
-    let common = git::common_dir(Path::new(&project.root))?.canonicalize()?;
+    let common = git::common_dir(root)?.canonicalize()?;
     let (_, source_busy) = read_tree(&mut source, &common)?;
     let (_, destination_busy) = read_tree(&mut destination, &common)?;
     if source_busy || destination_busy {
@@ -371,22 +425,92 @@ pub fn outcome(project: &Project, request: &MergeRequest) -> Result<MergeOutcome
             return Ok(MergeOutcome::Dirty);
         }
     }
-    let root = Path::new(&destination.path);
+    commit_outcome(
+        Path::new(&destination.path),
+        &source.head,
+        &destination.head,
+    )
+}
+
+/// Check integration against a local branch without needing a destination checkout.
+/// Honor a saved restoration and inspect any live destination checkout before comparing refs.
+///
+/// # Errors
+/// Fails for a foreign or changed source worktree, an invalid destination branch, or Git errors.
+pub fn branch_outcome(
+    root: &Path,
+    source_path: &str,
+    source_branch: &str,
+    destination_branch: &str,
+) -> Result<MergeOutcome> {
+    ensure!(
+        source_branch != destination_branch,
+        "Choose a different destination branch"
+    );
+    crate::tasks::check_branch(root, destination_branch)?;
+    let trees = git::try_worktrees(root)?;
+    let mut source = checked_tree(&trees, source_path, "source")?;
+    let request = |destination: &str| MergeRequest {
+        expected_source_head: None,
+        commit_source: None,
+        source: source.path.clone(),
+        source_branch: source_branch.into(),
+        destination: destination.into(),
+        destination_branch: destination_branch.into(),
+    };
+    if let Some(destination) = trees
+        .iter()
+        .find(|tree| tree.path != source.path && tree.branch.as_deref() == Some(destination_branch))
+    {
+        return outcome_in(root, &request(&destination.path));
+    }
+    if let Some(record) = pending_restoration(root, &source, source_branch, destination_branch)? {
+        validate_restoration(root, &request(&record.destination), &record)?;
+        return Ok(MergeOutcome::AlreadyIntegrated);
+    }
+    let destination_head = branch_head(root, destination_branch)?;
+    let common = git::common_dir(root)?.canonicalize()?;
+    // A rebase temporarily detaches HEAD, so worktree list omits that checkout's branch.
+    let destination_ref = format!("refs/heads/{destination_branch}");
+    for tree in trees
+        .iter()
+        .filter(|tree| tree.path != source.path && tree.branch.is_none())
+    {
+        let dirs = owned_dirs(Path::new(&tree.path), &common)?;
+        for marker in ["rebase-merge", "rebase-apply"] {
+            match std::fs::read_to_string(dirs[0].join(marker).join("head-name")) {
+                Ok(name) if name.trim() == destination_ref => return Ok(MergeOutcome::InProgress),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    let (_, busy) = read_tree(&mut source, &common)?;
+    if busy {
+        return Ok(MergeOutcome::InProgress);
+    }
+    ensure!(
+        source.branch.as_deref() == Some(source_branch),
+        "The merge source branch changed"
+    );
+    if !status_entries(Path::new(&source.path))?.is_empty() {
+        return Ok(MergeOutcome::Dirty);
+    }
+    commit_outcome(root, &source.head, &destination_head)
+}
+
+fn commit_outcome(root: &Path, source_head: &str, destination_head: &str) -> Result<MergeOutcome> {
     let ancestor = git::git(root)
-        .args([
-            "merge-base",
-            "--is-ancestor",
-            &source.head,
-            &destination.head,
-        ])
+        .args(["merge-base", "--is-ancestor", source_head, destination_head])
         .status()?;
     if !ancestor.success() {
         ensure!(ancestor.code() == Some(1), "Couldn't check merge ancestry");
         return Ok(MergeOutcome::NotMerged);
     }
-    let parents = git::run(git::git(root).args(["rev-list", "--parents", "-1", "HEAD"]))?;
+    let parents = git::run(git::git(root).args(["rev-list", "--parents", "-1", destination_head]))?;
     Ok(
-        if parents.split_whitespace().skip(2).any(|p| p == source.head) {
+        if parents.split_whitespace().skip(2).any(|p| p == source_head) {
             MergeOutcome::Merged
         } else {
             MergeOutcome::AlreadyIntegrated
@@ -979,11 +1103,22 @@ mod tests {
                 outcome(&f.project, &request).unwrap(),
                 MergeOutcome::AlreadyIntegrated
             );
+            let branch = || branch_outcome(root, &request.source, "feature", "main");
+            assert_eq!(branch().unwrap(), MergeOutcome::Merged);
             if move_ref {
                 fs::write(root.join("file.txt"), "new change").unwrap();
                 git::run(git::git(root).args(["commit", "-qam", "changed feature"])).unwrap();
+                assert_eq!(branch().unwrap(), MergeOutcome::NotMerged);
+                assert!(
+                    outcome(&f.project, &request)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("during cleanup")
+                );
                 assert!(cleanup(&f.project, &request).is_err());
             } else {
+                git::run(git::git(root).args(["switch", "main"])).unwrap();
+                assert_eq!(branch().unwrap(), MergeOutcome::AlreadyIntegrated);
                 cleanup(&f.project, &request).unwrap();
                 assert_eq!(
                     git::run(git::git(root).args(["branch", "--show-current"])).unwrap(),
@@ -1005,7 +1140,27 @@ mod tests {
         );
         assert!(!Path::new(&request.destination).exists());
         assert!(!git::branches(root).unwrap().contains(&"feature".into()));
+        assert!(restoration(root, &request).unwrap().unwrap().completed);
         cleanup(&f.project, &request).unwrap();
+    }
+
+    #[test]
+    fn branch_outcome_ignores_old_restorations_after_reusing_a_branch_name() {
+        let (f, request) = primary_request();
+        let root = Path::new(&f.project.root);
+        integrate(&request);
+        cleanup(&f.project, &request).unwrap();
+        // Older versions left completed records with pinned heads and no completion flag.
+        let mut legacy = restoration(root, &request).unwrap().unwrap();
+        legacy.completed = false;
+        save_restoration(root, &legacy).unwrap();
+        git::run(git::git(root).args(["switch", "-c", "feature"])).unwrap();
+        fs::write(root.join("file.txt"), "new work on feature").unwrap();
+        git::run(git::git(root).args(["commit", "-qam", "new work on feature"])).unwrap();
+        assert_eq!(
+            branch_outcome(root, &request.source, "feature", "main").unwrap(),
+            MergeOutcome::NotMerged
+        );
     }
 
     #[test]
@@ -1349,6 +1504,61 @@ mod tests {
             outcome(&f.project, &f.request).unwrap(),
             MergeOutcome::Merged
         );
+    }
+
+    #[test]
+    fn branch_outcome_detects_a_merge_without_a_destination_checkout() {
+        let f = Fixture::new();
+        let root = Path::new(&f.project.root);
+        let source = Path::new(&f.request.source);
+        let read = || branch_outcome(root, &f.request.source, "feature", "main").unwrap();
+        fs::write(source.join("feature.txt"), "feature\n").unwrap();
+        git::run(git::git(source).args(["add", "."])).unwrap();
+        git::run(git::git(source).args(["commit", "-qm", "feature"])).unwrap();
+        git::run(git::git(root).args(["switch", "-c", "other"])).unwrap();
+        assert_eq!(read(), MergeOutcome::NotMerged);
+
+        git::run(git::git(root).args(["switch", "main"])).unwrap();
+        git::run(git::git(root).args(["merge", "--no-ff", "-qm", "merge feature", "feature"]))
+            .unwrap();
+        git::run(git::git(root).args(["switch", "other"])).unwrap();
+        let trees = git::worktrees(root);
+        assert!(
+            !trees
+                .iter()
+                .any(|tree| tree.branch.as_deref() == Some("main"))
+        );
+        assert_eq!(read(), MergeOutcome::Merged);
+        assert_eq!(git::worktrees(root).len(), trees.len());
+
+        fs::write(source.join("uncommitted.txt"), "new work").unwrap();
+        assert_eq!(read(), MergeOutcome::Dirty);
+    }
+
+    #[test]
+    fn branch_outcome_inspects_a_destination_checkout_created_since_the_caller_read() {
+        let f = Fixture::new();
+        let root = Path::new(&f.project.root);
+        git::run(git::git(root).args(["switch", "-c", "other"])).unwrap();
+        let read = || branch_outcome(root, &f.request.source, "feature", "main").unwrap();
+        assert_eq!(read(), MergeOutcome::AlreadyIntegrated);
+
+        git::run(git::git(root).args(["switch", "main"])).unwrap();
+        fs::write(root.join("untracked"), "check artifact").unwrap();
+        assert_eq!(read(), MergeOutcome::AlreadyIntegrated);
+        fs::write(root.join("file.txt"), "dirty").unwrap();
+        assert_eq!(read(), MergeOutcome::Dirty);
+
+        let dirs = git_dirs(root).unwrap();
+        fs::write(dirs[0].join("MERGE_HEAD"), &f.request.source_branch).unwrap();
+        assert_eq!(read(), MergeOutcome::InProgress);
+        fs::remove_file(dirs[0].join("MERGE_HEAD")).unwrap();
+
+        git::run(git::git(root).args(["switch", "--detach"])).unwrap();
+        let rebase = dirs[0].join("rebase-merge");
+        fs::create_dir(&rebase).unwrap();
+        fs::write(rebase.join("head-name"), "refs/heads/main\n").unwrap();
+        assert_eq!(read(), MergeOutcome::InProgress);
     }
 
     #[test]

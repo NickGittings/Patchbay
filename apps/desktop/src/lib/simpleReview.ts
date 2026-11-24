@@ -39,7 +39,7 @@ export async function startSimpleReview(
   const current = () => {
     const s = useStore.getState()
     if (s.project?.id !== project.projectId || s.activeTask !== task)
-      throw new Error('The worktree changed. Choose Review in the intended chat.')
+      throw new Error('The worktree changed. Choose Review again in the intended worktree.')
     return s
   }
   const records = initial.sessionRecords.filter(

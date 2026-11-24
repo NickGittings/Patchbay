@@ -1,4 +1,5 @@
 import { shortSha } from '../../lib/commitId'
+import type { mergeDestinations } from '../../lib/reviewAgents'
 import { useStore } from '../../store'
 import type { AutoRun } from '../../types'
 
@@ -17,7 +18,7 @@ export default function MergeFields({
   onMode: (mode: AutoRun['merge']['mode']) => void
   cleanup: string
   destination: string
-  destinations: string[]
+  destinations: ReturnType<typeof mergeDestinations>
   onDestination: (destination: string) => void
 }) {
   if (inPlaceBase)
@@ -32,6 +33,7 @@ export default function MergeFields({
       <label className="auto-toggle">
         <input
           type="checkbox"
+          role="switch"
           checked={mode === 'auto'}
           onChange={(e) => onMode(e.target.checked ? 'auto' : 'ask')}
         />
@@ -56,9 +58,12 @@ export default function MergeFields({
       <label>
         Destination branch
         <select value={destination} onChange={(e) => onDestination(e.target.value)}>
-          <option value="">Choose a destination worktree</option>
-          {destinations.map((b) => (
-            <option key={b}>{b}</option>
+          <option value="">Choose a destination branch</option>
+          {destinations.map(({ branch, worktree }) => (
+            <option key={branch} value={branch}>
+              {branch}
+              {!worktree && ' (creates worktree)'}
+            </option>
           ))}
         </select>
       </label>

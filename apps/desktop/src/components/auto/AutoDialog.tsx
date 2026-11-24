@@ -29,7 +29,8 @@ import {
 } from '../../lib/auto'
 import { ROLE_LABELS, roleDevice, roleDevices } from '../../lib/agentRoles'
 import { agentDevices } from '../../lib/plan'
-import { integrated, MAX_ROUNDS } from '../../lib/autoSettings'
+import { autoOverrides, defaultAutoEffort, integrated, MAX_ROUNDS } from '../../lib/autoSettings'
+import { defaultMergeDestination, mergeDestinations } from '../../lib/reviewAgents'
 import { SEVERITIES } from '../../types'
 import {
   type AutoDraft,
@@ -74,15 +75,14 @@ export default function AutoDialog({
   const agents = useMemo(() => agentDevices(devices), [devices])
   // Closing the popover unmounts the dialog; what the user gave it waits for it to reopen.
   const draftKey = autoDraftKey(projectId, task)
-  const [draft, setDraft] = useState<AutoDraft>(
-    () =>
-      autoDrafts.get(draftKey) ?? { ...emptyAutoDraft(), effort: simple ? 'light' : 'standard' },
-  )
+  const [draft, setDraft] = useState<AutoDraft>(() => autoDrafts.get(draftKey) ?? emptyAutoDraft())
   // Only the user's changes are kept, so merely opening the dialog leaves no draft behind.
   const edit = (patch: Partial<AutoDraft>) =>
     changeDraft(draftKey, setDraft, (d) => ({ ...d, ...patch }), draft)
   // This run's choices; unpicked stages follow the global agent roles.
-  const { picked, reviewers: pickedReviewers, effort, overrides, mode, stage } = draft
+  const { picked, reviewers: pickedReviewers, overrides, mode, stage } = draft
+  const effort = defaultAutoEffort(simple)
+  const [roundsEmpty, setRoundsEmpty] = useState(false)
   const reviewers = useMemo(() => {
     const kept = pickedReviewers && agents.filter((a) => pickedReviewers.includes(a.id))
     // Picks whose presets were all removed since give way to the role, as unpicked agents do.
@@ -127,11 +127,11 @@ export default function AutoDialog({
     [device, runAgents, reviewers, scanners, workers],
   )
   // What the dialog fills in itself while the user hasn't: the inferred goal, withdrawn once a
-  // load finds the branch merged, and the current worktree's branch as the destination.
+  // load finds the branch merged, and the default destination branch.
   const [filled, setFilled] = useState({ goal: '', destination: '' })
   const goal = draft.goal ?? filled.goal
   const destination = draft.destination ?? filled.destination
-  const [destinations, setDestinations] = useState<string[]>([])
+  const [destinations, setDestinations] = useState<ReturnType<typeof mergeDestinations>>([])
   const [snapshot, setSnapshot] = useState<AutoSnapshot | null>(null)
   const [error, setError] = useState('')
   // A worktree with no branch to review against (the project folder on its default or only
@@ -203,7 +203,7 @@ export default function AutoDialog({
       status: 'running',
       stage: 'plan',
       goal: '',
-      effort: 'standard',
+      effort,
       merge: { mode: 'ask', destinationBranch: destination },
       device: '',
       round: 0,
@@ -213,22 +213,20 @@ export default function AutoDialog({
     void autoSnapshot(projectId, task, run, true)
       .then((snapshot) => {
         if (cancelled) return
-        const branches = snapshot.worktrees
-          .filter((w) => w.branch && w.path !== snapshot.source.path)
-          .map((w) => w.branch!)
-        setDestinations(branches)
-        // Merged work's plan is no goal for a new run. Without a destination the outcome is
-        // unknown, so a goal filled in then is withdrawn once a later load finds it merged.
+        const { source, worktrees, branches } = snapshot
+        const destinations = mergeDestinations(source, worktrees, branches)
+        setDestinations(destinations)
+        // Merged work's plan is no goal for a new run.
         setFilled({
           goal: integrated(snapshot.outcome) ? '' : snapshot.goal,
-          destination:
-            snapshot.worktrees.find((w) => w.current && w.path !== snapshot.source.path)?.branch ||
-            '',
+          destination: defaultMergeDestination(source, worktrees, branches),
         })
         // A restored destination no longer offered gives way to the filled-in one, also when the
         // dialog reopens, so its first load doesn't preview the stale one again.
         changeDraft(draftKey, setDraft, (d) =>
-          d.destination && !branches.includes(d.destination) ? { ...d, destination: undefined } : d,
+          d.destination && !destinations.some(({ branch }) => branch === d.destination)
+            ? { ...d, destination: undefined }
+            : d,
         )
         setSnapshot(snapshot)
         setError('')
@@ -244,7 +242,7 @@ export default function AutoDialog({
     return () => {
       cancelled = true
     }
-  }, [projectId, task, destination, draftKey, requestKey, recheck])
+  }, [projectId, task, destination, draftKey, requestKey, recheck, effort])
   useEffect(() => {
     let cancelled = false
     void Promise.all(distinct.map(checkAutoHooks))
@@ -265,7 +263,8 @@ export default function AutoDialog({
   const merge: AutoRun['merge'] = inPlaceSnapshot
     ? IN_PLACE_MERGE
     : { mode, destinationBranch: destination, cleanup: cleanupChoice }
-  const settings = simple ? EFFORT.light : { ...EFFORT[effort], ...overrides }
+  const runOverrides = autoOverrides(simple, overrides)
+  const settings = { ...EFFORT[effort], ...runOverrides }
   const decision =
     snapshot &&
     inferStage(
@@ -278,7 +277,7 @@ export default function AutoDialog({
         log: [],
         goal,
         effort,
-        overrides,
+        overrides: runOverrides,
         device,
         agents: runAgents,
         reviewers,
@@ -338,43 +337,56 @@ export default function AutoDialog({
             </select>
           </label>
           <label>
-            Fix effort
-            <select
-              disabled={simple}
-              value={simple ? 'light' : effort}
-              onChange={(e) => edit({ effort: e.target.value as AutoRun['effort'], overrides: {} })}
-            >
-              <option value="light">Light (1 fix round)</option>
-              <option value="standard">Standard (3 fix rounds)</option>
-              <option value="thorough">Thorough (5 fix rounds)</option>
-            </select>
+            Fix rounds
+            <input
+              type="number"
+              min={0}
+              max={MAX_ROUNDS}
+              value={roundsEmpty ? '' : settings.maxRounds}
+              onChange={(e) => {
+                const rounds = e.target.valueAsNumber
+                setRoundsEmpty(!Number.isFinite(rounds))
+                if (!Number.isFinite(rounds)) return
+                edit({
+                  overrides: {
+                    ...overrides,
+                    maxRounds: Math.max(0, Math.min(MAX_ROUNDS, Math.round(rounds))),
+                  },
+                })
+              }}
+            />
           </label>
         </div>
-        <label className="auto-toggle">
-          <input
-            type="checkbox"
-            checked={draft.autonomous === true}
-            onChange={(e) => edit({ autonomous: e.target.checked })}
-          />
-          Autonomous execution
-        </label>
-        <label className="auto-toggle">
-          <input
-            type="checkbox"
-            disabled={draft.autonomous === true}
-            checked={draft.autonomous === true || draft.background === true}
-            onChange={(e) => edit({ background: e.target.checked })}
-          />
-          Keep going in background
-        </label>
-        <label className="auto-toggle">
-          <input
-            type="checkbox"
-            checked={draft.resumeOnUsageReset === true}
-            onChange={(e) => edit({ resumeOnUsageReset: e.target.checked })}
-          />
-          Resume when usage resets
-        </label>
+        <div className="auto-toggles">
+          <label className="auto-toggle">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={draft.autonomous === true}
+              onChange={(e) => edit({ autonomous: e.target.checked })}
+            />
+            Autonomous execution
+          </label>
+          <label className="auto-toggle">
+            <input
+              type="checkbox"
+              role="switch"
+              disabled={draft.autonomous === true}
+              checked={draft.autonomous === true || draft.background === true}
+              onChange={(e) => edit({ background: e.target.checked })}
+            />
+            Keep going in background
+          </label>
+          <label className="auto-toggle">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={draft.resumeOnUsageReset === true}
+              onChange={(e) => edit({ resumeOnUsageReset: e.target.checked })}
+            />
+            Resume when usage resets
+          </label>
+        </div>
       </PanelSection>
       <PanelSection title="Merge">
         <MergeFields
@@ -459,26 +471,6 @@ export default function AutoDialog({
         {!simple && (
           <PanelDetails title="Advanced">
             <label>
-              Maximum fix rounds
-              <input
-                type="number"
-                min={0}
-                max={MAX_ROUNDS}
-                value={settings.maxRounds}
-                onChange={(e) =>
-                  edit({
-                    overrides: {
-                      ...overrides,
-                      maxRounds: Math.max(
-                        0,
-                        Math.min(MAX_ROUNDS, Math.round(Number(e.target.value) || 0)),
-                      ),
-                    },
-                  })
-                }
-              />
-            </label>
-            <label>
               Lowest severity to fix
               <select
                 value={settings.severityFloor}
@@ -496,6 +488,7 @@ export default function AutoDialog({
             <label className="auto-toggle">
               <input
                 type="checkbox"
+                role="switch"
                 checked={settings.validate}
                 onChange={(e) => edit({ overrides: { ...overrides, validate: e.target.checked } })}
               />
@@ -522,8 +515,9 @@ export default function AutoDialog({
         disabled={
           loading ||
           starting ||
+          roundsEmpty ||
           !integration ||
-          (!inPlaceSnapshot && !destinations.includes(destination)) ||
+          (!inPlaceSnapshot && !destinations.some(({ branch }) => branch === destination)) ||
           !goal.trim() ||
           !reviewers.length
         }
@@ -536,8 +530,8 @@ export default function AutoDialog({
             autonomous: draft.autonomous === true,
             background: draft.background === true,
             resumeOnUsageReset: draft.resumeOnUsageReset === true,
-            effort: simple ? 'light' : effort,
-            overrides: simple ? {} : overrides,
+            effort,
+            overrides: runOverrides,
             merge,
             device,
             agents: runAgents,

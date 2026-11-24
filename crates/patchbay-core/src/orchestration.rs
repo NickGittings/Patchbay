@@ -654,7 +654,7 @@ pub fn control(root: &Path, project_id: &str, id: &str, control: Control) -> Res
         ensure!(r.project_id == project_id, "Run belongs to another project");
         ensure!(
             r.chat_team.is_none(),
-            "Use Chat worker controls for chat-owned rounds"
+            "Use Chat Sub-builder controls for chat-owned rounds"
         );
         if r.state == State::Stopped && matches!(control, Control::Stop) {
             return Ok(r.clone());
@@ -914,12 +914,12 @@ pub fn command(root: &Path, launch: &LaunchContext, command: Command) -> Result<
                     .jobs
                     .iter_mut()
                     .find(|j| j.session_id.as_deref() == Some(&launch.agent_session))
-                    .ok_or_else(|| anyhow!("Worker does not own this assignment"))?;
+                    .ok_or_else(|| anyhow!("Sub-builder does not own this assignment"))?;
                 let task = tasks::find(
                     root,
                     j.task
                         .as_deref()
-                        .ok_or_else(|| anyhow!("Worker has no checkout"))?,
+                        .ok_or_else(|| anyhow!("Sub-builder has no checkout"))?,
                 )?;
                 let tree = Path::new(&task.worktree);
                 clean(tree)?;
@@ -930,10 +930,10 @@ pub fn command(root: &Path, launch: &LaunchContext, command: Command) -> Result<
                 let base = j
                     .base
                     .as_deref()
-                    .ok_or_else(|| anyhow!("Worker has no base revision"))?;
+                    .ok_or_else(|| anyhow!("Sub-builder has no base revision"))?;
                 ensure!(
                     commit != base && ancestor(tree, base, &commit)?,
-                    "Worker result must contain commits based on its assigned revision"
+                    "Sub-builder result must contain commits based on its assigned revision"
                 );
                 ensure!(
                     matches!(
@@ -983,7 +983,7 @@ fn add_assignments(r: &mut Run, drafts: Vec<AssignmentDraft>) -> Result<()> {
             .workers
             .iter()
             .find(|t| t.id == draft.preset)
-            .ok_or_else(|| anyhow!("Worker preset was not selected for this run"))?
+            .ok_or_else(|| anyhow!("Sub-builder preset was not selected for this run"))?
             .clone();
         if let Some(j) = r.jobs.iter().find(|j| j.id == draft.id) {
             ensure!(
@@ -1059,7 +1059,7 @@ fn integrate(r: &mut Run, id: &str) -> Result<()> {
     }
     ensure!(
         matches!(j.state, JobState::Complete | JobState::Integrating),
-        "Worker must submit a committed result first"
+        "Sub-builder must submit a committed result first"
     );
     ensure!(
         j.dependencies
@@ -1070,7 +1070,7 @@ fn integrate(r: &mut Run, id: &str) -> Result<()> {
     let commit = j
         .commit
         .clone()
-        .ok_or_else(|| anyhow!("Worker has no committed result"))?;
+        .ok_or_else(|| anyhow!("Sub-builder has no committed result"))?;
     // The intent was saved before merge: adopt a merge completed before a lost reply or crash.
     if j.state == JobState::Integrating && ancestor(&tree, &commit, "HEAD")? {
         clean(&tree)?;

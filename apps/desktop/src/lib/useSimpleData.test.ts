@@ -123,7 +123,7 @@ test('a deleted saved base falls back and continues exposing artifacts on refres
   expect(reader.data?.plan.text).toBe('updated plan')
   expect(reader.data?.proposal?.plan).toBe('proposal')
   expect(reader.data?.outcome).toBe('merged')
-  expect(reader.data?.review.ahead).toBe(true)
+  expect(reader.data?.review?.ahead).toBe(true)
   expect(ipc.gitReview).toHaveBeenLastCalledWith(expect.anything(), undefined, 'main')
 })
 
@@ -159,7 +159,7 @@ test('a project outside Git still loads plans and changes from its component rep
   expect(reader.error).toBe('')
   expect(reader.base).toBeUndefined()
   expect(reader.data?.plan.text).toBe('plan')
-  expect(reader.data?.review.changes.app).toHaveLength(1)
+  expect(reader.data?.review?.changes.app).toHaveLength(1)
   expect(ipc.gitBranches).not.toHaveBeenCalled()
 })
 

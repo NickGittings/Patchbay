@@ -5289,9 +5289,7 @@ mod tests {
                 )
                 .unwrap()
             };
-            let launch = spec(Some(crate::context::Kickoff::ImplementPlan {
-                subagents: None,
-            }));
+            let launch = spec(Some(crate::context::Kickoff::ImplementPlan));
             let recorded = restart_context(&metadata, &launch).unwrap();
             let resume = launch.resume_command.clone().unwrap();
             assert_eq!(resume.contains("Implement the change"), inline);

@@ -12,5 +12,5 @@ export const SimpleChangesContext = createContext<SimpleChanges>({
   files: [],
   bySession: new Map(),
 })
-/** The worktree Navigation's Chat is showing. */
+/** The worktree the Navigation canvas and Chat are showing. */
 export const SimpleWorktreeContext = createContext<SimpleWorktree | undefined>(undefined)

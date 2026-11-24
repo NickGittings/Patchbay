@@ -3,6 +3,7 @@ import type { SessionState } from '../types'
 import { leadDeliveryPending, teamFor, useChatTeams } from './chatTeams'
 import { chatAutoActive, limitStopped } from './chat'
 import {
+  componentMentions,
   forceable,
   forcedSettleAt,
   followDeliveries,
@@ -123,7 +124,7 @@ export async function flushQueued(key: string, force = false) {
       task,
       sid: queued.sessionId,
       ...queued,
-      mentions: [...new Set(queued.mentions.map((m) => m.id))],
+      mentions: [...new Set(componentMentions(queued.mentions))],
       force,
       current: () => {
         if (autoActive() || useSimpleUi.getState().worktrees[key]?.coordinationReset)

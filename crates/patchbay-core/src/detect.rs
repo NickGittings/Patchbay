@@ -9,8 +9,8 @@
 
 use crate::extensions::DetectorContribution;
 use crate::model::{
-    Component, ComponentKind, Link, Position, Project, SCHEMA_VERSION, TerminalKind, TerminalSpec,
-    check_component_dir, relative_path, resolve_dir,
+    BUILTIN_SOURCE, Component, ComponentKind, Link, Position, Project, SCHEMA_VERSION,
+    TerminalKind, TerminalSpec, check_component_dir, relative_path, resolve_dir,
 };
 use anyhow::{Result, bail};
 use std::cell::OnceCell;
@@ -176,7 +176,7 @@ fn from_package_json(dir: &Path, root: &Path, v: &serde_json::Value) -> Option<C
     }
 
     Some(Candidate {
-        detector: "builtin".into(),
+        detector: BUILTIN_SOURCE.into(),
         package_identity: None,
         rel: String::new(),
         name: v["name"]
@@ -219,7 +219,7 @@ fn from_cargo_toml(dir: &Path, t: &toml::Table) -> Option<Candidate> {
     tasks.push(task("test", "Tests", "cargo test".into()));
 
     Some(Candidate {
-        detector: "builtin".into(),
+        detector: BUILTIN_SOURCE.into(),
         package_identity: None,
         rel: String::new(),
         name,
@@ -262,7 +262,7 @@ fn python_candidate(dir: &Path, name: String, deps: HashSet<String>) -> Candidat
         tasks.push(task("test", "Tests", "python -m pytest".into()));
     }
     Candidate {
-        detector: "builtin".into(),
+        detector: BUILTIN_SOURCE.into(),
         package_identity: None,
         rel: String::new(),
         name,
@@ -336,7 +336,7 @@ fn from_go_mod(dir: &Path, text: &str) -> Candidate {
     }
     tasks.push(task("test", "Tests", "go test ./...".into()));
     Candidate {
-        detector: "builtin".into(),
+        detector: BUILTIN_SOURCE.into(),
         package_identity: None,
         rel: String::new(),
         name,
@@ -783,7 +783,7 @@ fn from_native_project(dir: &Path, root: &Path) -> Option<Candidate> {
         }
     }
     Some(Candidate {
-        detector: "builtin".into(),
+        detector: BUILTIN_SOURCE.into(),
         package_identity: None,
         rel: String::new(),
         name: dir_name(dir),
@@ -796,7 +796,7 @@ fn from_native_project(dir: &Path, root: &Path) -> Option<Candidate> {
 
 /// Stable package identity from the cached manifests, before user display-name edits.
 fn provenance(manifests: &Manifests, detector: &str) -> Option<String> {
-    if detector != "builtin" {
+    if detector != BUILTIN_SOURCE {
         return None;
     }
     if manifests.text("package.json").is_some() {
@@ -880,7 +880,7 @@ fn candidate_for(
 /// A git repo with no manifest we recognise still deserves a node.
 fn repo_candidate(dir: &Path) -> Candidate {
     Candidate {
-        detector: "builtin".into(),
+        detector: BUILTIN_SOURCE.into(),
         package_identity: None,
         rel: String::new(),
         name: dir_name(dir),
@@ -1037,7 +1037,7 @@ fn scan_candidates(root: &Path, detectors: &[DetectorContribution]) -> Vec<Candi
     walk(root, root, 0, &mut found, detectors);
     if found.is_empty() {
         found.push(Candidate {
-            detector: "builtin".into(),
+            detector: BUILTIN_SOURCE.into(),
             package_identity: None,
             rel: ".".into(),
             name: dir_name(root),
@@ -1108,7 +1108,7 @@ fn build_project(
         for t in targets {
             links.push(Link {
                 detection: Some(crate::model::DetectionProvenance {
-                    detector: "builtin".into(),
+                    detector: BUILTIN_SOURCE.into(),
                     package_identity: None,
                 }),
                 id: format!("{id}->{t}"),
@@ -1132,7 +1132,7 @@ fn build_project(
         if let Some((_, pid)) = found.iter().zip(&ids).find(|(p, _)| p.rel == parent) {
             links.push(Link {
                 detection: Some(crate::model::DetectionProvenance {
-                    detector: "builtin".into(),
+                    detector: BUILTIN_SOURCE.into(),
                     package_identity: None,
                 }),
                 id: format!("{pid}->{id}"),
@@ -1163,7 +1163,7 @@ fn build_project(
             if linked.insert((ids[i].clone(), ids[t].clone())) {
                 links.push(Link {
                     detection: Some(crate::model::DetectionProvenance {
-                        detector: "builtin".into(),
+                        detector: BUILTIN_SOURCE.into(),
                         package_identity: None,
                     }),
                     id: format!("{}->{}", ids[i], ids[t]),

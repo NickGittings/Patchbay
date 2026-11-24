@@ -1,6 +1,15 @@
-import type { MergeOutcome, ReviewFindings, SessionRecord } from '../types'
+import {
+  LEAD_RECIPIENT,
+  type MergeOutcome,
+  type ReviewFindings,
+  type SessionRecord,
+  type SessionState,
+} from '../types'
+import type { ChatTeam } from './chatTeams'
+import { savedStage } from './leadStageRun'
 import { reviewerBusy } from './review'
 import {
+  launchOrigin,
   workflowLog,
   recordStage,
   pendingLaunch,
@@ -50,6 +59,8 @@ export interface FlowSnapshot extends SimpleSnapshot {
 export interface SimpleFlow {
   step: SimpleStep
   prompt?: StepPrompt
+  /** The lead started this stage and hasn't had its say on the result yet. */
+  waitingOn?: typeof LEAD_RECIPIENT
   busyAgent?: SessionRecord
   agent?: SessionRecord
 }
@@ -84,12 +95,14 @@ export function flow(
             (state?.state === 'idle' && !!state.authoritative)))))
   const working = !!own && !ended
   const auto = snapshot.auto
+  // Auto's own launches are its run, not work that came after it.
   const manualAfterAuto =
     auto?.status === 'done' &&
     workflowLog(snapshot.simple).some(
       (e) =>
         (e.kind === 'prompt' ||
           (e.kind === 'action' &&
+            launchOrigin(e) !== 'auto' &&
             ['plan', 'implement', 'review', 'fix', 'merge'].includes(e.action))) &&
         e.atMs > (auto.log.at(-1)?.atMs ?? 0),
     )
@@ -126,6 +139,7 @@ export function flow(
       (snapshot.outcome === 'merged' || snapshot.outcome === 'alreadyIntegrated')) ||
     (auto?.status === 'done' && !manualAfterAuto)
   )
+    // No actions: the timeline narrates it and the step card stays away.
     return { step: 'merged', agent, prompt: { text: `Merged into ${base}.`, actions: [] } }
   if (auto && !['stopped', 'failed', 'done'].includes(auto.status)) {
     const step: SimpleStep = (
@@ -211,7 +225,7 @@ export function flow(
             ? mergePrompt()
             : {
                 text: 'Merge has not completed.',
-                actions: [button('checkMerge', 'Check conflicts')],
+                actions: [button('checkMerge', 'Retry merge')],
               }
           : {
               text: snapshot.outcomeError
@@ -364,23 +378,86 @@ export function workflowPromptKey(
   ])
 }
 
-const STEP_HEADINGS: Record<SimpleStep, string> = {
-  idle: 'Next step',
-  planning: 'Planning',
-  planReady: 'Planning',
-  building: 'Build',
-  built: 'Build',
-  reviewing: 'Review',
-  reviewed: 'Review',
-  fixing: 'Fix',
-  fixed: 'Fix',
-  merging: 'Merge',
-  merged: 'Merge complete',
+/**
+ * The step card's heading: the stage its actions start, the same stage the strip marks as waiting
+ * on you, so the card and the strip never name different stages.
+ */
+export function stepCardHeading(prompt: StepPrompt | undefined): string {
+  const actions = new Set<FlowAction>(prompt?.actions.map((a) => a.action))
+  if (actions.has('resumeAuto')) return 'Continue Auto mode'
+  const merge = actions.has('checkMerge') || actions.has('merge') || actions.has('mergeApproval')
+  if (merge && (actions.has('fix') || actions.has('review'))) return 'Review and merge'
+  if (merge || actions.has('retryMergeStatus')) return 'Merge'
+  if (actions.has('build')) return 'Build'
+  return 'Review'
 }
-/** The step card's heading when its actions don't name a more specific one. */
-export const chatStepHeading = (step: SimpleStep) => STEP_HEADINGS[step]
 
 const STAGE_LAUNCHES = ['plan', 'implement', 'review', 'fix', 'merge']
+
+/** Whether the newest stage launch that claimed this agent's run came from the lead. */
+export function leadStarted(
+  simple: FlowSnapshot['simple'] | undefined,
+  agentId: string | undefined,
+  generation: number | undefined,
+) {
+  if (!agentId) return false
+  const launch = workflowLog(simple).findLast(
+    (e) =>
+      e.kind === 'action' &&
+      e.sessionId === agentId &&
+      STAGE_LAUNCHES.includes(e.action) &&
+      (e.generation === undefined || generation === undefined || e.generation === generation),
+  )
+  return launch?.kind === 'action' && launchOrigin(launch) === 'lead'
+}
+
+const ACTIVE_REQUESTS = ['starting', 'running', 'waiting']
+/** Whether a lead workflow request is still running `agentId`: its saved stage run or a council lane. */
+function runsAgent(request: NonNullable<ChatTeam['requests']>[number], agentId: string) {
+  return (
+    ACTIVE_REQUESTS.includes(request.state) &&
+    (savedStage(request.result)?.sessionId === agentId ||
+      !!request.councilRun?.members.some((m) => m.sessionId === agentId))
+  )
+}
+/**
+ * Whether the lead still owns what follows a stage it started. That holds while its team is
+ * running and the lead is working, has a message on its way, or still runs this agent's request.
+ * Only messages being sent and requests naming this agent count: an `uncertain` delivery (as a
+ * restart leaves one) has its own recovery alert and never hides the card. Once the lead is back
+ * at its prompt with nothing pending, the step card returns.
+ */
+export function leadDeciding({
+  started,
+  agentId,
+  team,
+  lead,
+}: {
+  started: boolean
+  agentId: string | undefined
+  team: Pick<ChatTeam, 'state' | 'messages' | 'requests'> | undefined
+  lead: Pick<SessionState, 'running' | 'status'> | undefined
+}) {
+  if (!started || !agentId || team?.state !== 'running' || !lead?.running) return false
+  const state = lead.status?.agent?.state
+  return (
+    state === 'working' ||
+    state === 'needsInput' ||
+    (team.messages ?? []).some(
+      (m) =>
+        m.recipient === LEAD_RECIPIENT &&
+        !m.passive &&
+        (m.state === 'pending' || m.state === 'sending'),
+    ) ||
+    (team.requests ?? []).some((r) => runsAgent(r, agentId))
+  )
+}
+
+/** While the lead decides, the step card offers nothing and the strip says who it waits on. */
+export function forLead(state: SimpleFlow, deciding: boolean): SimpleFlow {
+  if (!deciding || !state.prompt?.actions.length) return state
+  return { ...state, prompt: undefined, waitingOn: LEAD_RECIPIENT }
+}
 /**
  * The step Chat shows. The lead decides it, except that Auto runs its own stages, and a stage
  * launched after the lead last spoke (a step-card button while it was idle) is newer news. Chats
@@ -431,10 +508,11 @@ const HALT_NOTES: Record<ChatStepperHalt, string> = {
 
 /**
  * Where a worktree's chat is in Plan → Build → Review → Merge, projected from its `flow` step.
- * Fixing is a pass inside Review, as Auto folds fix into its build stage. `issues` counts the
+ * Fixing is a pass inside Review, in Chat and the Auto panel alike. `issues` counts the
  * latest review verdict's findings (undefined without a verdict); `inPlace` drops Merge. `halt`
- * marks the stage in progress as paused, stopped or failed; `note` (Auto's reason) qualifies the
- * stage in progress when the flow step gives it none, and follows a halt's label.
+ * marks the stage in progress as paused, stopped or failed, and `attention` as waiting on you;
+ * `note` (Auto's reason) qualifies the stage in progress when the flow step gives it none, and
+ * follows a halt's label.
  */
 export function chatStepper(
   step: SimpleStep,
@@ -442,8 +520,16 @@ export function chatStepper(
     issues,
     inPlace = false,
     halt,
+    attention = false,
     note: fallback,
-  }: { issues?: number; inPlace?: boolean; halt?: ChatStepperHalt; note?: string } = {},
+  }: {
+    issues?: number
+    inPlace?: boolean
+    halt?: ChatStepperHalt
+    /** The stage in progress waits on you, such as Auto waiting for an answer. */
+    attention?: boolean
+    note?: string
+  } = {},
 ): ChatStepperItem[] {
   const progress: Record<SimpleStep, [index: number, state: ChatStepperState, note?: string]> = {
     idle: [-1, 'upcoming'],
@@ -477,7 +563,10 @@ export function chatStepper(
         state: halt === 'failed' ? 'failed' : 'stopped',
         note: [HALT_NOTES[halt], fallback].filter(Boolean).join(' · '),
       }
-    : { state, note: note ?? fallback }
+    : attention && state === 'current'
+      ? // Why it waits on you matters more than how far it got.
+        { state: 'attention', note: fallback ?? note }
+      : { state, note: note ?? fallback }
   return stages.map((stage, i) =>
     i < at
       ? { stage, state: 'done' }

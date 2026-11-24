@@ -43,14 +43,16 @@ For code changes, run the Rust formatting, lint and test checks and `npm run che
 - Rust tests use inline `#[cfg(test)] mod tests`; add behavior-named regression tests near changed core logic and isolate filesystem fixtures in temporary directories. PTY tests run on Unix. `.config/nextest.toml` limits process-spawning tests. Filter tests with `cargo test -p patchbay-core detect`.
 - Frontend tests use Vitest's Node environment, alongside modules as `src/**/*.test.ts`. Mock the store and Tauri APIs for logic tests; verify rendered UI through smoke tests and manual desktop checks.
 - Shared encodings such as `sessionId` and `componentLabel` have paired Rust/TypeScript golden tests; update both together.
-- Smoke tests need a desktop session and port 1420; stop `tauri dev` first. Use disposable fixture repositories and isolated state, never the personal root map.
+- Smoke tests need a desktop session. They and `npm run tauri dev` serve Vite on 1420 or, when it is taken, a free port (`scripts/dev-port.mjs`), so they can run alongside each other and other worktrees. Use disposable fixture repositories and isolated state, never the personal root map.
 - Smoke hooks (`src-tauri/src/smoke.rs`, `src/lib/smoke.ts`, `window.__patchbaySmoke`) must remain debug/dev-only. `PATCHBAY_SMOKE_SCRIPT` enables the harness.
-- Smoke windows run without focus on macOS. Verify focus events, `document.hasFocus()`, terminal authority claims, focus-driven `terminal_seen`, and Git refresh on focus manually; smoke checks cannot wait on them. Screenshot runs are the documented foreground exception.
+- Smoke windows run without focus on macOS, transparent and click-through so nothing shows on screen (keep them ordered in: hidden windows report `visibilityState` hidden and terminals won't attach). Verify focus events, `document.hasFocus()`, terminal authority claims, focus-driven `terminal_seen`, and Git refresh on focus manually; smoke checks cannot wait on them. Screenshot runs are the documented foreground exception.
 - Read [smoke launcher internals](docs/architecture/smoke.md) before changing the harness, fixtures, process handling, or screenshots.
 
 ## Style
 
 Follow `.editorconfig`: spaces, LF, final newline, two-space indentation except four for Rust. Format Rust with rustfmt and frontend files with `npm run format`. Prettier uses single quotes, no semicolons, trailing commas, and width 100. Use PascalCase React component filenames, camelCase TypeScript functions, and snake_case Rust modules/functions.
+
+Name strings that code matches on (scopes, sentinels, event names, storage keys) as constants in the module that owns them, and import them rather than repeating the literal. Window events are `patchbay:<kebab>` with a `*_EVENT` constant; localStorage keys are `patchbay.<camelCase>`. Display copy stays inline. Tests may use the literal values, which pins them to the Rust mirror. Each Tauri command has one wrapper; see [Rust/TS sync](docs/architecture/rust-ts-sync.md).
 
 Workspace lints forbid unsafe Rust. The desktop adapter uses `deny` so macOS-only `writing_tools.rs` can locally allow its Objective-C calls; keep its other lints aligned with the workspace. Clippy checks run with `-D warnings`, including truncation, wrap, and sign-loss cast warnings: use checked conversions or targeted allowances. Public fallible functions carry applicable `# Errors` / `# Panics` docs; pure getters use `#[must_use]`.
 

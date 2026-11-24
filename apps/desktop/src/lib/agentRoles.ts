@@ -1,6 +1,5 @@
 import {
   AGENT_ROLES,
-  isSubagentCount,
   type AgentRole,
   type AgentRoles,
   type DeviceManifest,
@@ -11,9 +10,9 @@ import { agentDevices, planTerminals } from './plan'
 
 export const ROLE_LABELS: Record<AgentRole, string> = {
   scan: 'Scan',
-  worker: 'Workers',
+  worker: 'Sub-builders',
   plan: 'Plan',
-  implement: 'Implement',
+  implement: 'Builder',
   review: 'Review',
   fix: 'Fix',
   merge: 'Merge',
@@ -111,14 +110,10 @@ export function restoredAgentDefaults(
     const roles = restoredAgentRoles(project.layout.agentRoles)
     for (const role of AGENT_ROLES) legacyRoles[role] ??= roles[role]
   }
-  const subagents = Object.hasOwn(settings, 'implementSubagents')
-    ? settings.implementSubagents
-    : projects.map((p) => p.layout.implementSubagents).find(isSubagentCount)
   return {
     agentRoles: Object.hasOwn(settings, 'agentRoles')
       ? restoredAgentRoles(settings.agentRoles)
       : restoredAgentRoles(legacyRoles),
-    implementSubagents: isSubagentCount(subagents) ? subagents : 0,
   }
 }
 
@@ -129,7 +124,7 @@ export function restoredAgents(value: unknown): Partial<Record<AgentRole, string
 }
 
 /**
- * The presets a worktree's stages launch, each once: the planner, Implement (else the planner's),
+ * The presets a worktree's stages launch, each once: the planner, Builder (else the planner's),
  * every reviewer, Fix when assigned (else a preset of a reviewer's provider) and Merge.
  */
 export function chatRolePresets(devices: DeviceManifest[], roles: AgentRoles): DeviceManifest[] {

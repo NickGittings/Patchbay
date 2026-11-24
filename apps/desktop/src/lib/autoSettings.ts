@@ -40,10 +40,19 @@ export const EFFORT: Record<AutoRun['effort'], EffortSettings & { note: string }
     note: 'Fix root causes and add tests.',
   },
 }
+
+export const defaultAutoEffort = (simple: boolean) => (simple ? 'light' : 'standard')
+
+/** Simple mode exposes only the fix budget. */
+export function autoOverrides(simple: boolean, overrides: AutoRun['overrides']) {
+  if (!simple || !overrides) return overrides
+  return overrides.maxRounds === undefined ? {} : { maxRounds: overrides.maxRounds }
+}
+
 export const STAGE_LABELS: Record<AutoStage, string> = {
   scan: 'Scan',
   plan: 'Plan',
-  implement: 'Implement',
+  implement: 'Build',
   validate: 'Validate',
   review: 'Review',
   fix: 'Fix',

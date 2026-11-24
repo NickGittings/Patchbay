@@ -17,6 +17,9 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Terminal events: every one to the main window on this channel, and each to
 /// its component's pop-out on `patchbay://terminal/<label>`. Mirrored in `ipc.ts`.
 pub const TERMINAL_EVENT: &str = "patchbay://terminal";
+
+const SERVICE_EVENT: &str = "patchbay://service";
+const SERVICE_RETIREMENT_EVENT: &str = "patchbay://service-retirement";
 const DISCONNECTED: &str =
     "Disconnected from session service. Wait for reconciliation before trying again.";
 /// Idle pooled connections; the service drops connections idle for 120s.
@@ -296,7 +299,7 @@ impl Bridge {
     pub fn retire(&self, app: &AppHandle) -> Result<(), String> {
         self.retire_with(
             |status| {
-                let _ = app.emit("patchbay://service-retirement", status);
+                let _ = app.emit(SERVICE_RETIREMENT_EVENT, status);
             },
             || {
                 let dir = session::runtime_dir().map_err(|e| e.to_string())?;
@@ -405,14 +408,14 @@ impl Bridge {
                                 bridge.learn(&records);
                                 bridge.pool.lock().unwrap().clear();
                                 bridge.connected(&client.instance);
-                                let _ = app.emit("patchbay://service", serde_json::json!({"connected": true, "instanceId": client.instance, "records": records}));
+                                let _ = app.emit(SERVICE_EVENT, serde_json::json!({"connected": true, "instanceId": client.instance, "records": records}));
                                 poller = Some(client);
                                 delay = 100;
                             }
                         }
                         Err(e) => {
                             let _ = app.emit(
-                                "patchbay://service",
+                                SERVICE_EVENT,
                                 serde_json::json!({"connected": false, "issue": session::service_issue(&e)}),
                             );
                             std::thread::sleep(Duration::from_millis(delay));
@@ -427,7 +430,7 @@ impl Bridge {
                         if let Ok(records) = client.call::<Vec<Record>>(Request::List) {
                             after = batch.end;
                             bridge.learn(&records);
-                            let _ = app.emit("patchbay://service", serde_json::json!({"connected": true, "instanceId": batch.instance_id, "records": records}));
+                            let _ = app.emit(SERVICE_EVENT, serde_json::json!({"connected": true, "instanceId": batch.instance_id, "records": records}));
                         }
                         0
                     }
@@ -466,10 +469,7 @@ impl Bridge {
                     Err(_) => {
                         poller = None;
                         bridge.disconnected();
-                        let _ = app.emit(
-                            "patchbay://service",
-                            serde_json::json!({"connected": false}),
-                        );
+                        let _ = app.emit(SERVICE_EVENT, serde_json::json!({"connected": false}));
                         0
                     }
                 };

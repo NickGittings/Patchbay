@@ -1,7 +1,7 @@
 import type { SessionRecord, SessionState } from '../types'
 import { activityLabel, turnSteps } from './activity'
 import { failedJob, workerSession, workerStatus } from './chatProgress'
-import { chatIdentity, type ChatRoleKey } from './chatIdentity'
+import { chatIdentity, ROLE_LABELS, type ChatRoleKey } from './chatIdentity'
 import type { ChatTeam } from './chatTeams'
 import type { ProviderJob, ProviderRun } from './orchestration'
 import { foreignPlanner, relatedSession, type SimpleState, type SimpleWorktree } from './simple'
@@ -22,7 +22,7 @@ export interface AgentCard {
 
 /**
  * Who the Agents tab shows: the team's undismissed assignments, whatever their state, and every
- * other running agent this chat counts as its own. A job's session appears only through its job.
+ * other running agent in scope. A job's session appears only through its job.
  */
 export function chatAgentCards({
   records,
@@ -34,6 +34,7 @@ export function chatAgentCards({
   runs,
   jobs,
   allJobs,
+  includeSharedPlanners = false,
 }: {
   records: readonly SessionRecord[]
   sessions: Record<string, SessionState>
@@ -44,6 +45,7 @@ export function chatAgentCards({
   runs: readonly ProviderRun[] | undefined
   jobs: readonly ProviderJob[]
   allJobs: readonly ProviderJob[]
+  includeSharedPlanners?: boolean
 }): AgentCard[] {
   const identity = (record: SessionRecord | undefined) => chatIdentity(record, teams, runs)
   const sessionCard = (record: SessionRecord): AgentCard => {
@@ -52,7 +54,12 @@ export function chatAgentCards({
       id: `session:${record.id}`,
       sessionId: record.id,
       record,
-      row: roleKey === 'lead' ? 'lead' : roleKey === 'builder' ? 'worker' : 'other',
+      row:
+        roleKey === 'lead'
+          ? 'lead'
+          : roleKey === 'builder' || roleKey === 'subBuilder'
+            ? 'worker'
+            : 'other',
       role,
       roleKey,
       detail,
@@ -68,7 +75,7 @@ export function chatAgentCards({
         !jobSessions.has(record.id) &&
         (record.id === team?.lead.sessionId ||
           (relatedSession(record, worktree, sessions[record.id]?.generation, simple) &&
-            !foreignPlanner(record, sessions, simple))),
+            (includeSharedPlanners || !foreignPlanner(record, sessions, simple)))),
     )
     .toSorted((a, b) => started(a) - started(b) || a.id.localeCompare(b.id))
     .map(sessionCard)
@@ -81,8 +88,8 @@ export function chatAgentCards({
       record,
       job,
       row: workerStatus(job, sessions) === 'complete' ? 'finished' : 'worker',
-      role: known?.role ?? 'Builder',
-      roleKey: known?.roleKey ?? 'builder',
+      role: known?.role ?? ROLE_LABELS.subBuilder,
+      roleKey: known?.roleKey ?? 'subBuilder',
       detail: known?.detail || job.terminal.name,
     }
   })

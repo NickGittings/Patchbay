@@ -810,9 +810,9 @@ test('starting an agent an Auto run still tracks again sends its Auto brief and 
   ])
 })
 
-test('Restart resumes Implement without repeating its subagent kickoff', async () => {
+test('Restart resumes Implement without repeating its kickoff', async () => {
   const terminalId = useStore.getState().addRootTerminal(agent)
-  const kickoff = { kind: 'implementPlan', subagents: 3 } as const
+  const kickoff = { kind: 'implementPlan' } as const
   vi.mocked(ipc.taskRootStart).mockResolvedValue('')
   await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', { kickoff })
   expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.[5]).toEqual(kickoff)

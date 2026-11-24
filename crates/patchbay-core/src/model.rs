@@ -5,6 +5,9 @@ use std::io::Write;
 use std::path::{Component as PathPart, Path, PathBuf};
 use std::sync::Mutex;
 
+/// Source of built-in detection results and device presets.
+pub const BUILTIN_SOURCE: &str = "builtin";
+
 /// Format 5 adds `instances`, run & test detection's parallel-instance verdict.
 pub const SCHEMA_VERSION: u32 = 5;
 /// Reserved component scope for project-level planner sessions.

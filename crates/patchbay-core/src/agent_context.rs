@@ -1,4 +1,5 @@
 //! Best-effort context observations, separate from account usage and turn completion.
+use crate::codex::{EVENT_MSG, TOKEN_COUNT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
@@ -112,7 +113,7 @@ fn codex(value: &Value) -> Option<AgentContext> {
         .ok()?;
     let payload = value.get("payload")?;
     let compacted = value.get("type")?.as_str()? == "compacted"
-        || (value.get("type")?.as_str()? == "event_msg"
+        || (value.get("type")?.as_str()? == EVENT_MSG
             && payload.get("type")?.as_str()? == "context_compacted");
     if compacted {
         return Some(AgentContext {
@@ -122,9 +123,7 @@ fn codex(value: &Value) -> Option<AgentContext> {
             ..Default::default()
         });
     }
-    if value.get("type")?.as_str()? != "event_msg"
-        || payload.get("type")?.as_str()? != "token_count"
-    {
+    if value.get("type")?.as_str()? != EVENT_MSG || payload.get("type")?.as_str()? != TOKEN_COUNT {
         return None;
     }
     let info = payload.get("info")?;
@@ -160,7 +159,7 @@ pub struct LimitStop {
 /// Codex finishes such a turn with `task_complete` carrying `usage_limit_exceeded`.
 fn codex_limit(value: &Value) -> Option<LimitStop> {
     let payload = value.get("payload")?;
-    if value.get("type")?.as_str()? != "event_msg"
+    if value.get("type")?.as_str()? != EVENT_MSG
         || payload.get("type")?.as_str()? != "task_complete"
     {
         return None;

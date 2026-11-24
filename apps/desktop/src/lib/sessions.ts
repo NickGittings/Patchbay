@@ -73,6 +73,16 @@ interface Cursor {
 }
 
 const lastSeq = new Map<string, Cursor>()
+const SERVICE_EVENT = 'patchbay://service'
+const SERVICE_RETIREMENT_EVENT = 'patchbay://service-retirement'
+
+const serviceStatus = () =>
+  invoke<{ connected: boolean; instanceId: string; retirement?: ServiceRetirement }>(
+    'service_status',
+  )
+
+/** Window event fired after the service connection comes back. */
+export const RECONNECTED_EVENT = 'patchbay:reconnected'
 
 /** The process generation whose output this window currently displays. */
 export const sessionGeneration = (sid: string) => lastSeq.get(sid)?.generation
@@ -85,7 +95,7 @@ const fetchingReplies = new Map<string, symbol>()
 // logged again on every pass.
 const persistedReplies = new Map<string, string>()
 const starting = new Map<string, Promise<string | undefined>>()
-const restarting = new Map<string, Promise<void>>()
+const restarting = new Map<string, Promise<string | undefined>>()
 // Keep successful shared-agent launches until their request can be matched to a run.
 const pendingChatLaunches = new Map<
   string,
@@ -176,9 +186,9 @@ export async function retireOlderService(): Promise<void> {
 export function listenForTerminals() {
   listening ??= Promise.all([
     onTerminalEvent(handleTerminalEvent),
-    listen<ServiceRetirement>('patchbay://service-retirement', (e) => applyRetirement(e.payload)),
+    listen<ServiceRetirement>(SERVICE_RETIREMENT_EVENT, (e) => applyRetirement(e.payload)),
     listen<{ connected: boolean; instanceId?: string; issue?: ServiceIssue | null }>(
-      'patchbay://service',
+      SERVICE_EVENT,
       (e) => {
         if (!e.payload.connected)
           useStore.setState({
@@ -862,27 +872,29 @@ export async function closeTerminal(componentId: string, terminalId: string) {
 }
 
 /** Keep restarts tracked across their stop/wait/start gap so removal can join them. */
+/** Resolves to the new run's launch request id, or `undefined` when it didn't start. */
 export function restartTerminal(
   componentId: string,
   terminalId: string,
   task?: string | null,
-): Promise<void> {
+): Promise<string | undefined> {
   const requestedEpoch = epoch
   let launch: Launch
   try {
     launch = captureLaunch(componentId, terminalId, task)
   } catch (e) {
     useStore.getState().setMessage(String(e), undefined, undefined, 'error')
-    return Promise.resolve()
+    return Promise.resolve(undefined)
   }
-  if (isClosing(launch)) return Promise.resolve()
+  if (isClosing(launch)) return Promise.resolve(undefined)
   const existing = restarting.get(launch.sid)
-  if (existing) return existing
+  // A caller joining a restart already under way didn't start it, so gets no request of its own.
+  if (existing) return existing.then(() => undefined)
   const request = (async () => {
     try {
       await checkLaunchAuth(launch)
       await starting.get(launch.sid)
-      if (requestedEpoch !== epoch || isClosing(launch)) return
+      if (requestedEpoch !== epoch || isClosing(launch)) return undefined
       if (
         !(await stopAndWait(
           launch.sid,
@@ -890,13 +902,14 @@ export function restartTerminal(
           () => requestedEpoch === epoch && !isClosing(launch),
         ))
       )
-        return
+        return undefined
       launch.restart = true
-      if (requestedEpoch === epoch && !isClosing(launch)) await launchTerminal(launch)
+      if (requestedEpoch === epoch && !isClosing(launch)) return await launchTerminal(launch)
     } catch (e) {
       if (requestedEpoch === epoch)
         useStore.getState().setMessage(String(e), undefined, undefined, 'error')
     }
+    return undefined
   })().finally(() => {
     if (restarting.get(launch.sid) === request) restarting.delete(launch.sid)
   })
@@ -1185,11 +1198,7 @@ async function fetchReplies(record: SessionRecord) {
 export function reconcileSessions(force = true): Promise<void> {
   reconciling ??= (async () => {
     try {
-      const status = await invoke<{
-        connected: boolean
-        instanceId: string
-        retirement?: ServiceRetirement
-      }>('service_status')
+      const status = await serviceStatus()
       if (status.retirement) applyRetirement(status.retirement)
       if (!status.connected) {
         useStore.setState({ serviceConnected: false })
@@ -1311,7 +1320,7 @@ export function reconcileSessions(force = true): Promise<void> {
         serviceRetirement: 'idle',
         serviceRetirementError: undefined,
       })
-      if (reconnecting) window.dispatchEvent(new Event('patchbay:reconnected'))
+      if (reconnecting) window.dispatchEvent(new Event(RECONNECTED_EVENT))
     } catch (e) {
       useStore.setState({ serviceConnected: false })
       throw e
