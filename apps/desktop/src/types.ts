@@ -480,6 +480,23 @@ export interface GitStatus {
   repos: Record<string, string>
 }
 
+/** How the current branch compares with its upstream (`remote::SyncStatus`). */
+export interface SyncStatus {
+  /** `null` when HEAD is detached. */
+  branch: string | null
+  /** The remote-tracking branch, such as `origin/main`. */
+  upstream: string | null
+  /** The remote fetch and push use. */
+  remote: string | null
+  ahead: number
+  behind: number
+  /** Unix milliseconds of the last fetch. */
+  lastFetchMs: number | null
+}
+
+/** `remote::SyncAction`. */
+export type SyncAction = 'fetch' | 'pull' | 'push'
+
 /** How a file differs from `HEAD` (`git::ChangeKind`). */
 export type ChangeKind =
   'modified' | 'added' | 'deleted' | 'renamed' | 'typeChanged' | 'conflicted' | 'untracked'

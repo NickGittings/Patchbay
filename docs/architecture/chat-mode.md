@@ -402,6 +402,5 @@ aggregate line totals, and component cards. Cards show kind colors, file counts,
 and active-task validation chips (except for project files). Component names remain labels.
 Review and Chat render component cards through the shared `ChangeGroupCard`.
 Groups start expanded; collapsing one preserves the open diff. File stepping and navigation
-counts include only expanded groups; selection resolution and aggregate totals retain all files. Local collapse and commit-history
-selection reset when the conversation worktree changes. Map / Stories / Changes tabs, finding
-line links, file stepping, and commit history retain their existing chat behavior.
+counts include only expanded groups; selection resolution and aggregate totals retain all files. Local collapse resets when the conversation worktree changes. Map / Stories / Changes tabs, finding
+line links and file stepping retain their existing chat behavior. Recent commits live in the rail's Git panel; a commit chosen there opens in Changes (see [Worktrees](worktrees.md)).

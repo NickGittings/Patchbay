@@ -1415,6 +1415,69 @@ async fn git_history(
     .await
 }
 
+/// A repository `git_history` lists for this worktree, resolved from the readable components.
+fn readable_repo(
+    access: &AccessSnapshot,
+    components: Vec<ComponentPath>,
+    worktree: Option<&str>,
+    repo: &str,
+) -> CmdResult<PathBuf> {
+    let root = access
+        .root()
+        .ok_or_else(|| "No project is open".to_string())?;
+    let components = readable_components(access, components);
+    let (root, components) = git::in_worktree(&root, components, worktree).map_err(err)?;
+    git::history_repos(&root, &components)
+        .into_iter()
+        .find(|g| g.root.to_string_lossy() == repo)
+        .map(|g| g.root)
+        .ok_or_else(|| "Repository is not readable".to_string())
+}
+
+/// How a repository's current branch compares with its upstream, from local refs.
+#[tauri::command]
+async fn git_sync_status(
+    project_id: String,
+    state: State<'_, AppState>,
+    components: Vec<ComponentPath>,
+    worktree: Option<String>,
+    repo: String,
+) -> CmdResult<patchbay_core::remote::SyncStatus> {
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    blocking(move || {
+        let repo = readable_repo(&access, components, worktree.as_deref(), &repo)?;
+        patchbay_core::remote::sync_status(&repo).map_err(err)
+    })
+    .await
+}
+
+/// Fetch, fast-forward pull, or push a repository's current branch.
+#[tauri::command]
+async fn git_sync(
+    window: WebviewWindow,
+    project_id: String,
+    state: State<'_, AppState>,
+    components: Vec<ComponentPath>,
+    worktree: Option<String>,
+    repo: String,
+    action: patchbay_core::remote::SyncAction,
+) -> CmdResult<patchbay_core::remote::SyncStatus> {
+    main_only(&window)?;
+    let scoped = state.project(&project_id)?;
+    let access = scoped.access.snapshot();
+    let status = blocking(move || {
+        let repo = readable_repo(&access, components, worktree.as_deref(), &repo)?;
+        patchbay_core::remote::sync(&repo, action).map_err(err)
+    })
+    .await?;
+    // The watcher sees these changes too; telling the window now saves its debounce.
+    let app = window.app_handle();
+    let _ = app.emit_to("main", GIT_DIRTY_EVENT, &project_id);
+    let _ = app.emit_to("main", BRANCHES_CHANGED_EVENT, &project_id);
+    Ok(status)
+}
+
 /// The worktrees of the project root's repo, for review.
 #[tauri::command]
 async fn git_worktrees(
@@ -3403,6 +3466,8 @@ pub fn run() {
                 git_changes,
                 git_diff,
                 git_history,
+                git_sync_status,
+                git_sync,
                 git_review,
                 git_worktrees,
                 git_branches,

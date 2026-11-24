@@ -1,6 +1,5 @@
-import CommitHistory from './changes/CommitHistory'
 import CommitDetails from './changes/CommitDetails'
-import type { HistorySelection } from '../lib/history'
+import { setChosenCommit as setHistory, useChosenCommit } from '../lib/gitSync'
 import { shortSha } from '../lib/commitId'
 import { useRef, useState } from 'react'
 import { StoryViewTabs } from './stories/StoryBoard'
@@ -24,14 +23,15 @@ interface Props {
 }
 
 export default function SimpleDiff(props: Props) {
-  // Local disclosures and history belong to one conversation's worktree.
+  // Local disclosures belong to one conversation's worktree.
   return (
     <ChangesContent key={JSON.stringify([props.scopeKey, props.reader.scope.path])} {...props} />
   )
 }
 
 function ChangesContent({ scopeKey, selection, reader }: Props) {
-  const [history, setHistory] = useState<HistorySelection | null>(null)
+  // The Git panel chooses a commit; it opens here, in place of a change's diff.
+  const history = useChosenCommit()
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const task = useStore((s) => s.activeTask)
   const title = useStore((s) => s.tasks.find((t) => t.id === task)?.title)
@@ -142,7 +142,6 @@ function ChangesContent({ scopeKey, selection, reader }: Props) {
               </ChangeGroupCard>
             )
           })}
-          <CommitHistory worktree={reader.source?.path} selected={history} onSelect={setHistory} />
         </aside>
         {history ? (
           <CommitDetails onSelect={setHistory} selection={history} worktree={reader.source?.path} />

@@ -443,15 +443,31 @@
       asideBounds.left >= paneBounds.left && asideBounds.right <= paneBounds.right,
       'Changes list is clipped',
     )
+    // Recent commits live in the rail's Git panel; a chosen commit opens in Chat's Changes.
+    if (!document.querySelector('.utility-panel[data-panel="git"]'))
+      click(
+        await until('Git rail button', () =>
+          document.querySelector('.workspace-rail [aria-label="Git"]'),
+        ),
+      )
+    const gitPanel = await until('Git panel', () =>
+      document.querySelector('.utility-panel[data-panel="git"]'),
+    )
     // The history's open state persists across launches, so open it if a run left it collapsed.
     const historyToggle = await until('history header', () =>
-      pane.querySelector('.commit-history header button'),
+      gitPanel.querySelector('.commit-history header button'),
     )
     if (historyToggle.getAttribute('aria-expanded') !== 'true') click(historyToggle)
-    click(await until('recent commit', () => pane.querySelector('.commit-row')))
+    click(await until('recent commit', () => gitPanel.querySelector('.commit-row')))
     await until('commit details', () => pane.querySelector('.commit-details'))
     click(pane.querySelector('.change-row[data-path="src/app.txt"]'))
     await until('working diff after history', () => !pane.querySelector('.commit-details'))
+    // Close the Git panel so later layout checks see Chat at its usual width.
+    click(document.querySelector('.workspace-rail [aria-label="Git"]'))
+    await until(
+      'Git panel closed',
+      () => !document.querySelector('.utility-panel[data-panel="git"]'),
+    )
     click(pane.querySelector('.review-toggle'))
     await until('group collapsed before switching', () =>
       pane.querySelector('.review-toggle[aria-expanded="false"]'),

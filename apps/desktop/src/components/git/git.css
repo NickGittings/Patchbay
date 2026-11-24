@@ -1,0 +1,53 @@
+.git-panel .commit-history {
+  margin-top: 12px;
+}
+.git-sync {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 8px;
+}
+.git-sync-branch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.git-sync-branch strong,
+.git-sync-upstream {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-sync-upstream {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.git-sync-counts {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.git-sync-counts small {
+  margin-left: auto;
+  color: var(--muted);
+}
+.git-sync-counts[data-diverged] span {
+  color: var(--warn-strong);
+}
+.git-sync-actions {
+  display: flex;
+  gap: 6px;
+}
+.git-sync-actions button {
+  flex: 1;
+}
+.git-sync-error {
+  color: var(--danger-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.workspace-rail sup.rail-sync-counts {
+  white-space: nowrap;
+}

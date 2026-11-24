@@ -144,6 +144,25 @@ pub fn apply(
     Ok(())
 }
 
+/// Refuses while a merge, rebase, cherry-pick, or revert is in progress in `repo`.
+pub(crate) fn ensure_no_operation(repo: &Path) -> Result<()> {
+    for marker in [
+        "MERGE_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "sequencer",
+    ] {
+        let path = git::run(git::git(repo).args(["rev-parse", "--git-path", marker]))?;
+        ensure!(
+            !repo.join(path).exists(),
+            "Finish or abort the active Git operation first"
+        );
+    }
+    Ok(())
+}
+
 fn validate(
     root: &Path,
     expected_head: &str,
@@ -160,20 +179,7 @@ fn validate(
         "The source checkout changed; refresh the branch list and try again"
     );
     let repo = Path::new(&current.path);
-    for marker in [
-        "MERGE_HEAD",
-        "rebase-merge",
-        "rebase-apply",
-        "CHERRY_PICK_HEAD",
-        "REVERT_HEAD",
-        "sequencer",
-    ] {
-        let path = git::run(git::git(repo).args(["rev-parse", "--git-path", marker]))?;
-        ensure!(
-            !repo.join(path).exists(),
-            "Finish or abort the active Git operation first"
-        );
-    }
+    ensure_no_operation(repo)?;
     let branch = match action {
         BranchAction::Switch { branch }
         | BranchAction::Rename { branch }

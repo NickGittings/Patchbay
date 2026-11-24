@@ -38,10 +38,16 @@ function HistoryBrowser({
   worktree,
   selected,
   onSelect,
+  initialRepo,
+  onRepo,
 }: {
   worktree?: string
   selected: HistorySelection | null
   onSelect: (value: HistorySelection | null) => void
+  /** The repository to show first when it is one of the listed ones. */
+  initialRepo?: string
+  /** Called when the user picks another repository. */
+  onRepo?: (repo: string) => void
 }) {
   const project = useStore((s) => s.project?.id)
   const revision = useStore((s) => s.gitChanges)
@@ -61,6 +67,9 @@ function HistoryBrowser({
     return () => clearInterval(timer)
   }, [open])
   const resetSelection = useEffectEvent(() => onSelect(null))
+  const firstRepo = useEffectEvent((result: string[]) =>
+    initialRepo && result.includes(initialRepo) ? initialRepo : (result[0] ?? ''),
+  )
   useEffect(() => {
     let alive = true
     resetSelection()
@@ -68,7 +77,7 @@ function HistoryBrowser({
       .then((result) => {
         if (alive) {
           setRepos(result)
-          setRepo(result[0] ?? '')
+          setRepo(firstRepo(result))
         }
       })
       .catch((e) => {
@@ -125,6 +134,7 @@ function HistoryBrowser({
               value={repo}
               onChange={(e) => {
                 setRepo(e.target.value)
+                onRepo?.(e.target.value)
                 setLimit(50)
                 setPage(undefined)
                 onSelect(null)

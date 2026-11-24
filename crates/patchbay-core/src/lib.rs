@@ -31,6 +31,7 @@ pub mod profiles;
 pub mod proposals;
 pub mod provider_auth;
 pub mod pty;
+pub mod remote;
 pub mod reviews;
 pub mod secrets;
 pub mod status;

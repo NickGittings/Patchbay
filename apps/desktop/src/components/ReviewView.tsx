@@ -1,8 +1,7 @@
 import { availableReviewBase } from '../lib/reviewAgents'
 import PanelStatus from './PanelStatus'
-import CommitHistory from './changes/CommitHistory'
 import CommitDetails from './changes/CommitDetails'
-import type { HistorySelection } from '../lib/history'
+import { setChosenCommit as setHistory, useChosenCommit } from '../lib/gitSync'
 import { useStepKeys } from './changes/useStepKeys'
 import { changeGroups } from '../lib/changeGroups'
 import { changePosition, changeRefs, stepChange } from '../lib/changeNav'
@@ -50,7 +49,8 @@ const WORKTREE_POLL_MS = 5000
  * chooses which worktree of the repo is reviewed.
  */
 export default function ReviewView() {
-  const [history, setHistory] = useState<HistorySelection | null>(null)
+  // The Git panel chooses a commit; it opens here, in place of a change's diff.
+  const history = useChosenCommit()
   const revision = useStore((s) => s.gitChanges)
   const nodes = useStore((s) => s.nodes)
   // Selecting or dragging replaces nodes and edges; refetch only when folders or links change.
@@ -89,6 +89,11 @@ export default function ReviewView() {
     setSelected(null)
     setLoaded(undefined)
     if (pane === 'fromFindings') setPane('diff')
+  }
+  const [shownCommit, setShownCommit] = useState(history)
+  if (shownCommit !== history) {
+    setShownCommit(history)
+    if (history && pane !== 'diff') setPane('diff')
   }
   const [refresh, setRefresh] = useState(0)
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
@@ -504,14 +509,6 @@ export default function ReviewView() {
                     </ChangeGroupCard>
                   )
                 })}
-                <CommitHistory
-                  worktree={target}
-                  selected={history}
-                  onSelect={(value) => {
-                    setHistory(value)
-                    if (value) setPane('diff')
-                  }}
-                />
                 {review && affected.length > 0 && (
                   <>
                     <div className="panel-title review-affected-title">May be affected</div>
