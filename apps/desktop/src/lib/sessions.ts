@@ -1020,7 +1020,8 @@ export function handleTerminalEvent(e: TerminalEvent, { output = true } = {}) {
     // Only a `started` event guarantees this xterm sees the run from its first byte.
     cursor = { generation: e.generation, end: 0, complete: terminal && e.type === 'started' }
     lastSeq.set(e.sessionId, cursor)
-    if (terminal) markOutputGeneration(e.sessionId, e.generation, e.type === 'started' ? 1 : 0)
+    // A start marks its run once its note is written, below.
+    if (terminal && e.type !== 'started') markOutputGeneration(e.sessionId, e.generation)
   }
   if (!terminal) cursor!.complete = false
   switch (e.type) {
@@ -1039,6 +1040,9 @@ export function handleTerminalEvent(e: TerminalEvent, { output = true } = {}) {
       if (terminal) {
         restoreModes(e.sessionId)
         writeNote(e.sessionId, `── started ${new Date().toLocaleTimeString()} ──`)
+        // The run owns its note's line, which exists by now. A marker below the cursor on the
+        // last row would lie past the buffer, and xterm disposes it as if it scrolled away.
+        markOutputGeneration(e.sessionId, e.generation, -1)
       }
       break
     case 'output': {
