@@ -183,6 +183,20 @@ export const useSimpleUi = create<{
     },
   ),
 )
+/** Clear drafts and transient Chat state for removed worktrees. */
+export function forgetSimpleUi(
+  projectId: string,
+  drop: (task: string | null) => boolean = () => true,
+) {
+  const { worktrees } = useSimpleUi.getState()
+  const kept = Object.entries(worktrees).filter(([key]) => {
+    const [project, task] = JSON.parse(key) as [string, string | null]
+    return project !== projectId || !drop(task)
+  })
+  if (kept.length !== Object.keys(worktrees).length)
+    useSimpleUi.setState({ worktrees: Object.fromEntries(kept) })
+}
+
 export const EMPTY_SIMPLE_UI = emptySimpleUi()
 /** Shows a session in Chat's terminal drawer until the user hides it. */
 export function pinChatTerminal(key: string, id: string, generation: number | undefined) {

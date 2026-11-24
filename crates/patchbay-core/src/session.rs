@@ -47,6 +47,9 @@ const EVENT_CAP: usize = 8 * 1024 * 1024;
 pub const POLL_LIMIT: usize = 512;
 /// Earlier incarnations kept per session, oldest dropped first.
 const MAX_HISTORY: usize = 3;
+/// Output kept for earlier incarnations and in `sessions.json`. Live backlogs hold more for
+/// replay, but persisting them in full would rewrite several MiB per session every few seconds.
+const PERSISTED_OUTPUT: usize = 512 * 1024;
 /// How much of a finished run's output is searched for a provider's resume hint.
 const CAPTURE_TAIL: usize = 4096;
 /// The refusal of a launch into a session slot whose terminal still runs. Clients
@@ -1207,7 +1210,16 @@ impl Service {
     }
     fn persist(&self) -> Result<()> {
         let _persistence = self.persistence.lock().unwrap();
-        let records: BTreeMap<_, _> = self.list().into_iter().map(|r| (r.id.clone(), r)).collect();
+        let records: BTreeMap<_, _> = self
+            .list()
+            .into_iter()
+            .map(|mut r| {
+                if let Some(snapshot) = &mut r.snapshot {
+                    snapshot.keep_tail(PERSISTED_OUTPUT);
+                }
+                (r.id.clone(), r)
+            })
+            .collect();
         atomic_write(
             &self.dir.join("sessions.json"),
             &serde_json::to_vec(&records)?,
@@ -2725,9 +2737,12 @@ fn restart_context(metadata: &Metadata, spec: &SessionSpec) -> Result<Option<Str
     Ok(Some(crate::workspace::session_id("restart", &settings, "")))
 }
 
-/// Keep the newest `MAX_HISTORY` incarnations.
+/// Keep the newest `MAX_HISTORY` incarnations, each with at most `PERSISTED_OUTPUT` of output.
 fn trim_history(history: &mut Vec<Snapshot>) {
     history.drain(..history.len().saturating_sub(MAX_HISTORY));
+    for snapshot in history {
+        snapshot.keep_tail(PERSISTED_OUTPUT);
+    }
 }
 impl EventSink for Service {
     fn emit(&self, event: TerminalEvent) {
@@ -6827,11 +6842,17 @@ for line in sys.stdin:
             notice: None,
         };
         let mut history: Vec<_> = (0..10).map(snapshot).collect();
+        history[9].data = vec![b'x'; PERSISTED_OUTPUT + 10];
+        history[9].end = 100 + PERSISTED_OUTPUT as u64 + 10;
         trim_history(&mut history);
         assert_eq!(
             history.iter().map(|s| s.generation).collect::<Vec<_>>(),
             [7, 8, 9]
         );
+        // Older runs keep only their newest output; `end` still marks the last byte.
+        assert_eq!(history[2].data.len(), PERSISTED_OUTPUT);
+        assert_eq!(history[2].end, 100 + PERSISTED_OUTPUT as u64 + 10);
+        assert!(history[2].truncated);
     }
     #[test]
     fn connections_of_one_client_share_authority_until_the_last_closes() {

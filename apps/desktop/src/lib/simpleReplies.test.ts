@@ -57,6 +57,16 @@ test('live and snapshot reply races merge by sequence within one generation only
     ),
   ).toHaveLength(20)
 })
+test('reply state keeps complete service replies and bounds oversized text', () => {
+  const regular = { ...reply(1), text: 'x'.repeat(16 * 1024) }
+  const oversized = { ...reply(2), text: 'Summary\n' + 'x'.repeat(64 * 1024) }
+  const [first, second] = hydrateReplies(undefined, 3, [regular, oversized])
+  expect(first).toBe(regular)
+  expect(second.text).toHaveLength(32 * 1024)
+  expect(second.text).toMatch(/^Summary\n/)
+  expect(second.text).toMatch(/\[Reply shortened\]$/)
+})
+
 test('ingestion persists an inactive worktree, deduplicates, and keeps old generations', () => {
   const r = record()
   useStore.getState().patchTask('p', 't', { simple: { startedMs: 1, log: [] } })

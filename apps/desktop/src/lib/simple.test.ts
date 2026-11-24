@@ -9,6 +9,7 @@ import {
   verdictSummary,
   type TimelineItem,
   restoredSimple,
+  ownsPlanner,
   type SimpleSnapshot,
 } from './simple'
 import type { SessionRecord } from '../types'
@@ -342,4 +343,78 @@ test('a review summary leaves out zero counts and calls a clean review clean', (
   expect(verdictSummary({ clean: true, counts: none })).toBe('clean')
   // Issues reported without a counted finding still don't read as clean.
   expect(verdictSummary({ clean: false, counts: none })).toBe('issues')
+})
+
+test('restoring a long conversation keeps the newest 200 prompts and actions alongside replies', () => {
+  const log = Array.from({ length: 205 }, (_, atMs) => ({
+    id: `entry-${atMs}`,
+    atMs,
+    stage: 'build',
+    ...(atMs % 2
+      ? { kind: 'action', action: 'implement' }
+      : { kind: 'prompt', text: 'Keep working', mentions: [] }),
+  }))
+  const reply = {
+    id: 'reply',
+    kind: 'reply',
+    stage: 'build',
+    atMs: 0,
+    sessionId: 's',
+    generation: 1,
+    sequence: 1,
+    text: 'Progress',
+  }
+  const restored = restoredSimple({ startedMs: 0, log: [...log.toReversed(), reply] })
+  expect(restored?.log.map((entry) => entry.id)).toEqual([
+    'reply',
+    ...log.slice(5).map((entry) => entry.id),
+  ])
+})
+
+test('prompts and actions past the log limit keep their run claims and stage', () => {
+  const claim = {
+    id: 'plan',
+    kind: 'action',
+    action: 'plan',
+    stage: 'plan',
+    atMs: 0,
+    sessionId: 'planner',
+    generation: 3,
+    text: 'Plan it',
+  }
+  const prompts = Array.from({ length: 205 }, (_, i) => ({
+    id: `prompt-${i}`,
+    kind: 'prompt',
+    stage: 'build',
+    atMs: i + 1,
+    text: 'More',
+    mentions: [],
+  }))
+  const restored = restoredSimple({ startedMs: 0, log: [claim, ...prompts] })
+  expect(restored?.log.some((e) => e.id === 'plan')).toBe(false)
+  expect(restored?.retainedWorkflow?.find((e) => e.id === 'plan')).toMatchObject({
+    action: 'plan',
+    generation: 3,
+    text: undefined,
+  })
+  expect(ownsPlanner(restored, 'planner', 3)).toBe(true)
+  // Retained facts stay bounded: repeated untargeted prompts collapse into one fact.
+  expect(restored?.retainedWorkflow?.filter((e) => e.kind === 'prompt')).toHaveLength(1)
+})
+
+test('retained workflow facts stay bounded and keep the first planning boundary', () => {
+  const claims = Array.from({ length: 450 }, (_, i) => ({
+    id: `claim-${i}`,
+    kind: 'action',
+    action: 'implement',
+    stage: i ? 'build' : 'plan',
+    atMs: i,
+    sessionId: 'builder',
+    generation: i,
+  }))
+  const restored = restoredSimple({ startedMs: 0, log: claims })
+  expect(restored?.log).toHaveLength(200)
+  expect(restored?.retainedWorkflow).toHaveLength(200)
+  expect(restored?.retainedWorkflow?.[0].id).toBe('claim-0')
+  expect(restored?.retainedWorkflow?.at(-1)?.id).toBe('claim-249')
 })

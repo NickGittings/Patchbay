@@ -68,7 +68,7 @@ import {
 } from './ipc'
 import { terminalReferences } from './navigation'
 import { sessionGeneration } from './sessions'
-import { terminalNavigationState, terminalText } from './terminals'
+import { terminalNavigationState, terminalRendererCounts, terminalText } from './terminals'
 import { openComponentWindow } from './windows'
 import { applyAdded } from './project'
 import { saveMap, flushMapSaves } from './mapSave'
@@ -335,6 +335,7 @@ const hooks = {
     await terminalWrite(sid, data)
   },
   terminalText,
+  terminalRendererCounts,
   terminalPrompt,
   openComponentWindow,
   createTask,

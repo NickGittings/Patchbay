@@ -117,6 +117,12 @@ export function logSimple(projectId: string, task: string | null, entry: Entry) 
     atMs: entry.atMs ?? Date.now(),
   } as SimpleEntry
   const next = boundedSimple({ ...simple, log: [...simple.log, complete] })
-  if (next.log.length === simple.log.length && next.log.every((e, i) => e === simple.log[i])) return
+  // An entry older than every kept one goes straight to retained facts, which still changed.
+  if (
+    next.retainedWorkflow === simple.retainedWorkflow &&
+    next.log.length === simple.log.length &&
+    next.log.every((e, i) => e === simple.log[i])
+  )
+    return
   useStore.getState().patchTask(projectId, task, { simple: next })
 }

@@ -1,11 +1,39 @@
 import { agentChatTask } from './agentChats'
 import { projectStateOf, useStore, workspaceOf } from '../store'
-import { MAP_SCOPE, PLAN_SCOPE, sessionMetadata, type Reply, type SessionRecord } from '../types'
+import {
+  MAP_SCOPE,
+  PLAN_SCOPE,
+  sessionMetadata,
+  type Reply,
+  type SessionRecord,
+  type SessionState,
+} from '../types'
 import { logSimple } from './simpleActions'
-import { ownsPlanner, relatedSession, recordStage, visibleReply, type SimpleState } from './simple'
+import {
+  boundedReplyText,
+  ownsPlanner,
+  relatedSession,
+  recordStage,
+  visibleReply,
+  type SimpleState,
+} from './simple'
 import { hydrateJournal } from './journal'
 
-export const hydrateReplies = hydrateJournal('replies', 20)
+const mergeReplies = hydrateJournal('replies', 20)
+// The service caps normal replies at 16 KiB. Still bound legacy or oversized replies at ingestion.
+const REPLY_TEXT_LIMIT = 32 * 1024
+
+export function hydrateReplies(
+  previous: SessionState | undefined,
+  generation: number,
+  incoming?: readonly Reply[],
+): Reply[] {
+  return mergeReplies(previous, generation, incoming).map((reply) =>
+    reply.text.length <= REPLY_TEXT_LIMIT
+      ? reply
+      : { ...reply, text: boundedReplyText(reply.text, REPLY_TEXT_LIMIT) },
+  )
+}
 
 /**
  * The chats a session's replies belong in: its related worktrees' chats, and for the shared

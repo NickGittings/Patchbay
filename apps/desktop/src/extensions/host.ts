@@ -432,13 +432,15 @@ async function runTerminal(runtime: Runtime, componentId: string, command: strin
     key,
   })
   const deadline = Date.now() + 8000
-  let snapshot = await ipc.terminalSnapshot(sid)
+  // Poll state only; read the output once the command ends or the wait runs out.
+  let snapshot = await ipc.terminalSnapshot(sid, 0)
   const generation = snapshot?.generation
   while (snapshot?.running && Date.now() < deadline && !runtime.disposed) {
     await new Promise((resolve) => setTimeout(resolve, 100))
-    snapshot = await ipc.terminalSnapshot(sid)
+    snapshot = await ipc.terminalSnapshot(sid, 0)
   }
   if (runtime.disposed) throw new Error('Extension stopped')
+  if (snapshot) snapshot = await ipc.terminalSnapshot(sid)
   if (snapshot?.generation !== generation)
     throw new Error('Command restarted while reading its result; Refresh again')
   return {

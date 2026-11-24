@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
-const BACKLOG_CAPACITY: usize = 512 * 1024;
+const BACKLOG_CAPACITY: usize = 2 * 1024 * 1024;
 
 /// How long [`PtyManager::reset`] waits for hung-up processes before force-killing them.
 const RESET_GRACE: Duration = Duration::from_secs(1);
@@ -246,6 +246,17 @@ impl Backlog {
         self.data.drain(..excess);
         self.data.extend(retained);
         seq
+    }
+}
+
+impl Snapshot {
+    /// Keep only the newest `limit` bytes of output; `end` still marks the last byte.
+    pub(crate) fn keep_tail(&mut self, limit: usize) {
+        let excess = self.data.len().saturating_sub(limit);
+        if excess > 0 {
+            self.data.drain(..excess);
+            self.truncated = true;
+        }
     }
 }
 
@@ -2332,7 +2343,8 @@ mod backlog_tests {
             std::hint::black_box(backlog.append(std::hint::black_box(&chunk)));
         }
         eprintln!(
-            "128MiB appended to full 512KiB backlog in {:?}",
+            "128 MiB appended to full {} KiB backlog in {:?}",
+            BACKLOG_CAPACITY / 1024,
             start.elapsed()
         );
     }

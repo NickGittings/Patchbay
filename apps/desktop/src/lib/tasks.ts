@@ -15,6 +15,7 @@ import {
 import { PROJECT_DRAFT, plannerSessionId, type Task, type TaskDraft } from '../types'
 import { taskActionState, unseenFinished } from './taskActions'
 import { forgetAutoDrafts } from './autoDrafts'
+import { forgetSimpleUi } from './simpleUi'
 import { forgetTeamChat } from './chatTeams'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import { reconcileFreshSessions, launching } from './sessions'
@@ -112,10 +113,21 @@ function applyTasks(projectId: string, tasks: Task[]) {
       components: task.components.filter((id) => ids.has(id)),
     }))
   }
-  // Worktrees removed elsewhere (another window, the CLI, by hand) leave no draft behind.
+  // Worktrees removed elsewhere (another window, the CLI, by hand) leave no draft behind. Chat
+  // drafts persist, so only tasks an applied list held count as removed: a list requested
+  // before a worktree was created lacks it, and its new drafts must survive.
+  const s = useStore.getState()
+  const previous = new Set(
+    (s.project?.id === projectId ? s.tasks : (projectStateOf(projectId, s)?.tasks ?? [])).map(
+      (t) => t.id,
+    ),
+  )
   const listed = new Set(tasks.map((t) => t.id))
   forgetAutoDrafts(projectId, (task) => task !== null && !listed.has(task))
-  const s = useStore.getState()
+  forgetSimpleUi(
+    projectId,
+    (task) => task !== null && task !== PROJECT_DRAFT && previous.has(task) && !listed.has(task),
+  )
   if (s.project?.id === projectId) {
     s.setTasks(tasks)
     return

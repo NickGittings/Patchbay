@@ -1408,7 +1408,7 @@ async function stopOwned(run: AutoRun, sessionIds: string[]) {
         const state = useStore.getState()
         let session: Pick<SessionState, 'startedMs' | 'running' | 'status'> | null | undefined =
           state.sessions[id] ?? state.sessionRecords.find((r) => r.id === id)?.snapshot
-        if (startedOf(id) === undefined) session = await terminalSnapshot(id)
+        if (startedOf(id) === undefined) session = await terminalSnapshot(id, 0)
         // One already being stopped needs no second stop.
         if (!session?.running || session.status?.stopped) gone.push(id)
         else if (owns(launch, session.startedMs)) {
@@ -2873,7 +2873,7 @@ async function drive(projectId: string, task: string | null) {
     const generations = await Promise.all(
       [sid, ...lanes].map(async (id) => ({
         sessionId: id,
-        startedMs: startedOf(id) ?? (await terminalSnapshot(id).catch(() => null))?.startedMs,
+        startedMs: startedOf(id) ?? (await terminalSnapshot(id, 0).catch(() => null))?.startedMs,
       })),
     )
     const latest = autoRun(projectId, task)

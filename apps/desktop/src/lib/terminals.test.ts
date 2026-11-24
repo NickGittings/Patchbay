@@ -21,7 +21,13 @@ vi.mock('@xterm/addon-fit', () => ({
     fit() {}
   },
 }))
-vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: class {} }))
+vi.mock('@xterm/addon-webgl', () => ({
+  WebglAddon: class {
+    activate() {}
+    dispose() {}
+    onContextLoss() {}
+  },
+}))
 vi.mock('./navigation', () => ({ openTerminalReference: vi.fn(), terminalReferences: () => [] }))
 vi.mock('./ipc', () => ({
   terminalResize: vi.fn(async () => {}),
@@ -29,8 +35,25 @@ vi.mock('./ipc', () => ({
 }))
 vi.mock('../store', () => ({ useStore: { getState: () => ({ serviceConnected: true }) } }))
 const ipc = await import('./ipc')
-const { attach, disposeAll, restoreModes, writeNote, writeOutput, terminalText } =
-  await import('./terminals')
+const {
+  attach,
+  detachHost,
+  disposeAll,
+  disposeTerminal,
+  hasTerminal,
+  markOutputGeneration,
+  ownsTerminalHost,
+  replayOutput,
+  requestRedraw,
+  restoreModes,
+  restoreOutput,
+  setOnScreen,
+  terminalRendererCounts,
+  terminalText,
+  writeNote,
+  writeOutput,
+} = await import('./terminals')
+const seed = () => replayOutput('session', new Uint8Array())
 const output = (text: string) => writeOutput('session', new TextEncoder().encode(text))
 const drain = () => new Promise<void>((resolve) => observed.terminals[0].write('', resolve))
 
@@ -40,7 +63,13 @@ beforeEach(() => {
   vi.stubGlobal('document', {
     documentElement: {},
     visibilityState: 'visible',
-    createElement: () => ({ className: '' }),
+    createElement: () => ({
+      className: '',
+      parentElement: null,
+      remove() {
+        this.parentElement = null
+      },
+    }),
   })
   vi.stubGlobal('getComputedStyle', () => ({ getPropertyValue: () => '#000000' }))
   vi.stubGlobal(
@@ -57,6 +86,7 @@ afterEach(() => {
 })
 
 test('reset preserves normal-buffer output and appends exit and next-run output in order', async () => {
+  seed()
   output('first\r\nsecond\r\nthird\r\n')
   restoreModes('session')
   writeNote('session', 'exited')
@@ -67,6 +97,7 @@ test('reset preserves normal-buffer output and appends exit and next-run output 
 })
 
 test('reset leaves a queued alternate screen and preserves the normal-buffer cursor', async () => {
+  seed()
   output('first\r\nsecond\r\n\x1b[?1049hTUI')
   restoreModes('session')
   writeNote('session', 'exited')
@@ -77,6 +108,7 @@ test('reset leaves a queued alternate screen and preserves the normal-buffer cur
 })
 
 test('reset clears TUI modes and cursor shape without suppressing input', async () => {
+  seed()
   output('\x1b[6 q\x1b[?25l\x1b[?1h\x1b[?2004h\x1b[?1003h\x1b[?1006h')
   await drain()
   const term = observed.terminals[0]
@@ -116,7 +148,7 @@ test('terminal hosts require visible geometry and cannot reclaim through hidden 
 })
 
 test('hidden inline hosts cannot reclaim the registry and visible hosts retain the same scrollback', async () => {
-  const { ownsTerminalHost } = await import('./terminals')
+  seed()
   output('retained scrollback\r\n')
   await drain()
   const term = observed.terminals[0]
@@ -146,6 +178,33 @@ test('hidden inline hosts cannot reclaim the registry and visible hosts retain t
   expect(terminalText('session').text).toContain('retained scrollback')
 })
 
+test('a pane registered while hidden takes the terminal when it is shown later', async () => {
+  seed()
+  await drain()
+  const term = observed.terminals[0]
+  vi.spyOn(term, 'open').mockImplementation(() => {})
+  const rect = { width: 100, height: 100, top: 0, left: 0, bottom: 100, right: 100 }
+  const container = (visible: boolean) => {
+    const host = {
+      isConnected: true,
+      parentElement: null,
+      getBoundingClientRect: () => (visible ? rect : { ...rect, height: 0 }),
+      replaceChildren: vi.fn((el: { parentElement: unknown }) => {
+        el.parentElement = host
+      }),
+    }
+    return host
+  }
+  const dock = container(false)
+  const drawer = container(true)
+  attach('session', dock as unknown as HTMLElement, { focus: false })
+  attach('session', drawer as unknown as HTMLElement, { focus: false })
+  expect(ownsTerminalHost('session', drawer as unknown as HTMLElement)).toBe(true)
+  dock.getBoundingClientRect = () => rect
+  attach('session', dock as unknown as HTMLElement, { focus: false })
+  expect(ownsTerminalHost('session', dock as unknown as HTMLElement)).toBe(true)
+})
+
 test('fits send a PTY size only when it changes, unless a claim forces it', async () => {
   const { resizesToSend } = await import('./terminals')
   expect(resizesToSend(undefined, 80, 24)).toEqual([{ cols: 80, rows: 24 }])
@@ -161,7 +220,8 @@ test('fits send a PTY size only when it changes, unless a claim forces it', asyn
 test('a forced fit after a replay nudges the width so the program repaints', async () => {
   vi.useFakeTimers()
   try {
-    const { fit, requestRedraw } = await import('./terminals')
+    const { fit } = await import('./terminals')
+    seed()
     output('replayed')
     const term = observed.terminals[0]
     vi.spyOn(term, 'open').mockImplementation(() => {})
@@ -184,4 +244,69 @@ test('a forced fit after a replay nudges the width so the program repaints', asy
   } finally {
     vi.useRealTimers()
   }
+})
+
+test('live terminal updates do not allocate an unviewed xterm', () => {
+  output('background output')
+  writeNote('session', 'started')
+  restoreModes('session')
+  markOutputGeneration('session', 3)
+  requestRedraw('session')
+  expect(hasTerminal('session')).toBe(false)
+  expect(observed.terminals).toHaveLength(0)
+})
+
+function pane() {
+  const host = {
+    isConnected: true,
+    visible: true,
+    child: undefined as { parentElement: unknown } | undefined,
+    checkVisibility: () => host.visible,
+    replaceChildren: (el: { parentElement: unknown }) => {
+      host.child = el
+      el.parentElement = host
+    },
+  }
+  return { host, element: host as unknown as HTMLElement }
+}
+
+test('offscreen hosts release WebGL while retaining PTY ownership', () => {
+  vi.stubGlobal('WebGL2RenderingContext', class {})
+  seed()
+  vi.spyOn(observed.terminals[0], 'open').mockImplementation(() => {})
+  const { element } = pane()
+  attach('session', element, { focus: false })
+  expect(terminalRendererCounts()).toEqual({ terminals: 1, webgl: 0 })
+  setOnScreen('session', element, true)
+  expect(terminalRendererCounts()).toEqual({ terminals: 1, webgl: 1 })
+  setOnScreen('session', element, false)
+  expect(terminalRendererCounts()).toEqual({ terminals: 1, webgl: 0 })
+  expect(ownsTerminalHost('session', element)).toBe(true)
+  setOnScreen('session', element, true)
+  expect(terminalRendererCounts()).toEqual({ terminals: 1, webgl: 1 })
+  disposeTerminal('session')
+  expect(terminalRendererCounts()).toEqual({ terminals: 0, webgl: 0 })
+})
+
+test('detaching a hidden pane keeps its DOM until the pane disconnects', () => {
+  seed()
+  vi.spyOn(observed.terminals[0], 'open').mockImplementation(() => {})
+  const { host, element } = pane()
+  attach('session', element, { focus: false })
+  host.visible = false
+  detachHost('session', element, { hidden: true })
+  expect(host.child?.parentElement).toBe(host)
+  host.isConnected = false
+  detachHost('session', element)
+  expect(host.child?.parentElement).toBeNull()
+  expect(hasTerminal('session')).toBe(true)
+})
+
+test('disposal settles a pending restore whose xterm write callback is cancelled', async () => {
+  seed()
+  vi.spyOn(observed.terminals[0], 'write').mockImplementation(() => {})
+  const restoring = restoreOutput('session', new Uint8Array(), 3)
+  disposeTerminal('session')
+  await restoring
+  expect(hasTerminal('session')).toBe(false)
 })
