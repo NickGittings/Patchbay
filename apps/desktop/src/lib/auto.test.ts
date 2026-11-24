@@ -732,7 +732,7 @@ test.each(['stop', 'skip', 'finish'] as const)(
         reviewers: ['codex', 'claude'],
       })
       await flush()
-      expect(ipc.terminalSnapshot).toHaveBeenCalledWith('lane')
+      expect(ipc.terminalSnapshot).toHaveBeenCalledWith('lane', 0)
       expect(autoRun('p', 't')?.laneSessions).toMatchObject([
         { sessionId: 'lane', startedMs: 1000 },
       ])
@@ -1776,7 +1776,7 @@ test.each(['plan', 'implement', 'fix', 'merge'] as const)(
         sessionOwned: false,
         round: stage === 'fix' ? 1 : 0,
       })
-      expect(ipc.terminalSnapshot).toHaveBeenCalledWith(sid)
+      expect(ipc.terminalSnapshot).toHaveBeenCalledWith(sid, 0)
       expect(ipc.terminalStop).not.toHaveBeenCalled()
     })
   },

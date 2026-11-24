@@ -23,7 +23,7 @@ import { clearedSimple } from './simple'
 import type { SimpleStep } from './simpleFlow'
 import { logSimple } from './simpleActions'
 import { claimAgentChat, selectChatAgent } from './agentChats'
-import { simpleKey, useSimpleUi } from './simpleUi'
+import { forgetSimpleUi, simpleKey, useSimpleUi } from './simpleUi'
 
 const chatTeams = (projectId: string) => invoke<ChatTeam[]>('chat_teams', { projectId })
 
@@ -506,10 +506,7 @@ export async function applyTeamHandoff(team: ChatTeam) {
  */
 export async function forgetTeamChat(projectId: string, task: string | null) {
   useStore.getState().patchTask(projectId, task, { simple: { startedMs: Date.now(), log: [] } })
-  const key = simpleKey(projectId, task)
-  useSimpleUi.setState((s) => ({
-    worktrees: Object.fromEntries(Object.entries(s.worktrees).filter(([k]) => k !== key)),
-  }))
+  forgetSimpleUi(projectId, (id) => id === task)
   await refreshChatTeams(projectId).catch(() => {})
 }
 /** Migration adopts saved recipients paused and never launches workers. */

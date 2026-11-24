@@ -54,6 +54,9 @@ import { unfinished } from './autoSettings'
 import { requestGitRefresh } from './git'
 import {
   disposeAll,
+  disposeTerminal,
+  hasTerminal,
+  hasTerminalHost,
   markOutputGeneration,
   replayOutput,
   requestRedraw,
@@ -61,6 +64,7 @@ import {
   restoreOutput,
   writeNote,
   writeOutput,
+  terminalIds,
 } from './terminals'
 
 /**
@@ -88,7 +92,15 @@ export const RECONNECTED_EVENT = 'patchbay:reconnected'
 /** The process generation whose output this window currently displays. */
 export const sessionGeneration = (sid: string) => lastSeq.get(sid)?.generation
 const pending = new Map<string, TerminalEvent[]>()
-const hydration = new Map<string, Promise<TerminalSnapshot | null>>()
+type HydratedRun = Pick<TerminalSnapshot, 'generation' | 'running' | 'end'>
+interface Hydration {
+  terminal: boolean
+  request: Promise<HydratedRun | null>
+}
+const hydration = new Map<string, Hydration>()
+const deferredForgets = new Set<string>()
+/** Known sessions the last reconcile found unlisted, forgotten if the next one agrees. */
+let unlisted = new Set<string>()
 // Snapshot coverage is separate from live replies: seeing sequence N doesn't mean we saw 1…N.
 const replySnapshots = new Map<string, { generation: number; sequence: number }>()
 const fetchingReplies = new Map<string, symbol>()
@@ -126,6 +138,55 @@ let floor = 0
 /** Bumped by `resetSessions` so in-flight hydrations don't write into the new project. */
 let epoch = 0
 
+/** Forget local state when the last pane releases this session. */
+export function forgetSession(sid: string) {
+  if (hasTerminalHost(sid)) {
+    deferredForgets.add(sid)
+    return
+  }
+  deferredForgets.delete(sid)
+  lastSeq.delete(sid)
+  hydration.delete(sid)
+  pending.delete(sid)
+  replySnapshots.delete(sid)
+  persistedReplies.delete(sid)
+  fetchingReplies.delete(sid)
+  mapPresets.delete(sid)
+  fixSessions.delete(sid)
+  disposeTerminal(sid)
+}
+
+/** Dispose a hostless xterm, e.g. after a Sessions preview, keeping state; the next pane replays. */
+export function releaseTerminal(sid: string) {
+  if (!hasTerminal(sid) || hasTerminalHost(sid)) return
+  const cursor = lastSeq.get(sid)
+  if (cursor) cursor.complete = false
+  // The next pane's attach creates an empty xterm before it hydrates; make that request replay.
+  const hydrated = hydration.get(sid)
+  if (hydrated) hydrated.terminal = false
+  disposeTerminal(sid)
+}
+
+/** Called after a pane unmounts, including previews whose service record was already forgotten. */
+export function finishForgettingSession(sid: string) {
+  if (deferredForgets.has(sid)) forgetSession(sid)
+}
+
+/** Closing a project releases its local terminals while its service sessions stay available. */
+function forgetProjectSessions(projectId: string) {
+  const sids = new Set<string>()
+  for (const [sid, metadata] of sessionMetadata) if (metadata.projectId === projectId) sids.add(sid)
+  for (const { id, metadata } of useStore.getState().sessionRecords)
+    if (metadata.projectId === projectId) sids.add(id)
+  for (const sid of sids) forgetSession(sid)
+}
+
+/** Forget the service record and release the local terminal. */
+export async function forgetSessionRecord(sid: string) {
+  await sessionForget(sid)
+  forgetSession(sid)
+}
+
 /**
  * Forget every session and dispose their xterms, e.g. after opening a project.
  * `generationFloor` comes from `terminalReset`; later events from killed sessions are dropped.
@@ -139,6 +200,10 @@ export function resetSessions(generationFloor: number) {
   replySnapshots.clear()
   persistedReplies.clear()
   fetchingReplies.clear()
+  deferredForgets.clear()
+  unlisted.clear()
+  mapPresets.clear()
+  fixSessions.clear()
   starting.clear()
   restarting.clear()
   for (const sid of pendingChatLaunches.keys()) endAgentChat(sid)
@@ -147,7 +212,13 @@ export function resetSessions(generationFloor: number) {
   disposeAll()
 }
 
-const decodeBase64 = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0))
+/** Decodes a snapshot backlog (up to 2 MiB) without a per-character callback. */
+function decodeBase64(data: string) {
+  const text = atob(data)
+  const bytes = new Uint8Array(text.length)
+  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i)
+  return bytes
+}
 
 interface ServiceRetirement {
   state: 'idle' | 'stopping' | 'reconnecting'
@@ -185,7 +256,13 @@ export async function retireOlderService(): Promise<void> {
 
 /** Each webview keeps one listener for its lifetime, including React StrictMode remounts. */
 export function listenForTerminals() {
-  listening ??= Promise.all([
+  if (listening) return listening
+  const unsubscribe = useStore.subscribe((state, previous) => {
+    if (state.projects === previous.projects) return
+    for (const id of Object.keys(previous.projects))
+      if (!state.projects[id]) forgetProjectSessions(id)
+  })
+  listening = Promise.all([
     onTerminalEvent(handleTerminalEvent),
     listen<ServiceRetirement>(SERVICE_RETIREMENT_EVENT, (e) => applyRetirement(e.payload)),
     listen<{ connected: boolean; instanceId?: string; issue?: ServiceIssue | null }>(
@@ -204,6 +281,7 @@ export function listenForTerminals() {
       setInterval(() => void reconcileSessions(false).catch(() => {}), 2000)
     })
     .catch((e) => {
+      unsubscribe()
       listening = undefined
       throw e
     })
@@ -657,7 +735,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
       // reply was lost, even if the agent has already exited. A planner may have run before.
       const snapshot = launch.freshConversation
         ? null
-        : await terminalSnapshot(sid).catch(() => null)
+        : await terminalSnapshot(sid, 0).catch(() => null)
       const fresh = componentId === TASK_ROOT_SCOPE && !!launch.kickoff
       const started = launch.freshConversation
         ? !!(await launchedRun(sid, requestId))
@@ -718,6 +796,8 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
     }
     if (starting.get(sid) === request) starting.delete(sid)
   })
+  // A relaunch reuses the session id; a pending forget of its earlier run no longer applies.
+  deferredForgets.delete(sid)
   starting.set(sid, request)
   return request
 }
@@ -810,8 +890,8 @@ export async function removeTaskTerminal(componentId: string, terminalId: string
       if (useStore.getState().sessions[sid]?.running) await terminalStop(sid)
       return
     }
-    await stopAndWait(sid, 'Terminal is still stopping; remove it again.')
-    if (sessionMetadata.has(sid)) await sessionForget(sid)
+    if (!(await stopAndWait(sid, 'Terminal is still stopping; remove it again.'))) return
+    if (sessionMetadata.has(sid)) await forgetSessionRecord(sid)
   } catch (e) {
     useStore.getState().setMessage(String(e), undefined, undefined, 'error')
   }
@@ -858,6 +938,7 @@ export async function closeTerminal(componentId: string, terminalId: string) {
       return false
     if (requestedEpoch !== epoch) return false
     useStore.getState().removeTerminal(componentId, terminalId, projectId)
+    for (const sid of sids) forgetSession(sid)
     return true
   } catch (e) {
     if (requestedEpoch === epoch)
@@ -919,7 +1000,7 @@ export function restartTerminal(
 }
 
 /** Apply a backend terminal event to the store and the session's xterm. */
-export function handleTerminalEvent(e: TerminalEvent) {
+export function handleTerminalEvent(e: TerminalEvent, { output = true } = {}) {
   if (e.instanceId && e.instanceId !== useStore.getState().serviceInstance) {
     void reconcileSessions().catch(() => {})
     return
@@ -933,16 +1014,22 @@ export function handleTerminalEvent(e: TerminalEvent) {
   const s = useStore.getState()
   let cursor = lastSeq.get(e.sessionId)
   if (cursor && e.generation < cursor.generation) return
+  const terminal = output && hasTerminal(e.sessionId)
   const newGeneration = !cursor || e.generation > cursor.generation
   if (newGeneration) {
-    // Only a `started` event guarantees this window sees the run from its first byte.
-    cursor = { generation: e.generation, end: 0, complete: e.type === 'started' }
+    // Only a `started` event guarantees this xterm sees the run from its first byte.
+    cursor = { generation: e.generation, end: 0, complete: terminal && e.type === 'started' }
     lastSeq.set(e.sessionId, cursor)
-    markOutputGeneration(e.sessionId, e.generation, e.type === 'started' ? 1 : 0)
+    // A start marks its run once its note is written, below.
+    if (terminal && e.type !== 'started') markOutputGeneration(e.sessionId, e.generation)
   }
+  if (!terminal) cursor!.complete = false
   switch (e.type) {
     case 'started':
       if (!newGeneration) break // Snapshot already includes this start.
+      // A run started elsewhere (Resume, another window) revives a session forgotten here.
+      if (s.projects[sessionMetadata.get(e.sessionId)?.projectId ?? ''])
+        deferredForgets.delete(e.sessionId)
       s.setSession(e.sessionId, {
         generation: e.generation,
         running: true,
@@ -950,13 +1037,18 @@ export function handleTerminalEvent(e: TerminalEvent) {
         chatStartup: e.chatStartup,
         notice: e.notice ?? undefined,
       })
-      restoreModes(e.sessionId)
-      writeNote(e.sessionId, `── started ${new Date().toLocaleTimeString()} ──`)
+      if (terminal) {
+        restoreModes(e.sessionId)
+        writeNote(e.sessionId, `── started ${new Date().toLocaleTimeString()} ──`)
+        // The run owns its note's line, which exists by now. A marker below the cursor on the
+        // last row would lie past the buffer, and xterm disposes it as if it scrolled away.
+        markOutputGeneration(e.sessionId, e.generation, -1)
+      }
       break
     case 'output': {
       const covered = Math.max(0, cursor!.end - e.seq)
       if (covered >= e.data.length) break
-      writeOutput(e.sessionId, e.data.slice(covered))
+      if (terminal) writeOutput(e.sessionId, e.data.slice(covered))
       cursor!.end = e.seq + e.data.length
       break
     }
@@ -973,8 +1065,10 @@ export function handleTerminalEvent(e: TerminalEvent) {
         exitCode: e.exitCode,
         exitedMs: e.exitedMs,
       })
-      restoreModes(e.sessionId)
-      writeNote(e.sessionId, `── exited ${e.exitCode} ──`)
+      if (terminal) {
+        restoreModes(e.sessionId)
+        writeNote(e.sessionId, `── exited ${e.exitCode} ──`)
+      }
       // A failure, or the run being watched, stays in Navigation's dock so its output can be read.
       if (
         e.sessionId === s.activeSession ||
@@ -1031,20 +1125,30 @@ export function handleTerminalEvent(e: TerminalEvent) {
 }
 
 /** Listen first, buffer live events during the snapshot, then replay only uncovered bytes. */
-export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
+export function hydrateSession(
+  sid: string,
+  { terminal = false } = {},
+): Promise<HydratedRun | null> {
+  const replay = terminal || hasTerminal(sid)
   const existing = hydration.get(sid)
-  if (existing) return existing
+  if (existing) {
+    if (!replay || existing.terminal) return existing.request
+    // Finish the state-only request before upgrading, so it drains its own live events.
+    return refreshSession(sid, { terminal })
+  }
   const queue: TerminalEvent[] = []
   pending.set(sid, queue)
-  const started = epoch
+  const current = () => pending.get(sid) === queue
   const request = (async () => {
     try {
       await listenForTerminals()
-      const snapshot = await terminalSnapshot(sid)
-      if (started !== epoch) return null
-      if (snapshot && (await applySnapshot(sid, snapshot))) {
-        // A run that ended (or was killed) mid-TUI must not leave this window's xterm in its modes.
-        if (!snapshot.running) restoreModes(sid)
+      if (!current()) return null
+      const snapshot = await terminalSnapshot(sid, replay ? undefined : 0)
+      if (!snapshot || !current()) return null
+      if (await applySnapshot(sid, snapshot, replay, current)) {
+        if (!current()) return null
+        // A run that ended mid-TUI must not leave this window's xterm in its modes.
+        if (replay && !snapshot.running) restoreModes(sid)
         useStore.getState().setSession(
           sid,
           sessionFromSnapshot(
@@ -1054,45 +1158,60 @@ export function hydrateSession(sid: string): Promise<TerminalSnapshot | null> {
           ),
         )
       }
-      if (snapshot) {
-        rememberReplySnapshot(sid, snapshot)
-        persistReplies(sid, snapshot.generation, snapshot.replies ?? [])
-      }
-      return snapshot
+      if (!current()) return null
+      rememberReplySnapshot(sid, snapshot)
+      persistReplies(sid, snapshot.generation, snapshot.replies ?? [])
+      const { generation, running, end } = snapshot
+      return { generation, running, end }
     } finally {
-      if (started === epoch) {
+      if (current()) {
         pending.delete(sid)
-        for (const event of queue) handleTerminalEvent(event)
+        // A state-only read leaves output to the replay that follows; an xterm opened meanwhile
+        // would otherwise get this tail before the full backlog.
+        for (const event of queue) handleTerminalEvent(event, { output: replay })
       }
     }
   })().catch((e) => {
-    if (started === epoch) hydration.delete(sid)
+    if (hydration.get(sid)?.request === request) hydration.delete(sid)
     throw e
   })
-  hydration.set(sid, request)
+  hydration.set(sid, { terminal: replay, request })
   return request
 }
 
 /** Refresh a completed hydration after a graph action reused or started a run. */
-export async function refreshSession(sid: string): Promise<TerminalSnapshot | null> {
+export async function refreshSession(
+  sid: string,
+  options?: { terminal?: boolean },
+): Promise<HydratedRun | null> {
   const started = epoch
   const previous = hydration.get(sid)
-  if (previous) await previous.catch(() => null)
+  if (previous) await previous.request.catch(() => null)
+  // A forget during the wait leaves a fresh read of the service's state.
   if (started !== epoch) return null
   // Concurrent refreshes join the newer hydration rather than replacing its event queue.
   if (hydration.get(sid) === previous) hydration.delete(sid)
-  return hydrateSession(sid)
+  return hydrateSession(sid, options)
 }
 
 /**
- * Bring the xterm up to date with a snapshot. If it already holds this run from the start,
- * append only the missing tail so earlier runs and notes stay in the scrollback.
+ * Sync the state cursor. An xterm that already holds this run gets only the missing tail so
+ * earlier runs and notes stay in scrollback.
  */
-async function applySnapshot(sid: string, snapshot: TerminalSnapshot): Promise<boolean> {
-  let bytes = decodeBase64(snapshot.data)
-  const start = snapshot.end - bytes.length
+async function applySnapshot(
+  sid: string,
+  snapshot: TerminalSnapshot,
+  replay: boolean,
+  current: () => boolean,
+): Promise<boolean> {
   const cursor = lastSeq.get(sid)
   if (cursor && cursor.generation > snapshot.generation) return false
+  if (!replay) {
+    lastSeq.set(sid, { generation: snapshot.generation, end: snapshot.end, complete: false })
+    return true
+  }
+  let bytes = decodeBase64(snapshot.data)
+  const start = snapshot.end - bytes.length
   if (cursor?.complete && cursor.generation === snapshot.generation && cursor.end >= start) {
     const from = cursor.end - start
     if (from < bytes.length) replayOutput(sid, bytes.subarray(from))
@@ -1101,15 +1220,26 @@ async function applySnapshot(sid: string, snapshot: TerminalSnapshot): Promise<b
   }
   // A truncated backlog can begin mid escape sequence or character; start at a line.
   if (start > 0) bytes = bytes.subarray(bytes.indexOf(0x0a) + 1)
+  // Released before its output arrived (a preview closed mid-load): keep state, open no xterm.
+  if (hydration.get(sid)?.terminal === false && !hasTerminalHost(sid)) {
+    lastSeq.set(sid, { generation: snapshot.generation, end: snapshot.end, complete: false })
+    return true
+  }
   await restoreOutput(sid, bytes, snapshot.generation)
+  if (!current()) return false
   // Replaying a running TUI's partial history, or at another width, garbles its frame.
   if (snapshot.running) requestRedraw(sid)
-  lastSeq.set(sid, { generation: snapshot.generation, end: snapshot.end, complete: start === 0 })
+  // A release during the restore disposed the xterm this run was written into.
+  lastSeq.set(sid, {
+    generation: snapshot.generation,
+    end: snapshot.end,
+    complete: start === 0 && hasTerminal(sid),
+  })
   return true
 }
 
 /** Whether this window's xterm lacks output the service has, e.g. after a gap in events. */
-function behind(sid: string, snapshot: TerminalSnapshot | null) {
+function behind(sid: string, snapshot: Pick<HydratedRun, 'generation' | 'end'> | null) {
   const cursor = lastSeq.get(sid)
   if (!cursor || !snapshot) return false
   return cursor.generation !== snapshot.generation || cursor.end < snapshot.end
@@ -1178,7 +1308,12 @@ async function fetchReplies(record: SessionRecord) {
   try {
     const snapshot = await terminalSnapshot(record.id, 0)
     const s = useStore.getState()
-    if (!snapshot || requestedEpoch !== epoch || !s.sessionRecords.some((r) => r.id === record.id))
+    if (
+      !snapshot ||
+      requestedEpoch !== epoch ||
+      fetchingReplies.get(record.id) !== token ||
+      !s.sessionRecords.some((r) => r.id === record.id)
+    )
       return
     const prev = s.sessions[record.id]
     if ((prev?.generation ?? 0) <= snapshot.generation)
@@ -1213,8 +1348,20 @@ export function reconcileSessions(force = true): Promise<void> {
       const reconnecting = !current.serviceConnected || changed
       if (changed) resetSessions(0)
       const listed = new Set(records.map((r) => r.id))
-      for (const sid of replySnapshots.keys()) if (!listed.has(sid)) replySnapshots.delete(sid)
-      for (const sid of persistedReplies.keys()) if (!listed.has(sid)) persistedReplies.delete(sid)
+      const known = new Set([
+        ...terminalIds(),
+        ...lastSeq.keys(),
+        ...hydration.keys(),
+        ...replySnapshots.keys(),
+        ...persistedReplies.keys(),
+        ...fetchingReplies.keys(),
+      ])
+      // A launch can finish while the list is in flight; forget only after two misses in a row.
+      const missing = new Set(
+        [...known].filter((sid) => !listed.has(sid) && !launching(sid) && !hasTerminalHost(sid)),
+      )
+      for (const sid of missing) if (unlisted.has(sid)) forgetSession(sid)
+      unlisted = missing
       useStore.setState((s) => ({
         serviceConnected: reconnecting ? false : current.serviceConnected,
         serviceInstance: status.instanceId,
@@ -1304,10 +1451,8 @@ export function reconcileSessions(force = true): Promise<void> {
       for (const r of records) {
         // Only sessions this window shows, and after lost events only those that fell behind.
         if (!showsSession(r.metadata)) continue
-        if (reconnecting || (force && behind(r.id, r.snapshot))) {
-          hydration.delete(r.id)
-          await hydrateSession(r.id)
-        }
+        if (reconnecting || (force && hasTerminal(r.id) && behind(r.id, r.snapshot)))
+          await refreshSession(r.id)
         const covered = replySnapshots.get(r.id)
         const seen = covered?.generation === r.snapshot?.generation ? (covered?.sequence ?? 0) : 0
         if (

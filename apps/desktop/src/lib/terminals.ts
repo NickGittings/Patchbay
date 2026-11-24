@@ -11,7 +11,9 @@ interface Entry {
   el: HTMLDivElement
   opened: boolean
   replaying: boolean
-  hosts: HTMLElement[]
+  hosts: Map<HTMLElement, boolean>
+  /** Hosts registered or detached while hidden; showing one moves it last in `hosts`. */
+  hiddenHosts: WeakSet<HTMLElement>
   generations: { generation: number; marker: IMarker }[]
   generation?: number
   /** The PTY size this window last sent, so unchanged fits don't signal the program again. */
@@ -19,12 +21,22 @@ interface Entry {
   /** A replayed backlog may be garbled; ask the program to repaint on the next claim. */
   redraw?: boolean
   fitTimer?: ReturnType<typeof setTimeout>
+  redrawTimer?: ReturnType<typeof setTimeout>
+  finishRestore?: () => void
   webgl?: WebglAddon
   webglLost?: boolean
 }
 
-/** One long-lived xterm per session so scrollback survives tab switches and restarts. */
+/** A viewed session keeps its xterm across tab switches and restarts. */
 const registry = new Map<string, Entry>()
+export const terminalIds = () => registry.keys()
+export const hasTerminal = (sid: string) => registry.has(sid)
+export function hasTerminalHost(sid: string) {
+  const e = registry.get(sid)
+  if (!e) return false
+  for (const host of e.hosts.keys()) if (host.isConnected) return true
+  return false
+}
 /** A drag reflows the terminal and signals its program once it settles, not every frame. */
 const FIT_DEBOUNCE_MS = 80
 /** Programs read the size when SIGWINCH arrives; two quick resizes can coalesce into none. */
@@ -79,13 +91,18 @@ function observeTheme() {
 
 /**
  * WebGL draws on-screen terminals (as VS Code does); the DOM renderer is the fallback. WebKit caps
- * live WebGL contexts and the registry keeps every session's xterm, so only terminals with a
- * visible host hold one, and a lost context leaves that terminal on the DOM renderer.
+ * live WebGL contexts. Only terminals in an on-screen host hold one, and a lost context leaves
+ * that terminal on the DOM renderer.
  */
 const WEBGL_LIMIT = 8
 let webglCount = 0
+let webglRetryScheduled = false
+function onScreen(e: Entry) {
+  const host = e.el.parentElement
+  return !!host && e.hosts.get(host) === true && hostVisible(host)
+}
 function enableWebgl(e: Entry) {
-  if (e.webgl || e.webglLost || !e.opened || webglCount >= WEBGL_LIMIT) return
+  if (e.webgl || e.webglLost || !e.opened || webglCount >= WEBGL_LIMIT || !onScreen(e)) return
   if (typeof WebGL2RenderingContext === 'undefined') return
   try {
     const addon = new WebglAddon()
@@ -105,11 +122,32 @@ function disableWebgl(e: Entry) {
   if (!addon) return
   e.webgl = undefined
   webglCount--
+  // A visible terminal may have missed a slot before this host's intersection callback ran.
+  if (webglCount === WEBGL_LIMIT - 1 && !webglRetryScheduled) {
+    webglRetryScheduled = true
+    queueMicrotask(() => {
+      webglRetryScheduled = false
+      for (const entry of registry.values()) enableWebgl(entry)
+    })
+  }
   try {
     addon.dispose()
   } catch {
     // already torn down with its context
   }
+}
+
+function updateWebgl(e: Entry) {
+  if (!e.webgl) enableWebgl(e)
+  else if (!onScreen(e)) disableWebgl(e)
+}
+
+/** Intersection affects renderer allocation; attached panes still own their PTY. */
+export function setOnScreen(sid: string, host: HTMLElement, visible: boolean) {
+  const e = registry.get(sid)
+  if (!e?.hosts.has(host)) return
+  e.hosts.set(host, visible)
+  updateWebgl(e)
 }
 
 /** Map UTF-16 string offsets onto xterm cell columns (wide and combining characters). */
@@ -221,7 +259,8 @@ function entry(sessionId: string): Entry {
       el,
       opened: false,
       replaying: false,
-      hosts: [],
+      hosts: new Map(),
+      hiddenHosts: new WeakSet(),
       generations: [],
     }
     // Both typing and automatic replies go through the service's single-viewer authority.
@@ -231,7 +270,7 @@ function entry(sessionId: string): Entry {
         !useStore.getState().serviceConnected ||
         created.replaying ||
         document.visibilityState !== 'visible' ||
-        !created.hosts.some(hostVisible)
+        !visibleHost(created)
       )
         return
       void terminalWrite(sessionId, d).catch(() => {})
@@ -245,7 +284,8 @@ function entry(sessionId: string): Entry {
 
 /** Scrollback retains earlier runs; markers keep links bound to the output's generation. */
 export function markOutputGeneration(sid: string, generation: number, offset = 0) {
-  const e = entry(sid)
+  const e = registry.get(sid)
+  if (!e) return
   e.term.write('', () => {
     e.generation = generation
     // Markers are in output order, so the disposed ones lead; keep the newest, whose run
@@ -259,7 +299,7 @@ export function markOutputGeneration(sid: string, generation: number, offset = 0
 }
 
 export function writeOutput(sessionId: string, data: number[] | Uint8Array) {
-  entry(sessionId).term.write(data instanceof Uint8Array ? data : new Uint8Array(data))
+  registry.get(sessionId)?.term.write(data instanceof Uint8Array ? data : new Uint8Array(data))
 }
 
 /** Append retained output that already ran, without answering the queries in it. */
@@ -278,6 +318,8 @@ export function restoreOutput(
   const e = entry(sessionId)
   const { term } = e
   return new Promise((resolve) => {
+    // Disposing xterm can cancel queued write callbacks.
+    e.finishRestore = resolve
     term.write('', () => {
       // Parsing historical terminal queries must not send replies to the live PTY.
       e.replaying = true
@@ -288,6 +330,7 @@ export function restoreOutput(
       if (marker) e.generations.push({ generation, marker })
       term.write(data, () => {
         e.replaying = false
+        e.finishRestore = undefined
         resolve()
       })
     })
@@ -299,14 +342,14 @@ export function restoreOutput(
  * cursor, key modes, colors) so the next run draws cleanly, keeping earlier scrollback.
  */
 export function restoreModes(sessionId: string) {
-  const { term } = entry(sessionId)
+  const e = registry.get(sessionId)
   // Clearing from the cursor down removes what the dead TUI drew below it (its input box and
   // status lines), which the next run would otherwise draw over line by line.
-  term.write('\x1b[?1049l\x1b[!p\x1b[?1000l\x1b[?1006l\x1b[2 q\x1b[J\r')
+  e?.term.write('\x1b[?1049l\x1b[!p\x1b[?1000l\x1b[?1006l\x1b[2 q\x1b[J\r')
 }
 
 export function writeNote(sessionId: string, text: string) {
-  entry(sessionId).term.write(`\r\n\x1b[2m${text}\x1b[0m\r\n`)
+  registry.get(sessionId)?.term.write(`\r\n\x1b[2m${text}\x1b[0m\r\n`)
 }
 
 /** Views unmount their hosts; CSS visibility and size cover collapsed panes and hidden tabs. */
@@ -317,8 +360,12 @@ export function hostVisible(host: HTMLElement): boolean {
   const { width, height } = host.getBoundingClientRect()
   return width > 0 && height > 0
 }
-export const hasVisibleTerminal = (sid: string) =>
-  document.visibilityState === 'visible' && (registry.get(sid)?.hosts.some(hostVisible) ?? false)
+const visibleHost = (e: Entry) => [...e.hosts.keys()].findLast(hostVisible)
+
+export const hasVisibleTerminal = (sid: string) => {
+  const e = registry.get(sid)
+  return document.visibilityState === 'visible' && !!e && !!visibleHost(e)
+}
 export const ownsTerminalHost = (sid: string, host: HTMLElement) =>
   registry.get(sid)?.el.parentElement === host && hostVisible(host)
 
@@ -328,11 +375,21 @@ export function attach(
   container: HTMLElement,
   options?: { focus?: boolean; repaint?: boolean },
 ) {
-  if (!hostVisible(container)) return
-  const e = entry(sessionId)
-  e.hosts = e.hosts.filter((host) => host.isConnected)
-  if (!e.hosts.includes(container)) e.hosts.push(container)
-  if (e.hosts.filter(hostVisible).at(-1) !== container) return
+  const visible = hostVisible(container)
+  const e = visible ? entry(sessionId) : registry.get(sessionId)
+  if (!e || !container.isConnected) return
+  for (const host of e.hosts.keys()) if (!host.isConnected) e.hosts.delete(host)
+  if (!e.hosts.has(container)) {
+    e.hosts.set(container, false)
+    if (!visible) e.hiddenHosts.add(container)
+  } else if (visible && e.hiddenHosts.has(container)) {
+    // The most recently shown pane takes the terminal, as one registered just now would.
+    const onScreen = e.hosts.get(container)!
+    e.hosts.delete(container)
+    e.hosts.set(container, onScreen)
+  }
+  if (visible) e.hiddenHosts.delete(container)
+  if (!visible || visibleHost(e) !== container) return
   const moved = e.el.parentElement !== container
   if (moved) container.replaceChildren(e.el)
   refreshTheme()
@@ -343,7 +400,7 @@ export function attach(
     e.term.textarea?.setAttribute('autocomplete', 'off')
     e.opened = true
   }
-  enableWebgl(e)
+  updateWebgl(e)
   fit(sessionId)
   // A re-parented or re-shown terminal may hold rows drawn for its old size or host.
   if (moved || options?.repaint) repaint(e)
@@ -365,13 +422,14 @@ export function scheduleFit(sessionId: string, container: HTMLElement, delayMs =
   clearTimeout(e.fitTimer)
   e.fitTimer = setTimeout(() => {
     e.fitTimer = undefined
-    attach(sessionId, container, { focus: false })
+    if (e.hosts.has(container)) attach(sessionId, container, { focus: false })
   }, delayMs)
 }
 
 /** Ask the running program to repaint once this window next claims the PTY (after a replay). */
 export function requestRedraw(sessionId: string) {
-  entry(sessionId).redraw = true
+  const e = registry.get(sessionId)
+  if (e) e.redraw = true
 }
 
 /**
@@ -417,7 +475,7 @@ export function focusTerminal(sessionId: string) {
  */
 export function fit(sessionId: string, options?: { force?: boolean }) {
   const e = registry.get(sessionId)
-  if (!e?.opened || !e.hosts.some(hostVisible)) return
+  if (!e?.opened || !visibleHost(e)) return
   try {
     e.fit.fit()
   } catch {
@@ -432,39 +490,58 @@ export function fit(sessionId: string, options?: { force?: boolean }) {
     void terminalResize(sessionId, cols, rows).catch(() => {})
   send(sizes[0])
   // A fit during the gap already sent a newer size; resending the latest is harmless.
-  if (sizes[1]) setTimeout(() => send(e.sent ?? sizes[1]), REDRAW_GAP_MS)
+  if (sizes[1]) {
+    clearTimeout(e.redrawTimer)
+    e.redrawTimer = setTimeout(() => send(e.sent ?? sizes[1]), REDRAW_GAP_MS)
+  }
 }
 
 /** Return the shared terminal to its previous pane when a Sessions preview closes. */
-export function detachHost(sessionId: string, host: HTMLElement): boolean {
+export function detachHost(
+  sessionId: string,
+  host: HTMLElement,
+  options?: { hidden?: boolean },
+): boolean {
   const e = registry.get(sessionId)
   if (!e) return false
-  e.hosts = e.hosts.filter((h) => h !== host && h.isConnected)
-  const previous = e.hosts.filter(hostVisible).at(-1)
+  if (!options?.hidden) e.hosts.delete(host)
+  else e.hiddenHosts.add(host)
+  for (const candidate of e.hosts.keys()) if (!candidate.isConnected) e.hosts.delete(candidate)
+  const previous = visibleHost(e)
   if (previous && e.el.parentElement === host) {
     previous.replaceChildren(e.el)
     fit(sessionId)
     repaint(e)
   }
-  const visible = e.hosts.some(hostVisible)
-  if (!visible) {
+  if (!previous) {
     clearTimeout(e.fitTimer)
-    disableWebgl(e)
+    if (e.el.parentElement && !e.el.parentElement.isConnected) e.el.remove()
   }
-  return visible
+  updateWebgl(e)
+  return !!previous
+}
+
+export function disposeTerminal(sid: string) {
+  const e = registry.get(sid)
+  if (!e) return
+  clearTimeout(e.fitTimer)
+  clearTimeout(e.redrawTimer)
+  disableWebgl(e)
+  e.term.dispose()
+  e.el.remove()
+  e.finishRestore?.()
+  registry.delete(sid)
 }
 
 export function disposeAll() {
   themeObserver?.disconnect()
   themeObserver = undefined
   themeSignature = ''
-  for (const e of registry.values()) {
-    clearTimeout(e.fitTimer)
-    disableWebgl(e)
-    e.term.dispose()
-  }
-  registry.clear()
+  for (const sid of registry.keys()) disposeTerminal(sid)
 }
+
+/** Renderer counts for the dev-only inspector hook. */
+export const terminalRendererCounts = () => ({ terminals: registry.size, webgl: webglCount })
 
 /** Visible text and size of a session's terminal, for the dev-only smoke test. */
 export function terminalText(sessionId: string) {

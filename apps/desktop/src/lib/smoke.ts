@@ -68,7 +68,12 @@ import {
 } from './ipc'
 import { terminalReferences } from './navigation'
 import { sessionGeneration } from './sessions'
-import { terminalNavigationState, terminalText } from './terminals'
+import {
+  hasTerminal,
+  terminalNavigationState,
+  terminalRendererCounts,
+  terminalText,
+} from './terminals'
 import { openComponentWindow } from './windows'
 import { applyAdded } from './project'
 import { saveMap, flushMapSaves } from './mapSave'
@@ -163,6 +168,30 @@ const chatPanel = {
     })
   },
 }
+/** Plain text of retained output, for sessions this webview has no xterm for. */
+const backlogText = new Map<string, string>()
+const readingBacklog = new Set<string>()
+// oxlint-disable-next-line no-control-regex -- terminal escape sequences
+const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]|\r/g
+/**
+ * Scripts poll this synchronously. Sessions without an xterm (not on screen) answer from the
+ * service backlog, refreshed in the background so the next poll sees newer output.
+ */
+function smokeTerminalText(sid: string) {
+  if (hasTerminal(sid)) return terminalText(sid)
+  if (!readingBacklog.has(sid)) {
+    readingBacklog.add(sid)
+    void terminalSnapshot(sid)
+      .then((snapshot) => {
+        const bytes = Uint8Array.from(atob(snapshot?.data ?? ''), (c) => c.charCodeAt(0))
+        backlogText.set(sid, new TextDecoder().decode(bytes).replace(ANSI, ''))
+      })
+      .catch(() => {})
+      .finally(() => readingBacklog.delete(sid))
+  }
+  return { text: backlogText.get(sid) ?? '', cols: 0, rows: 0 }
+}
+
 const hooks = {
   simpleUi: useSimpleUi,
   chatTeams: useChatTeams,
@@ -334,7 +363,8 @@ const hooks = {
     await terminalAttach(sid, true)
     await terminalWrite(sid, data)
   },
-  terminalText,
+  terminalText: smokeTerminalText,
+  terminalRendererCounts,
   terminalPrompt,
   openComponentWindow,
   createTask,

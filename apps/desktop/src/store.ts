@@ -746,7 +746,7 @@ const createState: StateCreator<State> = (set, get) => ({
   },
   closeProject: (id) => {
     forgetAutoDrafts(id)
-    const projects = get().captureProjects()
+    const projects = { ...get().captureProjects() }
     delete projects[id]
     const projectOrder = get().projectOrder.filter((p) => p !== id)
     const current = get().project?.id === id || get().activeProjectId === id

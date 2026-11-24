@@ -22,6 +22,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
 vi.mock('./ipc', () => ({
   sessionsList: vi.fn(async () => []),
+  sessionForget: vi.fn(async () => {}),
   sessionResume: vi.fn(async () => ''),
   terminalStart: vi.fn(async () => ''),
   terminalStop: vi.fn(async () => {}),
@@ -43,6 +44,10 @@ vi.mock('./windows', () => ({ showsSession: vi.fn() }))
 vi.mock('./git', () => ({ requestGitRefresh: vi.fn() }))
 vi.mock('./terminals', () => ({
   disposeAll: vi.fn(),
+  disposeTerminal: vi.fn(),
+  hasTerminal: vi.fn(() => false),
+  hasTerminalHost: vi.fn(() => false),
+  terminalIds: vi.fn(() => [] as string[]),
   markOutputGeneration: vi.fn(),
   replayOutput: vi.fn(),
   requestRedraw: vi.fn(),
@@ -57,8 +62,11 @@ const { showsSession } = await import('./windows')
 const { savePlanDraft } = await import('./planDrafts')
 const {
   closeTerminal,
+  finishForgettingSession,
+  forgetSession,
   handleTerminalEvent,
   hydrateSession,
+  sessionGeneration,
   startTerminal,
   startMapAgent,
   mapPresetId,
@@ -94,6 +102,8 @@ function deferred() {
 }
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(terminals.hasTerminal).mockReturnValue(false)
+  vi.mocked(terminals.hasTerminalHost).mockReturnValue(false)
   vi.mocked(ipc.terminalStart).mockResolvedValue('')
   vi.mocked(ipc.terminalStop).mockResolvedValue(undefined)
   vi.mocked(ipc.terminalSnapshot).mockResolvedValue(null)
@@ -102,6 +112,7 @@ beforeEach(() => {
   useStore.setState(useStore.getInitialState())
   useStore.getState().loadProject(project)
   useStore.setState({ serviceConnected: true })
+  vi.mocked(terminals.disposeTerminal).mockClear()
 })
 afterEach(() => vi.useRealTimers())
 const hasTerminal = () => useStore.getState().nodes[0].data.terminals.length === 1
@@ -118,6 +129,10 @@ test('close stops every worktree copy, including records unknown to this window'
   const stopped = vi.mocked(ipc.terminalStop).mock.calls.map(([sid]) => sid)
   expect(stopped).toEqual(expect.arrayContaining([own, task, 'unhydrated']))
   expect(stopped).not.toContain(foreign)
+  expect(vi.mocked(terminals.disposeTerminal).mock.calls.flat()).toEqual(
+    expect.arrayContaining([own, task]),
+  )
+  expect(terminals.disposeTerminal).not.toHaveBeenCalledWith(foreign)
   expect(hasTerminal()).toBe(false)
   expect(useStore.getState().activeSession).toBeNull()
   expect(useStore.getState().revealed).toBeNull()
@@ -511,6 +526,170 @@ function snapshot(running: boolean, generation = 3): TerminalSnapshot {
   }
 }
 
+test('background output advances an incomplete cursor and opening restores the entire backlog', async () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  handleTerminalEvent({
+    type: 'started',
+    sessionId: sid,
+    generation: 3,
+    startedMs: 1,
+    notice: null,
+  })
+  handleTerminalEvent({ type: 'output', sessionId: sid, generation: 3, seq: 0, data: [65] })
+  expect(sessionGeneration(sid)).toBe(3)
+  expect(terminals.writeOutput).not.toHaveBeenCalled()
+  expect(terminals.restoreOutput).not.toHaveBeenCalled()
+
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ ...snapshot(true), data: 'QUI=', end: 2 })
+  await expect(hydrateSession(sid, { terminal: true })).resolves.toEqual({
+    generation: 3,
+    running: true,
+    end: 2,
+  })
+  expect(terminals.restoreOutput).toHaveBeenCalledWith(sid, new Uint8Array([65, 66]), 3)
+  expect(terminals.replayOutput).not.toHaveBeenCalled()
+})
+
+test('a pane upgrades an in-flight state-only hydration and reads output', async () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  const waiting = deferred()
+  vi.mocked(ipc.terminalSnapshot)
+    .mockImplementationOnce(async () => {
+      await waiting.promise
+      return { ...snapshot(true), end: 1 }
+    })
+    .mockResolvedValueOnce({ ...snapshot(true), data: 'QQ==', end: 1 })
+  const stateOnly = hydrateSession(sid)
+  const pane = hydrateSession(sid, { terminal: true })
+  await vi.waitFor(() => expect(ipc.terminalSnapshot).toHaveBeenCalledWith(sid, 0))
+  expect(terminals.restoreOutput).not.toHaveBeenCalled()
+  waiting.resolve()
+  await Promise.all([stateOnly, pane])
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(2)
+  expect(ipc.terminalSnapshot).toHaveBeenLastCalledWith(sid, undefined)
+  expect(terminals.restoreOutput).toHaveBeenCalledWith(sid, new Uint8Array([65]), 3)
+  vi.mocked(terminals.hasTerminal).mockReturnValue(true)
+  await hydrateSession(sid, { terminal: true })
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(2)
+})
+
+test('a released xterm is replayed again by the next pane', async () => {
+  const { releaseTerminal } = await import('./sessions')
+  const sid = sessionId('web', 'dev', null, 'p')
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ ...snapshot(true), data: 'QQ==', end: 1 })
+  await hydrateSession(sid, { terminal: true })
+  vi.mocked(terminals.hasTerminal).mockReturnValue(true)
+  releaseTerminal(sid)
+  expect(terminals.disposeTerminal).toHaveBeenCalledExactlyOnceWith(sid)
+  // The next pane's attach creates an empty xterm before it hydrates.
+  await hydrateSession(sid, { terminal: true })
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(2)
+  expect(terminals.restoreOutput).toHaveBeenCalledTimes(2)
+})
+
+test('a state-only read leaves its queued output to the replay of an xterm opened meanwhile', async () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  const waiting = deferred()
+  vi.mocked(ipc.terminalSnapshot)
+    .mockImplementationOnce(async () => {
+      await waiting.promise
+      return { ...snapshot(true), end: 1 }
+    })
+    .mockResolvedValueOnce({ ...snapshot(true), data: 'QUI=', end: 2 })
+  const stateOnly = hydrateSession(sid)
+  await vi.waitFor(() => expect(ipc.terminalSnapshot).toHaveBeenCalledOnce())
+  handleTerminalEvent({ type: 'output', sessionId: sid, generation: 3, seq: 1, data: [66] })
+  vi.mocked(terminals.hasTerminal).mockReturnValue(true)
+  const pane = hydrateSession(sid, { terminal: true })
+  waiting.resolve()
+  await Promise.all([stateOnly, pane])
+  expect(terminals.writeOutput).not.toHaveBeenCalled()
+  expect(terminals.restoreOutput).toHaveBeenCalledExactlyOnceWith(sid, new Uint8Array([65, 66]), 3)
+})
+
+test('forgetting drops the cursor, invalidates hydration and discards queued events', async () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  const waiting = deferred()
+  vi.mocked(ipc.terminalSnapshot).mockImplementationOnce(async () => {
+    await waiting.promise
+    return snapshot(true)
+  })
+  handleTerminalEvent({ type: 'output', sessionId: sid, generation: 3, seq: 0, data: [65] })
+  const hydration = hydrateSession(sid, { terminal: true })
+  await vi.waitFor(() => expect(ipc.terminalSnapshot).toHaveBeenCalledOnce())
+  handleTerminalEvent({ type: 'output', sessionId: sid, generation: 4, seq: 0, data: [66] })
+
+  forgetSession(sid)
+  waiting.resolve()
+  await expect(hydration).resolves.toBeNull()
+  expect(terminals.disposeTerminal).toHaveBeenCalledWith(sid)
+  expect(terminals.restoreOutput).not.toHaveBeenCalled()
+  expect(sessionGeneration(sid)).toBeUndefined()
+  await hydrateSession(sid)
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(2)
+})
+
+test('forgetting waits until the last connected pane releases the xterm', () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  vi.mocked(terminals.hasTerminalHost).mockReturnValue(true)
+  forgetSession(sid)
+  finishForgettingSession(sid)
+  expect(terminals.disposeTerminal).not.toHaveBeenCalled()
+  vi.mocked(terminals.hasTerminalHost).mockReturnValue(false)
+  finishForgettingSession(sid)
+  expect(terminals.disposeTerminal).toHaveBeenCalledExactlyOnceWith(sid)
+})
+
+test('a restarted session cancels the forget deferred while its pane was mounted', () => {
+  const sid = sessionId('web', 'dev', null, 'p')
+  vi.mocked(terminals.hasTerminalHost).mockReturnValue(true)
+  forgetSession(sid)
+  handleTerminalEvent({
+    type: 'started',
+    sessionId: sid,
+    generation: 4,
+    startedMs: 1,
+    notice: null,
+  })
+  vi.mocked(terminals.hasTerminalHost).mockReturnValue(false)
+  finishForgettingSession(sid)
+  expect(terminals.disposeTerminal).not.toHaveBeenCalled()
+  expect(sessionGeneration(sid)).toBe(4)
+})
+
+test('reconciliation forgets a session only once two lists in a row omit it', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  const sid = sessionId('web', 'dev', null, 'p')
+  useStore.setState({ serviceInstance: 'test' })
+  handleTerminalEvent({
+    type: 'started',
+    sessionId: sid,
+    generation: 2,
+    startedMs: 1,
+    notice: null,
+  })
+  vi.mocked(ipc.sessionsList).mockResolvedValue([])
+  // A launch that finished while this list was in flight is missing from it once.
+  await reconcileSessions(false)
+  expect(sessionGeneration(sid)).toBe(2)
+  await reconcileSessions(false)
+  expect(sessionGeneration(sid)).toBeUndefined()
+  expect(terminals.disposeTerminal).toHaveBeenCalledWith(sid)
+})
+
+test('closing a project disposes its terminals and keeps other projects warm', async () => {
+  const own = sessionId('web', 'dev', null, 'p')
+  const other = sessionId('web', 'dev', null, 'other')
+  const store = useStore.getState()
+  store.loadProject({ ...project, projectId: 'other', root: '/other' })
+  await hydrateSession(own)
+  await hydrateSession(other)
+  useStore.getState().closeProject('p')
+  expect(terminals.disposeTerminal).toHaveBeenCalledWith(own)
+  expect(terminals.disposeTerminal).not.toHaveBeenCalledWith(other)
+  expect(ipc.terminalStop).not.toHaveBeenCalled()
+})
+
 test('a status before hydration supplies a stable run identity for notice dismissal', async () => {
   const sid = sessionId('web', 'dev', null, 'p')
   handleTerminalEvent({
@@ -541,7 +720,7 @@ test('a status before hydration supplies a stable run identity for notice dismis
 test('hydrating a finished run resets the modes it left on, a running one keeps them', async () => {
   const ended = sessionId('web', 'dev', null, 'p')
   vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(snapshot(false))
-  await hydrateSession(ended)
+  await hydrateSession(ended, { terminal: true })
   expect(terminals.restoreModes).toHaveBeenCalledWith(ended)
   vi.mocked(terminals.restoreModes).mockClear()
   const running = sessionId('web', 'dev', 'task', 'p')
@@ -554,7 +733,7 @@ test('hydrating a finished run resets the modes it left on, a running one keeps 
   })
   vi.mocked(terminals.restoreModes).mockClear()
   vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce(snapshot(true))
-  await hydrateSession(running)
+  await hydrateSession(running, { terminal: true })
   expect(terminals.restoreModes).not.toHaveBeenCalled()
   expect(useStore.getState().sessions[running].running).toBe(true)
 })
@@ -603,6 +782,7 @@ test.each(['not-started', 'running'])(
 )
 
 test('hydrating an older finished snapshot preserves the live run and its terminal modes', async () => {
+  vi.mocked(terminals.hasTerminal).mockReturnValue(true)
   const sid = sessionId('web', 'dev', null, 'p')
   handleTerminalEvent({
     type: 'started',
@@ -1239,6 +1419,57 @@ const replies = [1, 2].map((sequence) => ({
   text: `Reply ${sequence}`,
   turn: null,
 }))
+
+test('reconnect requests metadata only for a session without an xterm', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  const r = replyRecord()
+  useStore.setState({ serviceInstance: 'test', serviceConnected: false })
+  vi.mocked(showsSession).mockReturnValue(true)
+  vi.mocked(ipc.sessionsList).mockResolvedValue([r])
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ ...r.snapshot!, replies })
+  vi.stubGlobal('window', { dispatchEvent: vi.fn() })
+  try {
+    await reconcileSessions()
+  } finally {
+    vi.unstubAllGlobals()
+  }
+  expect(ipc.terminalSnapshot).toHaveBeenCalledExactlyOnceWith(r.id, 0)
+  expect(terminals.restoreOutput).not.toHaveBeenCalled()
+  expect(useStore.getState().sessions[r.id].replies).toEqual(replies)
+})
+
+test('forgetting clears reply coverage and invalidates an in-flight reply read', async () => {
+  const { reconcileSessions } = await import('./sessions')
+  const r = replyRecord()
+  useStore.setState({ serviceInstance: 'test' })
+  vi.mocked(showsSession).mockReturnValue(true)
+  handleTerminalEvent({
+    type: 'reply',
+    sessionId: r.id,
+    generation: 3,
+    previous: null,
+    reply: replies[0],
+  })
+  const waiting = deferred()
+  vi.mocked(ipc.sessionsList).mockResolvedValue([r])
+  vi.mocked(ipc.terminalSnapshot).mockImplementationOnce(async () => {
+    await waiting.promise
+    return { ...r.snapshot!, replies }
+  })
+  await reconcileSessions(false)
+  expect(ipc.terminalSnapshot).toHaveBeenCalledOnce()
+
+  forgetSession(r.id)
+  const first = replyRecord(3, 1)
+  vi.mocked(ipc.sessionsList).mockResolvedValue([first])
+  vi.mocked(ipc.terminalSnapshot).mockResolvedValue({ ...first.snapshot!, replies: [replies[0]] })
+  await reconcileSessions(false)
+  expect(ipc.terminalSnapshot).toHaveBeenCalledTimes(2)
+  waiting.resolve()
+  await waiting.promise
+  await Promise.resolve()
+  expect(useStore.getState().sessions[r.id].replies).toEqual([replies[0]])
+})
 
 test('a live reply before its session record is persisted during reconciliation', async () => {
   const { reconcileSessions } = await import('./sessions')

@@ -158,18 +158,6 @@ export function clearedSimple(
   sessions: Record<string, SessionState>,
   atMs: number,
 ): SimpleState {
-  const facts = new Map<string, SimpleEntry>()
-  for (const e of workflowLog(simple)) {
-    if (e.kind === 'reply') continue
-    const fact =
-      e.kind === 'prompt'
-        ? { ...e, text: '', mentions: [] }
-        : { ...e, text: undefined, mentions: undefined }
-    const key = `${e.kind}:${e.kind === 'action' ? e.action : ''}:${e.sessionId}:${e.generation}`
-    // Keep the first planning boundary as well as the latest delivery/launch fact.
-    if (e.stage === 'plan' && !facts.has(`start:${key}`)) facts.set(`start:${key}`, fact)
-    facts.set(key, fact)
-  }
   const runs = new Map((simple.clearBoundary?.runs ?? []).map((r) => [r.sessionId, r]))
   for (const [sessionId, s] of Object.entries(sessions)) {
     if (s.generation === undefined) continue
@@ -200,8 +188,33 @@ export function clearedSimple(
     ...simple,
     log: [],
     clearBoundary: { atMs, runs: [...runs.values()] },
-    retainedWorkflow: [...new Map([...facts.values()].map((e) => [e.id, e])).values()],
+    retainedWorkflow: workflowFacts(workflowLog(simple)),
   })
+}
+
+/**
+ * Text-free workflow facts that claim runs and mark stages, so claims and stage boundaries
+ * survive when their entries leave the log. `entries` is in `entryOrder`.
+ */
+function workflowFacts(entries: SimpleEntry[]): SimpleEntry[] {
+  const facts = new Map<string, SimpleEntry>()
+  for (const e of entries) {
+    if (e.kind === 'reply') continue
+    const fact =
+      e.kind === 'prompt'
+        ? { ...e, text: '', mentions: [] }
+        : { ...e, text: undefined, mentions: undefined }
+    const key = `${e.kind}:${e.kind === 'action' ? e.action : ''}:${e.sessionId}:${e.generation}`
+    // Keep the first planning boundary as well as the latest delivery/launch fact.
+    if (e.stage === 'plan' && !facts.has(`start:${key}`)) facts.set(`start:${key}`, fact)
+    facts.set(key, fact)
+  }
+  const kept = [...new Map([...facts.values()].map((e) => [e.id, e])).values()].toSorted(entryOrder)
+  if (kept.length <= SIMPLE_NON_REPLY_LIMIT) return kept
+  // Bounded like the log: the newest facts, plus the first planning boundary.
+  const newest = kept.slice(-SIMPLE_NON_REPLY_LIMIT)
+  const first = kept.find((e) => e.stage === 'plan')
+  return first && !newest.includes(first) ? [first, ...newest.slice(1)] : newest
 }
 
 /** Entries that start, resume or prompt a run, the only ones that may claim it. */
@@ -237,16 +250,26 @@ export function ownsPlanner(
 
 /** Reapplying old snapshots trims the same oldest text, without persisting per-run cursors. */
 export function boundedSimple(simple: SimpleState): SimpleState {
+  const visible = simple.log.filter((e) =>
+    e.kind === 'reply'
+      ? visibleReply(simple, e.sessionId, e.generation, e)
+      : !simple.clearBoundary || e.atMs > simple.clearBoundary.atMs,
+  )
+  const log = boundedSimpleLog(visible)
+  // Prompts and actions past the log limit keep their workflow facts, as clearing does.
+  const kept = new Set(log.map((e) => e.id))
+  const overflow = visible.filter((e) => e.kind !== 'reply' && !kept.has(e.id))
   return {
     ...simple,
     startedMs: simple.startedMs,
-    log: boundedSimpleLog(
-      simple.log.filter((e) =>
-        e.kind === 'reply'
-          ? visibleReply(simple, e.sessionId, e.generation, e)
-          : !simple.clearBoundary || e.atMs > simple.clearBoundary.atMs,
-      ),
-    ),
+    log,
+    ...(overflow.length
+      ? {
+          retainedWorkflow: workflowFacts(
+            [...(simple.retainedWorkflow ?? []), ...overflow].toSorted(entryOrder),
+          ),
+        }
+      : {}),
     version: SIMPLE_VERSION,
     ...(simple.agentRuns?.length ? { agentRuns: simple.agentRuns } : {}),
   }
@@ -262,23 +285,30 @@ const entryOrder = (a: SimpleEntry, b: SimpleEntry) =>
       a.sequence - b.sequence
     : 0)
 
-/** Keep recent reply text bounded while retaining every prompt and action. */
 export const SIMPLE_REPLY_LIMIT = 16 * 1024
 export const SIMPLE_REPLY_BUDGET = 128 * 1024
+const SIMPLE_NON_REPLY_LIMIT = 200
+
+export function boundedReplyText(text: string, limit: number): string {
+  if (text.length <= limit) return text
+  const suffix = '\n\n[Reply shortened]'
+  const end = Math.max(0, limit - suffix.length)
+  const last = text.charCodeAt(end - 1)
+  const splitPair = last >= 0xd800 && last <= 0xdbff
+  return text.slice(0, splitPair ? end - 1 : end) + suffix.slice(0, limit)
+}
+
+/** Keep recent prompts, actions and reply text within their worktree's history limits. */
 export function boundedSimpleLog(log: SimpleEntry[]): SimpleEntry[] {
   let remaining = SIMPLE_REPLY_BUDGET
+  let nonReplies = SIMPLE_NON_REPLY_LIMIT
   return log
     .toSorted(entryOrder)
     .reverse()
     .flatMap((entry): SimpleEntry[] => {
-      if (entry.kind !== 'reply') return [entry]
+      if (entry.kind !== 'reply') return nonReplies-- > 0 ? [entry] : []
       if (!remaining) return []
-      const limit = Math.min(SIMPLE_REPLY_LIMIT, remaining)
-      const suffix = '\n\n[Reply shortened]'
-      const text =
-        entry.text.length <= limit
-          ? entry.text
-          : entry.text.slice(0, Math.max(0, limit - suffix.length)) + suffix.slice(0, limit)
+      const text = boundedReplyText(entry.text, Math.min(SIMPLE_REPLY_LIMIT, remaining))
       remaining -= text.length
       return [text === entry.text ? entry : { ...entry, text }]
     })
@@ -317,14 +347,14 @@ function restoredAction(entry: Extract<SimpleEntry, { kind: 'action' }>): Simple
   }
 }
 
-/** Old layouts start empty. Never truncate the worktree's action history. */
+/** Old layouts start empty. Saved histories are trimmed to the current limits. */
 export function restoredSimple(value: unknown): SimpleState | null {
   if (!value || typeof value !== 'object') return null
   const state = value as SimpleState
   if (!Number.isFinite(state.startedMs) || !Array.isArray(state.log)) return null
   const seen = new Set<string>()
   const replies = new Set<string>()
-  const restored = boundedSimple({
+  const restored: SimpleState = {
     startedMs: state.startedMs,
     coordinationHandoff:
       typeof state.coordinationHandoff === 'string' ? state.coordinationHandoff : undefined,
@@ -419,11 +449,15 @@ export function restoredSimple(value: unknown): SimpleState | null {
         }
         return valid
       })
-      .map((entry) => (entry.kind === 'action' ? restoredAction(entry) : entry)),
-  })
-  return state.version === SIMPLE_VERSION
-    ? restored
-    : { ...restored, log: withLegacyGenerations(restored.log) }
+      .map((entry) => (entry.kind === 'action' ? restoredAction(entry) : entry))
+      .toSorted(entryOrder),
+  }
+  // Assign legacy runs before bounding, so entries moved to retained facts keep their claims.
+  return boundedSimple(
+    state.version === SIMPLE_VERSION
+      ? restored
+      : { ...restored, log: withLegacyGenerations(restored.log) },
+  )
 }
 export interface SimpleWorktree {
   projectId: string

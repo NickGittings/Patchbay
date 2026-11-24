@@ -6,13 +6,17 @@ import { projectStateOf, useStore } from '../store'
 import {
   sessionConversation,
   sessionHistory,
-  sessionForget,
   sessionResume,
   terminalStop,
   sessionsStopAll,
   taskList,
 } from '../lib/ipc'
-import { hydrateSession, reconcileSessions, startTerminal } from '../lib/sessions'
+import {
+  forgetSessionRecord,
+  hydrateSession,
+  reconcileSessions,
+  startTerminal,
+} from '../lib/sessions'
 import { ago } from '../lib/review'
 import { useClockTick } from '../lib/clock'
 import {
@@ -321,7 +325,7 @@ function SessionList({
                                 <MenuSeparator />
                                 <MenuItem
                                   disabled={unavailable}
-                                  onClick={() => void perform(() => sessionForget(r.id))}
+                                  onClick={() => void perform(() => forgetSessionRecord(r.id))}
                                 >
                                   Forget
                                 </MenuItem>
@@ -584,6 +588,7 @@ export default function SessionsPanel({
               <TerminalPane
                 key={selected.id}
                 existingSessionId={selected.id}
+                release
                 componentId={selected.metadata.componentId}
                 terminal={{
                   id: selected.metadata.terminalId,

@@ -1,6 +1,7 @@
 import { shortTitle } from './shortTitle'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
+import { simpleKey, useSimpleUi } from './simpleUi'
 import { PROJECT_DRAFT, plannerSessionId, type Task } from '../types'
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
@@ -88,6 +89,25 @@ test.each([true, false])(
     expect(useStore.getState().message).toBeFalsy()
   },
 )
+
+test('a new task listing prunes removed worktree drafts and a project close keeps the rest', async () => {
+  removalProject()
+  useSimpleUi.setState({ worktrees: {} })
+  const keys = [
+    simpleKey('p', 't'),
+    simpleKey('p', null),
+    simpleKey('p', PROJECT_DRAFT),
+    simpleKey('other', 't'),
+  ]
+  for (const key of keys) useSimpleUi.getState().patch(key, { draft: key })
+  vi.mocked(taskList).mockResolvedValueOnce([])
+  await refreshTasks('p')
+  expect(Object.keys(useSimpleUi.getState().worktrees)).toEqual(keys.slice(1))
+  // Closing a project keeps its drafts and queued prompts for when it reopens.
+  useStore.getState().closeProject('p')
+  expect(Object.keys(useSimpleUi.getState().worktrees)).toEqual(keys.slice(1))
+  useSimpleUi.setState({ worktrees: {} })
+})
 
 test('a refused removal keeps the active worktree and still refreshes tasks', async () => {
   removalProject()
@@ -332,6 +352,16 @@ test('a cut title never splits an emoji', () => {
   const title = titleFor(goal)
   expect(title).toBe(`${'a'.repeat(71)}😀`)
   expect(title).not.toMatch(/[\uD800-\uDBFF]$/)
+})
+
+test('a stale task list keeps the Chat draft of a worktree created after it was requested', async () => {
+  removalProject()
+  useSimpleUi.setState({ worktrees: {} })
+  useSimpleUi.getState().patch(simpleKey('p', 'new'), { draft: 'keep me' })
+  vi.mocked(taskList).mockResolvedValueOnce([])
+  await refreshTasks('p')
+  expect(useSimpleUi.getState().worktrees[simpleKey('p', 'new')]?.draft).toBe('keep me')
+  useSimpleUi.setState({ worktrees: {} })
 })
 
 test('a worktree that left the task list takes its Auto draft along', async () => {
