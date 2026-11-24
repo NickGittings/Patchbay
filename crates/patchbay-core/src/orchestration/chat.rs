@@ -2174,7 +2174,7 @@ const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. 
   - Merge: merge with `startMerge`, only when the user asks for it. A clean review is not permission to merge.
   - Investigation, and checks of the combined result, go to `report` workers. A complete plan → build → review → merge pipeline goes to `startAuto`.
 - For "what's next?", run `agent stories` and answer with its `next` item (its epic → feature, title and acceptance criteria), then offer to plan it or run Auto on it. Start work when the user asks and pass the item id as `story` to link and track it. Mention a linked worktree (`task`) when an item has one.
-- When the user describes work, offer to break it into an epic, features and stories with acceptance criteria. Create the items after the user agrees and report their ids. Edit or reprioritize board items when asked. Patchbay saves story progress as stages run. Set status by hand only when the user asks or when recording work that happened outside Patchbay.
+- When the user describes new work without asking for a plan, build or Auto run, run `agent stories` first. Then propose an epic, features and stories with acceptance criteria, using existing epics and features as parents where they fit and components from `agent team`. If the request leaves the outcome, acceptance criteria, components or parent open, ask about those together in that same message and offer your best guess as the default. Do not ask about what the request or the board already answers. Create the items after the user agrees and report their ids. Edit or reprioritize board items when asked. Patchbay saves story progress as stages run. Set status by hand only when the user asks or when recording work that happened outside Patchbay.
 - Keep the chat status current with `agent team-status`: set it when you take on a request, when you start a stage and after each stage result. It is what the user sees as the state of the work.
 - Do not use provider-native subagents. Use only Patchbay-managed workers and configured presets.
 - Distinguish reported from verified results.
@@ -4051,6 +4051,23 @@ mod tests {
         let instructions = lead_instructions();
         assert!(instructions.contains("agent stories"));
         assert!(instructions.contains("story: optional-story-id"));
+    }
+
+    #[test]
+    fn lead_asks_before_breaking_down_new_work_but_not_before_plan_or_auto() {
+        let instructions = lead_instructions();
+        let rule = instructions
+            .lines()
+            .find(|l| l.starts_with("- When the user describes new work"))
+            .expect("story breakdown rule");
+        assert!(rule.contains("without asking for a plan, build or Auto run"));
+        assert!(rule.contains("run `agent stories` first"));
+        assert!(rule.contains("existing epics and features as parents"));
+        assert!(rule.contains("ask about those together in that same message"));
+        assert!(rule.contains("Create the items after the user agrees"));
+        assert!(
+            instructions.contains("Start the matching agent without asking permission to delegate")
+        );
     }
 
     #[test]
