@@ -1,12 +1,12 @@
-import { useEffect } from 'react'
+import { listen } from '@tauri-apps/api/event'
+import { useEffect, useState } from 'react'
 import { create } from 'zustand'
 import { useStore } from '../store'
 import type { SyncAction, SyncStatus } from '../types'
 import { confirmAction } from './confirm'
 import { componentPaths, requestGitRefresh } from './git'
 import { historyRequest, type HistorySelection } from './history'
-import { gitSync, gitSyncStatus } from './ipc'
-import { useMainWorktree } from './mainWorktree'
+import { BRANCHES_CHANGED_EVENT, gitSync, gitSyncStatus } from './ipc'
 import { simpleKey, useSimpleUi } from './simpleUi'
 import { sessionLive } from './sessionList'
 import { activeWorktree, refreshTasks } from './tasks'
@@ -138,7 +138,8 @@ export async function runSync(
     )
     settle(requests.get(key) === id ? { status, statusError: undefined } : {})
     if (!quiet) {
-      const where = status.upstream ?? status.remote ?? 'the remote'
+      const where =
+        (action === 'push' ? status.pushTo : status.upstream) ?? status.remote ?? 'the remote'
       useStore.getState().setMessage(`${DONE[action]} ${status.branch ?? 'HEAD'} · ${where}`, true)
     }
     return true
@@ -154,7 +155,7 @@ export async function runSync(
 }
 
 /** The commit chosen in the Git panel's history, shown in Review's or Chat's diff pane. */
-interface CommitChoice {
+export interface CommitChoice {
   projectId: string
   worktree?: string
   selection: HistorySelection
@@ -170,14 +171,15 @@ export function chooseCommit(
   useCommitChoice.setState({ choice: selection ? { projectId, worktree, selection } : null })
 }
 
-/** The commit chosen for the active project and worktree, or `null`. */
-export function useChosenCommit(): HistorySelection | null {
+/**
+ * The commit chosen for the active project and worktree, or `null`. Its `worktree` is the one
+ * the history listed it from, so its details read the same repository.
+ */
+export function useChosenCommit(): CommitChoice | null {
   const projectId = useStore((s) => s.project?.id)
   const worktree = useStore(activeWorktree)
   const choice = useCommitChoice((s) => s.choice)
-  return choice && choice.projectId === projectId && choice.worktree === worktree
-    ? choice.selection
-    : null
+  return choice && choice.projectId === projectId && choice.worktree === worktree ? choice : null
 }
 
 /** Clear or change the chosen commit for the active project and worktree. */
@@ -203,9 +205,23 @@ export const useSyncScope = create<{
   repos: string[] | null
   /** The project and worktree `repos` lists, so a switch never pairs one with another's repo. */
   reposFor: string | null
+  /** Why listing the repositories failed. */
+  reposError: string | null
+  /** Bumped to list the repositories again. */
+  retry: number
   /** The repository chosen per project and worktree, when not the first. */
   chosen: Record<string, string>
-}>(() => ({ scope: null, repos: null, reposFor: null, chosen: {} }))
+}>(() => ({
+  scope: null,
+  repos: null,
+  reposFor: null,
+  reposError: null,
+  retry: 0,
+  chosen: {},
+}))
+
+/** List the active worktree's repositories again, after a failure. */
+export const retryRepos = () => useSyncScope.setState((s) => ({ retry: s.retry + 1 }))
 
 const contextKey = (projectId: string, worktree?: string) =>
   JSON.stringify([projectId, worktree ?? null])
@@ -226,19 +242,32 @@ export function useSyncTracking() {
   const projectId = useStore((s) => s.project?.id)
   const worktree = useStore(activeWorktree)
   const paths = useStore((s) => s.nodes.map((n) => n.data.path).join('\0'))
-  const revision = useStore((s) => s.gitChanges)
-  const branch = useMainWorktree((s) => (projectId ? s[projectId]?.branch : undefined))
-  const taskBranch = useStore((s) => s.tasks.find((t) => t.id === s.activeTask)?.branch)
+  const retry = useSyncScope((s) => s.retry)
+  // Refs move on commits, fetches and branch switches, which the watcher reports as branch
+  // changes; terminals can also fetch while the window is in the background.
+  const [refs, setRefs] = useState(0)
+  useEffect(() => {
+    if (!projectId) return
+    const bump = () => setRefs((n) => n + 1)
+    const unlisten = listen<string>(BRANCHES_CHANGED_EVENT, (e) => {
+      if (e.payload === projectId) bump()
+    })
+    window.addEventListener('focus', bump)
+    return () => {
+      void unlisten.then((stop) => stop())
+      window.removeEventListener('focus', bump)
+    }
+  }, [projectId])
   const context = projectId ? contextKey(projectId, worktree) : null
   const repos = useSyncScope((s) => (s.reposFor === context ? s.repos : null))
   const chosen = useSyncScope((s) => (context ? s.chosen[context] : undefined))
   useEffect(() => {
-    useSyncScope.setState({ repos: null, reposFor: null, scope: null })
+    useSyncScope.setState({ repos: null, reposFor: null, reposError: null, scope: null })
     if (!projectId || !context) return
     let alive = true
-    const listed = (result: string[]) => {
+    const listed = (result: string[], error: string | null = null) => {
       if (!alive) return
-      useSyncScope.setState({ repos: result, reposFor: context })
+      useSyncScope.setState({ repos: result, reposFor: context, reposError: error })
       // A commit from a repository no longer on the map can't be read any more.
       const choice = useCommitChoice.getState().choice
       if (
@@ -250,18 +279,18 @@ export function useSyncTracking() {
     }
     void historyRequest<string[]>(worktree)
       .then(listed)
-      .catch(() => listed([]))
+      .catch((e) => listed([], String(e)))
     return () => {
       alive = false
     }
-  }, [projectId, worktree, context, paths])
+  }, [projectId, worktree, context, paths, retry])
   const repo = repos && (chosen && repos.includes(chosen) ? chosen : repos[0])
   useEffect(() => {
     useSyncScope.setState({ scope: projectId && repo ? { projectId, worktree, repo } : null })
   }, [projectId, worktree, repo])
   useEffect(() => {
     if (projectId && repo) void refreshSyncStatus({ projectId, worktree, repo })
-  }, [projectId, worktree, repo, revision, branch, taskBranch])
+  }, [projectId, worktree, repo, refs])
 }
 
 /** The Git panel's scope and its status entry. */

@@ -41,6 +41,10 @@ const status = (ahead: number, behind: number): SyncStatus => ({
   ahead,
   behind,
   lastFetchMs: null,
+  pushTo: 'origin/main',
+  pushRefused: null,
+  unpushed: ahead,
+  pushBehind: behind,
 })
 function deferred<T>() {
   let resolve!: (value: T) => void

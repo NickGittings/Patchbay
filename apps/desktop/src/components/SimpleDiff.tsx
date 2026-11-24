@@ -31,7 +31,8 @@ export default function SimpleDiff(props: Props) {
 
 function ChangesContent({ scopeKey, selection, reader }: Props) {
   // The Git panel chooses a commit; it opens here, in place of a change's diff.
-  const history = useChosenCommit()
+  const chosen = useChosenCommit()
+  const history = chosen?.selection ?? null
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const task = useStore((s) => s.activeTask)
   const title = useStore((s) => s.tasks.find((t) => t.id === task)?.title)
@@ -144,7 +145,7 @@ function ChangesContent({ scopeKey, selection, reader }: Props) {
           })}
         </aside>
         {history ? (
-          <CommitDetails onSelect={setHistory} selection={history} worktree={reader.source?.path} />
+          <CommitDetails onSelect={setHistory} selection={history} worktree={chosen?.worktree} />
         ) : file && selected ? (
           <DiffView
             base={reader.base}

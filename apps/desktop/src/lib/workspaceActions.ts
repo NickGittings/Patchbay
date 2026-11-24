@@ -153,15 +153,15 @@ export function useWorkspaceActions(): WorkspaceAction[] {
       enabled: available,
       run: () => useStore.getState().setSimpleMode(!useStore.getState().simpleMode),
     },
-    ...(['project', 'worktree', 'auto', 'activity', 'stack', 'sessions', 'usage'] as const).map(
-      (panel): WorkspaceAction => ({
-        id: `panel-${panel}`,
-        title: `Open ${panel === 'auto' ? 'Auto mode' : panel} panel`,
-        group: 'workspace',
-        enabled: available || panel === 'project' || panel === 'sessions' || panel === 'usage',
-        run: () => selectPanel(panel),
-      }),
-    ),
+    ...(
+      ['project', 'worktree', 'git', 'auto', 'activity', 'stack', 'sessions', 'usage'] as const
+    ).map((panel): WorkspaceAction => ({
+      id: `panel-${panel}`,
+      title: `Open ${panel === 'auto' ? 'Auto mode' : panel === 'git' ? 'Git' : panel} panel`,
+      group: 'workspace',
+      enabled: available || panel === 'project' || panel === 'sessions' || panel === 'usage',
+      run: () => selectPanel(panel),
+    })),
   ]
 }
 export function runWorkspaceAction(action: WorkspaceAction | undefined) {

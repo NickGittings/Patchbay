@@ -12,6 +12,7 @@ import {
   useChosenCommit,
   useSyncEntry,
   useSyncScope,
+  retryRepos,
 } from '../../lib/gitSync'
 import { activeWorktree } from '../../lib/tasks'
 import CommitHistory from '../changes/CommitHistory'
@@ -32,8 +33,9 @@ const BUSY: Record<SyncAction, string> = {
 export default function GitPanel() {
   const { scope, entry } = useSyncEntry()
   const repos = useSyncScope((s) => s.repos)
+  const reposError = useSyncScope((s) => s.reposError)
   const worktree = useStore(activeWorktree)
-  const selected = useChosenCommit()
+  const selected = useChosenCommit()?.selection ?? null
   const { status, busy } = entry
   const error = entry.error ?? entry.statusError
   // Opening the panel fetches once when the last fetch is stale, so the counts mean something.
@@ -53,6 +55,12 @@ export default function GitPanel() {
   }, [key, loaded])
 
   if (!scope) {
+    if (reposError)
+      return (
+        <div className="hint git-sync-error" role="alert">
+          {reposError} <button onClick={retryRepos}>Retry</button>
+        </div>
+      )
     if (repos && !repos.length) return <p className="panel-empty">No Git repository.</p>
     return <PanelStatus compact kind="loading" message="Loading repository…" />
   }
@@ -60,6 +68,8 @@ export default function GitPanel() {
   const upstream = status?.upstream
   const branch = status?.branch
   const missing = status?.missingUpstream
+  const pushTo = status?.pushTo
+  const publish = !!pushTo && status?.unpushed === null
   const diverged = !!status && status.ahead > 0 && status.behind > 0
   return (
     <div className="git-panel">
@@ -97,12 +107,20 @@ export default function GitPanel() {
         </div>
         {status ? (
           <div className="git-sync-counts" data-diverged={diverged || undefined}>
-            <span aria-label={`${status.ahead} to push`} title="Commits to push">
+            <span
+              aria-label={`${status.ahead} ahead of the upstream`}
+              title={upstream ? `Commits ${upstream} doesn't have` : 'No upstream'}
+            >
               ↑ {status.ahead}
             </span>
             <span aria-label={`${status.behind} to pull`} title="Commits to pull">
               ↓ {status.behind}
             </span>
+            {pushTo && pushTo !== upstream && status.unpushed !== null && (
+              <span title={`Commits ${pushTo} doesn't have`}>
+                {status.unpushed} to {pushTo}
+              </span>
+            )}
             <small>
               {busy === 'fetch'
                 ? 'Fetching…'
@@ -142,28 +160,20 @@ export default function GitPanel() {
           </button>
           <button
             className="primary"
-            disabled={
-              !!busy ||
-              !branch ||
-              !status?.remote ||
-              !!missing ||
-              (!!upstream && !status?.ahead) ||
-              diverged
-            }
+            disabled={!!busy || !pushTo || !!status?.pushBehind || (!publish && !status?.unpushed)}
             title={
-              !branch
-                ? 'Check out a branch to push'
-                : missing
-                  ? `${missing} no longer exists; fetch, or push from a terminal`
-                  : !status?.remote
-                    ? 'No remote is configured'
-                    : upstream
-                      ? `Push to ${upstream}`
-                      : `Publish ${branch} to ${status.remote}`
+              !status
+                ? undefined
+                : (status.pushRefused ??
+                  (status.pushBehind
+                    ? `${pushTo} has commits this branch doesn't; pull first`
+                    : publish
+                      ? `Publish ${branch} to ${pushTo}`
+                      : `Push to ${pushTo}`))
             }
             onClick={() => run('push')}
           >
-            {busy === 'push' ? BUSY.push : upstream || !status?.remote ? 'Push' : 'Publish branch'}
+            {busy === 'push' ? BUSY.push : publish && !upstream ? 'Publish branch' : 'Push'}
           </button>
         </div>
         {error && !busy && (

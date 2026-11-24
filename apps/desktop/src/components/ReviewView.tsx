@@ -50,7 +50,8 @@ const WORKTREE_POLL_MS = 5000
  */
 export default function ReviewView() {
   // The Git panel chooses a commit; it opens here, in place of a change's diff.
-  const history = useChosenCommit()
+  const chosen = useChosenCommit()
+  const history = chosen?.selection ?? null
   const revision = useStore((s) => s.gitChanges)
   const nodes = useStore((s) => s.nodes)
   // Selecting or dragging replaces nodes and edges; refetch only when folders or links change.
@@ -543,7 +544,11 @@ export default function ReviewView() {
             <Panel id="ReviewView-pane-2" defaultSize="62" minSize="30">
               <div ref={pane === 'findings' ? undefined : diffPane} className="review-pane">
                 {history && pane === 'diff' ? (
-                  <CommitDetails onSelect={setHistory} selection={history} worktree={target} />
+                  <CommitDetails
+                    onSelect={setHistory}
+                    selection={history}
+                    worktree={chosen?.worktree}
+                  />
                 ) : pane === 'findings' ? (
                   <FindingsPanel
                     loaded={findings}

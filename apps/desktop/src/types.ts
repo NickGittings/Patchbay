@@ -492,8 +492,16 @@ export interface SyncStatus {
   remote: string | null
   ahead: number
   behind: number
-  /** Unix milliseconds of the last fetch. */
+  /** Unix milliseconds of this checkout's last fetch. */
   lastFetchMs: number | null
+  /** Where Push sends the branch, such as `fork/feature`; `null` when it can't. */
+  pushTo: string | null
+  /** Why Push would be refused. */
+  pushRefused: string | null
+  /** Commits the push target lacks; `null` when it doesn't exist yet, so Push publishes. */
+  unpushed: number | null
+  /** Commits on the push target the branch lacks, so a push would be rejected. */
+  pushBehind: number
 }
 
 /** `remote::SyncAction`. */
