@@ -1,4 +1,4 @@
-// A feature branch in the primary checkout can merge into local main without another worktree.
+// A feature branch in the primary checkout can merge into local main when main has no checkout yet.
 ;(async () => {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const until = async (label, check, timeout = 25000) => {
@@ -46,7 +46,8 @@
       adapter: 'codex',
       command: `'${parent}/review-cli/codex'`,
     }
-    state().setDevices([merge, review])
+    const lead = { ...review, id: 'lead-smoke', name: 'Lead fixture', command: `'${parent}/codex'` }
+    state().setDevices(chat ? [merge, review, lead] : [merge, review])
     state().setAgentRoles({ merge: [merge.id], review: [review.id] })
     await smoke.syncCurrentRoots()
     const original = await smoke.gitWorktrees(project.projectId)
@@ -55,80 +56,30 @@
       'fixture must have only a primary feature checkout',
     )
     const originalHead = original[0].head
+    state().setSimpleMode(false)
+    state().setView('review')
     if (chat) {
-      state().setSimpleMode(true)
-      await until('Chat mounted', () => visible('.simple-chat'))
-      smoke.simpleUi.getState().patch(smoke.simpleKey(project.projectId, null), { changes: true })
-      await until('initial committed comparison loaded', () =>
-        visible('.simple-diff .change-row[data-path="shared.txt"]'),
+      const start = await until('Review branch enabled', () =>
+        visible('.review-agent-button:not(:disabled)'),
       )
-      // Seed a completed Build so Review must choose its own base, before any saved findings.
-      const atMs = Date.now()
-      const built = {
-        id: 'fixture-build',
-        metadata: {
-          projectId: project.projectId,
-          projectRoot: root,
-          projectName: project.name,
-          componentId: '@task',
-          terminalId: 'fixture-build',
-          task: null,
-          name: 'Build fixture',
-          kind: 'agent',
-        },
-        spec: { cwd: root, command: review.command },
-        snapshot: { generation: 1, running: false, startedMs: atMs, exitCode: 0 },
-        history: [],
-      }
-      smoke.store.setState({ sessionRecords: [...state().sessionRecords, built] })
-      state().patchTask(project.projectId, null, {
-        simple: {
-          ...state().simple,
-          log: [
-            {
-              id: 'fixture-build',
-              kind: 'action',
-              action: 'implement',
-              stage: 'build',
-              sessionId: built.id,
-              generation: 1,
-              atMs,
-            },
-          ],
-        },
-      })
-      const start = await until('Chat Review enabled', () => {
-        const b = button('Review', visible('.simple-step') ?? document)
-        return b && !b.disabled && b
-      })
       start.click()
-      const reviewer = await until('Chat review starts without Options', () =>
+      const form = await until('review dialog with loaded base', () => {
+        const form = visible('[role="dialog"][aria-label="Start review agent"] form')
+        return form?.querySelector('[aria-label="Base branch"]').value && form
+      })
+      assert(form.querySelector('[aria-label="Base branch"]').value === 'main', 'wrong review base')
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      const reviewer = await until('review launched', () =>
         state().sessionRecords.find((r) => r.metadata.componentId === '@review'),
       )
-      const sid = reviewer.id
       await until('review findings written', () =>
-        smoke.terminalText(sid).text.includes('review-verified'),
+        smoke.terminalText(reviewer.id).text.includes('review-verified'),
       )
-      state().patchTask(project.projectId, null, {
-        simple: {
-          ...state().simple,
-          selectedAgent: sid,
-          log: [
-            ...(state().simple?.log ?? []),
-            {
-              id: 'fixture-review',
-              kind: 'action',
-              action: 'review',
-              stage: 'review',
-              sessionId: sid,
-              generation: state().sessions[sid].generation,
-              atMs: Date.now(),
-            },
-          ],
-        },
-      })
-      await smoke.terminalStop(sid)
+      await smoke.terminalStop(reviewer.id)
       await smoke.reconcileSessions()
+      state().setView('navigation')
+      state().setSimpleMode(true)
+      await until('Chat mounted', () => visible('.simple-chat'))
       const finding = await until('review finding file link', () => visible('.finding-ref'))
       finding.click()
       await until(
@@ -141,45 +92,61 @@
         !visible('.simple-diff').textContent.includes('Diff unavailable'),
         'finding did not resolve after the review comparison reloaded',
       )
-      const anyway = await until('Merge anyway with review findings', () => button('Merge anyway'))
-      assert(!anyway.disabled, 'Merge anyway disabled without a destination checkout')
-      anyway.click()
-    } else {
-      state().setSimpleMode(false)
-      state().setView('review')
-      const start = await until('Review merge enabled', () => {
-        const b = visible('.review-merge-button')
-        return b && !b.disabled && b
+      assert(!visible('.simple-step'), 'workflow card remains in Chat')
+      await smoke.agentHooksConfigure('codex', true)
+      smoke.store.setState({
+        workspaceSettings: { ...state().workspaceSettings, chatAgent: lead.id },
       })
-      start.click()
     }
-    const form = await until('shared branch dialog', () =>
-      visible(
-        chat
-          ? '[role="dialog"][aria-label="Merge"] form'
-          : '[role="dialog"][aria-label="Start merge agent"] form',
-      ),
-    )
-    assert(
-      form.querySelector('[aria-label="Source worktree"]').value === root,
-      'dialog changed the reviewed source',
-    )
-    const destinations = form.querySelector('[aria-label="Destination branch"]')
-    assert(destinations.value === 'main', 'main was not the default destination')
-    assert(
-      destinations.selectedOptions[0].textContent.includes('Create worktree'),
-      'new checkout not explained',
-    )
-    assert(
-      ![...destinations.options].some((o) => o.value === 'feature'),
-      'source branch offered as destination',
-    )
-    assert(
-      (await smoke.gitWorktrees(project.projectId)).length === 1,
-      'opening dialog created a checkout',
-    )
     const beforeLog = [...(state().simple?.log ?? [])]
-    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    if (chat) {
+      const composer = document.querySelector('.simple-composer textarea')
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(
+        composer,
+        'Merge the fixture branch',
+      )
+      composer.dispatchEvent(new Event('input', { bubbles: true }))
+      const send = await until('Send merge request', () => {
+        const send = button('Send', composer.closest('.simple-composer'))
+        return send && !send.disabled && send
+      })
+      send.click()
+      await until('lead issued merge request', () => {
+        const team = smoke.chatTeams
+          .getState()
+          .teams[project.projectId]?.find((t) => t.task === null)
+        const request = team?.requests.find((r) => r.id === 'fixture-merge')
+        if (request?.state === 'failed') throw new Error(request.result)
+        return request
+      })
+    } else {
+      const start = await until('Review merge enabled', () =>
+        visible('.review-merge-button:not(:disabled)'),
+      )
+      start.click()
+      const form = await until('shared branch dialog', () =>
+        visible('[role="dialog"][aria-label="Start merge agent"] form'),
+      )
+      assert(
+        form.querySelector('[aria-label="Source worktree"]').value === root,
+        'dialog changed the reviewed source',
+      )
+      const destinations = form.querySelector('[aria-label="Destination branch"]')
+      assert(destinations.value === 'main', 'main was not the default destination')
+      assert(
+        destinations.selectedOptions[0].textContent.includes('Create worktree'),
+        'new checkout not explained',
+      )
+      assert(
+        ![...destinations.options].some((o) => o.value === 'feature'),
+        'source branch offered as destination',
+      )
+      assert(
+        (await smoke.gitWorktrees(project.projectId)).length === 1,
+        'opening dialog created a checkout',
+      )
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    }
     const record = await until('destination merge launched', () =>
       state().sessionRecords.find((r) => r.metadata.componentId === '@merge'),
     )
@@ -218,6 +185,7 @@
           (e) =>
             e.kind === 'action' &&
             e.action === 'merge' &&
+            e.origin === 'lead' &&
             e.request?.destination === record.spec.cwd,
         ),
         'Chat did not log resolved request',
@@ -382,7 +350,7 @@
     )
   } catch (error) {
     await smoke.report(
-      `FAIL merge-branches: ${error?.message ?? error} ${error?.stack ?? ''}; message=${state().message}; step=${visible('.simple-step')?.textContent}; chat=${visible('.simple-chat')?.textContent.slice(-1600)}`,
+      `FAIL merge-branches: ${error?.message ?? error} ${error?.stack ?? ''}; message=${state().message}; stages=${visible('.chat-stepper')?.textContent}; chat=${visible('.simple-chat')?.textContent.slice(-1600)}`,
     )
   } finally {
     stopAnswering()

@@ -2602,8 +2602,8 @@ pub fn reconcile(
                         "Existing agent {} reached a ready prompt or exited. Inspect its results and validation before treating the work as complete.",
                         record.metadata.name
                     );
-                    // The step card already reports work the user started from it, and a merge
-                    // ends the task: neither is a reason for the lead to start a turn.
+                    // Chat already shows directly launched stages, and a merge ends the task.
+                    // Both notices can wait for the lead's next turn.
                     t.noted_since.remove(&record.id);
                     let noted = t.noted_agents.remove(&record.id);
                     if noted || record.metadata.component_id == crate::model::MERGE_SCOPE {
@@ -5526,7 +5526,7 @@ mod tests {
         assert!(settled.id.starts_with("external-finished-quick") && settled.passive);
         records.pop();
 
-        // An agent the user did not start from the step card still wakes the lead.
+        // An agent that was not announced to the lead still wakes it.
         finish("stranger", &mut records);
         let t = f.state();
         let notice = t.messages.last().unwrap();

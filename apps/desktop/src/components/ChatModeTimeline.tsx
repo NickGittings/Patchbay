@@ -28,9 +28,10 @@ interface TimelineProps {
   revealed: ReturnType<typeof useStore.getState>['revealed']
   terminal: SimpleUi['terminal']
   data: Reader['data']
+  mergeStatus?: string
+  retryMergeStatus?: () => void
   source: Reader['source']
   findings: Reader['findings']
-  pending: string
   failure?: Error
   openFile: (path: string, line?: number) => void
   openDiff: (file: SimpleDiff) => void
@@ -46,9 +47,10 @@ export default function ChatModeTimeline({
   revealed,
   terminal,
   data,
+  mergeStatus,
+  retryMergeStatus,
   source,
   findings,
-  pending,
   failure,
   openFile,
   openDiff,
@@ -56,7 +58,6 @@ export default function ChatModeTimeline({
   const inputKey = JSON.stringify(questions)
   const runningReview = useRunningReviewLanes(source?.branch)
   const grouped = sections(items, model.records)
-  const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
   // What can grow the thread, without serializing its records or reply texts on every render.
   const replies = model.items.flatMap((item) =>
     item.kind === 'agent'
@@ -84,6 +85,7 @@ export default function ChatModeTimeline({
     state.prompt,
     inputKey,
     data?.outcome,
+    mergeStatus,
   ])
   const { threadRef, following, unread, jump, onScroll } = useChatFollow(
     key,
@@ -179,10 +181,17 @@ export default function ChatModeTimeline({
               ) : null
             return (
               <p className="simple-narration" key={item.id}>
-                {data?.outcomeError ??
+                {mergeStatus ??
+                  data?.outcomeError ??
                   (data?.outcome === 'inProgress'
                     ? 'Merge in progress…'
                     : 'Waiting for the merge outcome…')}
+                {retryMergeStatus && (
+                  <>
+                    {' '}
+                    <button onClick={retryMergeStatus}>Retry status</button>
+                  </>
+                )}
               </p>
             )
           })
@@ -217,11 +226,6 @@ export default function ChatModeTimeline({
             />
           )
         })}
-        {launching && (
-          <p className="simple-narration" role="status">
-            Starting {pending === 'build' ? 'build' : pending}…
-          </p>
-        )}
         {failure && <WorkFeedback error={failure} />}
       </div>
       {!following && (

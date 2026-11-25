@@ -774,7 +774,7 @@ async function driveLeadRequests(team: ChatTeam) {
 /**
  * Tell the lead about work the user started with Chat's workflow buttons, so it neither repeats
  * nor contradicts it. The note and the finish of `sessions` wait for the lead's next coordination
- * delivery rather than starting a turn: the step card already reports them. Best effort: the
+ * delivery rather than starting a turn: Chat already shows the stage results. Best effort: the
  * launch already happened.
  */
 export async function noteLead(

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { AutoRun, AutoStage, SessionRecord } from '../types'
+import type { ChatTeam } from './chatTeams'
 import type { SimpleEntry, SimpleState } from './simple'
 import type { FlowSnapshot } from './simpleFlow'
 import { autoCurrent, autoStepper, stageModel } from './stageModel'
@@ -152,6 +153,20 @@ describe('stageModel', () => {
     auto,
     worktree: { projectId: 'p', task: null, path: '/p' },
     now: 1_000_000,
+  })
+  test('the strip shows Lead deciding while the lead handles a finished stage', () => {
+    const input = snapshot(null, [{ ...launch('manual'), origin: 'lead' } as SimpleEntry])
+    input.sessions.reviewer.running = false
+    input.lead = 'lead'
+    const team = { state: 'running', lead: { sessionId: 'lead' } } as ChatTeam
+    input.sessions.lead = {
+      running: true,
+      status: { agent: { state: 'working' } },
+    } as FlowSnapshot['sessions'][string]
+
+    const model = stageModel({ snapshot: input, team })
+    expect(model.driver).toBe('lead')
+    expect(model.stepper.find((item) => item.stage === 'review')?.note).toBe('Lead deciding')
   })
   test('while Auto runs, Chat’s strip is the Auto panel’s', () => {
     for (const stage of STAGES) {

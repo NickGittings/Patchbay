@@ -38,7 +38,9 @@ export function useTeamWork(team: ChatTeam | undefined) {
   const restartNotice = team?.error === RESTART_NOTICE
   const issues = {
     teamError: !!team?.error && !restartNotice,
-    requests: (team?.requests ?? []).filter((r) => ['failed', 'uncertain'].includes(r.state)),
+    // A failed request's result goes to the lead, which reports it; only an unconfirmed one needs
+    // the user to check what happened.
+    requests: (team?.requests ?? []).filter((r) => r.state === 'uncertain'),
     messages: (team?.messages ?? []).filter((m) => m.state === 'uncertain'),
   }
   // Reads the store at click time, so quick successive dismissals never overwrite each other,

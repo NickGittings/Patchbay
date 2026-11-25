@@ -36,7 +36,6 @@
       button(text, document.querySelector('[role="menu"]') ?? document),
     )
   }
-  const confirmDialog = (title) => document.querySelector(`[role="dialog"][aria-label="${title}"]`)
   const click = (el) => {
     assert(el, 'missing click target')
     const details = el.closest('details')
@@ -50,7 +49,7 @@
     el.dispatchEvent(new Event('input', { bubbles: true }))
   }
   const chatText = () => document.querySelector('.simple-thread')?.textContent ?? ''
-  const workflowText = () => document.querySelector('.simple-step')?.textContent ?? ''
+  const workflowText = () => document.querySelector('.chat-stepper')?.textContent ?? ''
   const inChat = () => assert(state().simpleMode && state().view === 'navigation', 'flow left Chat')
   try {
     await smoke.resizeWindow(1440, 900)
@@ -117,17 +116,28 @@
       simple: { ...state().simple, selectedAgent: plannerRecord.id },
     })
     await until('planner selected', () => state().simple?.selectedAgent === plannerRecord.id)
-    // Adopt the legacy manual session, then release coordination for this workflow fixture.
+    const team = () =>
+      smoke.chatTeams.getState().teams[projectId]?.find((t) => t.task === state().activeTask)
     await smoke.refreshChatTeams(projectId)
-    click(await chatMenu('Stop work'))
-    click(button('Stop work', await until('stop confirmation', () => confirmDialog('Stop work'))))
-    await until(
-      'coordination stopped for manual workflow',
-      () =>
-        smoke.chatTeams.getState().teams[projectId]?.find((t) => t.task === state().activeTask)
-          ?.state === 'stopped',
-    )
+    await until('planner adopted as lead', () => team()?.lead.sessionId === plannerRecord.id)
+    if (team().state === 'paused') click(await chatMenu('Continue work'))
+    await until('coordination running', () => team()?.state === 'running')
     const composer = document.querySelector('[aria-label="Message agent"]')
+    const requestStage = async (id, { waitForResult = true } = {}) => {
+      const textarea = document.querySelector('.simple-composer:not([hidden]) textarea')
+      input(textarea, `smoke-stage ${id}`)
+      click(
+        await until(`send ${id}`, () => {
+          const send = button('Send', textarea.closest('.simple-composer'))
+          return send && !send.disabled && send
+        }),
+      )
+      await until(`lead workflow ${id}`, () => {
+        const request = team()?.requests.find((request) => request.id === id)
+        if (request?.state === 'failed') throw new Error(`${id}: ${request.result}`)
+        return waitForResult ? request?.state === 'completed' : request
+      })
+    }
     for (const options of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
       const enter = new KeyboardEvent('keydown', {
         key: 'Enter',
@@ -225,24 +235,13 @@
       ),
     )
     await until('planner reply', () => chatText().includes('I planned the fixture feature'))
-    const actionCard = await until('saved plan actions', () => {
-      const card = document.querySelector('.simple-step')
-      return chatText().includes('Simple fixture plan') && card && button('Build', card) && card
-    })
-    const chatThread = document.querySelector('.simple-thread')
-    const chatComposer = document.querySelector('.simple-composer')
-    assert(actionCard.tagName === 'SECTION', 'workflow actions still use a dropdown')
-    assert(!chatThread.contains(actionCard), 'workflow actions remain inside the conversation')
-    assert(
-      actionCard.nextElementSibling === chatComposer,
-      'workflow actions are not anchored above the composer',
+    await until(
+      'saved plan and stage strip',
+      () => chatText().includes('Simple fixture plan') && workflowText().includes('Build'),
     )
-    const cardBounds = actionCard.getBoundingClientRect()
-    assert(
-      cardBounds.bottom <= chatComposer.getBoundingClientRect().top && cardBounds.height > 0,
-      'workflow action card overlaps the composer',
-    )
-    assert(button('Build', actionCard).getBoundingClientRect().height > 0, 'Build is hidden')
+    assert(!document.querySelector('.simple-step'), 'workflow card remains in Chat')
+    assert(!button('Review options'), 'Review options remain in Chat')
+    assert(!document.querySelector('.chat-stepper button'), 'stage strip still shows actions')
     inChat()
     const planner = state().simple.log.find((e) => e.kind === 'prompt').sessionId
     assert(
@@ -268,37 +267,17 @@
       document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm'),
     )
     await smoke.report('INFO simple: planner input and repeated reveals passed')
-    click(button('Build', document.querySelector('.simple-step')))
-    await until('worktree build done', () => {
-      const failure = document.querySelector('.simple-thread [role="alert"]')
-      if (failure) throw new Error(`Build failed: ${failure.textContent}`)
-      return workflowText().includes('Building done.')
-    })
-    click(
-      await until('review options above composer', () =>
-        document.querySelector('.simple-step [aria-label="Review options"]:not(:disabled)'),
-      ),
+    click(button('Close terminal', document.querySelector('.chat-terminal-panel')))
+    await until('composer visible after closing the drawer', () =>
+      document.querySelector('.simple-composer:not([hidden])'),
     )
-    const reviewOptions = await until('review base picker', () =>
-      document.querySelector('[role="dialog"][aria-label="Review"] form'),
-    )
-    assert(reviewOptions.querySelector('[aria-label="Base branch"]'), 'missing review base picker')
-    assert(reviewOptions.textContent.includes('Agents: Simple agent'), 'default agent is hidden')
-    assert(!reviewOptions.querySelector('[aria-label="Agent"]'), 'agent picker should start closed')
-    assert(!reviewOptions.querySelector('code'), 'compact review shows the source path')
-    click(button('Change', reviewOptions))
-    await until('review agent picker expanded', () =>
-      reviewOptions.querySelector('[aria-label="Agent"]'),
-    )
-    click(button('Done', reviewOptions))
-    await until(
-      'review agent picker collapsed',
-      () => !reviewOptions.querySelector('[aria-label="Agent"]'),
-    )
-    assert(reviewOptions.textContent.includes('Agents: Simple agent'), 'agent summary disappeared')
-    click(button('Cancel', reviewOptions))
-    await until('review options closed', () => !document.querySelector('[role="dialog"]'))
+    await requestStage('build')
+    await until('build reply', () => chatText().includes('Built the fixture feature.'))
     inChat()
+    click(button('View Lead terminal', document.querySelector('.simple-composer')))
+    await until('planner drawer reopened', () =>
+      document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm'),
+    )
     const task = state().activeTask
     assert(task, 'Build did not create a worktree')
     await dragChat(-70)
@@ -510,12 +489,8 @@
     click(button('Map'))
     await smoke.terminalWrite(builder, 'smoke-clean\n')
     await until('only committed change remains', () => button('Changes 1'))
-    click(button('Review', document.querySelector('.simple-step')))
-    await until(
-      'review findings',
-      () => workflowText().includes('1 issues found.') && button('Fix'),
-    )
-    await until('review retired the finished builder', () => !state().sessions[builder]?.running)
+    await requestStage('review')
+    await until('review findings', () => document.querySelector('.simple-result .finding-ref'))
     inChat()
     click(
       await until('finding file reference', () =>
@@ -571,42 +546,17 @@
     assert(state().simple.selectedAgent === planner, 'reviewer View changed selected agent')
     click(button('Close terminal', document.querySelector('.chat-terminal-panel')))
     await until('reviewer drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
-    let flashed = false
-    const monitor = new MutationObserver(() => {
-      if (!workflowText().includes('Fixes done.')) return
-      const action = state().simple?.log.findLast((e) => e.action === 'fix')
-      if (!action || !state().sessionRecords.some((r) => r.id === action.sessionId)) flashed = true
-    })
-    monitor.observe(document.querySelector('.simple-chat'), {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    })
     await smoke.report('INFO simple: changes and review passed')
-    const launchedBy = (action) => state().simple.log.findLast((e) => e.action === action).sessionId
-    const finishedReviewer = launchedBy('review')
-    click(button('Fix'))
-    await until('fix done', () => workflowText().includes('Fixes done.'))
-    monitor.disconnect()
-    assert(!flashed, 'Fixes done flashed before the fix session existed')
-    await until(
-      'fix retired the finished reviewer',
-      () => !state().sessions[finishedReviewer]?.running,
-    )
-    const fixer = launchedBy('fix')
-    click(button('Review again'))
-    await until('clean follow-up review', () =>
-      workflowText().includes('No issues. Merge into main?'),
-    )
-    await until('review retired the finished fixer', () => !state().sessions[fixer]?.running)
-    // Merge checks conflicts and, with none, starts the merge agent in the same click.
-    click(button('Merge'))
-    await until('merge started without a second click', () =>
+    await requestStage('fix')
+    await until('fix reply', () => chatText().includes('Fixed the review finding.'))
+    await requestStage('review-again')
+    await until('clean follow-up review', () => chatText().includes('The review is clean.'))
+    await requestStage('merge', { waitForResult: false })
+    await until('lead merge recorded', () =>
       [...(state().simple.retainedWorkflow ?? []), ...state().simple.log].some(
-        (e) => e.action === 'merge',
+        (e) => e.action === 'merge' && e.origin === 'lead',
       ),
     )
-    assert(!workflowText().includes('No conflicts'), 'Merge asked a second time')
     // The timeline narrates the merge until the confirmed merge into main clears Chat.
     await until(
       'merged',
@@ -635,16 +585,26 @@
     )
     await smoke.terminalStop(merger)
     await until('merge agent stopped', () => !state().sessions[merger]?.running)
-    // Runs launched outside Chat have no block to scroll to. View must keep their output open
-    // even after a successful or failed exit, and consume the reveal without claiming the run.
+    // Release the preserved lead's planner slot before testing fresh runs outside Chat.
+    if (state().sessions[planner]?.running) await smoke.terminalStop(planner)
+    await until(
+      'lead stopped for external planner checks',
+      () => !state().sessions[planner]?.running,
+    )
+    // View must keep an external run's output open after exit without claiming the run.
     for (const exitCode of [0, 1]) {
+      const previousGeneration = state().sessions[planner]?.generation
       await smoke.startTerminal('@plan', fake.id, task, projectId)
-      await until(
-        'external planner ready',
-        () =>
-          state().sessions[planner]?.running &&
-          state().sessions[planner]?.status?.agent?.state === 'idle',
-      )
+      await until('external planner ready', () => {
+        const session = state().sessions[planner]
+        const agent = session?.status?.agent
+        return (
+          session?.running &&
+          session.generation !== previousGeneration &&
+          agent?.authoritative &&
+          ['idle', 'review'].includes(agent.state)
+        )
+      })
       await smoke.terminalWrite(planner, `smoke-exit-${exitCode}\n`)
       await until('external planner exited', () => !state().sessions[planner]?.running)
       click(document.querySelector('[aria-label="Hide chat"]'))
@@ -739,7 +699,7 @@
       'old replies returned after remount',
     )
     await smoke.report(
-      'PASS simple: chat resize/hide/show and worktree widths, Enter queues and delivers, Changes tab/Map, collapsed history, no Fix flash, one conversation, plan/build/review/fix/merge, automatic Chat cleanup without terminal reset, drawer input waits and persisted clear',
+      'PASS simple: chat resize/hide/show and worktree widths, Enter queues and delivers, Changes tab/Map, collapsed history, lead launches Build/Review/Fix/Merge in one conversation, automatic Chat cleanup without terminal reset, drawer input waits and persisted clear',
     )
   } catch (e) {
     await smoke.report(

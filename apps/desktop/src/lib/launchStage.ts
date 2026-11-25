@@ -11,7 +11,7 @@ import { recordStageLaunch, type StageLaunch } from './stageRecord'
 /** The agent already runs, so a failure to record it never reports the launch as failed. */
 const recordQuietly = (launch: StageLaunch) => recordStageLaunch(launch).catch(() => {})
 
-/** Build the saved plan, from Chat's Build or the Plan view's Implement. */
+/** Build the saved plan from the Plan view. */
 export async function launchBuild(
   origin: 'chat' | 'manual',
   planner: string,
@@ -26,7 +26,7 @@ export async function launchBuild(
   return launched
 }
 
-/** Fix a review's findings in its worktree, from Chat's Fix or the findings' Fix in Build. */
+/** Fix a review's findings in its worktree. */
 export async function launchFix(
   origin: 'chat' | 'manual',
   reviewer: SessionRecord,
@@ -78,7 +78,7 @@ export async function launchReview(
 }
 
 /**
- * Merge from Chat or the Review view through the shared preflight. Only a merge that started is
+ * Merge from the Review view through the shared preflight. Only a merge that started is
  * recorded; conflicts and uncommitted changes come back for the caller to show.
  */
 export async function launchMerge(

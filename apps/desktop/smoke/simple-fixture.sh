@@ -20,6 +20,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import tty
@@ -27,7 +28,10 @@ tty.setcbreak(sys.stdin.fileno())
 
 journal = pathlib.Path(os.environ['PATCHBAY_REPORT_DIR'])
 body = pathlib.Path(os.environ['PATCHBAY_CONTEXT_FILE']).read_text()
-conversation = str(uuid.uuid4())
+conversation = sys.argv[2] if len(sys.argv) > 2 and sys.argv[1] == 'resume' else str(uuid.uuid4())
+history = pathlib.Path(os.environ['CODEX_HOME']) / 'sessions' / (conversation + '.jsonl')
+history.parent.mkdir(parents=True, exist_ok=True)
+history.write_text('{}\n')
 turn = str(uuid.uuid4())
 sequence = 0
 
@@ -75,6 +79,10 @@ def work():
     print('simple-work-finished', flush=True)
 
 report('SessionStart')
+if any('Reply ‘Ready’' in arg for arg in sys.argv[1:]):
+    report('UserPromptSubmit')
+    time.sleep(.4)
+    report('Stop', last_assistant_message='Ready')
 print('simple-ready', flush=True)
 if os.environ.get('PATCHBAY_COMPONENT') != 'plan':
     work()
@@ -92,6 +100,18 @@ for line in sys.stdin:
     if line.strip().startswith('[Patchbay message'):
         report('UserPromptSubmit')
         report('Stop', last_assistant_message='The lead retained coordination context.')
+        continue
+    if line.startswith('smoke-stage '):
+        request = line.split()[1]
+        action = {'build': 'startBuild', 'review': 'startReview', 'fix': 'startFix',
+                  'review-again': 'startReview', 'merge': 'startMerge'}[request]
+        report('UserPromptSubmit')
+        with tempfile.NamedTemporaryFile(mode='w') as settings:
+            json.dump({}, settings)
+            settings.flush()
+            subprocess.run([os.environ['PATCHBAY_CLI'], 'agent', 'team-request', '--id', request,
+                            '--action', action, '--file', settings.name], check=True)
+        report('Stop', last_assistant_message=f'Requested {request}.')
         continue
     if line.strip() == 'smoke-changes':
         report('UserPromptSubmit')

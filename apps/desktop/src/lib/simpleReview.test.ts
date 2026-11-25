@@ -12,7 +12,7 @@ vi.mock('./reviewAgents', () => ({
 }))
 const ipc = await import('./ipc')
 const agents = await import('./reviewAgents')
-const { simpleReviewRequest, startSimpleReview } = await import('./simpleReview')
+const { startSimpleReview } = await import('./simpleReview')
 const devices = [{ id: 'claude' } as DeviceManifest]
 const request = { worktree: '/t', branch: 'feature', base: 'main' }
 const snapshot = {
@@ -21,25 +21,6 @@ const snapshot = {
   status: { agent: { state: 'review', authoritative: true } },
 } as TerminalSnapshot
 
-test('Review explains missing worktrees, detached HEAD and unresolved bases', () => {
-  expect(() => simpleReviewRequest(undefined, 'main', ['main'])).toThrow('worktree to load')
-  expect(() => simpleReviewRequest({ path: '/t' }, 'main', ['main'])).toThrow('HEAD is detached')
-  expect(() => simpleReviewRequest({ path: '/t', branch: 'feature' }, undefined, [])).toThrow(
-    'Choose a review base in Options',
-  )
-  expect(simpleReviewRequest({ path: '/t', branch: 'feature' }, 'main', ['main'])).toEqual(request)
-})
-
-test('review again requires a new base when the saved branch was deleted or renamed', () => {
-  const source = { path: '/t', branch: 'feature' }
-  expect(simpleReviewRequest(source, 'release', ['feature', 'main', 'release'])).toEqual({
-    ...request,
-    base: 'release',
-  })
-  expect(simpleReviewRequest(source, 'release', ['feature', 'main'])).toBeUndefined()
-  expect(simpleReviewRequest(source, 'release', ['feature', 'main', 'renamed'])).toBeUndefined()
-  expect(simpleReviewRequest(source, 'feature', ['feature', 'main'])).toBeUndefined()
-})
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(agents.startReviewAgents).mockResolvedValue({ started: [], round: 'round', errors: [] })
@@ -166,6 +147,30 @@ test('a relaunched reviewer is hydrated before Chat records its kickoff generati
   expect(resultFlow.prompt).toBeUndefined()
 })
 
+beforeEach(() => {
+  vi.resetAllMocks()
+  vi.mocked(agents.startReviewAgents).mockResolvedValue({ started: [], round: 'round', errors: [] })
+  useStore.setState(useStore.getInitialState())
+  useStore.getState().loadProject({
+    projectId: 'p',
+    root: '/p',
+    name: 'P',
+    schemaVersion: 4,
+    components: [],
+    links: [],
+  })
+  useStore.setState({
+    sessionRecords: [
+      {
+        id: 'r',
+        metadata: { projectId: 'p', componentId: '@review' },
+        spec: { cwd: '/t' },
+        snapshot,
+        history: [],
+      } as unknown as SessionRecord,
+    ],
+  })
+})
 test('review again stops only the lanes the selected presets will reuse', async () => {
   const base = useStore.getState().sessionRecords[0]
   const records = [null, 'claude', 'codex', 'other'].map((lane) => ({

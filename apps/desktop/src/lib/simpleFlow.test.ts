@@ -7,19 +7,10 @@ import {
   forLead,
   leadDeciding,
   leadStarted,
-  stepCardHeading,
-  workflowPromptKey,
   type FlowSnapshot,
 } from './simpleFlow'
-import {
-  LAUNCH_RECORD_GRACE_MS,
-  pendingLaunch,
-  retryMergeBranch,
-  thread,
-  type SimpleState,
-} from './simple'
+import { LAUNCH_RECORD_GRACE_MS, pendingLaunch, thread, type SimpleState } from './simple'
 import type { AutoRun, ReviewFindings, SessionRecord, SessionState, WorkflowState } from '../types'
-import type { FlowAction } from './simpleFlow'
 import type { ChatTeam } from './chatTeams'
 import { stageModel } from './stageModel'
 
@@ -109,10 +100,6 @@ test('build, review, fix and merge prompts follow the latest turn and artifacts'
   expect(flow({ ...snapshot('@review'), findings: findings(true) }).prompt?.text).toBe(
     'No issues. Merge into main?',
   )
-  for (const paths of [[], ['src/a', 'src/b']])
-    expect(
-      flow({ ...snapshot('@review'), findings: findings(true), conflicts: paths }).prompt?.text,
-    ).toBe(paths.length ? 'Conflicts in src/a, src/b.' : 'No conflicts with main. Merge?')
   const fix = snapshot('@task')
   fix.simple!.log.push({
     id: 'fix',
@@ -156,7 +143,7 @@ test('Auto drives steps and renders its gates without launching manual actions',
   ).toBeUndefined()
 })
 
-test('review waits for every running lane and merge-anyway still checks conflicts', () => {
+test('review waits for every running lane before offering Fix or Merge', () => {
   const s = snapshot('@review')
   const other = { ...record('@review'), id: 'other' }
   s.records = [...s.records, other]
@@ -164,10 +151,14 @@ test('review waits for every running lane and merge-anyway still checks conflict
   s.findings = findings(false)
   expect(flow(s)).toMatchObject({ step: 'reviewing', busyAgent: { id: 'other' } })
   s.sessions.other = session('review')
-  s.conflicts = []
   expect(flow(s)).toMatchObject({
     step: 'reviewed',
-    prompt: { text: 'No conflicts with main. Merge?' },
+    prompt: {
+      actions: [
+        { action: 'fix', label: 'Fix' },
+        { action: 'checkMerge', label: 'Merge anyway' },
+      ],
+    },
   })
 })
 test('a later planning action supersedes an earlier merge outcome and completed Auto', () => {
@@ -440,51 +431,8 @@ test('merge status loading and failures never offer conflict recovery', () => {
     text: 'Merge status unavailable: The merge branches changed',
   })
   expect(flow({ ...s, outcome: 'notMerged' }).prompt?.actions[0].action).toBe('checkMerge')
-  expect(flow({ ...s, outcome: 'notMerged', conflicts: [] }).prompt?.actions[0].action).toBe(
-    'merge',
-  )
   for (const outcome of ['merged', 'alreadyIntegrated'] as const)
     expect(flow({ ...s, outcome }).step).toBe('merged')
-})
-
-test('prompt identity survives loading and activity, but changes for new attempts and scopes', () => {
-  const s = snapshot('@merge')
-  const key = (snapshot: FlowSnapshot) =>
-    workflowPromptKey(snapshot, thread(snapshot, snapshot.worktree), flow(snapshot))
-  const original = key(s)
-  expect(key({ ...s, outcomePending: true })).toBe(original)
-  expect(key({ ...s, outcomeError: 'Source worktree no longer exists' })).toBe(original)
-  expect(key({ ...s, sessions: { '@merge': session('working') } })).toBe(original)
-  expect(key({ ...s, outcome: 'merged' })).not.toBe(original)
-  const recovery = key({ ...s, outcome: 'notMerged' })
-  expect(recovery).not.toBe(original)
-  expect(key({ ...s, outcome: 'notMerged', conflicts: [] })).not.toBe(recovery)
-  expect(key({ ...s, worktree: { ...worktree, task: 'other' } })).not.toBe(original)
-  expect(key({ ...s, sessions: { '@merge': { ...session('review'), generation: 2 } } })).not.toBe(
-    original,
-  )
-  s.simple!.log.push({
-    id: 'attempt',
-    kind: 'action',
-    action: 'merge',
-    stage: 'merge',
-    atMs: 11,
-    sessionId: '@merge',
-    generation: 1,
-  })
-  const launched = key(s)
-  expect(key({ ...s, sessions: { '@merge': session('working') } })).toBe(launched)
-  expect(key({ ...s, sessions: { '@merge': { ...session('review'), generation: 2 } } })).not.toBe(
-    launched,
-  )
-  const replacement = {
-    ...record('@merge'),
-    id: 'new-merge',
-    snapshot: { ...record('@merge').snapshot!, generation: 1, startedMs: 100 },
-  }
-  expect(key({ ...s, records: [replacement], sessions: {} })).not.toBe(launched)
-  s.simple!.log.push({ ...s.simple!.log[0], id: 'next-attempt', atMs: 12 })
-  expect(key(s)).not.toBe(launched)
 })
 
 test('a build lead prompt advances a merged chat to the build stage', () => {
@@ -585,21 +533,6 @@ test('a saved prompt without a session still sets the stage', () => {
     mentions: [],
   })
   expect(thread(s, worktree).stage).toBe('build')
-})
-
-test('merging again targets the branch the dirty merge was launched for', () => {
-  const request = {
-    source: '/feature',
-    sourceBranch: 'feature',
-    destination: '/develop',
-    destinationBranch: 'develop',
-  }
-  const simple: SimpleState = {
-    startedMs: 0,
-    log: [{ id: 'merge', kind: 'action', action: 'merge', stage: 'merge', atMs: 1, request }],
-  }
-  expect(retryMergeBranch(simple, 'dirty')).toBe('develop')
-  expect(retryMergeBranch(simple, 'merged')).toBeUndefined()
 })
 
 const states = (items: ReturnType<typeof chatStepper>) =>
@@ -733,25 +666,10 @@ describe('chatStatus', () => {
   })
 })
 
-describe('step card', () => {
-  const heading = (...actions: FlowAction[]) =>
-    stepCardHeading({ text: '', actions: actions.map((action) => ({ action, label: action })) })
-  test('the heading names the stage its actions start, as the strip does', () => {
-    expect(heading('build', 'plan')).toBe('Build')
-    expect(heading('review')).toBe('Review')
-    expect(heading('fix', 'checkMerge')).toBe('Review and merge')
-    expect(heading('review', 'checkMerge')).toBe('Review and merge')
-    expect(heading('checkMerge')).toBe('Merge')
-    expect(heading('merge')).toBe('Merge')
-    expect(heading('mergeApproval')).toBe('Merge')
-    expect(heading('retryMergeStatus')).toBe('Merge')
-    expect(heading('resumeAuto')).toBe('Continue Auto mode')
-  })
-  test('a plan ready to build is headed Build, matching the strip’s ready stage', () => {
+describe('step prompts', () => {
+  test('a plan ready to build marks Build as the ready stage', () => {
     const ready = { ...prompted(snapshot('@plan')), plan: { text: 'new', cut: false, savedMs: 30 } }
-    const state = flow(ready)
-    expect(stepCardHeading(state.prompt)).toBe('Build')
-    expect(chatStepper(state.step).find((i) => i.state === 'ready')?.stage).toBe('build')
+    expect(chatStepper(flow(ready).step).find((i) => i.state === 'ready')?.stage).toBe('build')
   })
   test('a finished merge offers no actions', () => {
     expect(flow({ ...snapshot('@merge'), outcome: 'merged' }).prompt?.actions).toEqual([])

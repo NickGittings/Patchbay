@@ -57,7 +57,6 @@ export interface FlowSnapshot extends SimpleSnapshot {
   outcomeError?: string
   outcome?: MergeOutcome
   base?: string
-  conflicts?: string[]
   /** The time to judge a launch's missing record against; defaults to the current time. */
   now?: number
 }
@@ -114,18 +113,10 @@ export function flow(
     )
   const autoCurrent = auto && !['stopped', 'failed'].includes(auto.status) && !manualAfterAuto
   const base = (autoCurrent ? auto.merge.destinationBranch : snapshot.base) || 'base branch'
-  const mergePrompt = (): StepPrompt =>
-    snapshot.conflicts
-      ? {
-          text: snapshot.conflicts.length
-            ? `Conflicts in ${snapshot.conflicts.join(', ')}.`
-            : `No conflicts with ${base}. Merge?`,
-          actions: [button('merge', snapshot.conflicts.length ? 'Merge with agent' : 'Merge')],
-        }
-      : {
-          text: `No issues. Merge into ${base}?`,
-          actions: [button('checkMerge', 'Merge')],
-        }
+  const mergePrompt = (): StepPrompt => ({
+    text: `No issues. Merge into ${base}?`,
+    actions: [button('checkMerge', 'Merge')],
+  })
   const launch = pendingLaunch(snapshot, model.records, snapshot.now)
   if (!autoCurrent && launch)
     return {
@@ -145,7 +136,6 @@ export function flow(
       (snapshot.outcome === 'merged' || snapshot.outcome === 'alreadyIntegrated')) ||
     (auto?.status === 'done' && !manualAfterAuto)
   )
-    // No actions: the timeline narrates it and the step card stays away.
     return { step: 'merged', agent, prompt: { text: `Merged into ${base}.`, actions: [] } }
   if (auto && !['stopped', 'failed', 'done'].includes(auto.status)) {
     const step: SimpleStep = (
@@ -227,12 +217,10 @@ export function flow(
       agent,
       prompt:
         outcome === 'notMerged'
-          ? snapshot.conflicts
-            ? mergePrompt()
-            : {
-                text: 'Merge has not completed.',
-                actions: [button('checkMerge', 'Retry merge')],
-              }
+          ? {
+              text: 'Merge has not completed.',
+              actions: [button('checkMerge', 'Retry merge')],
+            }
           : {
               text: snapshot.outcomeError
                 ? `Merge status unavailable: ${snapshot.outcomeError}`
@@ -267,14 +255,12 @@ export function flow(
     return {
       step: 'reviewed',
       agent,
-      prompt: snapshot.conflicts
-        ? mergePrompt()
-        : !verdict.clean
-          ? {
-              text: `${issues} issues found. Fix them?`,
-              actions: [button('fix', 'Fix'), button('checkMerge', 'Merge anyway')],
-            }
-          : mergePrompt(),
+      prompt: !verdict.clean
+        ? {
+            text: `${issues} issues found. Fix them?`,
+            actions: [button('fix', 'Fix'), button('checkMerge', 'Merge anyway')],
+          }
+        : mergePrompt(),
     }
   }
   if (model.stage === 'build' && own && ended)
@@ -282,12 +268,10 @@ export function flow(
       ? {
           step: 'fixed',
           agent,
-          prompt: snapshot.conflicts
-            ? mergePrompt()
-            : {
-                text: 'Fixes done.',
-                actions: [button('review', 'Review again'), button('checkMerge', 'Merge')],
-              },
+          prompt: {
+            text: 'Fixes done.',
+            actions: [button('review', 'Review again'), button('checkMerge', 'Merge')],
+          },
         }
       : {
           step: 'built',
@@ -340,66 +324,6 @@ function isFix(snapshot: FlowSnapshot, agent: SessionRecord | undefined) {
   return action?.kind === 'action' ? action.action === 'fix' : !!agent.metadata.branch
 }
 
-/** Stable across artifact reloads and turn activity; a new workflow attempt gets a new key. */
-export function workflowPromptKey(
-  snapshot: FlowSnapshot,
-  model: ReturnType<typeof thread>,
-  state: SimpleFlow,
-): string {
-  const entry = workflowLog(snapshot.simple).findLast(
-    (e) =>
-      e.stage === model.stage &&
-      (e.kind === 'prompt' ||
-        (e.kind === 'action' &&
-          ['plan', 'implement', 'review', 'fix', 'merge'].includes(e.action))),
-  )
-  const record = model.records.filter((r) => recordStage(r) === model.stage).at(-1)
-  const run = record && (snapshot.sessions[record.id] ?? record.snapshot)
-  const newerRun =
-    entry &&
-    record &&
-    (entry.sessionId === record.id
-      ? entry.generation !== undefined &&
-        run?.generation !== undefined &&
-        run.generation > entry.generation
-      : (run?.startedMs ?? record.history.at(-1)?.startedMs ?? 0) > entry.atMs)
-  const attempt = entry && !newerRun ? [entry.id] : [record?.id, run?.generation, run?.startedMs]
-  const promptType =
-    state.step === 'merging'
-      ? snapshot.outcome === 'notMerged'
-        ? snapshot.conflicts
-          ? 'merge'
-          : 'checkMerge'
-        : snapshot.outcome === 'dirty' || snapshot.outcome === 'inProgress'
-          ? snapshot.outcome
-          : 'status'
-      : state.step
-  return JSON.stringify([
-    snapshot.worktree.projectId,
-    snapshot.worktree.task,
-    snapshot.simple?.startedMs,
-    snapshot.simple?.clearBoundary?.atMs,
-    snapshot.auto?.runId,
-    attempt,
-    state.step,
-    promptType,
-  ])
-}
-
-/**
- * The step card's heading: the stage its actions start, the same stage the strip marks as waiting
- * on you, so the card and the strip never name different stages.
- */
-export function stepCardHeading(prompt: StepPrompt | undefined): string {
-  const actions = new Set<FlowAction>(prompt?.actions.map((a) => a.action))
-  if (actions.has('resumeAuto')) return 'Continue Auto mode'
-  const merge = actions.has('checkMerge') || actions.has('merge') || actions.has('mergeApproval')
-  if (merge && (actions.has('fix') || actions.has('review'))) return 'Review and merge'
-  if (merge || actions.has('retryMergeStatus')) return 'Merge'
-  if (actions.has('build')) return 'Build'
-  return 'Review'
-}
-
 const STAGE_LAUNCHES = ['plan', 'implement', 'review', 'fix', 'merge']
 
 /** Whether the newest stage launch that claimed this agent's run came from the lead. */
@@ -432,8 +356,8 @@ function runsAgent(request: NonNullable<ChatTeam['requests']>[number], agentId: 
  * Whether the lead still owns what follows a stage it started. That holds while its team is
  * running and the lead is working, has a message on its way, or still runs this agent's request.
  * Only messages being sent and requests naming this agent count: an `uncertain` delivery (as a
- * restart leaves one) has its own recovery alert and never hides the card. Once the lead is back
- * at its prompt with nothing pending, the step card returns.
+ * restart leaves one) has its own recovery alert. The lead's decision ends when it returns to
+ * its prompt with nothing pending.
  */
 export function leadDeciding({
   started,
@@ -461,14 +385,14 @@ export function leadDeciding({
   )
 }
 
-/** While the lead decides, the step card offers nothing and the strip says who it waits on. */
+/** While the lead decides, the shared stage model waits on the lead. */
 export function forLead(state: SimpleFlow, deciding: boolean): SimpleFlow {
   if (!deciding || !state.prompt?.actions.length) return state
   return { ...state, prompt: undefined, waitingOn: LEAD_RECIPIENT }
 }
 /**
  * The step Chat shows. The lead decides it, except that Auto runs its own stages, a stage
- * launched from a step-card button after the lead last spoke is newer news, and a confirmed
+ * launched from a regular view after the lead last spoke is newer news, and a confirmed
  * merge is final whatever the lead said before it. Chats whose lead hasn't set a status keep the
  * step derived from their agents.
  */
@@ -535,6 +459,7 @@ export function chatStepper(
     inPlace = false,
     halt,
     attention = false,
+    waitingOnLead = false,
     note: fallback,
   }: {
     issues?: number
@@ -542,6 +467,7 @@ export function chatStepper(
     halt?: ChatStepperHalt
     /** The stage in progress waits on you, such as Auto waiting for an answer. */
     attention?: boolean
+    waitingOnLead?: boolean
     note?: string
   } = {},
 ): ChatStepperItem[] {
@@ -580,7 +506,7 @@ export function chatStepper(
     : attention && state === 'current'
       ? // Why it waits on you matters more than how far it got.
         { state: 'attention', note: fallback ?? note }
-      : { state, note: note ?? fallback }
+      : { state, note: waitingOnLead ? 'Lead deciding' : (note ?? fallback) }
   return stages.map((stage, i) =>
     i < at
       ? { stage, state: 'done' }
