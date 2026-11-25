@@ -10,7 +10,7 @@ import { changePosition, changeRefs, stepChange } from '../lib/changeNav'
 import PersistedGroup from './PersistedGroup'
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Panel, Separator } from 'react-resizable-panels'
-import { KIND_COLOR } from '../lib/display'
+import { KIND_COLOR, plural } from '../lib/display'
 import { gitReview, gitBranches, gitWorktrees, reviewPrune } from '../lib/ipc'
 import { ago, changedFileRef, latestChangeOf, lineTotals } from '../lib/review'
 import { useCollapsed } from '../lib/useCollapsed'
@@ -31,15 +31,14 @@ import { REVIEW_SCOPE, type Review, type Worktree } from '../types'
 import ChangeList from './changes/ChangeList'
 import ChangeGroupCard from './changes/ChangeGroupCard'
 import DiffStat from './changes/DiffStat'
+import ReviewContext from './changes/ReviewContext'
 import DiffView from './changes/DiffView'
 import ValidationChips from './changes/ValidationChips'
 import FindingsPanel, { SeverityCounts, VerdictBadge } from './findings/FindingsPanel'
 import { useRunningReviewLanes } from '../lib/reviewAgents'
 import FixFindingsButton from './findings/FixFindingsButton'
-import StageStrip from './StageStrip'
 import { useStageModel } from '../lib/useStageModel'
 import type { FileRef } from '../lib/findings'
-import { shortSha } from '../lib/commitId'
 
 /** Worktree branches and HEADs are polled while shown; the watcher covers their diffs. */
 const WORKTREE_POLL_MS = 5000
@@ -135,7 +134,7 @@ export default function ReviewView() {
       )
     )
   })
-  // Where the worktree's work is, as Chat and the Auto panel show it, and what comes next.
+  // What comes next for the worktree, as Chat and the Auto panel see it, picks the primary action.
   const stage = useStageModel()
   const next = new Set(stage?.state.prompt?.actions.map((a) => a.action))
   // The Auto panel handles approval for Auto's merge gate.
@@ -359,36 +358,20 @@ export default function ReviewView() {
             <Panel id="ReviewView-pane-1" defaultSize="38" minSize="20">
               <div className="review-list" ref={listPane}>
                 <div className="review-header">
-                  {stage?.visible && (
-                    <>
-                      <StageStrip items={stage.stepper} className="view-stepper" />
-                      {stage.driver !== 'user' && (
-                        <p className="view-stepper-hint">
-                          {stage.driver === 'lead'
-                            ? 'The chat’s lead is deciding the next stage.'
-                            : stage.autoHalt === 'paused'
-                              ? 'Auto is paused here; work you do now is where Resume continues from.'
-                              : 'Auto is running this worktree’s stages.'}
-                        </p>
-                      )}
-                    </>
-                  )}
-                  <div className="review-context">
-                    <strong>{reviewTask?.title ?? 'Main worktree'}</strong>
-                    <code>
-                      {source?.branch ??
-                        (source ? `detached ${shortSha(source.head)}` : 'Resolving branch…')}
-                    </code>
-                    <span>
-                      {base ? `Changes since merge base with ${base}` : 'Uncommitted changes'}
-                    </span>
-                    {source?.path && (
-                      <details>
-                        <summary>Worktree location</summary>
-                        <code>{source.path}</code>
-                      </details>
-                    )}
-                  </div>
+                  <ReviewContext
+                    title={reviewTask?.title}
+                    source={source}
+                    base={base}
+                    totals={
+                      review &&
+                      shownFiles.length > 0 && (
+                        <>
+                          {plural(shownFiles.length, 'file')}
+                          <DiffStat {...totals} />
+                        </>
+                      )
+                    }
+                  />
                   {autoHold && <WorkFeedback error={autoHold} />}
                   {!reviewDialog &&
                     !mergeDialog &&
@@ -403,9 +386,6 @@ export default function ReviewView() {
                     <p className="hint">Create another local branch before merging.</p>
                   )}
                   <div className="review-title-row">
-                    <span className="review-totals">
-                      {review && shownFiles.length > 0 && <DiffStat {...totals} />}
-                    </span>
                     <button
                       className={`review-agent-button${nextMerge || nextFix ? '' : ' primary'}`}
                       disabled={!source?.branch || !!autoHold}
@@ -443,7 +423,6 @@ export default function ReviewView() {
                     </button>
                   </div>
                   <div className="review-status-row">
-                    <ReviewStatus branch={source?.branch} findings={findings} status={status} />
                     {source?.branch && (
                       <button
                         className={`review-findings-button ${pane === 'findings' ? 'on' : ''}`}
@@ -460,6 +439,7 @@ export default function ReviewView() {
                         )}
                       </button>
                     )}
+                    <ReviewStatus branch={source?.branch} findings={findings} status={status} />
                   </div>
                   {groups.length > 1 && (
                     <div className="review-filter" role="toolbar" aria-label="Filter components">

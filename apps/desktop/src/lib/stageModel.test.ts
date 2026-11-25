@@ -172,7 +172,6 @@ describe('stageModel', () => {
     } as FlowSnapshot['sessions'][string]
 
     const model = stageModel({ snapshot: input, team })
-    expect(model.driver).toBe('lead')
     expect(model.state.waitingOn).toBe(LEAD_RECIPIENT)
     expect(model.stepper.find((item) => item.stage === 'review')?.note).toBe(expected)
   })
@@ -189,17 +188,12 @@ describe('stageModel', () => {
       autoCurrent: true,
     })
     const later = stageModel({ snapshot: snapshot(failed, [launch('manual')]) })
-    expect(later).toMatchObject({ autoHalt: undefined, autoCurrent: false, driver: 'user' })
+    expect(later).toMatchObject({ autoHalt: undefined, autoCurrent: false })
     expect(later.stepper.find((i) => i.stage === 'review')?.state).toBe('current')
   })
   test('work after a finished in-place run keeps the strip without Merge', () => {
     const done = run({ status: 'done', stage: 'done', baseCommit: 'abc' })
     const later = stageModel({ snapshot: snapshot(done, [launch('manual')]) })
     expect(later.stepper.map((i) => i.stage)).toEqual(['plan', 'build', 'review'])
-  })
-  test('Auto drives while it runs or is paused', () => {
-    expect(stageModel({ snapshot: snapshot(run()) }).driver).toBe('auto')
-    expect(stageModel({ snapshot: snapshot(run({ status: 'paused' })) }).driver).toBe('auto')
-    expect(stageModel({ snapshot: snapshot(null) }).driver).toBe('user')
   })
 })

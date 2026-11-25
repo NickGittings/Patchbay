@@ -38,7 +38,6 @@ import { linkStory } from '../lib/stories'
 import { launchBuild } from '../lib/launchStage'
 import { useStageModel } from '../lib/useStageModel'
 import { recordPlannerStart } from '../lib/stageRecord'
-import StageStrip from './StageStrip'
 
 const EMPTY_PLANNING_WORKSPACE = emptyTaskWorkspace()
 
@@ -332,10 +331,6 @@ export default function PlanView() {
       <Panel id="PlanView-pane-2" defaultSize="55" minSize="20">
         <div className="plan-dock">
           <aside className="plan-scope">
-            {/* The worktree's stages, as Chat, Review and the Auto panel show them. */}
-            {task !== PROJECT_DRAFT && stage?.visible && (
-              <StageStrip items={stage.stepper} className="view-stepper" />
-            )}
             <ProviderRunsPanel kind="scan" />
             <div className="row plan-scope-header">
               <span className="section-title">Planner scope</span>

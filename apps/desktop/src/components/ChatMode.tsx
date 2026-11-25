@@ -106,7 +106,7 @@ export default function ChatMode({
   const workBlocked = !!pending || !!ui.pendingWorkflow || !!ui.pendingAction
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
   const identity = useChatIdentity(recipient)
-  const { state, stepper, autoActive, autoHalt } = stage
+  const { state, stepper, visible: stripShown } = stage
   const mergeGateError =
     stage.autoCurrent && s.auto?.stage === 'mergeGate' && s.auto.status === 'waitingOnYou'
       ? s.auto.gateError
@@ -481,9 +481,7 @@ export default function ChatMode({
           ))}
         </div>
       )}
-      {(state.step !== 'idle' || autoActive || autoHalt) && (
-        <StageStrip items={stepper} className="chat-stepper" />
-      )}
+      {stripShown && <StageStrip items={stepper} className="chat-stepper" />}
       {mergeGateError && (
         <div className="chat-coordination">
           <p className="auto-callout" data-tone="attention" role="status">

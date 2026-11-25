@@ -1865,33 +1865,137 @@ input[type='radio'] {
 .review-view {
   min-width: 0;
 }
+/* One sticky header: context, then actions, then findings, then filters, on an 8px rhythm.
+   It floats over the list as a material with a soft scroll edge rather than a hard rule. */
 .review-header {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-  padding: 12px 14px;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  backdrop-filter: blur(14px) saturate(160%);
+  box-shadow:
+    0 1px 0 var(--border),
+    0 8px 14px -12px rgb(0 0 0 / 28%);
+  padding: 14px 14px 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
-.review-title-row {
+@media (prefers-reduced-transparency: reduce) {
+  .review-header {
+    background: var(--bg);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+.review-header > .hint,
+.review-header > .file-tree-error {
+  margin: 0;
+}
+.review-context {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.review-context-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.review-context-title strong {
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.review-context-title code {
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.review-context-meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.3;
+}
+.review-context-meta > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.review-context details {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.review-context summary {
+  width: fit-content;
+  cursor: default;
+}
+.review-context summary:hover {
+  color: var(--text);
+}
+.review-context details code {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.review-title-row,
+.review-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .review-totals {
-  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-size: var(--text-sm);
 }
-.review-refresh {
+.review-merge-button,
+.review-agent-button {
+  font-size: var(--text-sm);
+}
+.review-refresh,
+.review-refresh:hover:not(:disabled) {
+  margin-left: auto;
   padding: 2px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.review-refresh:hover:not(:disabled) {
+  color: var(--text);
+}
+.review-findings-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  font-size: var(--text-sm);
+}
+.review-status {
+  color: var(--muted);
+  font-size: var(--text-sm);
 }
 .review-filter {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 .filter-chip {
   display: inline-flex;
@@ -1937,7 +2041,7 @@ input[type='radio'] {
   font-size: 18px;
 }
 .review-group {
-  margin: 10px 10px 0;
+  margin: 8px 12px 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
@@ -2939,14 +3043,6 @@ kbd {
   margin: 0;
 }
 
-/* Job agents stay beside the reviewed source, regardless of the active task. */
-.review-title-row {
-  flex-wrap: wrap;
-}
-.review-merge-button,
-.review-agent-button {
-  font-size: var(--text-sm);
-}
 .review-merge-terminal {
   display: flex;
   flex-direction: column;
@@ -3030,24 +3126,6 @@ kbd {
   flex-basis: 100%;
 }
 
-.review-status {
-  color: var(--muted);
-  font-size: var(--text-sm);
-  padding: 4px 0;
-}
-.review-status-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-.review-findings-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  font-size: var(--text-sm);
-}
 .review-findings-button.on,
 .review-findings-button.on:hover:not(:disabled) {
   background: var(--accent-soft);
@@ -4725,26 +4803,6 @@ kbd {
 }
 .workspace-rail[data-expanded='true'] hr {
   width: 100%;
-}
-.review-context {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  margin-bottom: 12px;
-}
-.review-context code,
-.review-context span {
-  overflow-wrap: anywhere;
-}
-.review-context span,
-.review-context summary {
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-.review-title-row,
-.review-status-row {
-  flex-wrap: wrap;
 }
 .panel-status {
   padding: 16px;

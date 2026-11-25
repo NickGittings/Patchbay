@@ -1,6 +1,6 @@
 import CommitDetails from './changes/CommitDetails'
 import { setChosenCommit as setHistory, useChosenCommit } from '../lib/gitSync'
-import { shortSha } from '../lib/commitId'
+import ReviewContext from './changes/ReviewContext'
 import { useRef, useState } from 'react'
 import { StoryViewTabs } from './stories/StoryBoard'
 import { useStepKeys } from './changes/useStepKeys'
@@ -62,44 +62,30 @@ function ChangesContent({ scopeKey, selection, reader }: Props) {
       <div className="simple-diff-body" ref={body}>
         <aside className="review-list" aria-label="Changed files">
           <div className="review-header">
-            <div className="review-context">
-              <strong>{title ?? 'Main worktree'}</strong>
-              <code>
-                {reader.source?.branch ??
-                  (reader.source
-                    ? `detached ${shortSha(reader.source.head)}`
-                    : 'Resolving branch…')}
-              </code>
-              <span>
-                {reader.base
-                  ? `Changes since merge base with ${reader.base}`
-                  : 'Uncommitted changes'}
-              </span>
-              {reader.source?.path && (
-                <details>
-                  <summary>Worktree location</summary>
-                  <code>{reader.source.path}</code>
-                </details>
-              )}
-            </div>
-            <div className="review-title-row">
-              <span className="review-totals">
-                {reader.data && files.length > 0 && (
+            <ReviewContext
+              title={title}
+              source={reader.source}
+              base={reader.base}
+              totals={
+                reader.data &&
+                files.length > 0 && (
                   <>
                     {plural(files.length, 'file')}
                     <DiffStat {...lineTotals(groups.flatMap((g) => g.files))} />
                   </>
-                )}
-              </span>
-              <button
-                className="review-refresh"
-                title="Refresh changes"
-                aria-label="Refresh changes"
-                onClick={reader.retry}
-              >
-                ↻
-              </button>
-            </div>
+                )
+              }
+              action={
+                <button
+                  className="review-refresh"
+                  title="Refresh changes"
+                  aria-label="Refresh changes"
+                  onClick={reader.retry}
+                >
+                  ↻
+                </button>
+              }
+            />
           </div>
           {reader.error ? (
             <PanelStatus
