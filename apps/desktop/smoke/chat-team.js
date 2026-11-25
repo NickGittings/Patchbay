@@ -76,6 +76,7 @@
         command: `'${parent}/codex'`,
       },
     ])
+    state().setAgentRoles({ worker: ['team-agent'] })
     await smoke.agentHooksConfigure('codex', true)
     await smoke.syncCurrentRoots()
     state().setSimpleMode(true)

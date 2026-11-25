@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { projectOf, useStore } from '../store'
 import { controlTeam, requireTeamPreset, useChatTeams, type ChatTeam } from '../lib/chatTeams'
+import { roleDevices } from '../lib/agentRoles'
 import { planTerminals } from '../lib/plan'
 import { SettingsSection } from './SettingsDialog'
 
@@ -13,6 +14,8 @@ export default function ChatWorkerSettings() {
 
 function WorkerSettings({ team }: { team: ChatTeam }) {
   const devices = useStore((s) => s.devices)
+  const roles = useStore((s) => s.agentRoles)
+  const workersEnabled = roleDevices(devices, roles, 'worker').length > 0
   const [limit, setLimit] = useState(team.limit)
   const [presets, setPresets] = useState(team.workers.map((w) => w.id))
   const [error, setError] = useState('')
@@ -22,6 +25,12 @@ function WorkerSettings({ team }: { team: ChatTeam }) {
   )
   return (
     <SettingsSection title="Sub-builders for this worktree">
+      {!workersEnabled && (
+        <p className="hint">
+          Sub-builders are off. Choose agents under Role defaults → Sub-builders to let the lead
+          start them.
+        </p>
+      )}
       <label className="settings-field">
         Concurrent sub-builders
         <input

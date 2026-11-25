@@ -30,6 +30,10 @@ export const readChatTeams = (projectId: string) => invoke<ChatTeam[]>('chat_tea
 /** Mirrors core `orchestration::RESTART_NOTICE`, set when a restart pauses a team. */
 export const RESTART_NOTICE = 'Paused after restart'
 
+// Mirrors the core delegation failure in orchestration/chat.rs.
+const SUB_BUILDERS_OFF =
+  'Sub-builders are off (Settings → Agent roles → Sub-builders). Use a stage such as startPlan, startBuild or startAuto, or ask the user to turn sub-builders on.'
+
 export interface TeamMessage {
   id: string
   sequence: number
@@ -185,29 +189,31 @@ export async function initializeTeam(
   record: SessionRecord,
   paused = false,
 ) {
-  return cacheTeam(
-    await invoke<ChatTeam>('chat_team_initialize', {
-      projectId,
-      seed: {
-        task,
-        sessionId: record.id,
-        preset: leadPreset(record),
-        paused,
-        checkpoint: {
-          goal:
-            workspaceOf(projectStateOf(projectId)!, task)
-              .simple?.log.filter((e) => e.kind === 'prompt')
-              .at(-1)
-              ?.text?.slice(0, 8000) ?? '',
-          constraints: '',
-          decisions: '',
-          remaining:
-            'Continue the user’s latest request. Inspect the worktree and durable team records.',
-          validation: 'Not recorded',
-        },
+  const team = await invoke<ChatTeam>('chat_team_initialize', {
+    projectId,
+    seed: {
+      task,
+      sessionId: record.id,
+      preset: leadPreset(record),
+      paused,
+      checkpoint: {
+        goal:
+          workspaceOf(projectStateOf(projectId)!, task)
+            .simple?.log.filter((e) => e.kind === 'prompt')
+            .at(-1)
+            ?.text?.slice(0, 8000) ?? '',
+        constraints: '',
+        decisions: '',
+        remaining:
+          'Continue the user’s latest request. Inspect the worktree and durable team records.',
+        validation: 'Not recorded',
       },
-    }),
-  )
+    },
+  })
+  const cached = cacheTeam(team)
+  // The lead can delegate on its first prompt, before the background refresh runs. The team
+  // already exists, so a failed sync is left to that refresh rather than failing coordination.
+  return syncTeamCatalog(cached).catch(() => cached)
 }
 export async function requireTeamPreset(
   terminal: TerminalSpec,
@@ -509,6 +515,54 @@ export async function forgetTeamChat(projectId: string, task: string | null) {
   forgetSimpleUi(projectId, (id) => id === task)
   await refreshChatTeams(projectId).catch(() => {})
 }
+/** Mirrors core `sub_builders_enabled`: the worker role names an installed preset. */
+export function teamSubBuildersEnabled(team: Pick<ChatTeam, 'agentRoles' | 'presets'>) {
+  return (team.agentRoles?.worker ?? []).some((id) => team.presets?.some((p) => p.id === id))
+}
+async function syncTeamCatalog(team: ChatTeam) {
+  const available = planTerminals(useStore.getState().devices).filter(
+    (t) => !!(profileHookProvider(t.command) ?? t.adapter),
+  )
+  const council = councilSettings(
+    useStore.getState().workspaceSettings.reviewCouncil,
+    useStore.getState().agentRoles.review,
+  )
+  // An unavailable preset must disable new councils without blocking team reconciliation.
+  council.enabled &&=
+    council.members.length >= 2 && council.members.every((id) => available.some((p) => p.id === id))
+  const roles = useStore.getState().agentRoles
+  const rolesChanged = [
+    ...new Set([...Object.keys(roles), ...Object.keys(team.agentRoles ?? {})]),
+  ].some(
+    (role) =>
+      JSON.stringify(roles[role as keyof typeof roles] ?? []) !==
+      JSON.stringify(team.agentRoles?.[role] ?? []),
+  )
+  if (
+    JSON.stringify(team.council) !== JSON.stringify(council) ||
+    rolesChanged ||
+    (team.presets ?? []).length !== available.length ||
+    available.some(
+      (preset) =>
+        !(team.presets ?? []).some(
+          (known) =>
+            known.id === preset.id &&
+            known.name === preset.name &&
+            known.command === preset.command &&
+            known.adapter === preset.adapter,
+        ),
+    )
+  ) {
+    return controlTeam(team, {
+      kind: 'catalog',
+      presets: available,
+      roles,
+      council,
+    })
+  }
+  return team
+}
+
 /** Migration adopts saved recipients paused and never launches workers. */
 export async function refreshChatTeams(projectId: string) {
   const saved = projectStateOf(projectId)
@@ -535,51 +589,8 @@ export async function refreshChatTeams(projectId: string) {
   }
   const teams = await readChatTeams(projectId)
   useChatTeams.setState((s) => ({ teams: { ...s.teams, [projectId]: teams } }))
-  for (const team of teams) {
-    const available = planTerminals(useStore.getState().devices).filter(
-      (t) => !!(profileHookProvider(t.command) ?? t.adapter),
-    )
-    const council = councilSettings(
-      useStore.getState().workspaceSettings.reviewCouncil,
-      useStore.getState().agentRoles.review,
-    )
-    // An unavailable preset must disable new councils without blocking team reconciliation.
-    council.enabled &&=
-      council.members.length >= 2 &&
-      council.members.every((id) => available.some((p) => p.id === id))
-    const roles = useStore.getState().agentRoles
-    const rolesChanged = [
-      ...new Set([...Object.keys(roles), ...Object.keys(team.agentRoles ?? {})]),
-    ].some(
-      (role) =>
-        JSON.stringify(roles[role as keyof typeof roles] ?? []) !==
-        JSON.stringify(team.agentRoles?.[role] ?? []),
-    )
-    if (
-      JSON.stringify(team.council) !== JSON.stringify(council) ||
-      rolesChanged ||
-      (team.presets ?? []).length !== available.length ||
-      available.some(
-        (preset) =>
-          !(team.presets ?? []).some(
-            (known) =>
-              known.id === preset.id &&
-              known.name === preset.name &&
-              known.command === preset.command &&
-              known.adapter === preset.adapter,
-          ),
-      )
-    ) {
-      const updated = await controlTeam(team, {
-        kind: 'catalog',
-        presets: available,
-        roles,
-        council,
-      })
-      team.council = updated.council
-      team.presets = updated.presets
-      team.agentRoles = updated.agentRoles
-    }
+  for (const savedTeam of teams) {
+    const team = await syncTeamCatalog(savedTeam)
     await applyTeamHandoff(team)
     await driveLeadRequests(team)
     const state = projectStateOf(projectId)
@@ -665,6 +676,15 @@ async function driveLeadRequests(team: ChatTeam) {
       continue
     }
     try {
+      if (request.action === 'startAgent' && !teamSubBuildersEnabled(team)) {
+        await controlTeam(team, {
+          kind: 'requestState',
+          id: request.id,
+          state: 'failed',
+          result: SUB_BUILDERS_OFF,
+        })
+        continue
+      }
       if (reviewRound) {
         await driveCouncil(team, request)
         continue
