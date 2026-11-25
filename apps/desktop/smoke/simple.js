@@ -335,13 +335,11 @@
     await smoke.report('INFO simple: worktree widths and unsaved-layout reveal passed')
     await smoke.terminalWrite(builder, 'smoke-changes\n')
     await until('three changed files', () => button('Changes 3'))
-    click(
-      await until('Agents tab', () =>
-        [...document.querySelectorAll('.view-tabs button')].find((b) =>
-          b.textContent.trim().startsWith('Agents '),
-        ),
-      ),
-    )
+    const agentsTab = () =>
+      [...document.querySelectorAll('.view-tabs button')].find((b) =>
+        b.textContent.trim().startsWith('Agents '),
+      )
+    click(await until('Agents tab', agentsTab))
     await until('builder card', () =>
       document.querySelector(`.agent-card[data-session="${CSS.escape(builder)}"]`),
     )
@@ -457,6 +455,14 @@
     await until('group collapsed before switching', () =>
       pane.querySelector('.review-toggle[aria-expanded="false"]'),
     )
+    const selection = () => smoke.simpleUi.getState().worktrees[smoke.simpleKey(projectId, task)]
+    assert(selection().changes && selection().diff, 'missing selection before worktree switch')
+    state().setActiveTask(null, true)
+    state().setActiveTask(task, true)
+    assert(
+      state().activeTask === task && !selection().changes && !selection().diff,
+      'a quick worktree round trip kept Changes selected',
+    )
     state().setActiveTask(null, true)
     // Root Chat stays hidden from the earlier cross-worktree reveal check; only the switch matters.
     await until(
@@ -478,12 +484,25 @@
     click(button('Map', pane))
     await until('Map returns', () => !document.querySelector('.simple-diff'))
     assert(!document.querySelector('.simple-file'), 'Changes card remains in the thread')
+    click(await until('Agents before edited file', agentsTab))
     click(await until('latest edited file link', () => button('Edited src/third.txt')))
-    await until('Edited opens Changes', () =>
+    const editedDiff = () =>
       document.querySelector(
         '.simple-diff .change-row[data-path="src/third.txt"][aria-selected="true"]',
-      ),
+      )
+    await until('Edited opens Changes', editedDiff)
+    smoke.selectRailView('plan')
+    await until('Full Plan', () => !document.querySelector('.navigation-shell'))
+    smoke.selectRailView('navigation')
+    const fullMap = await until('Full Navigation map', () =>
+      document.querySelector('.navigation-map'),
     )
+    assert(
+      !fullMap.inert && !document.querySelector('.agent-canvas'),
+      'Agents covered the map after opening a file and switching to Full',
+    )
+    state().setSimpleMode(true)
+    await until('Chat restores the selected file', editedDiff)
     click(button('Stories', document.querySelector('.simple-diff')))
     await until('Stories leaves Changes', () => !document.querySelector('.simple-diff'))
     click(button('Map'))
@@ -492,12 +511,14 @@
     await requestStage('review')
     await until('review findings', () => document.querySelector('.simple-result .finding-ref'))
     inChat()
+    click(await until('Agents before finding', agentsTab))
     click(
       await until('finding file reference', () =>
         document.querySelector('.simple-result .finding-ref'),
       ),
     )
     await until('finding opens Changes', () => document.querySelector('.simple-diff'))
+    assert(!selection().agents, 'opening a finding kept Agents selected')
     await until(
       'committed finding diff and line focus',
       () =>

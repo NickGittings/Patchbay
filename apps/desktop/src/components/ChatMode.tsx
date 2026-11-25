@@ -8,7 +8,7 @@ import { profileHookProvider } from '../lib/agentProfiles'
 import { leadStageSessions } from '../lib/leadStageRun'
 import { useStageModel } from '../lib/useStageModel'
 import type { useSimpleData } from '../lib/useSimpleData'
-import { pinChatTerminal, useSimpleUi } from '../lib/simpleUi'
+import { pinChatTerminal, useSimpleUi, type SimpleDiff } from '../lib/simpleUi'
 import { chatRolePresets } from '../lib/agentRoles'
 import {
   missingHooks,
@@ -178,12 +178,11 @@ export default function ChatMode({
       })
   }, [s.project, s.activeTask, s.simple])
   if (!s.project) return null
+  const openDiff = (diff: SimpleDiff) =>
+    useSimpleUi.getState().patch(key, { changes: true, agents: false, diff })
   const openFile = (path: string, line?: number) => {
     const match = changedFileRef(changed, path, source?.path)
-    useSimpleUi.getState().patch(key, {
-      changes: true,
-      diff: { componentId: match?.componentId ?? '@project', path: match?.path ?? path, line },
-    })
+    openDiff({ componentId: match?.componentId ?? '@project', path: match?.path ?? path, line })
   }
   // Until this launch's run reconciles (or its grace expires), an old slot's result is history.
   const items =
@@ -515,7 +514,7 @@ export default function ChatMode({
         findings={findings}
         failure={workflow.autoPrompt ? undefined : failure}
         openFile={openFile}
-        openDiff={(file) => useSimpleUi.getState().patch(key, { changes: true, diff: file })}
+        openDiff={openDiff}
       />
       {drawerShown && drawerRecord && (
         <ChatTerminalPanel

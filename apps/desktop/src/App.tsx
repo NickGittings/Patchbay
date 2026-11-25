@@ -188,12 +188,6 @@ function NavigationView() {
   const changes = useSimpleUi((s) => simple && !!s.worktrees[scopeKey]?.changes)
   const agents = useSimpleUi((s) => !!s.worktrees[scopeKey]?.agents && !changes)
   useMapActivityFeedback()
-  useEffect(
-    () => () => {
-      useSimpleUi.getState().patch(scopeKey, { diff: null, changes: false, agents: false })
-    },
-    [scopeKey],
-  )
   const chatReveal = useStore((s) =>
     s.chatReveal?.projectId === s.project?.id && s.chatReveal?.task === s.activeTask
       ? s.chatReveal
@@ -349,6 +343,20 @@ function AppWorkspace() {
   const projectId = useStore((s) => s.project?.id)
   const restoring = useStore((s) => s.restoring)
   const inspector = useStore(showsInspector)
+  useEffect(
+    () =>
+      useStore.subscribe((s, previous) => {
+        // Clear each worktree as it leaves, even when React batches a switch away and back.
+        const left = previous.project?.id
+        if (!left || (s.project?.id === left && s.activeTask === previous.activeTask)) return
+        const key = simpleKey(left, previous.activeTask)
+        const ui = useSimpleUi.getState()
+        const selection = ui.worktrees[key]
+        if (selection?.diff || selection?.changes || selection?.agents)
+          ui.patch(key, { diff: null, changes: false, agents: false })
+      }),
+    [],
+  )
   useEffect(() => {
     void initializeWorkspace()
     const stopHost = startExtensionHost()
