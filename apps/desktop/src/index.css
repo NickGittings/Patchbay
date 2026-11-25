@@ -1872,6 +1872,7 @@ input[type='radio'] {
   top: 0;
   z-index: 2;
   background: color-mix(in srgb, var(--bg) 86%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
   backdrop-filter: blur(14px) saturate(160%);
   box-shadow:
     0 1px 0 var(--border),
@@ -1884,6 +1885,7 @@ input[type='radio'] {
 @media (prefers-reduced-transparency: reduce) {
   .review-header {
     background: var(--bg);
+    -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
 }

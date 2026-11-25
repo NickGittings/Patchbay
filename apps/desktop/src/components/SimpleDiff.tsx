@@ -75,17 +75,17 @@ function ChangesContent({ scopeKey, selection, reader }: Props) {
                   </>
                 )
               }
+              action={
+                <button
+                  className="review-refresh"
+                  title="Refresh changes"
+                  aria-label="Refresh changes"
+                  onClick={reader.retry}
+                >
+                  ↻
+                </button>
+              }
             />
-            <div className="review-title-row">
-              <button
-                className="review-refresh"
-                title="Refresh changes"
-                aria-label="Refresh changes"
-                onClick={reader.retry}
-              >
-                ↻
-              </button>
-            </div>
           </div>
           {reader.error ? (
             <PanelStatus
