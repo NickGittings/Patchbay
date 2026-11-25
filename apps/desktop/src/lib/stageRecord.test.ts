@@ -70,7 +70,7 @@ test('Chat and the regular views retire the stage before and tell the lead', asy
       'a review of this worktree',
       ['agent'],
       'request',
-      origin === 'chat' ? 'with Chat’s workflow buttons' : 'outside Chat',
+      origin === 'chat' ? 'in Chat mode' : 'outside Chat',
     )
   }
   vi.clearAllMocks()

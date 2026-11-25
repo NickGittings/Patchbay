@@ -322,7 +322,7 @@ pub struct Team {
     pub original_briefing: String,
     #[serde(default)]
     pub observed_agents: BTreeMap<String, u64>,
-    /// Sessions the user started from Chat's workflow buttons; their finish does not wake the lead.
+    /// Sessions the user started independently. Their finish does not wake the lead.
     #[serde(default)]
     pub noted_agents: std::collections::BTreeSet<String>,
     /// When each noted session's work was noted, in Unix milliseconds.
@@ -485,7 +485,7 @@ pub enum Control {
     HandoffApplied {
         id: String,
     },
-    /// Work the user started outside the lead (Chat's workflow buttons), for its inbox.
+    /// Work the user started independently, recorded in the lead's inbox.
     Note {
         id: String,
         text: String,

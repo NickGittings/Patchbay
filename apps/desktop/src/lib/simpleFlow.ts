@@ -506,7 +506,7 @@ export function chatStepper(
     : attention && state === 'current'
       ? // Why it waits on you matters more than how far it got.
         { state: 'attention', note: fallback ?? note }
-      : { state, note: waitingOnLead ? 'Lead deciding' : (note ?? fallback) }
+      : { state, note: waitingOnLead ? (fallback ?? 'Lead deciding') : (note ?? fallback) }
   return stages.map((stage, i) =>
     i < at
       ? { stage, state: 'done' }

@@ -107,6 +107,10 @@ export default function ChatMode({
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
   const identity = useChatIdentity(recipient)
   const { state, stepper, autoActive, autoHalt } = stage
+  const mergeGateError =
+    stage.autoCurrent && s.auto?.stage === 'mergeGate' && s.auto.status === 'waitingOnYou'
+      ? s.auto.gateError
+      : undefined
   const mergeStatus = stage.flow.step === 'merging' ? stage.flow.prompt : undefined
   const retryMergeStatus = mergeStatus?.actions.some(
     (action) => action.action === 'retryMergeStatus',
@@ -480,6 +484,13 @@ export default function ChatMode({
       )}
       {(state.step !== 'idle' || autoActive || autoHalt) && (
         <StageStrip items={stepper} className="chat-stepper" />
+      )}
+      {mergeGateError && (
+        <div className="chat-coordination">
+          <p className="auto-callout" data-tone="attention" role="status">
+            Couldn’t check merge status: {mergeGateError}
+          </p>
+        </div>
       )}
       {team && (
         <ChatCoordinationAlerts key={team.id} team={team} openTerminal={openWorkerTerminal} />

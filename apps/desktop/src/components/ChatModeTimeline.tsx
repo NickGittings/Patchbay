@@ -58,6 +58,9 @@ export default function ChatModeTimeline({
   const inputKey = JSON.stringify(questions)
   const runningReview = useRunningReviewLanes(source?.branch)
   const grouped = sections(items, model.records)
+  const latestMergeResult = items.findLast(
+    (item) => item.kind === 'result' && item.result === 'merge',
+  )
   // What can grow the thread, without serializing its records or reply texts on every render.
   const replies = model.items.flatMap((item) =>
     item.kind === 'agent'
@@ -173,6 +176,7 @@ export default function ChatModeTimeline({
                   </article>
                 )
               )
+            if (item !== latestMergeResult) return null
             if (state.step === 'merged')
               return state.prompt ? (
                 <p className="simple-narration" key={item.id}>

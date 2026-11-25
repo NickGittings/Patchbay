@@ -772,17 +772,16 @@ async function driveLeadRequests(team: ChatTeam) {
 }
 
 /**
- * Tell the lead about work the user started with Chat's workflow buttons, so it neither repeats
- * nor contradicts it. The note and the finish of `sessions` wait for the lead's next coordination
- * delivery rather than starting a turn: Chat already shows the stage results. Best effort: the
- * launch already happened.
+ * Tell the lead about work the user started independently, so it can account for the result.
+ * The note and the finish of `sessions` wait for the lead's next coordination delivery.
+ * Delivery is best effort because the launch already happened.
  */
 export async function noteLead(
   team: ChatTeam | undefined,
   what: string,
   sessions: string[],
   id: string = crypto.randomUUID(),
-  from = 'with Chat’s workflow buttons',
+  from: string,
 ) {
   if (!team) return
   await controlTeam(team, {
