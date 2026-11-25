@@ -237,24 +237,27 @@ test('process exit during claim cancels and concurrent session writes are serial
   await expect(first).rejects.toThrow('ready prompt')
   expect(p.write).not.toHaveBeenCalled()
 })
-test('an uncertain failed write is attempted once, preserves the draft and clears its stamp', async () => {
-  const p = port()
-  const stamps: (number | undefined)[] = []
-  p.onSubmit = (atMs) => stamps.push(atMs)
-  let draft = '  draft\n'
-  p.write = vi.fn(async () => {
-    throw new Error('uncertain')
-  })
-  await expect(
-    deliverPrompt(context, draft, p).then(() => {
-      draft = ''
-    }),
-  ).rejects.toThrow('uncertain')
-  expect(draft).toBe('  draft\n')
-  expect(p.write).toHaveBeenCalledOnce()
-  expect(p.release).toHaveBeenCalledOnce()
-  expect(stamps).toEqual([2000, undefined])
-})
+test.each([true, false])(
+  'a failed write is attempted once, preserves the draft and keeps its stamp only when uncertain=%s',
+  async (uncertain) => {
+    const p = port()
+    const stamps: (number | undefined)[] = []
+    p.onSubmit = (atMs) => stamps.push(atMs)
+    let draft = '  draft\n'
+    p.write = vi.fn(async () => {
+      throw Object.assign(new Error('Send failed'), { uncertain })
+    })
+    await expect(
+      deliverPrompt(context, draft, p).then(() => {
+        draft = ''
+      }),
+    ).rejects.toThrow('Send failed')
+    expect(draft).toBe('  draft\n')
+    expect(p.write).toHaveBeenCalledOnce()
+    expect(p.release).toHaveBeenCalledOnce()
+    expect(stamps).toEqual(uncertain ? [2000] : [2000, undefined])
+  },
+)
 
 test('startup waits for a hook-confirmed prompt, times out at 30 seconds, and cancels generations', async () => {
   let now = 0

@@ -1817,6 +1817,14 @@ function recoveryMark(run: AutoRun, snapshot: AutoSnapshot) {
   }
 }
 
+function recoveryFailureReason(error: unknown, summary: string) {
+  const failure = error as { uncertain?: boolean } | null | undefined
+  const message = error instanceof Error ? error.message : String(error)
+  if (failure?.uncertain)
+    return `${summary}: The continuation may have been delivered. Inspect the agent before resuming. ${message}`
+  return `${summary}: ${message}`
+}
+
 /** Serialized by the normal controller, including after restart. No raw terminal writes. */
 async function recoverAuto(
   projectId: string,
@@ -1949,7 +1957,7 @@ async function recoverAuto(
         pauseAuto(
           projectId,
           task,
-          `Recovery continuation was not confirmed: ${e instanceof Error ? e.message : String(e)}`,
+          recoveryFailureReason(e, 'Recovery continuation was not confirmed'),
           'needsUser',
         )
     }
@@ -2136,7 +2144,7 @@ async function recoverProviderRun(projectId: string, task: string | null, provid
         pauseAuto(
           projectId,
           task,
-          `Provider recovery needs attention: ${e instanceof Error ? e.message : String(e)}`,
+          recoveryFailureReason(e, `Provider recovery for job ${job.id} needs attention`),
           'needsUser',
         )
       else {

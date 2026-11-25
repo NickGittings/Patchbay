@@ -5174,6 +5174,27 @@ test('a serialized continuation refusal appears in the pause reason', async () =
   })
 })
 
+test('an uncertain continuation pauses with a delivery warning and is not resent on Resume', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(2000)
+  autonomousPlanner()
+  const { terminalPrompt } = await vi.importActual<typeof ipc>('./ipc')
+  vi.mocked(ipc.terminalPrompt).mockImplementationOnce(terminalPrompt)
+  vi.mocked(invoke).mockRejectedValueOnce(new Error('IPC channel closed'))
+  await withFollower(async () => {
+    await flush()
+    expect(autoRun('p', 't')).toMatchObject({
+      status: 'paused',
+      pauseKind: 'needsUser',
+      reason:
+        'Recovery continuation was not confirmed: The continuation may have been delivered. Inspect the agent before resuming. IPC channel closed',
+    })
+    await resumeAuto('p', 't')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(ipc.terminalPrompt).toHaveBeenCalledOnce()
+  })
+})
+
 test.each([false, true])(
   'autonomous fix budget exhaustion ends the run with merge=%s',
   async (automatic) => {
@@ -5654,7 +5675,7 @@ test('scanner relaunches without changed reports exhaust the same persisted stag
   })
 })
 
-test.each(['prompt', 'permission', 'foreign'] as const)(
+test.each(['prompt', 'uncertain prompt', 'permission', 'foreign'] as const)(
   'provider recovery respects an owned %s',
   async (condition) => {
     const { providers, current } = await autonomousScan()
@@ -5673,9 +5694,13 @@ test.each(['prompt', 'permission', 'foreign'] as const)(
       ],
     })
     vi.mocked(ipc.terminalPrompt).mockResolvedValue(undefined)
+    if (condition === 'uncertain prompt')
+      vi.mocked(ipc.terminalPrompt).mockRejectedValueOnce(
+        Object.assign(new Error('Prompt acknowledgment timed out'), { uncertain: true }),
+      )
     await withFollower(async () => {
       await flush()
-      if (condition === 'prompt') {
+      if (condition === 'prompt' || condition === 'uncertain prompt') {
         expect(providers.controlProviderRun).toHaveBeenCalledWith('p', 'scan', {
           kind: 'continueJob',
           job: 'job',
@@ -5686,7 +5711,16 @@ test.each(['prompt', 'permission', 'foreign'] as const)(
           7,
           expect.stringContaining('submit its required artifacts'),
         )
-        expect(autoRun('p', 't')?.status).toBe('running')
+        if (condition === 'uncertain prompt') {
+          expect(autoRun('p', 't')).toMatchObject({
+            status: 'paused',
+            pauseKind: 'needsUser',
+            reason:
+              'Provider recovery for job job needs attention: The continuation may have been delivered. Inspect the agent before resuming. Prompt acknowledgment timed out',
+          })
+        } else {
+          expect(autoRun('p', 't')?.status).toBe('running')
+        }
       } else {
         expect(autoRun('p', 't')).toMatchObject({ status: 'paused', pauseKind: 'needsUser' })
         expect(ipc.terminalPrompt).not.toHaveBeenCalled()

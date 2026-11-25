@@ -12,7 +12,7 @@ import { logSimple } from './simpleActions'
 import { leadNotes, settleLeadNotes } from './chatTeams'
 import { persistReplies } from './simpleReplies'
 import type { SimpleStage } from './simple'
-import { simpleKey, useSimpleUi, type Mention } from './simpleUi'
+import { simpleKey, useSimpleUi, type Mention, type SimpleUi } from './simpleUi'
 import { sessionReportedHooks, type HooksCheck } from './agentHooks'
 
 const KIND_NAMES: Record<Story['kind'], string> = {
@@ -344,7 +344,7 @@ export interface SendPort {
   write: (text: string) => Promise<void>
   release: () => Promise<void>
   now?: () => number
-  /** The submit time while a send is in flight or delivered; undefined once it certainly failed. */
+  /** The submit time while a send is in flight, delivered or uncertain. Undefined on refusal. */
   onSubmit?: (atMs: number | undefined) => void
 }
 const sending = new Set<string>()
@@ -393,10 +393,10 @@ export async function deliverPrompt(
     port.onSubmit?.(port.now?.() ?? Date.now())
     try {
       await port.write(text)
-    } catch (e) {
-      // A refused send leaves no stamp that would keep Send disabled for this generation.
-      port.onSubmit?.(undefined)
-      throw e
+    } catch (error) {
+      const failure = error as { uncertain?: boolean } | null | undefined
+      if (!failure?.uncertain) port.onSubmit?.(undefined)
+      throw error
     }
   } finally {
     if (claimed) await port.release().catch(() => {})
@@ -470,6 +470,15 @@ export function lastSubmission(sid: string, generation: number | undefined) {
   return stamp?.generation === generation ? stamp : undefined
 }
 
+/** Release the readiness gate for the specific attempt the user resolved. */
+export function clearUnconfirmedSubmission({
+  sessionId,
+  generation,
+  atMs,
+}: Pick<NonNullable<SimpleUi['unconfirmed']>, 'sessionId' | 'generation' | 'atMs'>) {
+  if (lastSubmission(sessionId, generation)?.atMs === atMs) submitted.delete(sessionId)
+}
+
 /** Shared delivery for the composer and background queues, including chats no longer selected. */
 export async function sendToSession({
   projectId,
@@ -518,7 +527,8 @@ export async function sendToSession({
             text: message,
             stage,
             mentions,
-            atMs: Date.now(),
+            // deliverPrompt stamped this submission immediately before calling write.
+            atMs: lastSubmission(sid, generation)!.atMs,
             previousTurnId: useStore.getState().sessions[sid]?.status?.agent?.turnId ?? null,
             noteIds: notes.ids,
           },

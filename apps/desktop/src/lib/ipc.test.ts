@@ -14,20 +14,38 @@ test.each([false, true])(
   'terminalPrompt normalizes failures with uncertain=%s',
   async (uncertain) => {
     const message = 'The agent is not at a ready prompt'
-    vi.mocked(invoke).mockRejectedValueOnce({ message, uncertain })
+    const failure = { message, uncertain }
+    vi.mocked(invoke).mockRejectedValueOnce(failure)
     const pending = terminalPrompt('session', 1, 'Continue')
     await expect(pending).rejects.toBeInstanceOf(Error)
     await expect(pending).rejects.toMatchObject({ message, uncertain })
+    await expect(pending).rejects.toHaveProperty('cause', failure)
   },
 )
 
-test('terminalPrompt reports a string IPC rejection as an Error', async () => {
-  const message = 'IPC channel closed'
+test.each([
+  'invalid args `generation` for command `terminal_prompt`',
+  'terminal_prompt not allowed on this window',
+])('terminalPrompt treats a Tauri dispatch rejection as a refusal (%s)', async (message) => {
   vi.mocked(invoke).mockRejectedValueOnce(message)
   const pending = terminalPrompt('session', 1, 'Continue')
   await expect(pending).rejects.toBeInstanceOf(Error)
-  await expect(pending).rejects.toMatchObject({ message, uncertain: false })
+  await expect(pending).rejects.toMatchObject({ message, uncertain: false, cause: message })
 })
+
+test.each([
+  [new Error('IPC channel closed'), 'IPC channel closed'],
+  [{ uncertain: false }, 'Prompt delivery could not be confirmed'],
+])(
+  'terminalPrompt treats an unrecognized IPC failure as uncertain (%j)',
+  async (error, message) => {
+    vi.mocked(invoke).mockRejectedValueOnce(error)
+    const pending = terminalPrompt('session', 1, 'Continue')
+    await expect(pending).rejects.toBeInstanceOf(Error)
+    await expect(pending).rejects.toMatchObject({ message, uncertain: true })
+    await expect(pending).rejects.toHaveProperty('cause', error)
+  },
+)
 
 test('IPC keeps the original default project across the authentication await', async () => {
   const original = useStore.getState().project

@@ -140,7 +140,7 @@ export async function flushQueued(key: string, force = false) {
       },
     })
   } catch (error) {
-    restore(key, queued, String(error))
+    restore(key, queued, error instanceof Error ? error.message : String(error))
   } finally {
     useSimpleUi.getState().patch(key, { pendingAction: false })
   }
@@ -167,6 +167,7 @@ export function followQueuedPrompts() {
         ([key, ui]) =>
           ui.queued &&
           (ui.queued !== previous.worktrees[key]?.queued ||
+            (previous.worktrees[key]?.unconfirmed && !ui.unconfirmed) ||
             (previous.worktrees[key]?.pendingAction && !ui.pendingAction)),
       )
     )

@@ -42,6 +42,7 @@ import {
   resumeRecipient,
   sendToSession,
   lastSubmission,
+  clearUnconfirmedSubmission,
   componentMentions,
   editedMentions,
   sentFromDraft,
@@ -548,9 +549,9 @@ export default function SimpleComposer({
       setError(String((e as { message?: string })?.message ?? e))
     }
   }
-  const markSent = () => {
+  const markSent = (manual = false) => {
     const message = useSimpleUi.getState().worktrees[scopeKey]?.unconfirmed
-    if (!message || !s.project) return
+    if (!message || !s.project || isSending(message.sessionId)) return
     logSimple(s.project.id, s.activeTask, {
       kind: 'prompt',
       sessionId: message.sessionId,
@@ -566,7 +567,18 @@ export default function SimpleComposer({
     const matches =
       !!latest &&
       sentFromDraft(message.text, latest.draft, latest.mentions, useStore.getState().stories)
+    if (manual) {
+      clearUnconfirmedSubmission(message)
+      setError('')
+    }
     patch({ unconfirmed: undefined, ...(matches ? { draft: '', mentions: [] } : {}) })
+  }
+  const retryDelivery = () => {
+    const message = useSimpleUi.getState().worktrees[scopeKey]?.unconfirmed
+    if (!message || isSending(message.sessionId)) return
+    clearUnconfirmedSubmission(message)
+    setError('')
+    patch({ unconfirmed: undefined })
   }
   // The agent's own hook naming the message settles a delivery whose reply was lost.
   const unconfirmedSession = useStore((s) =>
@@ -581,6 +593,7 @@ export default function SimpleComposer({
   const [settled, setSettled] = useState(0)
   useEffect(() => followDeliveries(() => setSettled((n) => n + 1)), [])
   const unconfirmedId = ui.unconfirmed?.sessionId
+  const deliveryPending = !!unconfirmedId && isSending(unconfirmedId)
   useEffect(() => {
     if (confirmed && unconfirmedId && !isSending(unconfirmedId)) markSentRef.current()
   }, [confirmed, unconfirmedId, settled])
@@ -817,8 +830,12 @@ export default function SimpleComposer({
           >
             Inspect terminal
           </button>
-          <button onClick={markSent}>Mark sent</button>
-          <button onClick={() => patch({ unconfirmed: undefined })}>Retry delivery</button>
+          <button disabled={deliveryPending} onClick={() => markSent(true)}>
+            Mark sent
+          </button>
+          <button disabled={deliveryPending} onClick={retryDelivery}>
+            Retry delivery
+          </button>
         </p>
       )}
       {error && (

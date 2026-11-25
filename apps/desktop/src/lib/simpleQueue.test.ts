@@ -31,7 +31,14 @@ import {
   sendableNow,
 } from './simpleQueue'
 import { appendDraft, simpleKey, useSimpleUi } from './simpleUi'
-import { FORCED_SETTLE_MS, sendToSession, transmittedText } from './simpleComposer'
+import {
+  clearUnconfirmedSubmission,
+  FORCED_SETTLE_MS,
+  lastSubmission,
+  promptReady,
+  sendToSession,
+  transmittedText,
+} from './simpleComposer'
 import { logSimple } from './simpleActions'
 
 const key = simpleKey('p', 't')
@@ -137,7 +144,7 @@ test('a failed or uncertain write returns the draft and is never retried', async
   update(session('idle'))
   await vi.waitFor(() =>
     expect(useStore.getState().setMessage).toHaveBeenCalledWith(
-      'Error: uncertain write',
+      'uncertain write',
       undefined,
       undefined,
       'error',
@@ -204,7 +211,7 @@ test('a refused queued delivery reports the draft retention message once', async
   update(session('idle'))
   await flushQueued(key)
   expect(useStore.getState().setMessage).toHaveBeenCalledExactlyOnceWith(
-    'Error: The agent is not at a ready prompt. Your draft was kept.',
+    'The agent is not at a ready prompt. Your draft was kept.',
     undefined,
     undefined,
     'error',
@@ -425,7 +432,7 @@ test.each([
       mentions: [{ id: 'app', token: '@app', start: 7, end: 11 }],
     })
     expect(useStore.getState().setMessage).toHaveBeenCalledExactlyOnceWith(
-      'Error: Auto took control of this workspace. Your queued message was kept as a draft.',
+      'Auto took control of this workspace. Your queued message was kept as a draft.',
       undefined,
       undefined,
       'error',
@@ -478,8 +485,10 @@ test('queued user messages wait until recovery delivery finishes its turn', asyn
   useChatTeams.setState({ teams: {} })
 })
 
-test('an uncertain user send stays blocked until the user resolves delivery', async () => {
-  update(session('idle'))
+test('resolving an uncertain send lets the queue use the same ready prompt', async () => {
+  const idle = session('idle')
+  idle.status!.agent!.sinceMs = 1
+  update(idle)
   queue()
   vi.mocked(terminalPrompt).mockRejectedValueOnce({
     message: 'Lost acknowledgement',
@@ -494,6 +503,17 @@ test('an uncertain user send stays blocked until the user resolves delivery', as
   await flushQueued(key)
   expect(terminalPrompt).toHaveBeenCalledOnce()
   expect(useSimpleUi.getState().worktrees[key].queued).toBeDefined()
+  expect(promptReady(idle, lastSubmission(sid, 1))).toBe(false)
+
+  stop = followQueuedPrompts()
+  const { unconfirmed } = useSimpleUi.getState().worktrees[key]
+  clearUnconfirmedSubmission({ ...unconfirmed!, generation: 0 })
+  expect(lastSubmission(sid, 1)).toBeDefined()
+  clearUnconfirmedSubmission(unconfirmed!)
+  expect(promptReady(idle, lastSubmission(sid, 1))).toBe(true)
+  useSimpleUi.getState().patch(key, { unconfirmed: undefined })
+  await vi.waitFor(() => expect(terminalPrompt).toHaveBeenCalledTimes(2))
+  expect(useSimpleUi.getState().worktrees[key].queued).toBeUndefined()
 })
 
 test('a limit-stopped agent keeps its queue until the user forces delivery', async () => {

@@ -29,8 +29,9 @@ relaunch reservation. Polling and restart cannot submit the same prompt twice. A
 or changed required artifact resets the budget; resetting sessions or review round IDs does not.
 Three attempts without progress fail the run with the unresolved reason. Pause and Stop invalidate
 in-flight recovery, and the panel and activity log show decisions, attempts and exhausted budgets.
-If prompt submission fails during stage or provider-job recovery, Auto pauses with the service's
-error message.
+If prompt submission fails, Auto pauses with the stage recovery summary or provider job ID and
+the service's error message. An uncertain delivery warns that the continuation may have reached
+the agent and asks the user to inspect it before resuming.
 
 Recovery cannot increase the configured fix-round limit: autonomous runs fail when blocking
 findings or validation failures remain at that limit. Automatic merge requires a current, covered

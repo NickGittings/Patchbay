@@ -884,9 +884,18 @@ export const terminalPrompt = (
 ) =>
   invoke<void>('terminal_prompt', { sessionId, generation, text, force }).catch(
     (error: unknown) => {
-      const failure = error as { message?: string; uncertain?: boolean } | null | undefined
-      throw Object.assign(new Error(failure?.message ?? String(error)), {
-        uncertain: failure?.uncertain === true,
+      const failure = error as { message?: unknown; uncertain?: unknown } | null | undefined
+      const message =
+        typeof failure?.message === 'string'
+          ? failure.message
+          : typeof error === 'string'
+            ? error
+            : 'Prompt delivery could not be confirmed'
+      throw Object.assign(new Error(message, { cause: error }), {
+        // Tauri rejects before dispatch with a string. The command returns PromptFailure.
+        uncertain:
+          typeof error !== 'string' &&
+          !(typeof failure?.message === 'string' && failure.uncertain === false),
       })
     },
   )
