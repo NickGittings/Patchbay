@@ -330,16 +330,6 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-/* The strip above the Plan and Review views' own controls. */
-.view-stepper {
-  margin: 0 0 8px;
-}
-.view-stepper-hint {
-  margin: -4px 0 8px;
-  color: var(--muted);
-  font-size: var(--text-xs);
-}
-
 .auto-meta {
   display: flex;
   flex-direction: column;

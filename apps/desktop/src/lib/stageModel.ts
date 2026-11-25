@@ -140,12 +140,6 @@ export function stageModel({ snapshot, model, team }: StageModelInput) {
         note: status.note,
         waitingOnLead: state.waitingOn === LEAD_RECIPIENT,
       })
-  const driver: 'auto' | 'lead' | 'user' =
-    autoActive || autoHalt === 'paused'
-      ? 'auto'
-      : state.waitingOn === LEAD_RECIPIENT || (team?.state === 'running' && !!team.status)
-        ? 'lead'
-        : 'user'
   return {
     model: threaded,
     flow: flowed,
@@ -157,7 +151,6 @@ export function stageModel({ snapshot, model, team }: StageModelInput) {
     autoCurrent: current,
     /** Whether the strip shows at all: something has happened or Auto is on. */
     visible: state.step !== 'idle' || autoActive || !!autoHalt,
-    driver,
   }
 }
 export type StageModel = ReturnType<typeof stageModel>

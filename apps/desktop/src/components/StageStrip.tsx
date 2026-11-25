@@ -12,8 +12,7 @@ const STAGE_LABELS = {
 } as const
 
 /**
- * Plan → Build → Review → Merge, as Chat, the Auto panel and the Plan and Review views all show
- * it (`stageModel`).
+ * Plan → Build → Review → Merge, as Chat and the Auto panel show it (`stageModel`).
  * A note shows beside its stage when the stage waits on you or halted; otherwise it is a tooltip,
  * still read by screen readers.
  */
