@@ -6,7 +6,6 @@ import { useChatTeams } from '../lib/chatTeams'
 import { changedFileRef } from '../lib/review'
 import { profileHookProvider } from '../lib/agentProfiles'
 import { leadStageSessions } from '../lib/leadStageRun'
-import { stepCardHeading, workflowPromptKey } from '../lib/simpleFlow'
 import { useStageModel } from '../lib/useStageModel'
 import type { useSimpleData } from '../lib/useSimpleData'
 import { pinChatTerminal, useSimpleUi } from '../lib/simpleUi'
@@ -33,8 +32,6 @@ import { useRail } from '../lib/rail'
 import ChatModeTimeline from './ChatModeTimeline'
 import StageStrip from './StageStrip'
 import { ChatCoordinationAlerts } from './ChatCoordination'
-import ReviewAgentDialog from './ReviewAgentDialog'
-import MergeAgentDialog from './MergeAgentDialog'
 import SimpleComposer from './SimpleComposer'
 import ChatTerminalPanel from './ChatTerminalPanel'
 import ChatAgentPicker from './ChatAgentPicker'
@@ -71,9 +68,9 @@ export default function ChatMode({
       revealed: s.revealed,
     })),
   )
-  const { data, source, worktrees, branches, files: changed, error, findings } = reader
+  const { data, source, files: changed, error, findings } = reader
   const stage = useStageModel(reader)!
-  const { key, team, ui, model, flowSnapshot, launch, now, retryBranch, target, reviewBase } = stage
+  const { key, team, ui, model, launch, now } = stage
   const [confirm, setConfirm] = useState<
     | { kind: 'clear' | 'fresh'; key: string }
     | {
@@ -95,10 +92,6 @@ export default function ChatMode({
     task,
     model,
     source,
-    target,
-    reviewBase,
-    devices: s.devices,
-    agentRoles: s.agentRoles,
     auto: s.auto,
     simple: s.simple,
     changed,
@@ -106,7 +99,7 @@ export default function ChatMode({
     focusComposer: () =>
       chatRef.current?.querySelector<HTMLTextAreaElement>('.simple-composer textarea')?.focus(),
   })
-  const { pending, failure, dialog, setDialog, act, mergeStarted } = workflow
+  const { pending, failure } = workflow
   const blockedHandoff = workflow.handoffBlock
   const workTarget = { projectId, task }
   const stopSelection = workflow.selected('stop')
@@ -114,6 +107,16 @@ export default function ChatMode({
   const recipient = chatRecipient(model.records, s.simple?.selectedAgent)
   const identity = useChatIdentity(recipient)
   const { state, stepper, autoActive, autoHalt } = stage
+  const mergeGateError =
+    stage.autoCurrent && s.auto?.stage === 'mergeGate' && s.auto.status === 'waitingOnYou'
+      ? s.auto.gateError
+      : undefined
+  const mergeStatus = stage.flow.step === 'merging' ? stage.flow.prompt : undefined
+  const retryMergeStatus = mergeStatus?.actions.some(
+    (action) => action.action === 'retryMergeStatus',
+  )
+    ? reader.retry
+    : undefined
   const runs = useChatTeams((state) => (team ? state.runs[team.projectId] : undefined))
   const offered = useAgentQuestions((q) => q.pending)
   // The lead, and the workers it is running: their approvals and questions are answered here too.
@@ -174,16 +177,7 @@ export default function ChatMode({
         simple: { startedMs: Date.now(), log: [] },
       })
   }, [s.project, s.activeTask, s.simple])
-  const promptKey = workflowPromptKey(flowSnapshot, model, state)
   if (!s.project) return null
-  // Review's own dialog, beside the step's actions once there is work to review.
-  const options =
-    !!state.prompt?.actions.length && ['built', 'reviewed', 'fixed'].includes(state.step)
-  const cardDismissed = !!ui.dismissedPrompts?.includes(promptKey)
-  const restoreCard = () =>
-    useSimpleUi.getState().patch(key, {
-      dismissedPrompts: (ui.dismissedPrompts ?? []).filter((k) => k !== promptKey),
-    })
   const openFile = (path: string, line?: number) => {
     const match = changedFileRef(changed, path, source?.path)
     useSimpleUi.getState().patch(key, {
@@ -196,8 +190,6 @@ export default function ChatMode({
     launch && now === undefined
       ? model.items.filter((i) => i.kind !== 'result' || i.result !== launch.stage)
       : model.items
-  const stepHeading = stepCardHeading(state.prompt)
-  const launching = ['build', 'fix', 'review', 'merge'].includes(pending)
   const openWorkerTerminal = (record: SessionRecord) => {
     pinChatTerminal(key, record.id, s.sessions[record.id]?.generation)
     focusTerminal(record.id)
@@ -491,15 +483,14 @@ export default function ChatMode({
         </div>
       )}
       {(state.step !== 'idle' || autoActive || autoHalt) && (
-        <StageStrip
-          items={stepper}
-          className="chat-stepper"
-          restore={
-            cardDismissed && state.prompt?.actions.length
-              ? { label: `Show ${stepHeading} actions`, onRestore: restoreCard }
-              : undefined
-          }
-        />
+        <StageStrip items={stepper} className="chat-stepper" />
+      )}
+      {mergeGateError && (
+        <div className="chat-coordination">
+          <p className="auto-callout" data-tone="attention" role="status">
+            Couldn’t check merge status: {mergeGateError}
+          </p>
+        </div>
       )}
       {team && (
         <ChatCoordinationAlerts key={team.id} team={team} openTerminal={openWorkerTerminal} />
@@ -507,41 +498,6 @@ export default function ChatMode({
       <ChatLimitNotice records={model.records} />
       <ActivityHooksNotice providers={hookProviders} reporting={reporting} />
       {error && <p role="alert">{error}</p>}
-      {source && dialog === 'review' && (
-        <ReviewAgentDialog
-          compact
-          key={`${projectId}/${source.path}/${source.branch}`}
-          origin="chat"
-          task={task}
-          initialBase={reviewBase || undefined}
-          source={source}
-          worktrees={worktrees}
-          close={() => setDialog(undefined)}
-          onError={workflow.setFailure}
-          launched={() => {
-            workflow.setFailure()
-            setDialog(undefined)
-          }}
-        />
-      )}
-      {source && dialog === 'merge' && (
-        <MergeAgentDialog
-          compact
-          source={source}
-          worktrees={worktrees}
-          branches={branches}
-          initialDestination={retryBranch ?? target?.branch ?? undefined}
-          close={() => setDialog(undefined)}
-          origin="chat"
-          task={task}
-          onRequest={mergeStarted}
-          onError={workflow.setFailure}
-          launched={() => {
-            workflow.setFailure()
-            setDialog(undefined)
-          }}
-        />
-      )}
       <ChatModeTimeline
         scopeKey={key}
         model={model}
@@ -553,62 +509,14 @@ export default function ChatMode({
         revealed={s.revealed}
         terminal={ui.terminal}
         data={data}
+        mergeStatus={mergeStatus?.text}
+        retryMergeStatus={retryMergeStatus}
         source={source}
         findings={findings}
-        pending={pending}
-        failure={dialog || workflow.autoPrompt ? undefined : failure}
+        failure={workflow.autoPrompt ? undefined : failure}
         openFile={openFile}
         openDiff={(file) => useSimpleUi.getState().patch(key, { changes: true, diff: file })}
       />
-      {!launching && !cardDismissed && !!state.prompt?.actions.length && (
-        <section
-          className="simple-step"
-          data-step={state.step}
-          aria-label={`${stepHeading} actions`}
-        >
-          <div className="simple-step-heading">
-            <span className="simple-step-icon" aria-hidden="true">
-              ↗
-            </span>
-            <h3>{stepHeading}</h3>
-            <button
-              className="simple-dismiss"
-              aria-label="Dismiss suggestion"
-              title="Dismiss suggestion"
-              onClick={() =>
-                useSimpleUi.getState().patch(key, {
-                  dismissedPrompts: [...(ui.dismissedPrompts ?? []), promptKey],
-                })
-              }
-            >
-              ×
-            </button>
-          </div>
-          {state.prompt && <p>{state.prompt.text}</p>}
-          <div className="simple-step-actions">
-            {state.prompt?.actions.map((b, index) => (
-              <button
-                className={index === 0 ? 'primary' : undefined}
-                disabled={!!pending}
-                key={b.action}
-                onClick={() => (b.action === 'retryMergeStatus' ? reader.retry() : act(b.action))}
-              >
-                {b.label}
-              </button>
-            ))}
-            {options && (
-              <button
-                className="simple-options"
-                aria-label="Review options"
-                disabled={!!pending || !!ui.pendingWorkflow || !!ui.pendingAction}
-                onClick={() => setDialog('review')}
-              >
-                Review options…
-              </button>
-            )}
-          </div>
-        </section>
-      )}
       {drawerShown && drawerRecord && (
         <ChatTerminalPanel
           record={drawerRecord}

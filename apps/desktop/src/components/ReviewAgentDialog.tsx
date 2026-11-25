@@ -13,17 +13,7 @@ export default function ReviewAgentDialog({
   close,
   launched,
   onError,
-  origin,
-  task,
-  initialBase,
-  compact = false,
 }: {
-  compact?: boolean
-  initialBase?: string
-  /** Which flow the dialog serves, recorded with the review. */
-  origin: 'chat' | 'manual'
-  /** The source's task, when the caller knows it. */
-  task?: string | null
   source: Worktree
   worktrees: Worktree[]
   close: () => void
@@ -35,14 +25,14 @@ export default function ReviewAgentDialog({
   const records = useStore((s) => s.sessionRecords)
   const sessions = useStore((s) => s.sessions)
   const tasks = useStore((s) => s.tasks)
-  const sourceTask = task !== undefined ? task : taskOfWorktree(source, project.projectId)
+  const sourceTask = taskOfWorktree(source, project.projectId)
   const blockedMessage = useStore(() => autoBlocker(project.projectId, sourceTask)?.message)
   const blocker = blockedMessage ? autoBlocker(project.projectId, sourceTask) : undefined
   const revision = useStore((s) => s.gitChanges)
   const [branches, setBranches] = useState<string[]>()
   const [branchError, setBranchError] = useState('')
   // Until the user picks one, the default follows the branches as they load.
-  const [picked, setPicked] = useState(initialBase)
+  const [picked, setPicked] = useState<string>()
   const bases = reviewBases(source, tasks, worktrees, branches)
   const base =
     picked !== undefined && (!picked || bases.includes(picked))
@@ -78,8 +68,7 @@ export default function ReviewAgentDialog({
   return (
     <AgentJobDialog
       role="review"
-      title={compact ? 'Review' : 'Start review agent'}
-      compact={compact}
+      title="Start review agent"
       source={source}
       ready={!!base && base !== source.branch}
       // A reviewer that settled is replaced, as in every flow; only one still writing blocks.
@@ -91,7 +80,7 @@ export default function ReviewAgentDialog({
       hint="Reviews committed work since the merge base, uncommitted changes, and untracked files. Reports findings only; fixes belong in Build. Read-only behavior relies on the briefing, not on rewriting your agent command."
       launch={async (devices) => {
         const { started, errors } = await launchReview(
-          origin,
+          'manual',
           project,
           sourceTask,
           { worktree: source.path, branch: source.branch!, base },

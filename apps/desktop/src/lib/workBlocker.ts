@@ -139,7 +139,7 @@ export function returnAfterAutoStop(target: WorkTarget, stopped: AutoRun) {
   if (typeof document !== 'undefined')
     requestAnimationFrame(() => {
       const control = back.chat
-        ? '.simple-step-actions button'
+        ? '.simple-composer:not([hidden]) textarea'
         : back.view === 'review'
           ? '.review-merge-button'
           : '.plan-implement button'
@@ -147,7 +147,7 @@ export function returnAfterAutoStop(target: WorkTarget, stopped: AutoRun) {
         ? '.simple-chat header button'
         : '.workspace-rail [aria-label="Auto mode"]'
       const element =
-        document.querySelector<HTMLButtonElement>(`${control}:not(:disabled)`) ??
+        document.querySelector<HTMLElement>(`${control}:not(:disabled)`) ??
         document.querySelector<HTMLButtonElement>(fallback)
       element?.focus()
     })

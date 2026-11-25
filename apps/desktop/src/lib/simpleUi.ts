@@ -39,9 +39,6 @@ export interface SimpleUi {
   connection?: 'Connecting…' | 'Restoring context…'
   chatPreset?: string
   dismissedAssignments?: string[]
-  dismissedPrompts?: string[]
-  /** Conflicts the last merge check found, keyed by the worktree and both heads it compared. */
-  mergeCheck?: { key: string; paths: string[] }
   coordinationReset?: boolean
   inputRequests?: import('./chat').ChatInputRequest[]
   pendingAction?: boolean
@@ -175,7 +172,6 @@ export const useSimpleUi = create<{
               ...appendDraft(ui, ui.queued ?? { draft: '', mentions: [] }),
               unconfirmed: ui.unconfirmed,
               dismissedAssignments: ui.dismissedAssignments,
-              dismissedPrompts: ui.dismissedPrompts,
             },
           ]),
         ),

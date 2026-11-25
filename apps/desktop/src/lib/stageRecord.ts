@@ -28,7 +28,7 @@ const WHAT: Record<StageAction, string> = {
   merge: 'a merge',
 }
 const WHERE: Record<SimpleOrigin, string> = {
-  chat: 'with Chat’s workflow buttons',
+  chat: 'in Chat mode',
   manual: 'outside Chat',
   lead: '',
   auto: '',

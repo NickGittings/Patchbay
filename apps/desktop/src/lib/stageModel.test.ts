@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import type { AutoRun, AutoStage, SessionRecord } from '../types'
+import { LEAD_RECIPIENT, type AutoRun, type AutoStage, type SessionRecord } from '../types'
+import type { ChatTeam } from './chatTeams'
 import type { SimpleEntry, SimpleState } from './simple'
 import type { FlowSnapshot } from './simpleFlow'
 import { autoCurrent, autoStepper, stageModel } from './stageModel'
@@ -152,6 +153,28 @@ describe('stageModel', () => {
     auto,
     worktree: { projectId: 'p', task: null, path: '/p' },
     now: 1_000_000,
+  })
+  test.each([
+    { note: undefined, expected: 'Lead deciding' },
+    { note: 'Checking the reviewer’s findings', expected: 'Checking the reviewer’s findings' },
+  ])('the strip shows “$expected” while the lead decides', ({ note, expected }) => {
+    const input = snapshot(null, [{ ...launch('manual'), origin: 'lead' } as SimpleEntry])
+    input.sessions.reviewer.running = false
+    input.lead = 'lead'
+    const team = {
+      state: 'running',
+      lead: { sessionId: 'lead' },
+      status: note ? { step: 'reviewed', note, atMs: 30 } : undefined,
+    } as ChatTeam
+    input.sessions.lead = {
+      running: true,
+      status: { agent: { state: 'working' } },
+    } as FlowSnapshot['sessions'][string]
+
+    const model = stageModel({ snapshot: input, team })
+    expect(model.driver).toBe('lead')
+    expect(model.state.waitingOn).toBe(LEAD_RECIPIENT)
+    expect(model.stepper.find((item) => item.stage === 'review')?.note).toBe(expected)
   })
   test('while Auto runs, Chat’s strip is the Auto panel’s', () => {
     for (const stage of STAGES) {

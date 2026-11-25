@@ -518,7 +518,7 @@ export async function sendToSession({
       session: () => useStore.getState().sessions[sid],
       claim: () => terminalAttach(sid, true),
       write: async (message) => {
-        // Work started from the step card reaches the lead here, after the user's own words.
+        // Work started from the regular views reaches the lead here, after the user's own words.
         const notes = leadNotes(projectId, task, sid)
         useSimpleUi.getState().patch(key, {
           unconfirmed: {

@@ -153,6 +153,36 @@ test('Open Auto selects the merge destination, even when the source is the activ
   expect(startMerge).not.toHaveBeenCalled()
 })
 
+test.each([true, false])(
+  'return from Auto focuses the Chat composer when visible: %s',
+  async (composerVisible) => {
+    const { openWorktreeAuto, returnAfterAutoStop } = await import('./workBlocker')
+    const composerFocus = vi.fn()
+    const fallbackFocus = vi.fn()
+    const querySelector = vi.fn((selector: string) =>
+      selector === '.simple-composer:not([hidden]) textarea:not(:disabled)' && composerVisible
+        ? { focus: composerFocus }
+        : selector === '.simple-chat header button'
+          ? { focus: fallbackFocus }
+          : null,
+    )
+    vi.stubGlobal('document', { querySelector })
+    vi.stubGlobal('requestAnimationFrame', (callback: () => void) => callback())
+    try {
+      useStore.getState().setSimpleMode(true)
+      const target = { projectId: 'p', task: null }
+      const run = { runId: 'run', status: 'running' } as AutoRun
+      useStore.getState().patchTask('p', null, { auto: run })
+      openWorktreeAuto(target, true)
+      returnAfterAutoStop(target, run)
+      expect(composerFocus).toHaveBeenCalledTimes(Number(composerVisible))
+      expect(fallbackFocus).toHaveBeenCalledTimes(Number(!composerVisible))
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  },
+)
+
 test('merge rechecks the resolved destination when Auto takes it during preflight', async () => {
   const { gitWorktrees } = await import('./ipc')
   const source = { path: '/p', branch: 'main', head: 'm', main: true, current: true }

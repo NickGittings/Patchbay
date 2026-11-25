@@ -93,6 +93,37 @@ test('the tab flags team errors and treats the restart notice as informational',
   )
 })
 
+test('failed lead requests stay with the lead; an unconfirmed one asks the user to check', () => {
+  state.jobs = []
+  const render = (component: typeof ChatCoordinationAlerts, ...requestStates: string[]) =>
+    renderToStaticMarkup(
+      createElement(component, {
+        openTerminal: vi.fn(),
+        team: {
+          id: 'team',
+          projectId: 'p',
+          state: 'running',
+          messages: [],
+          requests: requestStates.map((state, index) => ({
+            id: String(index),
+            action: 'startCouncilReview',
+            state,
+            result: 'INCOMPLETE OR STALE: do not report a clean verdict.',
+          })),
+        } as unknown as ChatTeam,
+      }),
+    )
+  expect(render(Flags, 'failed')).toContain('0, 0')
+  expect(render(ChatCoordinationAlerts, 'failed')).toBe('')
+  expect(render(Flags, 'uncertain')).toContain('1 coordination issue')
+  const alert = render(ChatCoordinationAlerts, 'failed', 'uncertain', 'uncertain')
+  expect(alert.match(/role="alert"/g)).toHaveLength(1)
+  expect(alert.match(/<button\b/g)).toHaveLength(1)
+  expect(alert).toContain('Couldn’t confirm whether a request from the lead started')
+  expect(alert).toContain('Open Sessions')
+  expect(alert).not.toContain('INCOMPLETE')
+})
+
 vi.mock('../lib/simpleUi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/simpleUi')>()),
   useSimpleUi: (select: (s: unknown) => unknown) =>

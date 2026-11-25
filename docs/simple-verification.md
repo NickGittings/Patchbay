@@ -12,13 +12,13 @@ cargo nextest run --workspace
 (cd apps/desktop && node scripts/smoke-all.mjs simple stories views auto)
 ```
 
-The Simple smoke uses disposable agents and worktrees, without model calls: prompt → planner reply → plan → Build/new worktree → build completion → Review → findings → Fix → conflict check → Merge → merged. The follow-up review after fixes verifies reuse of interactive reviewer sessions. It checks Chat stays open, the open composer drawer switches from planner to builder, input waits open it automatically, and replies survive saved workspace/remount. The Stories smoke checks linking at creation and the derived review label.
+The Simple smoke uses disposable agents and worktrees. A planner replies and saves a plan, then the lead starts Build, Review, Fix, a follow-up Review, and Merge through its authenticated workflow requests. The smoke verifies that Chat stays open, that you can open stage terminals and inspect findings, and that a merge into main clears history without restarting the lead. The Stories smoke checks linkage at creation and the derived review label.
 
 Manual checks with `npm run tauri dev` and hooks installed:
 
-- Describe a feature in the main worktree. See the planner's Markdown replies and current saved plan. Build into a new worktree; the conversation continues there. Older project plans remain collapsed and cannot enable Build.
-- Complete review, fixes, conflict check and merge in Chat. Verify review Options can change presets/base. Check both conflicting and clean branches, and merge anyway after issues.
-- Leave View terminal open while starting Build or Review. Verify it follows the composer recipient, resizing works, and scrollback survives switching to Full and back.
+- Describe a feature in the main worktree and ask the lead to plan. Check the Markdown replies and saved plan. Create a worktree for the feature and ask its lead to build. Check that older plans appear collapsed.
+- Ask the lead to review, fix findings, review again, and merge. Check the stage strip and merge outcome in Chat. In the regular Review view, verify that you can still change the review preset and base, and open the merge dialog.
+- Open the terminal for a stage started by the lead. Check resizing and scrollback after switching to a regular view and back.
 - Trigger a native permission request or AskUserQuestion. Verify the hook message, recipient and automatic drawer; a drawer opened manually stays open when the wait ends. Verify authority with a component pop-out focused.
 - Ask Claude to use AskUserQuestion with two questions, and Codex in Plan mode to use request_user_input (and, outside Plan mode, to ask a clarifying question through request_user_input_async). Verify Chat shows every question and option, Send answer continues the agent without its terminal menu, Answer in terminal brings the menu up, and leaving it unanswered past two minutes falls back to the menu. After updating, reinstall hooks (Codex: trust them again in /hooks).
 - With hooks reinstalled, have Claude and Codex each run a command that needs approval. Verify Chat shows the tool and command, Allow continues without the terminal dialog, Deny with a reason reaches the agent, Answer in terminal brings the dialog up, and a Codex setup with an automatic reviewer shows no card.

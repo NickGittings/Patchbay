@@ -13,7 +13,7 @@ const STAGE_LABELS = {
 
 /**
  * Plan → Build → Review → Merge, as Chat, the Auto panel and the Plan and Review views all show
- * it (`stageModel`). `restore` turns the stage waiting on you into a link back to its actions.
+ * it (`stageModel`).
  * A note shows beside its stage when the stage waits on you or halted; otherwise it is a tooltip,
  * still read by screen readers.
  */
@@ -21,12 +21,10 @@ export default function StageStrip({
   items,
   className,
   label = 'Workflow stages',
-  restore,
 }: {
   items: ChatStepperItem[]
   className?: string
   label?: string
-  restore?: { label: string; onRestore: () => void }
 }) {
   return (
     <ol className={['auto-stepper', className].filter(Boolean).join(' ')} aria-label={label}>
@@ -48,19 +46,10 @@ export default function StageStrip({
             data-state={item.state}
             title={item.note}
           >
-            {restore && ['ready', 'attention'].includes(item.state) ? (
-              // A dismissed card comes back from the stage it was about.
-              <button className="chat-stepper-restore" onClick={restore.onRestore}>
-                {name}
-                {note}
-                <small className="stage-note-hidden">{` · ${restore.label}`}</small>
-              </button>
-            ) : (
-              <span>
-                {name}
-                {note}
-              </span>
-            )}
+            <span>
+              {name}
+              {note}
+            </span>
           </li>
         )
       })}

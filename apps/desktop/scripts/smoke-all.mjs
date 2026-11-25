@@ -119,11 +119,14 @@ const SCRIPTS = {
     },
     'merge-fixture.sh',
   ),
-  'merge-branches-chat': smoke(
-    'merge-branches.js',
-    { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-merge/chat-primary') },
-    'merge-branches-fixture.sh',
-  ),
+  'merge-branches-chat': {
+    ...smoke(
+      'merge-branches.js',
+      { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-merge/chat-primary') },
+      'merge-branches-fixture.sh',
+    ),
+    run: ['scripts/hooks-home.mjs'],
+  },
   'merge-branches-review': smoke(
     'merge-branches.js',
     { PATCHBAY_SMOKE_ROOT: tmp('patchbay-smoke-merge/review-primary') },

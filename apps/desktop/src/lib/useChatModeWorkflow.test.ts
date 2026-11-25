@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 const hooks = vi.hoisted(() => ({ states: [] as unknown[], cursor: 0 }))
 vi.mock('react', async (original) => ({
   ...(await original<typeof import('react')>()),
@@ -13,48 +13,39 @@ vi.mock('react', async (original) => ({
     ]
   },
 }))
-vi.mock('./reviewHandoff', () => ({ fixReviewFindings: vi.fn() }))
-vi.mock('./reviewAgents', () => ({ startMerge: vi.fn() }))
 vi.mock('./chatTeams', () => ({
   controlTeam: vi.fn(),
-  noteLead: vi.fn(),
+  readChatTeams: vi.fn(),
   resetLead: vi.fn(),
   teamFor: vi.fn(),
 }))
 vi.mock('./auto', () => ({
-  mergeNow: vi.fn(),
-  resumeAuto: vi.fn(),
+  autoRun: vi.fn(),
   pauseAuto: vi.fn(),
+  resumeAuto: vi.fn(),
   stopAuto: vi.fn(),
 }))
-vi.mock('./planHandoff', () => ({ implementPlannerPlan: vi.fn() }))
-vi.mock('./stageRetire', () => ({ retireStageAgents: vi.fn() }))
-vi.mock('./simpleActions', () => ({
-  clearSimpleChat: vi.fn(),
-  logLaunch: vi.fn(),
-  logSimple: vi.fn(),
-}))
-vi.mock('./ipc', () => ({
-  gitBranches: vi.fn(),
-  gitWorktrees: vi.fn(),
-}))
-vi.mock('./simpleReview', () => ({
-  simpleReviewRequest: vi.fn(() => ({})),
-  startSimpleReview: vi.fn(),
-}))
+vi.mock('./simpleComposer', () => ({ interruptSession: vi.fn() }))
+vi.mock('./simpleActions', () => ({ clearSimpleChat: vi.fn() }))
 import { useStore } from '../store'
 import { simpleKey, useSimpleUi } from './simpleUi'
 import { useChatModeWorkflow } from './useChatModeWorkflow'
-import { implementPlannerPlan } from './planHandoff'
-import { noteLead } from './chatTeams'
-import { clearSimpleChat, logLaunch } from './simpleActions'
-import { gitBranches, gitWorktrees } from './ipc'
-import { startMerge } from './reviewAgents'
-import { startSimpleReview } from './simpleReview'
+import { controlTeam, readChatTeams, resetLead } from './chatTeams'
+import { stopAuto } from './auto'
+import type { AutoRun, Task } from '../types'
+import { clearSimpleChat } from './simpleActions'
 import { thread } from './simple'
-import { retireStageAgents } from './stageRetire'
 type Context = Parameters<typeof useChatModeWorkflow>[0]
 let context: Context
+const other = { key: simpleKey('p', 'other'), task: 'other' }
+const makeTeam = (task: Context['task']): NonNullable<Context['team']> =>
+  ({
+    id: task ?? 'main',
+    projectId: 'p',
+    task,
+    state: 'running',
+    lead: { sessionId: task ?? 'main' },
+  }) as NonNullable<Context['team']>
 function render(overrides: Partial<Context> = {}) {
   hooks.cursor = 0
   return Workflow({ ...context, ...overrides })
@@ -72,8 +63,10 @@ beforeEach(() => {
   hooks.states = []
   useStore.setState(useStore.getInitialState())
   useSimpleUi.setState({ worktrees: {} })
-  useStore.setState({ project: { id: 'p', name: 'P', root: '/p' } })
-  const s = useStore.getState()
+  useStore.setState({
+    project: { id: 'p', name: 'P', root: '/p' },
+    tasks: [{ id: other.task, branch: other.task, worktree: '/other' } as Task],
+  })
   context = {
     key: simpleKey('p', null),
     projectId: 'p',
@@ -83,10 +76,6 @@ beforeEach(() => {
       { projectId: 'p', task: null, path: '/p' },
     ),
     source: undefined,
-    target: undefined,
-    reviewBase: 'main',
-    devices: s.devices,
-    agentRoles: s.agentRoles,
     auto: null,
     simple: null,
     changed: [],
@@ -94,91 +83,29 @@ beforeEach(() => {
     focusComposer: vi.fn(),
   }
 })
-test('duplicate launches share a scope lock and release it after failure', async () => {
+test('a pending reset blocks another reset in the same worktree and releases the lock after failure', async () => {
   let reject!: (error: Error) => void
-  vi.mocked(implementPlannerPlan).mockReturnValue(
+  vi.mocked(resetLead).mockReturnValueOnce(
     new Promise((_, fail) => {
       reject = fail
     }),
   )
-  render().act('build')
-  render().act('build')
-  expect(implementPlannerPlan).toHaveBeenCalledTimes(1)
-  expect(render().pending).toBe('build')
-  reject(new Error('launch failed'))
+  const completed = vi.fn()
+  const team = makeTeam(null)
+  const first = render({ team }).startFresh(context.key, completed)
+  await render({ team }).startFresh(context.key, completed)
+  expect(resetLead).toHaveBeenCalledOnce()
+  expect(await render({ team }).clearHistory(context.key)).toBe(false)
+  reject(new Error('reset failed'))
+  await first
   await idle()
-  expect(render().failure?.message).toContain('launch failed')
-  vi.mocked(implementPlannerPlan).mockResolvedValue({ sessionId: 'builder' })
-  render().act('build')
-  await idle()
-  expect(implementPlannerPlan).toHaveBeenCalledTimes(2)
-  expect(render().failure).toBeUndefined()
-  // The lead hears of work started beside it, with the session whose finish must not wake it.
-  expect(vi.mocked(noteLead).mock.calls.at(-1)?.slice(1, 3)).toEqual([
-    'a build of the saved plan',
-    ['builder'],
-  ])
+  expect(render({ team }).failure?.message).toBe('reset failed')
+  expect(completed).not.toHaveBeenCalled()
+  await render({ team }).startFresh(context.key, completed)
+  expect(resetLead).toHaveBeenCalledTimes(2)
+  expect(completed).toHaveBeenCalledOnce()
 })
-test('late failure stays scoped to its original chat', async () => {
-  let reject!: (error: Error) => void
-  vi.mocked(implementPlannerPlan).mockReturnValue(
-    new Promise((_, fail) => {
-      reject = fail
-    }),
-  )
-  render().act('build')
-  useStore.setState({ activeTask: 'other' })
-  const other = { key: simpleKey('p', 'other'), task: 'other' }
-  expect(render(other).pending).toBe('')
-  reject(new Error('old launch failed'))
-  await idle()
-  expect(render(other).failure).toBeUndefined()
-  expect(render().failure?.message).toContain('old launch failed')
-})
-test('stale build and review actions do not launch in another worktree', async () => {
-  const old = render()
-  useStore.setState({ activeTask: 'other' })
-  old.act('build')
-  await idle()
-  expect(implementPlannerPlan).not.toHaveBeenCalled()
-  expect(render().failure?.message).toContain('worktree changed')
-  vi.mocked(gitBranches).mockResolvedValue(['main'])
-  old.act('review')
-  await idle()
-  expect(startSimpleReview).not.toHaveBeenCalled()
-  expect(render().failure?.message).toContain('Choose Review')
-})
-test('partial review success logs started reviewers and surfaces remaining errors', async () => {
-  vi.mocked(gitBranches).mockResolvedValue(['main'])
-  vi.mocked(startSimpleReview).mockResolvedValue({
-    started: [{ sessionId: 'reviewer', requestId: 'request', lane: null }],
-    errors: ['second reviewer failed'],
-    round: 'round',
-  })
-  render().act('review')
-  await idle()
-  expect(logLaunch).toHaveBeenCalledWith(
-    'p',
-    null,
-    expect.objectContaining({ action: 'review', sessionId: 'reviewer' }),
-    'request',
-    { atRunStart: true },
-  )
-  expect(render().failure?.message).toBe('second reviewer failed')
-  expect(retireStageAgents).toHaveBeenCalledWith('p', null, ['reviewer'], undefined)
-})
-test('a stage that fails to launch leaves the earlier agents running', async () => {
-  vi.mocked(gitBranches).mockResolvedValue(['main'])
-  vi.mocked(startSimpleReview).mockResolvedValue({
-    started: [],
-    errors: ['no reviewer started'],
-    round: 'round',
-  })
-  render().act('review')
-  await idle()
-  expect(render().failure?.message).toBe('no reviewer started')
-  expect(retireStageAgents).not.toHaveBeenCalled()
-})
+
 test('history confirmation rejects stale scopes and pending input', async () => {
   const workflow = render()
   expect(await workflow.clearHistory('wrong')).toBe(false)
@@ -189,113 +116,71 @@ test('history confirmation rejects stale scopes and pending input', async () => 
   vi.mocked(clearSimpleChat).mockReturnValue(true)
   expect(await workflow.clearHistory(context.key)).toBe(true)
 })
-test('Plan delegates composer focus without starting an agent', async () => {
-  render().act('plan')
-  await idle()
-  expect(context.focusComposer).toHaveBeenCalledOnce()
-  expect(implementPlannerPlan).not.toHaveBeenCalled()
+
+test('a stale Stop confirmation leaves both worktrees untouched after switching', async () => {
+  const team = makeTeam(null)
+  const auto = { runId: 'run', status: 'running' } as AutoRun
+  const workflow = render({ team, auto })
+  const selection = workflow.selected('stop')
+  useStore.setState({ activeTask: other.task })
+
+  await workflow.work('stop', selection, workflow.tree)
+
+  expect(stopAuto).not.toHaveBeenCalled()
+  expect(readChatTeams).not.toHaveBeenCalled()
+  expect(controlTeam).not.toHaveBeenCalled()
+  const changed = expect.objectContaining({ message: expect.stringContaining('worktree changed') })
+  expect(render({ team, auto }).workOutcomes).toEqual([
+    { target: 'Auto', result: changed },
+    { target: 'Chat coordination', result: changed },
+  ])
+  expect(render(other).workOutcomes).toEqual([])
 })
 
-test('completion keeps launch ownership and leaves another scope pending', async () => {
-  let finishFirst!: (value: { sessionId: string }) => void
-  let finishOther!: (value: { sessionId: string }) => void
-  vi.mocked(implementPlannerPlan)
+test('a stale reset confirmation cannot reset either lead after switching worktrees', async () => {
+  const workflow = render({ team: makeTeam(null) })
+  const completed = vi.fn()
+  useStore.setState({ activeTask: other.task })
+  await workflow.startFresh(context.key, completed)
+  await render({ ...other, team: makeTeam(other.task) }).startFresh(context.key, completed)
+  expect(resetLead).not.toHaveBeenCalled()
+  expect(completed).not.toHaveBeenCalled()
+})
+
+test('a late reset failure stays in its original worktree and leaves another reset pending', async () => {
+  let rejectFirst!: (error: Error) => void
+  let resolveOther!: (team: NonNullable<Context['team']>) => void
+  vi.mocked(resetLead)
     .mockReturnValueOnce(
-      new Promise((done) => {
-        finishFirst = done
+      new Promise((_, reject) => {
+        rejectFirst = reject
       }),
     )
     .mockReturnValueOnce(
-      new Promise((done) => {
-        finishOther = done
+      new Promise((resolve) => {
+        resolveOther = resolve
       }),
     )
-  render().act('build')
-  useStore.setState({ activeTask: 'other' })
-  const other = { key: simpleKey('p', 'other'), task: 'other' }
-  render(other).act('build')
-  finishFirst({ sessionId: 'first' })
-  await idle()
-  expect(logLaunch).toHaveBeenCalledWith(
-    'p',
-    null,
-    expect.objectContaining({ sessionId: 'first' }),
-    undefined,
-    { atRunStart: true },
-  )
-  expect(render(other).pending).toBe('build')
+  const team = makeTeam(null)
+  const otherTeam = makeTeam(other.task)
+  const otherContext = { ...other, team: otherTeam }
+  const first = render({ team }).startFresh(context.key, vi.fn())
+  useStore.setState({ activeTask: other.task })
+  const completed = vi.fn()
+  const second = render(otherContext).startFresh(other.key, completed)
+
+  rejectFirst(new Error('first reset failed'))
+  await first
+  expect(resetLead).toHaveBeenNthCalledWith(1, team)
+  expect(resetLead).toHaveBeenNthCalledWith(2, otherTeam)
+  expect(render({ team }).failure?.message).toBe('first reset failed')
+  expect(render(otherContext).failure).toBeUndefined()
+  expect(render(otherContext).pending).toBe('reset')
+  expect(useSimpleUi.getState().worktrees[context.key]?.pendingWorkflow).toBe(false)
   expect(useSimpleUi.getState().worktrees[other.key]?.pendingWorkflow).toBe(true)
-  finishOther({ sessionId: 'other' })
-  await vi.waitFor(() => expect(render(other).pending).toBe(''))
-})
 
-const source = { path: '/p/feature', branch: 'feature', head: 'f1' }
-const target = { path: '/p', branch: 'main', head: 'm1' }
-describe('Merge', () => {
-  const started = {
-    kind: 'started',
-    sessionId: 'merger',
-    requestId: 'merge-request',
-    request: {
-      source: source.path,
-      sourceBranch: 'feature',
-      destination: target.path,
-      destinationBranch: 'main',
-    },
-  } as const
-  const merge = () => {
-    vi.mocked(gitWorktrees).mockResolvedValue([source, target] as never)
-    vi.mocked(startMerge).mockResolvedValue(started)
-    return { source, target } as unknown as Partial<Context>
-  }
-  test('conflicts stay shown when the merge cannot start', async () => {
-    const sides = merge()
-    useSimpleUi.getState().patch(context.key, { mergeCheck: { key: 'k', paths: ['a.ts'] } })
-    vi.mocked(startMerge).mockRejectedValue(new Error('no merge agent'))
-    render(sides).act('merge')
-    await idle()
-    expect(useSimpleUi.getState().worktrees[context.key]?.mergeCheck?.paths).toEqual(['a.ts'])
-  })
-  test('without conflicts one click starts the merge agent', async () => {
-    const sides = merge()
-    render(sides).act('checkMerge')
-    await idle()
-    expect(startMerge).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        source,
-        destinationBranch: 'main',
-        checkConflicts: true,
-        commitSource: 'report',
-      }),
-    )
-    expect(useSimpleUi.getState().worktrees[context.key]?.mergeCheck).toBeUndefined()
-  })
-  test('conflicts stop the merge and stay shown for this worktree', async () => {
-    const sides = merge()
-    vi.mocked(startMerge).mockResolvedValueOnce({
-      kind: 'conflicts',
-      paths: ['src/a.ts'],
-      sourceHead: 'f1',
-      destinationHead: 'm1',
-    })
-    render(sides).act('checkMerge')
-    await idle()
-    expect(useSimpleUi.getState().worktrees[context.key]?.mergeCheck).toEqual({
-      key: JSON.stringify([context.key, 'f1', 'm1']),
-      paths: ['src/a.ts'],
-    })
-    render(sides).act('merge')
-    await idle()
-    expect(startMerge).toHaveBeenLastCalledWith(expect.objectContaining({ checkConflicts: false }))
-    expect(useSimpleUi.getState().worktrees[context.key]?.mergeCheck).toBeUndefined()
-  })
-  test('uncommitted source changes open the dialog instead of merging', async () => {
-    const sides = merge()
-    vi.mocked(startMerge).mockResolvedValueOnce({ kind: 'uncommitted', changes: [' M a.ts'] })
-    const workflow = render(sides)
-    workflow.act('merge')
-    await idle()
-    expect(render(sides).dialog).toBe('merge')
-    expect(logLaunch).not.toHaveBeenCalled()
-  })
+  resolveOther(otherTeam)
+  await second
+  expect(completed).toHaveBeenCalledOnce()
+  expect(render(otherContext).pending).toBe('')
 })

@@ -55,7 +55,7 @@ const active = new Set<string>()
 const driving = new Map<string, Promise<void>>()
 type Workflow = NonNullable<ChatTeam['requests']>[number]
 type Member = CouncilRun['members'][number]
-/** A lead's `startReview`: the regular review, with the reviewers and base Chat's button uses. */
+/** A lead's `startReview`: the regular review, using role presets and the worktree’s review base. */
 const leadReview = (request: Workflow) => request.action === 'startReview'
 /** Like `startReviewAgents`, a lone reviewer has no lane and several get one each. */
 const laneOf = (run: CouncilRun, member: Member) =>
@@ -263,7 +263,7 @@ async function advanceCouncil(team: ChatTeam, request: Workflow) {
     member.startedMs = Date.now()
     await save(team, request, run)
     try {
-      // A lead review launches like Chat's Review, which doesn't need status hooks.
+      // The regular review presets need provider sign-in. Status hooks are optional.
       if (leadReview(request))
         await requireProviderAuth({ terminal: member.preset, project, task: team.task })
       else await requireTeamPreset(member.preset, project, team.task)

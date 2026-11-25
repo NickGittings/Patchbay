@@ -322,7 +322,7 @@ pub struct Team {
     pub original_briefing: String,
     #[serde(default)]
     pub observed_agents: BTreeMap<String, u64>,
-    /// Sessions the user started from Chat's workflow buttons; their finish does not wake the lead.
+    /// Sessions the user started independently. Their finish does not wake the lead.
     #[serde(default)]
     pub noted_agents: std::collections::BTreeSet<String>,
     /// When each noted session's work was noted, in Unix milliseconds.
@@ -485,7 +485,7 @@ pub enum Control {
     HandoffApplied {
         id: String,
     },
-    /// Work the user started outside the lead (Chat's workflow buttons), for its inbox.
+    /// Work the user started independently, recorded in the lead's inbox.
     Note {
         id: String,
         text: String,
@@ -2602,8 +2602,8 @@ pub fn reconcile(
                         "Existing agent {} reached a ready prompt or exited. Inspect its results and validation before treating the work as complete.",
                         record.metadata.name
                     );
-                    // The step card already reports work the user started from it, and a merge
-                    // ends the task: neither is a reason for the lead to start a turn.
+                    // Chat already shows directly launched stages, and a merge ends the task.
+                    // Both notices can wait for the lead's next turn.
                     t.noted_since.remove(&record.id);
                     let noted = t.noted_agents.remove(&record.id);
                     if noted || record.metadata.component_id == crate::model::MERGE_SCOPE {
@@ -5526,7 +5526,7 @@ mod tests {
         assert!(settled.id.starts_with("external-finished-quick") && settled.passive);
         records.pop();
 
-        // An agent the user did not start from the step card still wakes the lead.
+        // An agent that was not announced to the lead still wakes it.
         finish("stranger", &mut records);
         let t = f.state();
         let notice = t.messages.last().unwrap();

@@ -17,37 +17,22 @@ export default function MergeAgentDialog({
   source: active,
   worktrees,
   branches,
-  initialDestination,
   close,
   launched,
   onError,
-  onRequest,
-  origin,
-  task,
-  compact = false,
 }: {
-  compact?: boolean
-  /** A merge agent started; it is already recorded in its worktree's chat. */
-  onRequest?: () => void
-  /** Which flow the dialog serves, recorded with the merge. */
-  origin: 'chat' | 'manual'
-  /** The opening source's task, when the caller knows it. */
-  task?: string | null
   source: Worktree
   worktrees: Worktree[]
   branches: string[]
-  /** The destination already chosen elsewhere, such as Chat's merge target. */
-  initialDestination?: string
   close: () => void
   launched: (sid: string) => void
   onError?: (error: Error) => void
 }) {
   // Capture this dialog's project so switching tabs cannot redirect a pending launch.
   const [project] = useState(() => useStore.getState().toProject())
-  const [selection, setSelection] = useState(() => {
-    const initial = initialMergeSelection(active, worktrees, branches)
-    return { ...initial, destination: initialDestination || initial.destination }
-  })
+  const [selection, setSelection] = useState(() =>
+    initialMergeSelection(active, worktrees, branches),
+  )
   const source = worktrees.find((w) => w.path === selection.source && w.branch)
   const destination = reconcileMergeDestination(source, worktrees, selection.destination, branches)
   // Drop invalid destinations immediately so a later source change cannot restore an old choice.
@@ -58,10 +43,7 @@ export default function MergeAgentDialog({
   const sessions = useStore((s) => s.sessions)
   const destinations = mergeDestinations(source, worktrees, branches)
   const target = destinations.find((d) => d.branch === destination)
-  const sourceTask =
-    source?.path === active.path && task !== undefined
-      ? task
-      : source && taskOfWorktree(source, project.projectId)
+  const sourceTask = source && taskOfWorktree(source, project.projectId)
   const blockedMessage = useStore(
     () => mergeAutoBlocker(project.projectId, sourceTask, target?.worktree)?.message,
   )
@@ -74,8 +56,7 @@ export default function MergeAgentDialog({
   return (
     <AgentJobDialog
       role="merge"
-      title={compact ? 'Merge' : 'Start merge agent'}
-      compact={compact}
+      title="Start merge agent"
       source={source}
       sourceField={({ busy, clearError }) => (
         <label>
@@ -113,7 +94,7 @@ export default function MergeAgentDialog({
       launch={async ([device]) => {
         const requestId = crypto.randomUUID()
         try {
-          const started = await launchMerge(origin, sourceTask, {
+          const started = await launchMerge('manual', sourceTask, {
             project,
             source: source!,
             destinationBranch: target!.branch,
@@ -122,7 +103,6 @@ export default function MergeAgentDialog({
             ...(commitFirst ? { commitSource: changes } : {}),
           })
           if (started.kind !== 'started') throw new Error('The merge did not start')
-          onRequest?.()
           return started.sessionId
         } catch (e) {
           // The confirmed list may be what went stale; show the current one for the retry.
@@ -135,21 +115,19 @@ export default function MergeAgentDialog({
     >
       {({ busy, clearError }) => (
         <>
-          {(!compact || (source && (!loaded || loaded.error || status !== 'current'))) && (
-            <p className="hint" aria-label="Source review status">
-              {!source
-                ? 'Choose a source worktree.'
-                : loaded?.error
-                  ? loaded.error
-                  : !loaded
-                    ? 'Loading review status…'
-                    : status === 'none'
-                      ? 'No review findings for this branch.'
-                      : status === 'current'
-                        ? 'Review findings are current.'
-                        : 'Review findings exist; changed since review.'}
-            </p>
-          )}
+          <p className="hint" aria-label="Source review status">
+            {!source
+              ? 'Choose a source worktree.'
+              : loaded?.error
+                ? loaded.error
+                : !loaded
+                  ? 'Loading review status…'
+                  : status === 'none'
+                    ? 'No review findings for this branch.'
+                    : status === 'current'
+                      ? 'Review findings are current.'
+                      : 'Review findings exist; changed since review.'}
+          </p>
           {!target && source && !destinations.length && (
             <p role="status">Create another local branch before merging this worktree.</p>
           )}

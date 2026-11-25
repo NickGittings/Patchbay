@@ -1,7 +1,6 @@
 import type {
   AutoRun,
   AutoStage,
-  MergeOutcome,
   PlanText,
   Review,
   ReviewFindings,
@@ -656,18 +655,6 @@ export function foreignPlanner(
     !record.metadata.task &&
     (!ownsPlanner(simple, record.id, session?.generation) || !session?.running)
   )
-}
-
-/** The branch "Merge again" retries: the one the merge that ended dirty was launched for. */
-export function retryMergeBranch(
-  simple: SimpleState | null | undefined,
-  outcome: MergeOutcome | undefined,
-) {
-  if (outcome !== 'dirty') return undefined
-  const merge = workflowLog(simple).findLast(
-    (e) => e.kind === 'action' && e.action === 'merge' && !!e.request,
-  )
-  return merge?.kind === 'action' ? merge.request?.destinationBranch : undefined
 }
 
 /**

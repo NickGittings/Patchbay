@@ -105,13 +105,12 @@ export function ChatCoordinationAlerts({ team, openTerminal }: Props) {
       })}
       {team.reset?.error && <p role="alert">{team.reset.error}</p>}
       {teamError && <p role="alert">{team.error}</p>}
-      {requests.map((r) => (
-        <p role="alert" key={r.id}>
-          {r.result ?? `${r.action} ${r.state}`}{' '}
-          <button onClick={showSessions}>Open Sessions</button>
-          <button onClick={showSettings}>Agent settings</button>
+      {requests.length > 0 && (
+        <p role="alert">
+          Couldn’t confirm whether a request from the lead started. Check Sessions before asking
+          again. <button onClick={showSessions}>Open Sessions</button>
         </p>
-      ))}
+      )}
       {messages.map((m) => (
         <div role="alert" key={m.id}>
           Message delivery was not confirmed. Inspect the recipient’s terminal before retrying.{' '}

@@ -4,14 +4,8 @@ import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../store'
 import { useChatTeams } from './chatTeams'
 import { useExpiredDeadline } from './clock'
-import { chatReviewBase, defaultMergeDestination } from './reviewAgents'
-import {
-  LAUNCH_RECORD_GRACE_MS,
-  pendingLaunch,
-  recordStage,
-  retryMergeBranch,
-  thread,
-} from './simple'
+import { chatReviewBase } from './reviewAgents'
+import { LAUNCH_RECORD_GRACE_MS, pendingLaunch, recordStage, thread } from './simple'
 import { EMPTY_SIMPLE_UI, simpleKey, useSimpleUi } from './simpleUi'
 import { stageModel } from './stageModel'
 import type { useSimpleData } from './useSimpleData'
@@ -66,50 +60,27 @@ export function useStageModel(explicit?: WorktreeReader) {
   const launch = pendingLaunch(snapshot, model.records)
   const now = useExpiredDeadline(launch ? launch.atMs + LAUNCH_RECORD_GRACE_MS : undefined)
   if (!reader) return null
-  const { source, worktrees, branches, error, findings } = reader
-  const retryBranch = retryMergeBranch(s.simple, data?.outcome)
-  const target = worktrees.find(
-    (w) =>
-      w.branch ===
-      (retryBranch ?? (source && defaultMergeDestination(source, worktrees, branches))),
-  )
+  const { source, worktrees, branches, error } = reader
   const merging = model.records.filter((r) => recordStage(r) === 'merge').at(-1)
   const mergeBase =
     model.stage === 'merge'
       ? worktrees.find((w) => w.path === merging?.spec.cwd)?.branch
       : undefined
   const base = chatReviewBase(source, s.tasks, worktrees, branches, mergeBase)
-  const reviewBase = chatReviewBase(
-    source,
-    s.tasks,
-    worktrees,
-    branches,
-    findings?.findings?.base || mergeBase,
-  )
-  const checkKey = JSON.stringify([key, source?.head, target?.head])
   const flowSnapshot = {
     ...snapshot,
     worktree,
-    findings: findings?.findings,
     outcomePending: !data && !error,
     outcomeError: data?.outcomeError || error || undefined,
     base: base ?? undefined,
-    // The last conflict check, kept per worktree so a remount still shows its conflicts.
-    conflicts: ui.mergeCheck?.key === checkKey ? ui.mergeCheck.paths : undefined,
     now,
   }
   return {
     key,
     team,
     ui,
-    snapshot,
-    flowSnapshot,
     launch,
     now,
-    target,
-    retryBranch,
-    base,
-    reviewBase,
     ...stageModel({ snapshot: flowSnapshot, model, team }),
   }
 }

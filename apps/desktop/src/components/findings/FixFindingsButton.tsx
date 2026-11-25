@@ -17,6 +17,7 @@ export default function FixFindingsButton({
   /** Fixing is the worktree's next step. */
   primary?: boolean
 }) {
+  const simpleMode = useStore((s) => s.simpleMode)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<{ id: string; error: Error }>()
   const blocker = () =>
@@ -30,6 +31,7 @@ export default function FixFindingsButton({
   const reviewing = useStore((s) =>
     reviewWorktreeBusy(s.sessionRecords, s.sessions, record.spec.cwd),
   )
+  if (simpleMode) return null
   return (
     <>
       <button
@@ -43,8 +45,7 @@ export default function FixFindingsButton({
         onClick={() => {
           setStarting(true)
           setError(undefined)
-          // In Chat mode the agent panel shows this button too.
-          void launchFix(useStore.getState().simpleMode ? 'chat' : 'manual', record, 'follow')
+          void launchFix('manual', record, 'follow')
             .catch((e) => setError({ id: record.id, error: workError(e) }))
             .finally(() => setStarting(false))
         }}

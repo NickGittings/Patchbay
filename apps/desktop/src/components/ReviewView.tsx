@@ -138,7 +138,7 @@ export default function ReviewView() {
   // Where the worktree's work is, as Chat and the Auto panel show it, and what comes next.
   const stage = useStageModel()
   const next = new Set(stage?.state.prompt?.actions.map((a) => a.action))
-  // Auto's own gate is approved in Chat or the Auto panel; the dialog here can't merge for it.
+  // The Auto panel handles approval for Auto's merge gate.
   const nextMerge = next.has('checkMerge') || next.has('merge')
   const nextFix = next.has('fix')
   // Hiding the dock sticks, also for the shown worktree's own agent when the hidden selection was
@@ -321,7 +321,6 @@ export default function ReviewView() {
       {reviewDialog && source?.branch && (
         <ReviewAgentDialog
           key={`${projectId}/${source.path}/${source.branch}`}
-          origin="manual"
           source={source}
           worktrees={worktrees}
           close={() => setReviewDialogScope(null)}
@@ -339,7 +338,6 @@ export default function ReviewView() {
       {mergeDialog && source?.branch && (
         <MergeAgentDialog
           key={`${projectId}/${source.path}/${source.branch}`}
-          origin="manual"
           source={source}
           worktrees={worktrees}
           branches={branches}

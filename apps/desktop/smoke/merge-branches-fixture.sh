@@ -18,3 +18,66 @@ for name in chat-primary review-primary; do
   printf 'feature\n' > "$dir/$name/shared.txt"
   git -C "$dir/$name" commit -qam feature
 done
+cat > "$dir/lead.py" <<'PY'
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+import time
+import tty
+import uuid
+
+tty.setcbreak(sys.stdin.fileno())
+
+journal = pathlib.Path(os.environ['PATCHBAY_REPORT_DIR'])
+conversation = str(uuid.uuid4())
+turn = str(uuid.uuid4())
+sequence = 0
+
+def report(event, **extra):
+    global sequence
+    sequence += 1
+    data = dict(session=os.environ['PATCHBAY_REPORT_SESSION'],
+                generation=int(os.environ['PATCHBAY_REPORT_GENERATION']),
+                provider=os.environ['PATCHBAY_REPORT_PROVIDER'], sequence=sequence,
+                atMs=int(time.time()*1000), event=event, conversation=conversation, turn=turn)
+    data.update(extra)
+    temp = journal / 'pending'
+    temp.write_text(json.dumps(data))
+    temp.replace(journal / ('%020d.json' % sequence))
+
+report('SessionStart')
+report('UserPromptSubmit')
+time.sleep(.4)
+report('Stop', reply='Ready')
+buffer = ''
+for line in sys.stdin:
+    buffer += line
+    if '\x1b[200~' in buffer and '\x1b[201~' not in buffer:
+        continue
+    prompt = buffer.replace('\x1b[200~', '').replace('\x1b[201~', '').strip()
+    buffer = ''
+    if not prompt:
+        continue
+    turn = str(uuid.uuid4())
+    report('UserPromptSubmit')
+    if prompt == 'Merge the fixture branch':
+        with tempfile.NamedTemporaryFile(mode='w') as settings:
+            json.dump({}, settings)
+            settings.flush()
+            subprocess.run([os.environ['PATCHBAY_CLI'], 'agent', 'team-request', '--id', 'fixture-merge',
+                            '--action', 'startMerge', '--file', settings.name], check=True)
+    report('Stop', reply='Ready.')
+PY
+
+cat > "$dir/codex" <<WRAPPER
+#!/bin/sh
+if [ "\${1:-}" = login ] && [ "\${2:-}" = status ]; then
+  printf 'Logged in using ChatGPT\n'
+  exit 0
+fi
+exec python3 '$dir/lead.py' "\$@"
+WRAPPER
+chmod +x "$dir/codex"

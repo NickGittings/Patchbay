@@ -103,7 +103,7 @@ export function stageModel({ snapshot, model, team }: StageModelInput) {
   // Auto runs and verdicts from before a return to main belong to the finished branch.
   const auto = autoBeforeReset(snapshot.auto, simple) ? null : snapshot.auto
   const flowed = flow(snapshot, threaded)
-  // The lead decides what follows a stage it started; the card returns once it is done deciding.
+  // The lead decides what follows a stage it started.
   const derived = forLead(
     flowed,
     leadDeciding({
@@ -137,7 +137,8 @@ export function stageModel({ snapshot, model, team }: StageModelInput) {
         // A worktree Auto ran in place has no Merge, even once later work follows the run.
         inPlace: !!auto && !['stopped', 'failed'].includes(auto.status) && runsInPlace(auto),
         halt: team?.state === 'paused' || team?.state === 'stopped' ? team.state : undefined,
-        note: status.note ?? (state.waitingOn === LEAD_RECIPIENT ? 'Lead deciding' : undefined),
+        note: status.note,
+        waitingOnLead: state.waitingOn === LEAD_RECIPIENT,
       })
   const driver: 'auto' | 'lead' | 'user' =
     autoActive || autoHalt === 'paused'
