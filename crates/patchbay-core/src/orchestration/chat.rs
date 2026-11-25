@@ -17,6 +17,9 @@ impl std::error::Error for DeliveryRefused {}
 pub const LEAD_RECIPIENT: &str = "lead";
 
 const MESSAGE_LIMIT: usize = 64 * 1024;
+const WORKER_ROLE: &str = "worker";
+// Mirrors the desktop's early startAgent failure in chatTeams.ts.
+const SUB_BUILDERS_OFF: &str = "Sub-builders are off (Settings → Agent roles → Sub-builders). Use a stage such as startPlan, startBuild or startAuto, or ask the user to turn sub-builders on.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -349,6 +352,14 @@ pub struct Team {
     #[serde(default)]
     pub finished: FinishedWork,
     pub error: Option<String>,
+}
+
+/// Sub-builders are on when the worker role names at least one installed preset,
+/// matching the desktop's `roleDevices(…, 'worker')` for the regular flow.
+fn sub_builders_enabled(t: &Team) -> bool {
+    t.agent_roles
+        .get(WORKER_ROLE)
+        .is_some_and(|ids| ids.iter().any(|id| t.presets.iter().any(|p| &p.id == id)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1223,6 +1234,7 @@ pub fn command(
                     ensure!(copy.jobs.len() == count, "Round identity already used");
                     return Ok(t);
                 }
+                ensure!(sub_builders_enabled(&t), "{SUB_BUILDERS_OFF}");
                 ensure!(
                     shared
                         || s.runs.iter().all(|r| r.chat_team.as_deref() != Some(&t.id)
@@ -2167,13 +2179,14 @@ const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. 
 
 - You coordinate agents and talk to the user. The user talks only to you: present coherent updates and final answers in this conversation, and never ask the user to relay worker messages.
 - Agents do the work. You do not plan, implement, review, fix, merge, investigate or edit project files yourself, however small the task. Read team state, results and the saved plan only as far as coordinating and reporting need.
+- When `team.agentRoles.worker` is missing or empty, sub-builders are off. Do not use `team-delegate`, `team-delegate-shared` or `startAgent`. For implementation use `startPlan` → `startBuild`, or `startAuto`. For investigation ask the user to turn sub-builders on. Never do the work yourself.
 - Start the matching agent without asking permission to delegate:
   - Plan: when the user asks for a plan, request `startPlan` with their request as `goal`. When it completes, read `$PATCHBAY_PLAN_FILE` and summarize the plan. Do not build it unless asked.
-  - Build: build a saved plan with `startBuild`. Other implementation goes to `code` workers.
+  - Build: build a saved plan with `startBuild`. Other implementation goes to `code` workers when sub-builders are on.
   - Review: review this branch's changes with `startReview`, or `startCouncilReview` for several independent reviewers, never with a `report` worker.
   - Fix: fix review findings with `startFix`, only when the user asks.
   - Merge: merge with `startMerge`, only when the user asks for it. A clean review is not permission to merge.
-  - Investigation, and checks of the combined result, go to `report` workers. A complete plan → build → review → merge pipeline goes to `startAuto`.
+  - When sub-builders are on, investigation and checks of the combined result go to `report` workers. A complete plan → build → review → merge pipeline goes to `startAuto`.
 - For "what's next?", run `agent stories` and answer with its `next` item (its epic → feature, title and acceptance criteria), then offer to plan it or run Auto on it. Start work when the user asks and pass the item id as `story` to link and track it. Mention a linked worktree (`task`) when an item has one.
 - When the user describes new work without asking for a plan, build or Auto run, run `agent stories` first. Then propose an epic, features and stories with acceptance criteria, using existing epics and features as parents where they fit and components from `agent team`. If the request leaves the outcome, acceptance criteria, components or parent open, ask about those together in that same message and offer your best guess as the default. Do not ask about what the request or the board already answers. Create the items after the user agrees and report their ids. Edit or reprioritize board items when asked. Patchbay saves story progress as stages run. Set status by hand only when the user asks or when recording work that happened outside Patchbay.
 - Keep the chat status current with `agent team-status`: set it when you take on a request, when you start a stage and after each stage result. It is what the user sees as the state of the work.
@@ -2205,7 +2218,7 @@ Run each command below as {cli}.
 - `agent team-coordinate --session <session-id> --file <json-array-of-component-ids> [--paths <relative-path> ...]`: record an existing agent's agreed components.
 - `agent team-ask --id <request-id> --to <assignment-id-or-session-id> --text <question>`: gather progress, blockers, findings and validation from EXISTING agents before launching more work. Requests and responses are durable in `team.informationRequests`. Busy agents receive questions at their next ready prompt and respond with `agent team-reply --id <request-id> --text <response>`.
 - `agent team-send --id <unique-id> --to <assignment-id> --text <message>`: route dependencies and messages. Workers contact only you.
-- `agent team-integrate <assignment-id>`, then `agent team-finish --validation <checks-and-results>`: integrate code SERIALly, have a worker verify the result, checkpoint, then finish. If integration conflicts, stop and tell the user which assignment conflicted.
+- `agent team-integrate <assignment-id>`, then `agent team-finish --validation <checks-and-results>`: integrate code SERIALly, have a `report` worker verify the result (when sub-builders are off, record the checks that ran in `--validation` and offer `startReview` instead), checkpoint, then finish. If integration conflicts, stop and tell the user which assignment conflicted.
 
 ### Rules
 
@@ -3481,6 +3494,12 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
+            let mut fixture = Self::new_without_sub_builders();
+            fixture.team =
+                fixture.set_worker_roles(BTreeMap::from([(WORKER_ROLE.into(), vec![preset().id])]));
+            fixture
+        }
+        fn new_without_sub_builders() -> Self {
             let dir = std::env::temp_dir().join(format!("patchbay-team-{}", new_id()));
             std::fs::create_dir_all(&dir).unwrap();
             run(git(&dir).args(["init", "-b", "main"])).unwrap();
@@ -3510,6 +3529,20 @@ mod tests {
                 lead,
                 team,
             }
+        }
+        fn set_worker_roles(&self, roles: BTreeMap<String, Vec<String>>) -> Team {
+            control(
+                &self.dir,
+                "p",
+                &self.team.id,
+                Control::Catalog {
+                    presets: vec![preset()],
+                    roles,
+                    council: CouncilSettings::default(),
+                },
+                std::slice::from_ref(&self.lead),
+            )
+            .unwrap()
         }
         fn auth(&self) -> LaunchContext {
             LaunchContext {
@@ -3654,6 +3687,52 @@ mod tests {
                 .is_err()
         );
     }
+    #[test]
+    fn delegation_is_rejected_while_sub_builders_are_off() {
+        let f = Fixture::new_without_sub_builders();
+        let isolated = || Command::Delegate {
+            id: "round1".into(),
+            assignments: vec![assignment("a", ResultKind::Report, &[])],
+        };
+        let shared = || Command::DelegateShared {
+            id: "round2".into(),
+            assignments: vec![assignment("b", ResultKind::Report, &[])],
+        };
+        for off in [
+            BTreeMap::new(),
+            BTreeMap::from([(WORKER_ROLE.into(), vec![])]),
+            // A worker preset that is no longer installed is off, as in the regular flow.
+            BTreeMap::from([(WORKER_ROLE.into(), vec!["uninstalled".into()])]),
+        ] {
+            f.set_worker_roles(off);
+            for command in [isolated(), shared()] {
+                let error = f.cmd(command).unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    "Sub-builders are off (Settings → Agent roles → Sub-builders). Use a stage such as startPlan, startBuild or startAuto, or ask the user to turn sub-builders on."
+                );
+            }
+            assert!(f.state().rounds.is_empty());
+        }
+
+        f.set_worker_roles(BTreeMap::from([(WORKER_ROLE.into(), vec![preset().id])]));
+        f.cmd(isolated()).unwrap();
+        f.cmd(shared()).unwrap();
+        assert_eq!(f.state().rounds, ["round1", "round2"]);
+
+        let (_, worker) = f.launch("a");
+        f.set_worker_roles(BTreeMap::new());
+        f.worker_cmd(
+            &worker,
+            Command::Report {
+                summary: "Baseline inspected".into(),
+            },
+        )
+        .unwrap();
+        let round = super::super::read(&f.dir, "p", "round1").unwrap();
+        assert!(job_done(&round.jobs[0]));
+    }
+
     #[test]
     fn shared_workers_preserve_dirty_worktree_and_complete_without_commits() {
         let f = Fixture::new();
@@ -4052,6 +4131,22 @@ mod tests {
         let instructions = lead_instructions();
         assert!(instructions.contains("agent stories"));
         assert!(instructions.contains("story: optional-story-id"));
+    }
+
+    #[test]
+    fn lead_uses_stages_when_sub_builders_are_off() {
+        let instructions = lead_instructions();
+        let rule = instructions
+            .lines()
+            .find(|line| line.starts_with("- When `team.agentRoles.worker`"))
+            .expect("sub-builder role rule");
+        assert!(rule.contains("is missing or empty, sub-builders are off"));
+        assert!(
+            rule.contains("Do not use `team-delegate`, `team-delegate-shared` or `startAgent`")
+        );
+        assert!(rule.contains("`startPlan` → `startBuild`, or `startAuto`"));
+        assert!(rule.contains("ask the user to turn sub-builders on"));
+        assert!(rule.contains("Never do the work yourself"));
     }
 
     #[test]

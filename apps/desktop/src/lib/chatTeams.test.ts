@@ -379,6 +379,22 @@ test('initializing the selected lead uses its authenticated preset rather than i
   )
 })
 
+test('initializing a lead syncs the enabled sub-builder role before returning', async () => {
+  useStore.getState().setAgentRoles({ worker: [preset.id] })
+  const initialized = team()
+  const synced = team({ agentRoles: { worker: [preset.id] } })
+  vi.mocked(invoke).mockResolvedValueOnce(initialized).mockResolvedValueOnce(synced)
+
+  await expect(initializeTeam('p', null, record)).resolves.toEqual(synced)
+  expect(invoke).toHaveBeenNthCalledWith(
+    2,
+    'chat_team_control',
+    expect.objectContaining({
+      control: expect.objectContaining({ kind: 'catalog', roles: { worker: [preset.id] } }),
+    }),
+  )
+})
+
 test('a reply from the replacement that arrives before handoff acknowledgement stays visible', async () => {
   const original = useStore.getState().simple!
   useStore.getState().patchTask('p', null, {
@@ -473,6 +489,23 @@ test.each(['startPlan', 'startBuild', 'startFix', 'startMerge'] satisfies Workfl
     expect(saved.requests![0].state).toBe('starting')
   },
 )
+test.each([undefined, { worker: [] }, { worker: ['uninstalled'] }])(
+  'startAgent fails before delegating with sub-builder roles %j',
+  async (roles) => {
+    const saved = mockRequestDriver('startAgent', { preset: preset.id, instructions: 'Inspect' })
+    saved.agentRoles = roles
+    await refreshChatTeams('p')
+    expect(saved.requests![0]).toMatchObject({
+      state: 'failed',
+      result:
+        'Sub-builders are off (Settings → Agent roles → Sub-builders). Use a stage such as startPlan, startBuild or startAuto, or ask the user to turn sub-builders on.',
+    })
+    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).not.toContain(
+      'chat_team_delegate_shared',
+    )
+  },
+)
+
 test('a running lead stage is checked for its agent finishing', async () => {
   const saved = mockRequestDriver('startBuild')
   saved.requests![0].state = 'running'

@@ -272,8 +272,12 @@ stage, so messaging a build agent after a merge resumes the build flow. A team's
 run was launched for a stage and then adopted as lead. The lead sets the status itself instead.
 Continue work resumes previously launched rounds and rounds paused by restart. Unlaunched queued
 rounds otherwise stay paused and are included in the lead's recovery handoff.
-Chat teams choose presets and concurrency in **Sub-builders for this worktree** under
-Settings → Agent roles. The regular flow uses the global **Sub-builders** role default. Pause work, Continue work and Stop work live in the chat menu.
+The global **Sub-builders** role in Settings → Agent roles gates both Chat and the regular flow.
+It defaults to Off, so Chat delegation is opt-in. While it is Off, or names no installed preset,
+Chat rejects new delegations and the lead uses stages. Existing rounds continue, and the lead
+records the checks that ran instead of starting a verifying worker. Once the role is on, Chat teams can choose
+presets and concurrency in **Sub-builders for this worktree**. Pause work, Continue work and Stop
+work live in the chat menu.
 Lead messaging and its inbox remain available while sub-builder scheduling is paused or stopped.
 
 The lead requests progress, findings, blockers and dependencies from existing agents with
