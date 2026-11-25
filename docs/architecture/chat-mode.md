@@ -223,6 +223,8 @@ Auto, chat and manual provider runs share exclusive target ownership; stopping a
 target without deleting results or worktrees.
 The Agents tab shows the team's work status. Pause and stop use the Chat menu; retry uses the failed assignment's inline action. Manual plan handoffs cannot
 adopt chat-owned coordinators.
+If a failed assignment blocks Continue work, **Open retry** focuses its retry button or opens
+Agents while that assignment's worktree is active.
 A Build, Review, Fix or Merge the user starts from Navigation's stage buttons is told to the lead once
 (`chatTeams.ts` `noteLead` → `Control::Note`, a `patchbay` inbox message keyed by the launch's
 request), so the lead neither repeats that work nor ignores its result. The note and the finish
@@ -399,6 +401,11 @@ Review and Chat render component cards through the shared `ChangeGroupCard`.
 Groups start expanded; collapsing one preserves the open diff. File stepping and navigation
 counts include only expanded groups; selection resolution and aggregate totals retain all files. Local collapse resets when the conversation worktree changes. Map / Stories / Changes tabs, finding
 line links and file stepping retain their existing chat behavior. Recent commits live in the rail's Git panel; a commit chosen there opens in Changes (see [Worktrees](worktrees.md)).
+
+The Changes and Agents tabs are mutually exclusive. The selected tab and file diff survive Chat
+toggles and view switches. Switching worktrees or projects clears those selections for the
+worktree you leave, including when the canvas is hidden or you switch back immediately. Full
+Navigation shares the Agents selection. Changes is available only in Chat.
 
 ### Work controls and Auto handoff
 

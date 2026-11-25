@@ -47,7 +47,7 @@ export interface SimpleUi {
   mentions: Mention[]
   diff: SimpleDiff | null
   changes: boolean
-  /** The Agents tab is open; Changes wins while both are set. */
+  /** The Agents tab is open in Chat or Full Navigation. */
   agents?: boolean
   queued?: QueuedPrompt
   terminal: 'closed' | 'user' | 'input'

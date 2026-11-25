@@ -155,9 +155,11 @@ test('a chosen commit opens in Review, or in Chat when Chat mode is on', () => {
     selection,
   })
   store.setState({ simpleMode: true, view: 'navigation' } as never)
+  const key = simpleKey('one', null)
+  useSimpleUi.getState().patch(key, { agents: true })
   showCommit(selection)
   expect(store.getState().view).toBe('navigation')
-  expect(useSimpleUi.getState().worktrees[simpleKey('one', null)]?.changes).toBe(true)
+  expect(useSimpleUi.getState().worktrees[key]).toMatchObject({ changes: true, agents: false })
 })
 
 test('pulling another repository on the map counts the terminals inside it, from any task', async () => {

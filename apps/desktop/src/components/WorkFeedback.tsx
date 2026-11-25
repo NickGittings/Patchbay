@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useStore } from '../store'
 import { simpleKey, useSimpleUi } from '../lib/simpleUi'
 import { refreshChatTeams } from '../lib/chatTeams'
 import { openWorktreeAuto, WorkBlocker, workError } from '../lib/workBlocker'
@@ -46,15 +47,16 @@ export default function WorkFeedback({
         <button
           type="button"
           onClick={() => {
+            const { projectId, task } = recovery.target
+            const current = useStore.getState()
+            if (current.project?.id !== projectId || current.activeTask !== task) return
             const retry = document.getElementById(recovery.assignment)
             if (retry) retry.focus()
             else
-              useSimpleUi
-                .getState()
-                .patch(simpleKey(recovery.target.projectId, recovery.target.task), {
-                  agents: true,
-                  changes: false,
-                })
+              useSimpleUi.getState().patch(simpleKey(projectId, task), {
+                agents: true,
+                changes: false,
+              })
           }}
         >
           Open {recovery.name} retry

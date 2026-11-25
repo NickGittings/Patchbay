@@ -226,7 +226,9 @@ export function showCommit(selection: HistorySelection | null) {
   if (!selection) return
   const s = useStore.getState()
   if (s.simpleMode)
-    useSimpleUi.getState().patch(simpleKey(s.project?.id, s.activeTask), { changes: true })
+    useSimpleUi
+      .getState()
+      .patch(simpleKey(s.project?.id, s.activeTask), { changes: true, agents: false })
   else if (s.view !== 'review') s.setView('review')
 }
 
