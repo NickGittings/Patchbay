@@ -1057,6 +1057,7 @@ for (const cached of [false, true]) {
       claude,
       expect.any(String),
       true,
+      true, // manual
     )
   })
 }
@@ -1072,6 +1073,7 @@ test('a successful detection launch keeps the new preset for restart', async () 
     codex,
     expect.any(String),
     true,
+    true, // manual
   )
 })
 
@@ -1757,6 +1759,7 @@ test('explicit stack detection selects or clears the target while terminal resta
     expect.any(String),
     false,
     { stackId: 'stack-id' },
+    true, // manual
   )
   await restartTerminal(MAP_SCOPE, STACK_AGENT_TERMINAL, null)
   expect(ipc.stackAgentStart).toHaveBeenLastCalledWith(
@@ -1765,6 +1768,7 @@ test('explicit stack detection selects or clears the target while terminal resta
     expect.any(String),
     true,
     undefined,
+    true, // manual
   )
   expect(await startMapAgent('p', codex, STACK_AGENT_TERMINAL)).toBe(true)
   expect(ipc.stackAgentStart).toHaveBeenLastCalledWith(
@@ -1773,6 +1777,7 @@ test('explicit stack detection selects or clears the target while terminal resta
     expect.any(String),
     false,
     {},
+    true, // manual
   )
   // Starting a retained tile after reload has no in-memory detection request.
   await startTerminal(MAP_SCOPE, STACK_AGENT_TERMINAL, null)
@@ -1782,6 +1787,7 @@ test('explicit stack detection selects or clears the target while terminal resta
     expect.any(String),
     false,
     undefined,
+    true, // manual
   )
 })
 

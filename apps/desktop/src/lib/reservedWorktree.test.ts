@@ -1,7 +1,13 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 import { useStore } from '../store'
 import { terminalStop, worktreeReservations } from './ipc'
-import { warnAfterResume, warnReservedFolder } from './reservedWorktree'
+import {
+  launchFailure,
+  launchFailureText,
+  warnAfterResume,
+  warnReservedFolder,
+} from './reservedWorktree'
+import { LEGACY_WORKTREE_BUSY } from '../types'
 
 vi.mock('./ipc', () => ({
   worktreeReservations: vi.fn(async () => []),
@@ -35,4 +41,14 @@ test('the session itself, or a failed lookup, says nothing', async () => {
   vi.mocked(worktreeReservations).mockRejectedValueOnce(new Error('Disconnected'))
   await warnReservedFolder('p', 't', '/repo')
   expect(useStore.getState().message).toBe('')
+})
+
+test('an older service’s refusal points at what helps, not a restart it never offers', () => {
+  const legacy = new Error(`${LEGACY_WORKTREE_BUSY}; stop other terminals there first`)
+  expect(launchFailureText(legacy)).toContain('Stop the merge agent from the Sessions panel')
+  expect(launchFailureText(legacy)).not.toContain('restart sessions')
+  expect((launchFailure(legacy) as Error).cause).toBe(legacy)
+  const other = new Error('Something else')
+  expect(launchFailureText(other)).toBe('Error: Something else')
+  expect(launchFailure(other)).toBe(other)
 })

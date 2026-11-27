@@ -1,5 +1,20 @@
 import { terminalStop, worktreeReservations } from './ipc'
 import { useStore } from '../store'
+import { LEGACY_WORKTREE_BUSY } from '../types'
+
+/**
+ * A manual launch or resume's failure as the person should read it. A session service of the
+ * previous build still refuses terminals beside a merge agent, and offers no restart (it never
+ * recorded its binary), so the message says what does help.
+ */
+export function launchFailureText(e: unknown): string {
+  return String(e).includes(LEGACY_WORKTREE_BUSY)
+    ? 'The session service predates this Patchbay update, so it still refuses a terminal beside a merge agent. Stop the merge agent from the Sessions panel (or, to start a merge, the other terminals in its destination). Once no sessions are running, reopen Patchbay to finish updating.'
+    : String(e)
+}
+/** `launchFailureText` as an error, for callers that rethrow. */
+export const launchFailure = (e: unknown) =>
+  String(e).includes(LEGACY_WORKTREE_BUSY) ? new Error(launchFailureText(e), { cause: e }) : e
 
 /**
  * A person's launch or resume beside a running merge agent, which still refuses automated work

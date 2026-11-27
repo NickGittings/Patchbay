@@ -16,6 +16,7 @@ import {
   type TerminalSpec,
   type WorkflowAction,
   type WorkflowState,
+  LEGACY_WORKTREE_BUSY,
   WORKTREE_BUSY,
 } from '../types'
 import type { ProviderRun } from './orchestration'
@@ -786,10 +787,11 @@ async function driveLeadRequests(team: ChatTeam) {
             'An unfinished provider run controls this worktree',
             'This worktree is controlled',
             WORKTREE_BUSY,
+            LEGACY_WORKTREE_BUSY,
           ].some((reason) => String(error).includes(reason))
             ? 'waiting'
             : 'failed',
-        result: String(error).includes(WORKTREE_BUSY)
+        result: [WORKTREE_BUSY, LEGACY_WORKTREE_BUSY].some((r) => String(error).includes(r))
           ? `${String(error)}. Ask the user whether to stop that merge agent, then try again.`
           : String(error),
       }).catch(() => {})

@@ -65,6 +65,7 @@ import { cancelQueued, enqueuePrompt, flushQueued, sendableNow } from '../lib/si
 import { refreshSession, reconcileFreshSessions, restartTerminal } from '../lib/sessions'
 import { openIntegrations, useAgentHooksInstalled } from '../lib/agentHooks'
 import { boardOrder } from '../lib/stories'
+import { warnAfterResume } from '../lib/reservedWorktree'
 import type { StoryKind } from '../types'
 
 /** An autocomplete option: a map component, or a story board item when `story` names its kind. */
@@ -416,6 +417,8 @@ export default function SimpleComposer({
         const result = await continueChat(resolvedTeam)
         continued = true
         target = result.session
+        // The person's message resumed the lead, as a Sessions panel Resume would.
+        if (result.outcome !== 'connected') void warnAfterResume(target.id)
         recipientRef.current = target.id
       } else if (target && !useStore.getState().sessions[target.id]?.running) {
         check()

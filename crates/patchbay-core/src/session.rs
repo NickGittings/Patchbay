@@ -275,17 +275,19 @@ pub fn built_ms(path: &Path) -> u64 {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BuildAge {
     Current,
-    /// `helper` replaced the service's own binary since it started: an in-place update.
+    /// `helper` replaced the service's own binary since it started: an in-place update (or
+    /// downgrade).
     Updated,
     /// A service from before endpoints named their binary, so whether it is this install is
     /// unknown. It is replaced only when idle, and never offered for a restart.
     Legacy,
 }
-/// How the service of `endpoint` relates to `helper`. Only an older build of the same binary
-/// is an update, so two installs (or a development build) never retire each other's service.
+/// How the service of `endpoint` relates to `helper`. Only another build of the same binary (an
+/// update, or a reinstalled older release) counts, so two installs (or a development build)
+/// never retire each other's service.
 fn build_age(endpoint: &Endpoint, helper: &Path) -> BuildAge {
     let helper_ms = built_ms(helper);
-    if endpoint.protocol != PROTOCOL || helper_ms == 0 || endpoint.built_ms >= helper_ms {
+    if endpoint.protocol != PROTOCOL || helper_ms == 0 || endpoint.built_ms == helper_ms {
         return BuildAge::Current;
     }
     if endpoint.binary.as_os_str().is_empty() {
@@ -3437,9 +3439,15 @@ mod tests {
         };
         let lifetime = lock(&dir.join("service.lock")).unwrap();
         lifetime.try_lock().unwrap();
-        // A service built with or after the helper is current: nothing is asked of it.
-        save(u64::MAX, &helper);
+        // A service of the helper's own build is current: nothing is asked of it.
+        save(built_ms(&helper), &helper);
         assert!(!retire_outdated_build(&dir, &helper, false).unwrap());
+        // A reinstalled older release replaces a newer service's binary too.
+        save(u64::MAX, &helper);
+        assert_eq!(
+            build_age(&read_endpoint(&dir).unwrap(), &helper),
+            BuildAge::Updated
+        );
         // Nor is a previous build when this app has no helper binary to replace it with.
         save(0, &helper);
         assert!(!retire_outdated_build(&dir, &dir.join("missing"), false).unwrap());

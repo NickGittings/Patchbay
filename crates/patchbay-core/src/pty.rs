@@ -50,8 +50,9 @@ pub struct SessionSpec {
     /// Reserve this worktree against all other terminals while running.
     #[serde(default)]
     pub exclusive_cwd: bool,
-    /// Launched by the person from a view, never by Chat, Auto or another agent. A manual
-    /// launch is never refused because an exclusive session (a merge agent) holds its worktree.
+    /// Launched at the person's request: from a view, or a Chat lead started by their message.
+    /// Never set by Auto, another agent, or Chat's own resets and replacements. A manual launch
+    /// is never refused because an exclusive session (a merge agent) holds its worktree.
     #[serde(default)]
     pub manual: bool,
     /// Merge provenance. Writable, and needed to resume, only when also listed in `dirs` because

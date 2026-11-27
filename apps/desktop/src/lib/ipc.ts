@@ -506,9 +506,11 @@ export const extensionTerminalRun = (
   command: string,
   key: string,
   task?: string,
+  manual?: boolean,
 ) =>
   invoke<string>('extension_terminal_run', {
     task,
+    manual,
     project,
     projectId: project.projectId,
     requestId: crypto.randomUUID(),
@@ -713,6 +715,7 @@ export const mapAgentStart = (
   terminal: TerminalSpec,
   requestId: string,
   resume?: boolean,
+  manual?: boolean,
 ) =>
   invoke<string>('map_agent_start', {
     projectId: project.projectId,
@@ -720,6 +723,7 @@ export const mapAgentStart = (
     terminal,
     requestId,
     resume,
+    manual,
   })
 /** A stack detection agent submitted a stack (`agent_commands.rs` emits it). */
 export const STACK_PROPOSALS_EVENT = 'patchbay://stack-proposals'
@@ -743,6 +747,7 @@ export const stackAgentStart = (
   requestId: string,
   resume?: boolean,
   detection?: { stackId?: string; componentIds?: string[]; auto?: boolean },
+  manual?: boolean,
 ) =>
   invoke<string>('stack_agent_start', {
     projectId: project.projectId,
@@ -754,6 +759,7 @@ export const stackAgentStart = (
     componentIds: detection?.componentIds,
     auto: detection?.auto,
     newDetection: !!detection,
+    manual,
   })
 /** An agent asked to set up run & test (`agent_commands.rs` `request_setup`). */
 export const onAutoSetup = (

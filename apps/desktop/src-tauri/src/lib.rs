@@ -2228,6 +2228,7 @@ async fn merge_agent_start(
 
 /// Launch the agent that proposes dependencies between the map's components,
 /// at the project root. `terminal` is the chosen agent preset.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn map_agent_start(
     window: WebviewWindow,
@@ -2237,6 +2238,7 @@ async fn map_agent_start(
     terminal: TerminalSpec,
     request_id: String,
     resume: Option<bool>,
+    manual: Option<bool>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let scoped = state.project(&project_id)?;
@@ -2247,6 +2249,7 @@ async fn map_agent_start(
         let project = access.restrict(project, &[]).map_err(err)?;
         let (job, mut spec) =
             patchbay_core::link_proposals::prepare(&project, &terminal, &AllowAll).map_err(err)?;
+        spec.manual = manual.unwrap_or(false);
         let mut metadata = service::metadata(&project_id, &project, model::MAP_SCOPE, &job);
         // The preset, so a restart launches the same agent.
         metadata.lane = Some(terminal.id);
@@ -2273,6 +2276,7 @@ async fn stack_agent_start(
     new_detection: Option<bool>,
     component_ids: Option<Vec<String>>,
     auto: Option<bool>,
+    manual: Option<bool>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let scoped = state.project(&project_id)?;
@@ -2306,6 +2310,8 @@ async fn stack_agent_start(
         let (job, mut spec) =
             patchbay_core::stack_proposals::prepare_for(&project, &terminal, &launch, &AllowAll)
                 .map_err(err)?;
+        // An agent's own setup request stays automated, whoever's tile it runs in.
+        spec.manual = manual.unwrap_or(false) && !launch.auto;
         let mut metadata = service::metadata(&project_id, &project, model::MAP_SCOPE, &job);
         // The preset, so a restart launches the same agent.
         metadata.lane = Some(terminal.id);
@@ -2474,6 +2480,23 @@ async fn merge_cleanup(
             .filter(|r| merge_agent(r))
             .map(|r| r.id.clone())
             .collect();
+        // Only those whose source folder goes are forgotten; a restore keeps the source, so its
+        // merge agents are just stopped, like the other sessions of a kept folder. Decided
+        // before removal, while the folder still canonicalizes.
+        let removed_canonical = removed.canonicalize().ok();
+        let source_removed: std::collections::HashSet<String> = records
+            .iter()
+            .filter(|r| merge_agents.contains(&r.id))
+            .filter(|r| {
+                r.spec.merge_source.as_deref().is_some_and(|source| {
+                    source == removed
+                        || source
+                            .canonicalize()
+                            .is_ok_and(|c| removed_canonical.as_ref() == Some(&c))
+                })
+            })
+            .map(|r| r.id.clone())
+            .collect();
         let owned: Vec<_> = records
             .into_iter()
             .filter(|r| {
@@ -2499,7 +2522,7 @@ async fn merge_cleanup(
             .filter(|_| preview.restore && cleanup.is_ok());
         for record in owned.into_iter().filter(|r| {
             r.spec.cwd.starts_with(&removed)
-                || merge_agents.contains(&r.id)
+                || source_removed.contains(&r.id)
                 || finished_chat.is_some_and(|chat| {
                     r.metadata.kind == patchbay_core::TerminalKind::Agent
                         && r.metadata.project_id == project_id
@@ -3718,6 +3741,8 @@ async fn command_run(
         project,
         component_id,
         task,
+        // An extension's command decides its own launches.
+        false,
         move |registry| {
             let owner = registry
                 .extensions
@@ -3744,6 +3769,7 @@ async fn command_run(
 }
 
 /// Spawn a terminal that isn't on the map, with the component's file context.
+#[allow(clippy::too_many_arguments)]
 async fn launch_extension_terminal(
     project_id: String,
     request_id: String,
@@ -3751,6 +3777,7 @@ async fn launch_extension_terminal(
     project: Project,
     component_id: String,
     task: Option<String>,
+    manual: bool,
     terminal: impl FnOnce(
         &Registry,
     ) -> CmdResult<(TerminalSpec, String, Option<String>, Option<String>)>
@@ -3781,6 +3808,7 @@ async fn launch_extension_terminal(
         let mut spec =
             context::extra_session_spec(project, &component_id, terminal, &AllowAll, &sections)
                 .map_err(err)?;
+        spec.manual = manual;
         if agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
@@ -3801,6 +3829,7 @@ struct ExtensionTerminalRequest {
 }
 
 /// An extension's `terminals.run`, which needs its `terminals` permission.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn extension_terminal_run(
     project_id: String,
@@ -3810,6 +3839,7 @@ async fn extension_terminal_run(
     project: Project,
     request: ExtensionTerminalRequest,
     task: Option<String>,
+    manual: Option<bool>,
 ) -> CmdResult<String> {
     main_only(&window)?;
     let ExtensionTerminalRequest {
@@ -3825,6 +3855,7 @@ async fn extension_terminal_run(
         project,
         component_id,
         task,
+        manual.unwrap_or(false),
         move |registry| {
             registry
                 .allowed(&extension_id, Some("terminals"))

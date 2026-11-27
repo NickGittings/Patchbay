@@ -10,7 +10,7 @@ import { sessionFromSnapshot } from './sessionState'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
-import { warnReservedFolder } from './reservedWorktree'
+import { launchFailureText, warnReservedFolder } from './reservedWorktree'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
@@ -35,7 +35,6 @@ import {
   type TerminalSnapshot,
   type TerminalSpec,
   type ServiceIssue,
-  LEGACY_WORKTREE_BUSY,
 } from '../types'
 import {
   mapAgentStart,
@@ -690,6 +689,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           runtime.terminal.command,
           runtime.key,
           task,
+          !reports(launch),
         )
       else if (componentId === MAP_SCOPE && terminalId === STACK_AGENT_TERMINAL)
         await stackAgentStart(
@@ -698,9 +698,10 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           requestId,
           !!launch.restart,
           launch.stackDetection,
+          !reports(launch),
         )
       else if (componentId === MAP_SCOPE)
-        await mapAgentStart(project, mapPreset(sid), requestId, !!launch.restart)
+        await mapAgentStart(project, mapPreset(sid), requestId, !!launch.restart, !reports(launch))
       else if (componentId === PLAN_SCOPE) {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
@@ -765,16 +766,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
         }
         // Otherwise skip errors made stale by a reset.
         if (requestedEpoch === epoch)
-          useStore
-            .getState()
-            .setMessage(
-              String(e).includes(LEGACY_WORKTREE_BUSY)
-                ? 'A merge agent is running in this worktree, and the session service predates this Patchbay update, so it still refuses terminals there. Stop the merge agent from the Sessions panel, or restart sessions to finish updating.'
-                : String(e),
-              undefined,
-              undefined,
-              'error',
-            )
+          useStore.getState().setMessage(launchFailureText(e), undefined, undefined, 'error')
       }
     }
     if (launch.started && !reports(launch)) warnReservedWorktree(launch)
