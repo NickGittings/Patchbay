@@ -38,6 +38,9 @@ pub struct Bundle {
     pub editor: Option<navigation::EditorPreferences>,
     #[serde(default)]
     pub agent_profiles: Vec<profiles::Profile>,
+    /// The exporter left profile environment values out, so import keeps local ones.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub environments_omitted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +52,8 @@ pub struct Imported {
     pub profiles_needing_keys: Vec<String>,
     /// Names of imported profiles whose executable isn't found on this machine.
     pub profiles_missing_programs: Vec<String>,
+    /// Names of imported profiles moved to this machine's default configuration folder.
+    pub profiles_relocated: Vec<String>,
 }
 
 fn portable_settings(mut settings: Map<String, Value>) -> Map<String, Value> {
@@ -61,6 +66,7 @@ pub fn drop_environments(bundle: &mut Bundle) {
     for profile in &mut bundle.agent_profiles {
         profile.environment.clear();
     }
+    bundle.environments_omitted = true;
 }
 
 /// Whether any exported profile carries environment variables, which may hold tokens.
@@ -96,6 +102,7 @@ fn bundle(
         settings: portable_settings(settings),
         editor: Some(editor),
         agent_profiles: agent_profiles.into_iter().map(profiles::portable).collect(),
+        environments_omitted: false,
     }
 }
 
@@ -159,7 +166,7 @@ pub fn import(bundle: Bundle) -> Result<Imported> {
         navigation::validate_preferences(editor)?;
         navigation::save_preferences(editor)?;
     }
-    let imported = match profiles::import(bundle.agent_profiles) {
+    let imported = match profiles::import(bundle.agent_profiles, bundle.environments_omitted) {
         Ok(imported) => imported,
         Err(e) => {
             if bundle.editor.is_some() {
@@ -169,14 +176,16 @@ pub fn import(bundle: Bundle) -> Result<Imported> {
         }
     };
     let profiles_missing_programs = imported
+        .profiles
         .iter()
         .filter(|p| !p.archived && !profiles::executable_available(p))
         .map(|p| p.name.clone())
         .collect();
     Ok(Imported {
         settings: portable_settings(bundle.settings),
-        profiles_needing_keys: profiles_needing_keys(&imported),
+        profiles_needing_keys: profiles_needing_keys(&imported.profiles),
         profiles_missing_programs,
+        profiles_relocated: imported.relocated,
     })
 }
 
@@ -290,7 +299,9 @@ mod tests {
         assert!(has_environments(&bundle));
         drop_environments(&mut bundle);
         assert!(!has_environments(&bundle));
-        assert!(!serde_json::to_string(&bundle).unwrap().contains("ghp_x"));
+        let text = serde_json::to_string(&bundle).unwrap();
+        assert!(!text.contains("ghp_x"));
+        assert!(parse(text.as_bytes()).unwrap().environments_omitted);
     }
 
     #[test]

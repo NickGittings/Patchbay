@@ -158,11 +158,7 @@ fn normalize(profile: &mut Profile, directory: &Path) -> Result<()> {
         "Enter an executable path"
     );
     if profile.config_dir.trim().is_empty() {
-        profile.config_dir = directory
-            .join("agents")
-            .join(&profile.id)
-            .display()
-            .to_string();
+        profile.config_dir = default_config_dir(directory, &profile.id);
     }
     profile.config_dir = expanded(&profile.config_dir)?.display().to_string();
     anyhow::ensure!(
@@ -188,16 +184,30 @@ fn normalize(profile: &mut Profile, directory: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Merge exported profiles into this machine's store, matching on id. Profiles not in `incoming`
-/// are kept. Keys never travel: a matching local profile keeps its saved key, others have none.
-/// Executables and keys aren't required yet, since the bundle may come from another machine.
-/// # Errors
-/// Fails if a profile is invalid or the store can't be written; nothing is written then.
-pub fn import(incoming: Vec<Profile>) -> Result<Vec<Profile>> {
-    import_at(&path()?, incoming)
+/// Profiles an import saved, and the names of those whose configuration folder couldn't be
+/// created where the file said, so they use this machine's default folder instead.
+#[derive(Debug, Default)]
+pub struct ImportedProfiles {
+    pub profiles: Vec<Profile>,
+    pub relocated: Vec<String>,
 }
 
-fn import_at(path: &Path, incoming: Vec<Profile>) -> Result<Vec<Profile>> {
+/// Merge exported profiles into this machine's store, matching on id. Profiles not in `incoming`
+/// are kept. Keys never travel: a matching local profile keeps its saved key, others have none.
+/// With `keep_environments` (the file left environment values out), a matching local profile
+/// also keeps its environment. Executables and keys aren't required yet, since the bundle may
+/// come from another machine.
+/// # Errors
+/// Fails if a profile is invalid or the store can't be written; nothing is written then.
+pub fn import(incoming: Vec<Profile>, keep_environments: bool) -> Result<ImportedProfiles> {
+    import_at(&path()?, incoming, keep_environments)
+}
+
+fn import_at(
+    path: &Path,
+    incoming: Vec<Profile>,
+    keep_environments: bool,
+) -> Result<ImportedProfiles> {
     let directory = path.parent().context("Missing profile store directory")?;
     crate::workspace::private_dir(directory)?;
     let guard = crate::workspace::lock(&path.with_extension("lock"))?;
@@ -219,13 +229,20 @@ fn import_at(path: &Path, incoming: Vec<Profile>) -> Result<Vec<Profile>> {
         }
         normalize(&mut profile, directory)
             .with_context(|| format!("Profile \"{}\"", profile.name))?;
-        profile.credential = profiles
-            .iter()
-            .find(|p| p.id == profile.id)
-            .and_then(|p| p.credential.clone());
+        let local = profiles.iter().find(|p| p.id == profile.id);
+        profile.credential = local.and_then(|p| p.credential.clone());
+        if keep_environments && let Some(local) = local {
+            profile.environment.clone_from(&local.environment);
+        }
         imported.push(profile);
     }
-    for profile in &imported {
+    let mut relocated = Vec::new();
+    for profile in &mut imported {
+        let default = default_config_dir(directory, &profile.id);
+        if std::fs::create_dir_all(&profile.config_dir).is_err() && profile.config_dir != default {
+            profile.config_dir = default;
+            relocated.push(profile.name.clone());
+        }
         std::fs::create_dir_all(&profile.config_dir).with_context(|| {
             format!(
                 "Cannot create the configuration folder {} of profile \"{}\"",
@@ -236,21 +253,38 @@ fn import_at(path: &Path, incoming: Vec<Profile>) -> Result<Vec<Profile>> {
     profiles.retain(|p| imported.iter().all(|i| i.id != p.id));
     profiles.extend(imported.iter().cloned());
     crate::workspace::atomic_write(path, &serde_json::to_vec_pretty(&profiles)?)?;
-    Ok(imported)
+    Ok(ImportedProfiles {
+        profiles: imported,
+        relocated,
+    })
 }
 
-/// A profile as it leaves this machine: no keychain reference, and a configuration directory
-/// and executable under the home folder written with `~/` so they resolve on the importing
-/// machine.
+fn default_config_dir(directory: &Path, id: &str) -> String {
+    directory.join("agents").join(id).display().to_string()
+}
+
+/// A profile as it leaves this machine: no keychain reference, the default configuration folder
+/// left empty so the importing machine uses its own, and other paths under the home folder
+/// written with `~/` and `/` separators so they resolve there.
 #[must_use]
 pub fn portable(mut profile: Profile) -> Profile {
     profile.credential = None;
+    if let Ok(path) = path()
+        && let Some(directory) = path.parent()
+        && profile.config_dir == default_config_dir(directory, &profile.id)
+    {
+        profile.config_dir.clear();
+    }
     if let Some(home) = dirs::home_dir() {
         for path in [&mut profile.config_dir, &mut profile.executable] {
             if let Ok(rest) = Path::new(path.as_str()).strip_prefix(&home)
                 && !rest.as_os_str().is_empty()
             {
-                *path = format!("~/{}", rest.display());
+                let parts: Vec<_> = rest
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                *path = format!("~/{}", parts.join("/"));
             }
         }
     }
@@ -460,7 +494,9 @@ mod tests {
         renamed.executable = "/nowhere/claude".into();
         let mut arriving = fixture();
         arriving.config_dir.clear();
-        let imported = import_at(&store.path(), vec![renamed, arriving.clone()]).unwrap();
+        let imported = import_at(&store.path(), vec![renamed, arriving.clone()], false)
+            .unwrap()
+            .profiles;
         assert_eq!(imported[0].credential, local.credential);
         assert_eq!(
             imported[1].credential, None,
@@ -495,7 +531,9 @@ mod tests {
         let mut arriving = exported;
         // Keep the created folder inside the test store.
         arriving.config_dir = store.0.join("cfg").display().to_string();
-        let imported = import_at(&store.path(), vec![arriving]).unwrap();
+        let imported = import_at(&store.path(), vec![arriving], false)
+            .unwrap()
+            .profiles;
         assert_eq!(
             imported[0].executable,
             home.join(".local/bin/claude").display().to_string()
@@ -507,6 +545,47 @@ mod tests {
     }
 
     #[test]
+    fn import_without_environments_keeps_local_ones() {
+        let store = Store::new();
+        let mut local = fixture();
+        local.config_dir = store.0.join("local").display().to_string();
+        local.environment = BTreeMap::from([("GITHUB_TOKEN".into(), "ghp_x".into())]);
+        std::fs::create_dir_all(&store.0).unwrap();
+        std::fs::write(store.path(), serde_json::to_vec(&[local.clone()]).unwrap()).unwrap();
+        let mut stripped = local.clone();
+        stripped.environment.clear();
+        let kept = import_at(&store.path(), vec![stripped.clone()], true).unwrap();
+        assert_eq!(kept.profiles[0].environment, local.environment);
+        let replaced = import_at(&store.path(), vec![stripped], false).unwrap();
+        assert!(replaced.profiles[0].environment.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_uncreatable_config_folder_falls_back_to_the_local_default() {
+        let store = Store::new();
+        std::fs::create_dir_all(&store.0).unwrap();
+        // A file where a parent folder should be makes the path uncreatable.
+        std::fs::write(store.0.join("blocked"), "").unwrap();
+        let mut foreign = fixture();
+        foreign.config_dir = store.0.join("blocked/agents/x").display().to_string();
+        let mut default_dir = fixture();
+        default_dir.config_dir.clear();
+        let result = import_at(&store.path(), vec![foreign.clone(), default_dir], false).unwrap();
+        assert_eq!(result.relocated, vec![foreign.name.clone()]);
+        assert_eq!(
+            result.profiles[0].config_dir,
+            store
+                .0
+                .join("agents")
+                .join(&foreign.id)
+                .display()
+                .to_string()
+        );
+        assert!(std::path::Path::new(&result.profiles[1].config_dir).is_dir());
+    }
+
+    #[test]
     fn import_writes_nothing_when_any_profile_is_invalid() {
         let store = Store::new();
         let mut good = fixture();
@@ -514,13 +593,13 @@ mod tests {
         let mut bad = good.clone();
         bad.id = uuid::Uuid::new_v4().to_string();
         bad.environment = BTreeMap::from([("ANTHROPIC_API_KEY".into(), "x".into())]);
-        assert!(import_at(&store.path(), vec![good.clone(), bad]).is_err());
+        assert!(import_at(&store.path(), vec![good.clone(), bad], false).is_err());
         let mut duplicate = good.clone();
         duplicate.name = "Again".into();
-        assert!(import_at(&store.path(), vec![good.clone(), duplicate]).is_err());
+        assert!(import_at(&store.path(), vec![good.clone(), duplicate], false).is_err());
         let mut odd = good;
         odd.id = "../escape".into();
-        assert!(import_at(&store.path(), vec![odd]).is_err());
+        assert!(import_at(&store.path(), vec![odd], false).is_err());
         assert!(list_at(&store.path()).unwrap().is_empty());
     }
 

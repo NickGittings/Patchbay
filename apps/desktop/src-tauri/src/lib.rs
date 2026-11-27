@@ -1934,13 +1934,18 @@ async fn settings_export(
     blocking(move || {
         let mut bundle = settings_bundle::export(settings).map_err(err)?;
         if settings_bundle::has_environments(&bundle) {
+            let private = if cfg!(unix) {
+                "It is saved readable only by you; "
+            } else {
+                ""
+            };
             let include = window
                 .dialog()
-                .message(
+                .message(format!(
                     "Some agent profiles set environment variables, which may hold tokens. \
-                     Include their values in the exported file? It is saved readable only by \
-                     you; don't share it if it holds secrets.",
-                )
+                     Include their values in the exported file? {private}don't share it if it \
+                     holds secrets. Leaving them out keeps this machine's values on import."
+                ))
                 .title("Export settings")
                 .kind(MessageDialogKind::Warning)
                 .buttons(MessageDialogButtons::OkCancelCustom(

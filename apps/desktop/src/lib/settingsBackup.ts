@@ -27,6 +27,7 @@ export interface ImportedSettings {
   settings: Record<string, unknown>
   profilesNeedingKeys: string[]
   profilesMissingPrograms: string[]
+  profilesRelocated: string[]
 }
 
 const settingsExport = (settings: Record<string, unknown>) =>
@@ -86,25 +87,42 @@ export async function importSettings() {
   const s = useStore.getState()
   const blocked = workspaceSaveBlocked()
   if (blocked) return s.setMessage(blocked, true)
+  let imported: ImportedSettings | null
   try {
-    const imported = await settingsImport()
-    if (!imported) return
-    useStore.setState((s) => importedSettingsState(imported.settings, s))
-    window.dispatchEvent(new Event(SETTINGS_IMPORTED_EVENT))
+    imported = await settingsImport()
+  } catch (e) {
+    return s.setMessage(String(e), undefined, undefined, 'error')
+  }
+  if (!imported) return
+  // Profiles and editor preferences are saved by now; report them even if a step below fails.
+  window.dispatchEvent(new Event(SETTINGS_IMPORTED_EVENT))
+  const notes = [
+    imported.profilesNeedingKeys.length &&
+      `Add API keys in Agent profiles for: ${imported.profilesNeedingKeys.join(', ')}.`,
+    imported.profilesMissingPrograms.length &&
+      `Install or locate the executable for: ${imported.profilesMissingPrograms.join(', ')}.`,
+    imported.profilesRelocated.length &&
+      `These profiles now use Patchbay's default configuration folder: ${imported.profilesRelocated.join(', ')}.`,
+  ].filter((note): note is string => !!note)
+  const settings = imported.settings
+  try {
+    useStore.setState((s) => importedSettingsState(settings, s))
     const devices = await listDevices()
     useStore.getState().setDevices(devices)
     await flushWorkspace(true)
-    const notes = [
-      imported.profilesNeedingKeys.length &&
-        `Add API keys in Agent profiles for: ${imported.profilesNeedingKeys.join(', ')}.`,
-      imported.profilesMissingPrograms.length &&
-        `Install or locate the executable for: ${imported.profilesMissingPrograms.join(', ')}.`,
-    ].filter(Boolean)
     const missing = missingPresets(useStore.getState(), devices)
     if (missing.length)
       notes.push(`Missing presets, reassign them in Agent roles: ${missing.join(', ')}.`)
     s.setMessage(['Settings imported.', ...notes].join(' '), !notes.length)
   } catch (e) {
-    s.setMessage(String(e), undefined, undefined, 'error')
+    s.setMessage(
+      [
+        `Agent profiles and editor preferences were imported, but the other settings could not be saved: ${String(e)}`,
+        ...notes,
+      ].join(' '),
+      undefined,
+      undefined,
+      'error',
+    )
   }
 }

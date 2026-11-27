@@ -137,6 +137,7 @@ test('import applies, saves, refreshes devices and names profiles that need keys
     settings: { chatAgent: 'imported' },
     profilesNeedingKeys: ['Router'],
     profilesMissingPrograms: ['Far'],
+    profilesRelocated: ['Moved'],
   })
   const refreshed = vi.fn()
   window.addEventListener(SETTINGS_IMPORTED_EVENT, refreshed)
@@ -151,6 +152,7 @@ test('import applies, saves, refreshes devices and names profiles that need keys
   expect(store.getState().devices).toEqual([{ id: 'profile-1' }])
   expect(messages[0].text).toContain('Router')
   expect(messages[0].text).toContain('Far')
+  expect(messages[0].text).toContain('Moved')
   expect(messages[0].text).toContain('imported')
 })
 
@@ -158,4 +160,20 @@ test('import errors are shown', async () => {
   invoke.mockRejectedValueOnce('Not a Patchbay settings file')
   await importSettings()
   expect(messages[0]).toEqual({ text: 'Not a Patchbay settings file', kind: 'error' })
+})
+
+test('a failed workspace save still says what was imported and shows the notes', async () => {
+  invoke.mockResolvedValueOnce({
+    settings: {},
+    profilesNeedingKeys: ['Router'],
+    profilesMissingPrograms: [],
+    profilesRelocated: [],
+  })
+  flush.mockRejectedValueOnce(new Error('disk full'))
+  await importSettings()
+  expect(messages).toHaveLength(1)
+  expect(messages[0].kind).toBe('error')
+  expect(messages[0].text).toContain('Agent profiles and editor preferences were imported')
+  expect(messages[0].text).toContain('disk full')
+  expect(messages[0].text).toContain('Router')
 })
