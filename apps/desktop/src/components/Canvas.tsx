@@ -1,10 +1,13 @@
 import { useReducedMotion } from '../lib/useReducedMotion'
+import { CANVAS_GESTURES } from '../lib/canvasGestures'
 import { planningHighlights, togglePlanningHighlight, usePlanningTask } from '../lib/planningScope'
 import { StoryViewTabs } from './stories/StoryBoard'
 import {
   Background,
   BackgroundVariant,
   Controls,
+  getNodesBounds,
+  getViewportForBounds,
   Panel,
   ReactFlow,
   useReactFlow,
@@ -12,7 +15,7 @@ import {
   type Connection,
   type Edge,
 } from '@xyflow/react'
-import { useCallback, useEffect, useEffectEvent, useMemo, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { onArranged } from '../lib/arrange'
 import type { Position } from '../lib/layout'
@@ -30,6 +33,7 @@ import { FOCUS_COMPONENT_EVENT, takeFocusRequest } from '../lib/navigation'
 const nodeTypes = { component: ComponentNode }
 
 const ARRANGE_MS = 400
+const ARRANGE_FIT = { padding: 0.25, maxZoom: 1 }
 
 const ease = (t: number) => 1 - (1 - t) ** 3
 
@@ -39,12 +43,36 @@ const ease = (t: number) => 1 - (1 - t) ** 3
  */
 function useArranging(projectId: string | undefined) {
   const reduced = useReducedMotion()
-  const { fitView, getNode } = useReactFlow()
+  const { fitView, getNode, getViewport, setViewport } = useReactFlow()
+  // Set while the camera glides to an arrangement, so a drag can stop it.
+  const [gliding, setGliding] = useState(false)
+  const flow = useStoreApi()
   const [tween, setTween] = useState<{
     from: Record<string, Position>
     t: number
-    fit: boolean
   } | null>(null)
+  // The camera glides to frame the destination alongside the nodes rather than after them. React
+  // Flow still draws the starting positions, so the frame comes from the store's end state.
+  const fitDestination = useEffectEvent(() => {
+    const destination = useStore.getState().nodes.map((n) => ({
+      ...n,
+      // A node React Flow hasn't measured yet counts at its card size rather than as a point.
+      measured: getNode(n.id)?.measured ?? n.measured ?? { width: 260, height: 120 },
+    }))
+    if (!destination.length) return
+    const { width, height, minZoom } = flow.getState()
+    if (!width || !height) return
+    const viewport = getViewportForBounds(
+      getNodesBounds(destination),
+      width,
+      height,
+      minZoom,
+      ARRANGE_FIT.maxZoom,
+      ARRANGE_FIT.padding,
+    )
+    setGliding(true)
+    void setViewport(viewport, { duration: ARRANGE_MS }).then(() => setGliding(false))
+  })
   const previousPositions = useEffectEvent(() => tween?.from)
   useEffect(() => {
     let frame = 0
@@ -54,7 +82,7 @@ function useArranging(projectId: string | undefined) {
       if (reduced) {
         setTween(null)
         frame = requestAnimationFrame(() => {
-          void fitView({ padding: 0.25, maxZoom: 1, duration: 0 })
+          void fitView({ ...ARRANGE_FIT, duration: 0 })
         })
         return
       }
@@ -69,7 +97,8 @@ function useArranging(projectId: string | undefined) {
         setTween((current) => (current ? { ...current, t: ease(t) } : null))
         if (t < 1) frame = requestAnimationFrame(step)
       }
-      setTween({ from, t: 0, fit: true })
+      setTween({ from, t: 0 })
+      fitDestination()
       frame = requestAnimationFrame(step)
     })
     return () => {
@@ -84,30 +113,60 @@ function useArranging(projectId: string | undefined) {
   }, [reduced])
   useEffect(() => {
     if (!tween || tween.t !== 1) return
-    // Let React Flow receive the final positions before it queues a fit. Both this render and
-    // the next show the destination, so fitting cannot frame the tween's starting positions.
-    const frame = requestAnimationFrame(() => {
-      if (tween.fit) void fitView({ padding: 0.25, maxZoom: 1, duration: ARRANGE_MS })
-      setTween(null)
-    })
+    const frame = requestAnimationFrame(() => setTween(null))
     return () => cancelAnimationFrame(frame)
-  }, [fitView, tween])
-  const interrupt = useCallback((ids: string[]) => {
-    if (!ids.length) return
-    setTween((current) => {
-      if (!current) return null
-      const from = { ...current.from }
-      for (const id of ids) delete from[id]
-      // A user taking control of the map also cancels the automatic viewport move.
-      return { ...current, from, fit: false }
-    })
-  }, [])
-  /** A pan or zoom by the user cancels the automatic viewport move too. */
-  const keepViewport = useCallback(
-    () => setTween((current) => (current?.fit ? { ...current, fit: false } : current)),
+  }, [tween])
+  const interrupt = useCallback(
+    (ids: string[]) => {
+      if (!ids.length) return
+      // A user taking hold of a node also stops the camera where it is; a viewport set without a
+      // duration interrupts the running d3 transition.
+      if (gliding) {
+        setGliding(false)
+        void setViewport(getViewport())
+      }
+      setTween((current) => {
+        if (!current) return null
+        const from = { ...current.from }
+        for (const id of ids) delete from[id]
+        return { ...current, from }
+      })
+    },
+    [gliding, getViewport, setViewport],
+  )
+  // A pan or zoom by the user interrupts the camera glide by itself: d3 drops a running transition
+  // when a gesture starts.
+  return { tween, interrupt }
+}
+
+type Viewport = { x: number; y: number; zoom: number }
+
+/**
+ * Keeps the map's viewport in the store. With pan-on-scroll on, React Flow reports a move's end
+ * 150 ms late, so a view switch inside that window would lose it: the last move it hasn't reported
+ * yet is saved on unmount instead, unless another project became active meanwhile.
+ */
+function useSavedViewport(projectId: string | undefined) {
+  const pending = useRef<{ projectId: string | undefined; viewport: Viewport } | null>(null)
+  useEffect(
+    () => () => {
+      const last = pending.current
+      pending.current = null
+      const store = useStore.getState()
+      if (last && (store.activeProjectId ?? undefined) === last.projectId)
+        store.setViewport(last.viewport)
+    },
     [],
   )
-  return { tween, interrupt, keepViewport }
+  return {
+    onMove: (_: unknown, viewport: Viewport) => {
+      pending.current = { projectId, viewport }
+    },
+    onMoveEnd: (_: unknown, viewport: Viewport) => {
+      pending.current = null
+      useStore.getState().setViewport(viewport)
+    },
+  }
 }
 
 /** Centers the component `focusComponent` asked for, on mount (after a view switch) or later. */
@@ -202,7 +261,8 @@ export default function Canvas({ covered = false }: { covered?: boolean }) {
     })),
   )
   const inspectorShown = useStore(showsInspector)
-  const { tween, interrupt, keepViewport } = useArranging(project?.id)
+  const { tween, interrupt } = useArranging(project?.id)
+  const savedViewport = useSavedViewport(project?.id)
   useFocusRequests()
   const rescan = useRescanProject()
   const addRepo = useAddFolder()
@@ -286,11 +346,8 @@ export default function Canvas({ covered = false }: { covered?: boolean }) {
         }}
         colorMode="dark"
         defaultViewport={useStore.getState().viewport}
-        onMoveStart={(event) => {
-          // Programmatic moves, such as the fit itself, come without an event.
-          if (event) keepViewport()
-        }}
-        onMoveEnd={(_, viewport) => useStore.getState().setViewport(viewport)}
+        {...CANVAS_GESTURES}
+        {...savedViewport}
         fitView={!useStore.getState().viewport}
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
         nodesConnectable={!planning}

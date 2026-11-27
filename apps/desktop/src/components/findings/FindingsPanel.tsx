@@ -9,6 +9,7 @@ import { SEVERITIES, type ReviewFindings, type Severity } from '../../types'
 import Markdown from './Markdown'
 import './findings.css'
 import PanelStatus from '../PanelStatus'
+import EmptyState from '../EmptyState'
 
 export type FindingsStatus = 'none' | 'current' | 'stale'
 
@@ -135,9 +136,9 @@ export default function FindingsPanel({
   if (!findings)
     return (
       <div className="findings-panel">
-        <div className="review-empty">
+        <EmptyState compact icon="◇" title="Not reviewed yet">
           <code>{branch}</code> has not been reviewed yet. Choose Review branch… to get findings.
-        </div>
+        </EmptyState>
       </div>
     )
 

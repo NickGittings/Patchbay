@@ -7,6 +7,7 @@ import {
 } from 'react-resizable-panels'
 import { useStore } from '../store'
 import { PANEL_OPEN_SIZES, collapsedInto, expandedFrom } from './panelLayout'
+import { canTransitionPanels, transitionPanels } from './panelTransition'
 
 /** Whether the panel is collapsed, or undefined while its group has no layout to tell. */
 function collapsedNow(p: PanelImperativeHandle) {
@@ -96,13 +97,26 @@ export function useCollapsed(
     defaultSize: number
     minSize?: number
   },
-  { keepCollapsed = false, onReveal }: { keepCollapsed?: boolean; onReveal?: () => void } = {},
+  {
+    keepCollapsed = false,
+    onReveal,
+    glide: glides = false,
+  }: {
+    keepCollapsed?: boolean
+    onReveal?: () => void
+    /** Opens and closes glide as a view transition; the panel needs a name in index.css. */
+    glide?: boolean
+  } = {},
 ) {
   const panelRef = usePanelRef()
   const visibilityRef = useRef<Visibility | undefined>(undefined)
   // Set while a request could not be handled yet, so the next measurement retries it.
   const retryRef = useRef(false)
   const measuredRef = useRef(false)
+  // Set while a gliding open or close waits for its transition to apply it, then for the one run
+  // after it, which settles the request in place (a refused open retries on measurement as usual).
+  const pendingRef = useRef(false)
+  const settlingRef = useRef(false)
   const [collapsed, setCollapsed] = useState(true)
   const [attempt, setAttempt] = useState(0)
   const fillGroup = fill?.group
@@ -118,8 +132,36 @@ export function useCollapsed(
       return
     }
     retryRef.current = false
+    // A request arriving mid-transition is picked up by the re-run the transition schedules.
+    if (pendingRef.current) return
+    const settling = settlingRef.current
+    settlingRef.current = false
     const previous = visibilityRef.current
-    if (shouldOpenPanel({ shown, reveal }, previous, keepCollapsed)) {
+    const opening = shouldOpenPanel({ shown, reveal }, previous, keepCollapsed)
+    // Only a measured panel glides; restoring a layout at launch lands in place.
+    const glide =
+      glides &&
+      !settling &&
+      measuredRef.current &&
+      (opening ? p.isCollapsed() : !shown && !p.isCollapsed()) &&
+      canTransitionPanels()
+    if (glide) {
+      pendingRef.current = true
+      transitionPanels(() => {
+        pendingRef.current = false
+        settlingRef.current = true
+        try {
+          if (opening)
+            openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize, minSize)
+          else closePanel(p, id, openSizes, fillGroup?.current, fillPanel)
+        } finally {
+          // Re-run with the latest visibility to confirm the change and finish the request.
+          setAttempt((n) => n + 1)
+        }
+      })
+      return
+    }
+    if (opening) {
       if (p.isCollapsed())
         openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize, minSize)
       // Unmeasured, the handle may still describe the default rather than the restored layout, so
@@ -149,6 +191,7 @@ export function useCollapsed(
     keepCollapsed,
     minSize,
     onReveal,
+    glides,
   ])
   const onResize = (size: PanelSize, _: unknown, prev: PanelSize | undefined) => {
     // A restored zero-size panel can report its first size after the mount layout effect, and an
@@ -165,12 +208,23 @@ export function useCollapsed(
   }
   const expand = () => {
     const p = panelRef.current
-    if (p) openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize, minSize)
+    if (!p) return
+    const open = () =>
+      openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize, minSize)
+    if (glides) transitionPanels(open)
+    else open()
   }
-  /** Returns whether the panel is collapsed afterwards. */
+  /**
+   * Returns whether the panel is collapsed afterwards, or, while the close glides, whether it will
+   * be once the transition applies it.
+   */
   const collapse = () => {
     const p = panelRef.current
-    return !!p && closePanel(p, id, openSizes, fillGroup?.current, fillPanel)
+    if (!p) return false
+    if (!glides || !canTransitionPanels() || p.isCollapsed())
+      return closePanel(p, id, openSizes, fillGroup?.current, fillPanel)
+    transitionPanels(() => closePanel(p, id, openSizes, fillGroup?.current, fillPanel))
+    return true
   }
   return { props: { panelRef, onResize, collapsible: true }, collapsed, expand, collapse }
 }

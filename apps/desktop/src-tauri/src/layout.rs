@@ -1,8 +1,8 @@
 //! Window arrangements are local state; user closes remove pop-outs, app quit preserves them.
-use crate::{AppState, CmdResult, err, workspace_path};
+use crate::{AppState, CmdResult, workspace_path};
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Manager, WebviewWindow, Window, WindowEvent};
+use tauri::{AppHandle, Manager, Window, WindowEvent};
 
 pub fn save(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -61,10 +61,6 @@ pub fn event(window: &Window, event: &WindowEvent) {
     }
     state.layout_dirty.store(true, Ordering::Release);
 }
-pub fn clamp(window: &WebviewWindow, geometry: &Value, main: bool) -> CmdResult<Value> {
-    let monitors = window.available_monitors().map_err(err)?;
-    clamp_to_monitors(&monitors, geometry, main)
-}
 
 /// Fits saved window geometry onto one of `monitors` (the one holding its origin, else the first).
 ///
@@ -83,16 +79,26 @@ pub fn clamp_to_monitors(
     };
     let requested_x = finite("x").unwrap_or(80.0);
     let requested_y = finite("y").unwrap_or(80.0);
+    let contains = |m: &&tauri::Monitor, x: f64, y: f64| {
+        let scale = m.scale_factor();
+        let p = m.position();
+        let size = m.size();
+        x >= f64::from(p.x) / scale
+            && x < f64::from(p.x) / scale + f64::from(size.width) / scale
+            && y >= f64::from(p.y) / scale
+            && y < f64::from(p.y) / scale + f64::from(size.height) / scale
+    };
+    // By its centre first: a window maximized on Windows sits a few pixels outside its display,
+    // so its origin alone would pick the primary one.
+    let centre_x = requested_x + finite("width").unwrap_or(0.0) / 2.0;
+    let centre_y = requested_y + finite("height").unwrap_or(0.0) / 2.0;
     let monitor = monitors
         .iter()
-        .find(|m| {
-            let scale = m.scale_factor();
-            let p = m.position();
-            let size = m.size();
-            requested_x >= f64::from(p.x) / scale
-                && requested_x < f64::from(p.x) / scale + f64::from(size.width) / scale
-                && requested_y >= f64::from(p.y) / scale
-                && requested_y < f64::from(p.y) / scale + f64::from(size.height) / scale
+        .find(|m| contains(m, centre_x, centre_y))
+        .or_else(|| {
+            monitors
+                .iter()
+                .find(|m| contains(m, requested_x, requested_y))
         })
         .or_else(|| monitors.first())
         .ok_or("No displays available")?;
@@ -117,55 +123,18 @@ pub fn clamp_to_monitors(
         json!({ "x": requested_x.clamp(left, (left + sw - width).max(left)), "y": requested_y.clamp(top, (top + sh - height).max(top)), "width": width, "height": height, "maximized": geometry.get("maximized").and_then(Value::as_bool).unwrap_or(false) }),
     )
 }
-pub fn restore_main(app: &AppHandle) -> CmdResult<()> {
-    let Some(window) = app.get_webview_window("main") else {
-        return Ok(());
-    };
-    let geometry = app
-        .state::<AppState>()
-        .workspace
-        .lock()
-        .unwrap()
-        .windows
-        .get("main")
-        .cloned();
-    if let Some(g) = geometry {
-        let g = clamp(&window, &g, true)?;
-        // Restore the normal bounds before maximizing on the saved display.
-        window.unmaximize().map_err(err)?;
-        window
-            .set_size(tauri::LogicalSize::new(
-                g["width"].as_f64().unwrap(),
-                g["height"].as_f64().unwrap(),
-            ))
-            .map_err(err)?;
-        window
-            .set_position(tauri::LogicalPosition::new(
-                g["x"].as_f64().unwrap(),
-                g["y"].as_f64().unwrap(),
-            ))
-            .map_err(err)?;
-    }
-    // Every launch fills the usable screen, regardless of the last saved state.
-    #[cfg(target_os = "macos")]
-    {
-        let restored = window.clone();
-        // First pass through Tauri's event queue so Tao has submitted all native changes.
-        // Then join their serial main dispatch queue: maximizing earlier can see the old
-        // isZoomed state and return before the queued unmaximize/size/position take effect.
-        window
-            .run_on_main_thread(move || {
-                dispatch2::DispatchQueue::main().exec_async(move || {
-                    if let Err(e) = restored.maximize() {
-                        eprintln!("Main window could not be maximized after restoration: {e}");
-                    }
-                });
-            })
-            .map_err(err)?;
-    }
-    #[cfg(not(target_os = "macos"))]
-    window.maximize().map_err(err)?;
-    #[cfg(target_os = "windows")]
-    crate::window_controls::verify(&window).map_err(err)?;
-    Ok(())
+/// The main window's saved bounds `(x, y, width, height)`, fitted onto a connected display, for
+/// building the window there. Every launch still opens maximized (`tauri.conf.json`); these pick
+/// the display and the size it returns to when un-maximized. None without a saved arrangement.
+pub fn saved_main(app: &AppHandle) -> Option<(f64, f64, f64, f64)> {
+    let document = patchbay_core::workspace::Workspace::load(&workspace_path().ok()?).ok()?;
+    let saved = document.windows.get("main")?;
+    let monitors = app.available_monitors().ok()?;
+    let g = clamp_to_monitors(&monitors, saved, true).ok()?;
+    Some((
+        g["x"].as_f64()?,
+        g["y"].as_f64()?,
+        g["width"].as_f64()?,
+        g["height"].as_f64()?,
+    ))
 }

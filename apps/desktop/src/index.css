@@ -25,6 +25,8 @@
   --warn-strong: #ff8a4c;
   /* Text on filled accent and danger surfaces. */
   --on-accent: #fff;
+  /* The Windows caption close button's hover red. */
+  --window-close: #c42b1c;
   --danger-text: #ffc9c9;
   --task: var(--review);
   --role-lead: var(--accent);
@@ -66,6 +68,12 @@
   /* Small uppercase labels open up slightly; large display text tightens. */
   --tracking-caps: 0.06em;
   --tracking-display: -0.02em;
+  /* Headings from --text-md up tighten a touch less than display text. */
+  --tracking-heading: -0.01em;
+  /* Leading: compact rows and labels, running body text, then long-form prose. */
+  --leading-tight: 1.3;
+  --leading-body: 1.5;
+  --leading-relaxed: 1.6;
   /* Stacking layers, lowest first: workspace chrome, its popovers, the canvas node menu, modal
      dialogs, then app-level overlays (provider setup, maintenance review, tooltips). */
   --z-chrome: 30;
@@ -78,16 +86,23 @@
   --radius-sm: 6px;
   --radius: 8px;
   --radius-lg: 12px;
+  --radius-pill: 999px;
   /* Elevation: resting controls, raised cards and tips, then floating menus and dialogs. */
   --shadow-1: 0 2px 6px rgb(0 0 0 / 22%);
   --shadow-2: 0 4px 16px rgb(0 0 0 / 26%);
-  --shadow: 0 0 0 1px var(--border-strong), 0 16px 48px rgb(0 0 0 / 70%);
-  --overlay: rgb(0 0 0 / 70%);
+  /* Floating surfaces read thicker as they grow: menus, results and toasts sit lower than dialogs. */
+  --shadow-menu: 0 0 0 1px var(--border-strong), 0 8px 24px rgb(0 0 0 / 45%);
+  --shadow-dialog: 0 0 0 1px var(--border-strong), 0 24px 64px rgb(0 0 0 / 60%);
+  --overlay: rgb(0 0 0 / 50%);
   /* Pressed fill: one step past --hover, so a press reads before release. */
   --active: #2e2e34;
   /* Motion: quick feedback for state changes, a slightly longer beat for surfaces. */
   --dur-fast: 120ms;
   --dur-base: 200ms;
+  /* Surfaces: menus and popovers appear, toasts slide in, and anything leaving goes a little faster. */
+  --dur-surface: 150ms;
+  --dur-toast: 240ms;
+  --dur-exit: 160ms;
   --ease-out: cubic-bezier(0.2, 0.9, 0.3, 1);
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --sans: -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', sans-serif;
@@ -328,7 +343,7 @@ input[type='radio'] {
 .attention-pill {
   padding: 0 6px;
   border: 1px solid var(--tone);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 .health-ready.status-label {
   --tone: var(--ok);
@@ -366,7 +381,11 @@ input[type='radio'] {
   background: var(--panel);
   border: 0;
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-menu);
+}
+/* The largest floating surface sits highest. */
+.dialog-shell {
+  box-shadow: var(--shadow-dialog);
 }
 
 /* Toolbar dropdowns: generic menus and the list of terminals that need the user */
@@ -927,7 +946,7 @@ input[type='radio'] {
   --xy-controls-button-color-hover: var(--text);
   --xy-controls-button-border-color: var(--border);
   --xy-minimap-background-color: var(--panel);
-  --xy-minimap-mask-background-color: var(--overlay);
+  --xy-minimap-mask-background-color: rgb(0 0 0 / 70%);
   --xy-edge-label-color: var(--muted);
 }
 
@@ -967,6 +986,16 @@ input[type='radio'] {
   box-shadow:
     0 0 0 1px var(--accent),
     var(--shadow-2);
+}
+/* A held node lifts off the map. Shadow only: scaling would skew React Flow's handle measurements. */
+.react-flow__node.dragging .component-node {
+  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+  cursor: grabbing;
+}
+.react-flow__node.dragging .component-node.selected {
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 12px 32px rgb(0 0 0 / 45%);
 }
 .component-header {
   display: flex;
@@ -1026,7 +1055,7 @@ input[type='radio'] {
   font-size: var(--text-sm);
   padding: 2px 8px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg);
   color: var(--muted);
 }
@@ -1077,7 +1106,7 @@ input[type='radio'] {
   font-size: var(--text-sm);
   font-weight: 600;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   color: var(--role-color);
   background: color-mix(in srgb, var(--role-color) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--role-color) 20%, transparent);
@@ -1110,6 +1139,13 @@ input[type='radio'] {
   height: 10px;
   background: var(--bg);
   border: 2px solid var(--kind);
+}
+/* The dot stays small; the pointer target around it is about 22px. */
+.react-flow__handle.link-handle::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
 }
 
 /* Terminal dock */
@@ -1910,7 +1946,7 @@ input[type='radio'] {
   font-size: var(--text-md);
   font-weight: 600;
   line-height: 1.25;
-  letter-spacing: -0.01em;
+  letter-spacing: var(--tracking-heading);
   overflow-wrap: anywhere;
 }
 .review-context-title code {
@@ -2001,7 +2037,7 @@ input[type='radio'] {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 2px 10px;
   font-size: var(--text-sm);
   color: var(--muted);
@@ -2022,23 +2058,11 @@ input[type='radio'] {
   background: transparent;
   border: 1.5px solid var(--muted);
 }
+/* The diff pane beside an empty change list: the list already shows the all-clear. */
 .review-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
   padding: 40px 12px;
   color: var(--muted);
-}
-.review-empty-mark {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  color: var(--ok);
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-  font-size: 18px;
+  text-align: center;
 }
 .review-group {
   margin: 8px 12px 0;
@@ -2053,7 +2077,6 @@ input[type='radio'] {
   gap: 8px;
   padding: 8px 12px 8px 6px;
   background: var(--panel);
-  border-bottom: 1px solid var(--border);
 }
 .review-group.affected {
   background: transparent;
@@ -2127,7 +2150,7 @@ button.review-name:hover:not(:disabled) {
 }
 .extension-entry small {
   overflow-wrap: anywhere;
-  opacity: 0.7;
+  color: var(--muted);
 }
 .extension-badge {
   --tone: var(--accent);
@@ -2834,6 +2857,11 @@ button.review-name:hover:not(:disabled) {
   color: var(--muted);
   font-size: 18px;
 }
+.empty-state[data-tone='ok'] .empty-state-mark {
+  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
+}
 .empty-state-title {
   font-weight: 600;
 }
@@ -3216,7 +3244,7 @@ kbd {
 }
 .workspace-context > button:hover:not(:disabled),
 .workspace-context > button[aria-expanded='true'] {
-  background: var(--border);
+  background: var(--hover);
 }
 .workspace-context-project,
 .workspace-context-worktree {
@@ -3255,11 +3283,11 @@ kbd {
   background: transparent;
 }
 .window-controls button:hover {
-  background: var(--border);
+  background: var(--hover);
 }
 .window-controls .window-close:hover {
-  color: white;
-  background: #c42b1c;
+  color: var(--on-accent);
+  background: var(--window-close);
 }
 .window-controls svg {
   width: 12px;
@@ -3306,10 +3334,14 @@ kbd {
   overflow-wrap: anywhere;
 }
 .search-results button.active {
-  background: var(--border);
+  color: var(--accent-text);
+  background: var(--accent-soft);
 }
 .search-results small {
-  opacity: 0.65;
+  color: var(--muted);
+}
+.search-results button.active small {
+  color: inherit;
 }
 .workspace-body {
   display: flex;
@@ -3429,6 +3461,7 @@ kbd {
 .utility-header h2 {
   font-size: var(--text-md);
   font-weight: 600;
+  letter-spacing: var(--tracking-heading);
   margin: 0 0 4px;
 }
 .utility-header small {
@@ -3436,7 +3469,7 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: 0.65;
+  color: var(--muted);
 }
 .utility-scroll {
   overflow: auto;
@@ -3449,6 +3482,7 @@ kbd {
   width: 4px;
   flex: 0 0 4px;
   cursor: col-resize;
+  z-index: 1;
   --resize-line: var(--border);
   position: relative;
   background: linear-gradient(var(--resize-line), var(--resize-line)) center / 1px 100% no-repeat;
@@ -4187,7 +4221,7 @@ kbd {
   border: 0;
   border-radius: var(--radius-lg);
   background: var(--panel);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-menu);
 }
 .footer-popover-header {
   display: flex;
@@ -4324,8 +4358,8 @@ kbd {
 }
 .toast-region > .toast {
   transition:
-    opacity 240ms var(--ease-out),
-    transform 240ms var(--ease-out);
+    opacity var(--dur-toast) var(--ease-out),
+    transform var(--dur-toast) var(--ease-out);
 }
 /* Transitions, not keyframes: dismissing a card mid-entrance reverses it from where it is. */
 @starting-style {
@@ -4338,7 +4372,7 @@ kbd {
   opacity: 0;
   transform: translateY(var(--toast-from)) scale(0.98);
   pointer-events: none;
-  transition-duration: 160ms;
+  transition-duration: var(--dur-exit);
   transition-timing-function: var(--ease-in);
 }
 @media (prefers-reduced-motion: reduce) {
@@ -4718,6 +4752,13 @@ kbd {
   --resize-line: var(--accent);
   outline: none;
 }
+/* The visible rule stays 4px wide; the grab area reaches 12px, like the panel separators. */
+.utility-resize::before {
+  content: '';
+  position: absolute;
+  /* Only into the content beside it, clear of the panel's own scrollbar on the left. */
+  inset: 0 -8px 0 0;
+}
 .separator::after,
 .utility-resize::after {
   content: '';
@@ -4820,6 +4861,11 @@ kbd {
 .panel-status[data-kind='error'] p {
   color: var(--text);
 }
+/* A quick local read finishes before the notice shows, so it never flashes for a frame; a slow one
+   fades in after a beat. */
+.panel-status[data-kind='loading'] {
+  animation: scrim-in var(--dur-base) var(--ease-out) 150ms both;
+}
 .panel-status details {
   margin-top: 10px;
 }
@@ -4830,10 +4876,11 @@ kbd {
 }
 
 /* Surfaces arrive from what opened them: menus and popovers grow from their trigger's corner,
-   dialogs settle in place over a fading scrim. Closing stays immediate, like macOS menus. */
+   dialogs settle in place over a fading scrim. Menus close at once, like macOS menus; dialogs fade
+   out with their scrim. */
 .menu-list {
   transform-origin: top left;
-  animation: surface-in 150ms var(--ease-out);
+  animation: surface-in var(--dur-surface) var(--ease-out);
 }
 .menu-list.right {
   transform-origin: top right;
@@ -4847,6 +4894,12 @@ kbd {
 .extension-overlay {
   animation: scrim-in var(--dur-base) var(--ease-out);
 }
+/* Dialogs leave the way they came: scrim and card fade together, a little faster than they arrived. */
+.extension-overlay[data-leaving] {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-exit) var(--ease-in);
+}
 /* Opacity only: any transform, even mid-animation, would make the dialog a containing block
    for fixed popups and send a Popover opened inside it to the document body. */
 .dialog-shell {
@@ -4858,7 +4911,12 @@ kbd {
 /* Footer popovers rise from the footer control that opened them. */
 .footer-popover {
   transform-origin: bottom right;
-  animation: surface-in 150ms var(--ease-out);
+  animation: surface-in var(--dur-surface) var(--ease-out);
+}
+/* Search results drop from the field above them. */
+.search-results {
+  transform-origin: top center;
+  animation: surface-in var(--dur-surface) var(--ease-out);
 }
 @keyframes surface-in {
   from {
@@ -4873,7 +4931,8 @@ kbd {
 }
 @media (prefers-reduced-motion: reduce) {
   .menu-list,
-  .footer-popover {
+  .footer-popover,
+  .search-results {
     animation-name: scrim-in;
   }
 }
@@ -4942,4 +5001,50 @@ kbd {
 .secret-dialog label {
   display: grid;
   gap: 4px;
+}
+
+/* Programmatic panel opens and closes glide (see lib/panelTransition.ts). The panels are named only
+   while a transition runs, so they form no stacking context otherwise. Snapshots keep their size
+   and are clipped by the moving edge, so text slides with it instead of stretching. */
+.panels-transitioning [id='App-pane-2'] {
+  view-transition-name: panel-canvas;
+}
+.panels-transitioning [id='App-pane-3'] {
+  view-transition-name: panel-map;
+}
+.panels-transitioning [id='App-pane-4'] {
+  view-transition-name: panel-dock;
+}
+.panels-transitioning [id='App-simple-chat'] {
+  view-transition-name: panel-chat;
+}
+::view-transition-group(panel-canvas),
+::view-transition-group(panel-map),
+::view-transition-group(panel-dock),
+::view-transition-group(panel-chat) {
+  overflow: clip;
+  animation-duration: var(--dur-base);
+  animation-timing-function: var(--ease-out);
+}
+::view-transition-old(panel-canvas),
+::view-transition-new(panel-canvas),
+::view-transition-old(panel-map),
+::view-transition-new(panel-map),
+::view-transition-old(panel-dock),
+::view-transition-new(panel-dock),
+::view-transition-old(panel-chat),
+::view-transition-new(panel-chat) {
+  height: 100%;
+  width: 100%;
+  object-fit: none;
+  object-position: left top;
+  animation-duration: var(--dur-base);
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur-base);
+}
+/* Input reaches the live page underneath during a transition instead of the snapshot layer. */
+::view-transition {
+  pointer-events: none;
 }

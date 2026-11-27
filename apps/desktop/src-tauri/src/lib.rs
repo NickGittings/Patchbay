@@ -3501,6 +3501,11 @@ pub fn run() {
             // Auto's scheduler must continue while the main window is hidden/minimized.
             let main = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
                 .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+            // Open on the saved display, already maximized, so launch never shows a resize.
+            let main = match layout::saved_main(app.handle()) {
+                Some((x, y, width, height)) => main.position(x, y).inner_size(width, height),
+                None => main,
+            };
             #[cfg(target_os = "macos")]
             let main = writing_tools::disable(main);
             #[cfg(debug_assertions)]
@@ -3512,6 +3517,11 @@ pub fn run() {
             let _main = main.build()?;
             #[cfg(debug_assertions)]
             smoke::conceal(&_main);
+            // A window built hidden (as smoke runs build it) ignores the config's `maximized`
+            // and stays at its saved size once shown; a visible build is maximized already.
+            if config.maximized && !_main.is_maximized().unwrap_or(true) {
+                _main.maximize()?;
+            }
             #[cfg(target_os = "windows")]
             window_controls::verify(&_main)?;
             #[cfg(target_os = "macos")]
@@ -4152,7 +4162,6 @@ async fn workspace_load(
         app.state::<AppState>()
             .workspace_ready
             .store(true, std::sync::atomic::Ordering::Release);
-        layout::restore_main(&app)?;
         Ok(Restored {
             document,
             opened,

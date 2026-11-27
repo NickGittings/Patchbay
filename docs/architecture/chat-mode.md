@@ -35,6 +35,9 @@ latest content with zero unread replies. Scrolling away preserves the visible me
 when older history reconciles or a stage folds. **Jump to latest** counts unseen replies received
 since that scope was opened; restored history and duplicate replies add no unread count. Jumping
 or scrolling to the bottom clears the count and resumes following, including content resizing.
+The jump scrolls smoothly (instantly under reduced motion); scroll events on the way down don't
+count as leaving the bottom until it lands, the reader scrolls, or a second passes. Auto-follow
+stays instant so streaming replies never lag.
 `chatNavigation::chatReplyId` supplies the same session/generation/sequence identity to reply
 markers and rendered message anchors.
 
@@ -253,7 +256,10 @@ assignments and every other running agent of this chat, `agentSnippet` picks eac
 wait, failure, recent steps, summary, instructions, last reply) and `agentLayout` places the lead,
 sub-builders, other agents and finished work in rows, wrapped at the column count `agentColumns` finds
 shows cards largest in the canvas. Cards subscribe to their own sessions; the graph rebuilds only
-when membership or job state changes and refits when the layout or canvas size does. The minimap and
+when membership or job state changes and refits, gliding after the first fit, when the layout or
+canvas size does, until the person pans or zooms (canvas, zoom buttons or minimap); the fit
+control resumes refitting. Both canvases pan on two-finger scroll and zoom on pinch
+(`canvasGestures`). The minimap and
 its toggle are `CanvasMinimap`, sharing the Map's saved preference. Cards and minimap nodes use the
 role colors of Chat's agent headers. The tab's label
 counts unfinished agents and flagged items, with the breakdown in its accessible name. Terminal

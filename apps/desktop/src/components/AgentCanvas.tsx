@@ -41,6 +41,8 @@ import type { Health } from '../lib/display'
 import type { ProviderJob } from '../lib/orchestration'
 import { useChatAgents } from '../lib/useChatAgents'
 import { useReducedMotion } from '../lib/useReducedMotion'
+import { CANVAS_GESTURES } from '../lib/canvasGestures'
+import { DETAILS_TRANSITIONING, transitionPanels } from '../lib/panelTransition'
 import { useTeamAction, type TeamWork } from '../lib/useTeamWork'
 import {
   AssignmentReport,
@@ -365,6 +367,8 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
   const worktree = useContext(SimpleWorktreeContext)
   const { cards, team, work } = useChatAgents(worktree)
   const [selected, setSelected] = useState<string>()
+  // The open details' card, read by the stable actions to tell an open from a switch.
+  const selectedRef = useRef<string>(undefined)
   const [undo, setUndo] = useState<ProviderJob>()
   const key = graphKey(cards)
   const [shown, setShown] = useState({ key, cards })
@@ -404,12 +408,20 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
   const { fitView, getViewport, setViewport } = useReactFlow()
   const reducedMotion = useReducedMotion()
   const topology = positions.map(({ card, x, y }) => `${card.id}:${x}:${y}`).join('|')
+  // Once the person pans or zooms, agents starting and finishing no longer move their view; the
+  // fit control hands framing back to the canvas.
+  const userMoved = useRef(false)
+  const fitted = useRef(false)
   useEffect(() => {
+    if (userMoved.current) return
     const frame = requestAnimationFrame(() => {
-      void fitView(FIT_VIEW)
+      // The first fit lands in place; later ones glide to the new arrangement.
+      const duration = fitted.current && !reducedMotion ? 300 : 0
+      fitted.current = true
+      void fitView({ ...FIT_VIEW, duration })
     })
     return () => cancelAnimationFrame(frame)
-  }, [fitView, topology, size])
+  }, [fitView, topology, size, reducedMotion])
   const { setDismissed } = work
   const dismiss = useCallback(
     (job: ProviderJob) => {
@@ -422,7 +434,10 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
   const actions = useMemo(
     () => ({
       select: (id: string) => {
-        setSelected(id)
+        // Opening the details slides the panel in from the right edge; switching cards swaps it.
+        if (selectedRef.current === undefined)
+          transitionPanels(() => setSelected(id), DETAILS_TRANSITIONING)
+        else setSelected(id)
         // Slide the chosen card out from under the details panel, keeping its left edge in view.
         const position = positions.find(({ card }) => card.id === id)
         const width = canvas.current?.clientWidth
@@ -443,16 +458,40 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
     [onOpenTerminal, positions, getViewport, setViewport, reducedMotion, dismiss],
   )
   const details = cards.find((card) => card.id === selected)
+  useEffect(() => {
+    selectedRef.current = details?.id
+  })
+  // Deferred to the transition, so it clears only the details being closed: a card chosen in the
+  // meantime stays open.
+  const closeSelection = () => {
+    const closing = selectedRef.current
+    transitionPanels(
+      () => setSelected((id) => (id === closing ? undefined : id)),
+      DETAILS_TRANSITIONING,
+    )
+  }
   const closeDetails = () => {
     if (details)
       canvas.current
         ?.querySelector<HTMLElement>(`[data-card="${CSS.escape(details.id)}"] .agent-card-name`)
         ?.focus({ preventScroll: true })
-    setSelected(undefined)
+    closeSelection()
   }
   return (
     <AgentActions value={actions}>
-      <div className="agent-canvas" ref={canvas}>
+      <div
+        className="agent-canvas"
+        ref={canvas}
+        // Minimap pans and zooms reach d3 without a source event, so they are caught here.
+        // A drag on the minimap pans; a plain press there leaves auto-fit alone.
+        onPointerMoveCapture={(e) => {
+          if (e.buttons && (e.target as Element).closest('.react-flow__minimap'))
+            userMoved.current = true
+        }}
+        onWheelCapture={(e) => {
+          if ((e.target as Element).closest('.react-flow__minimap')) userMoved.current = true
+        }}
+      >
         <ReactFlow
           proOptions={{ hideAttribution: true }}
           nodes={nodes}
@@ -461,6 +500,11 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
           colorMode="dark"
           fitView
           fitViewOptions={FIT_VIEW}
+          {...CANVAS_GESTURES}
+          onMoveStart={(event) => {
+            // Programmatic moves (fits, sliding a card clear of the details) come without an event.
+            if (event) userMoved.current = true
+          }}
           minZoom={0.3}
           nodesDraggable={false}
           nodesConnectable={false}
@@ -470,7 +514,11 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
           deleteKeyCode={null}
           defaultEdgeOptions={{ type: 'smoothstep', style: { strokeWidth: 2 } }}
           onNodeClick={(_, node) => actions.select(node.id)}
-          onPaneClick={() => setSelected(undefined)}
+          onPaneClick={() => {
+            if (selectedRef.current !== undefined) closeSelection()
+            // A card that left the graph keeps no selection to reopen on its return.
+            else setSelected(undefined)
+          }}
         >
           <Background
             variant={BackgroundVariant.Dots}
@@ -478,7 +526,19 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
             size={1}
             color="color-mix(in srgb, var(--border) 55%, transparent)"
           />
-          <Controls showInteractive={false} className="canvas-controls">
+          <Controls
+            showInteractive={false}
+            className="canvas-controls"
+            onFitView={() => {
+              userMoved.current = false
+            }}
+            onZoomIn={() => {
+              userMoved.current = true
+            }}
+            onZoomOut={() => {
+              userMoved.current = true
+            }}
+          >
             <MinimapToggle />
           </Controls>
           <CanvasMinimap nodeColor={minimapColor} />

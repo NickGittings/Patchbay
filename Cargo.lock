@@ -2963,7 +2963,6 @@ name = "patchbay-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "dispatch2",
  "keepawake",
  "objc2",
  "objc2-io-kit",

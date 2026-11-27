@@ -118,7 +118,7 @@
     )
     click(visible('.review-findings-button'))
     const emptyFindings = await until('unreviewed branch named in findings', () => {
-      const empty = visible('.findings-panel .review-empty')
+      const empty = visible('.findings-panel .empty-state')
       return empty?.querySelector('code')?.textContent === 'feature' && empty
     })
     assert(

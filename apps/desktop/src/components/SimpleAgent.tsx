@@ -82,7 +82,8 @@ export default function SimpleAgent({
         </button>
       )}
       {latest && busy && (
-        <div className="simple-working" role="status">
+        <div className="simple-working health-working" role="status">
+          <span className="status-dot" aria-hidden />
           <p>
             {current ? activityLabel(current, record?.spec.cwd) : 'Working…'}
             {session?.status?.agent?.state === 'working' && (
