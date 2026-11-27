@@ -126,6 +126,27 @@ impl CleanupPreview {
                 && git::owning_worktree(trees, &cwd)
                     .is_some_and(|tree| tree.path == request.source))
     }
+    /// Whether cleanup must stop and retire the merge agent of a `component` session with
+    /// `merge_source`. Its cwd is the destination, which outlives cleanup, so `owns_session`
+    /// misses it; a merge of the removed source would otherwise reserve the destination forever.
+    #[must_use]
+    pub fn owns_merge_agent(
+        &self,
+        request: &MergeRequest,
+        component: &str,
+        merge_source: Option<&Path>,
+    ) -> bool {
+        let Some(source) = merge_source.filter(|_| component == MERGE_SCOPE) else {
+            return false;
+        };
+        let same = |other: &Path| {
+            source == other
+                || source
+                    .canonicalize()
+                    .is_ok_and(|a| other.canonicalize().is_ok_and(|b| a == b))
+        };
+        same(Path::new(&request.source)) || same(Path::new(&self.removed_worktree))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -584,7 +605,12 @@ pub(crate) fn cleanup_if_idle(
     ensure!(
         !records.iter().any(|record| {
             record.snapshot.as_ref().is_some_and(|s| s.running)
-                && preview.owns_session(request, &trees, &record.spec.cwd)
+                && (preview.owns_session(request, &trees, &record.spec.cwd)
+                    || preview.owns_merge_agent(
+                        request,
+                        &record.metadata.component_id,
+                        record.spec.merge_source.as_deref(),
+                    ))
         }),
         "A terminal or agent is running in a worktree affected by cleanup; stop it and retry cleanup"
     );
@@ -980,6 +1006,25 @@ mod tests {
         project: Project,
         request: MergeRequest,
     }
+    #[test]
+    fn cleanup_owns_the_merge_agent_of_its_source_only() {
+        let f = Fixture::new();
+        let preview = cleanup_preview(&f.project, &f.request).unwrap();
+        let source = Path::new(&f.request.source);
+        assert!(preview.owns_merge_agent(&f.request, MERGE_SCOPE, Some(source)));
+        // Retained records keep their source after the worktree is gone.
+        let gone = f.dir.join("gone");
+        let mut removed = f.request.clone();
+        removed.source = gone.to_string_lossy().into_owned();
+        assert!(preview.owns_merge_agent(&removed, MERGE_SCOPE, Some(&gone)));
+        assert!(!preview.owns_merge_agent(&f.request, MERGE_SCOPE, Some(&f.dir.join("other"))));
+        assert!(!preview.owns_merge_agent(&f.request, MERGE_SCOPE, None));
+        // An ordinary terminal in the destination is no merge agent.
+        assert!(!preview.owns_merge_agent(&f.request, TASK_ROOT_SCOPE, Some(source)));
+        let destination = Path::new(&f.request.destination);
+        assert!(!preview.owns_session(&f.request, &[], destination));
+    }
+
     #[test]
     fn cleanup_removes_integrated_worktree_and_branch() {
         let f = Fixture::new();

@@ -40,6 +40,8 @@ pub struct Bridge {
     routes: Mutex<HashMap<String, String>>,
     stopped: AtomicBool,
     retirement: Mutex<Retirement>,
+    /// The connected service is a previous build that kept running work through an update.
+    outdated: AtomicBool,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +101,7 @@ impl Default for Bridge {
             routes: Mutex::default(),
             stopped: AtomicBool::new(false),
             retirement: Mutex::default(),
+            outdated: AtomicBool::new(false),
         }
     }
 }
@@ -257,10 +260,12 @@ impl Bridge {
         &self,
         id: String,
         request_id: String,
+        manual: bool,
     ) -> Result<String, (String, bool)> {
         let resume = Request::Resume {
             id,
             request_id: request_id.clone(),
+            manual,
         };
         self.recovering(&request_id, |bridge| bridge.call_reporting(resume))
     }
@@ -293,7 +298,7 @@ impl Bridge {
     pub fn status(&self) -> serde_json::Value {
         let instance = self.instance.lock().unwrap().clone();
         let retirement = self.retirement.lock().unwrap();
-        serde_json::json!({"connected": instance.is_some(), "instanceId": instance.unwrap_or_default(), "retirement": *retirement})
+        serde_json::json!({"connected": instance.is_some(), "instanceId": instance.unwrap_or_default(), "retirement": *retirement, "outdated": self.outdated.load(Ordering::Acquire)})
     }
     /// One stop action is shared by all tiles and webviews until reconnection.
     pub fn retire(&self, app: &AppHandle) -> Result<(), String> {
@@ -303,19 +308,31 @@ impl Bridge {
             },
             || {
                 let dir = session::runtime_dir().map_err(|e| e.to_string())?;
+                if self.outdated.load(Ordering::Acquire) {
+                    let retired = session::retire_outdated_build(&dir, &helper(), true)
+                        .map_err(|e| e.to_string())?;
+                    // Nothing older is running any more (it exited, or the app was reinstalled).
+                    if !retired {
+                        self.outdated.store(false, Ordering::Release);
+                    }
+                    return Ok(retired);
+                }
                 session::retire_outdated(&dir, true).map_err(|e| e.to_string())?;
-                Ok(())
+                Ok(true)
             },
         )
     }
     fn retire_with(
         &self,
         notify: impl Fn(serde_json::Value),
-        stop: impl FnOnce() -> Result<(), String>,
+        stop: impl FnOnce() -> Result<bool, String>,
     ) -> Result<(), String> {
+        // A service that blocks connecting, or a connected previous build left by an update.
+        let before = self.instance.lock().unwrap().clone();
         {
             let mut retirement = self.retirement.lock().unwrap();
-            if retirement.state != RetirementState::Idle || self.instance.lock().unwrap().is_some()
+            if retirement.state != RetirementState::Idle
+                || (before.is_some() && !self.outdated.load(Ordering::Acquire))
             {
                 return Ok(());
             }
@@ -325,24 +342,29 @@ impl Bridge {
         }
         let result = stop();
         let mut retirement = self.retirement.lock().unwrap();
-        retirement.state = if result.is_ok() && self.instance.lock().unwrap().is_none() {
+        let instance = self.instance.lock().unwrap().clone();
+        // Only a service that was actually stopped leaves a reconnection to wait for.
+        retirement.state = if result == Ok(true) && (instance.is_none() || instance == before) {
             RetirementState::Reconnecting
         } else {
             RetirementState::Idle
         };
         retirement.error = result.as_ref().err().cloned();
         notify(serde_json::to_value(&*retirement).unwrap());
-        result
+        result.map(|_| ())
     }
     fn connected(&self, instance: &str) {
         // The same lock keeps a completed stop from restoring Reconnecting after
         // the poller has already connected to the replacement service.
         let mut retirement = self.retirement.lock().unwrap();
         *self.instance.lock().unwrap() = Some(instance.into());
+        self.outdated.store(false, Ordering::Release);
         *retirement = Retirement::default();
     }
     fn disconnected(&self) {
         self.instance.lock().unwrap().take();
+        // Whatever replaces it is checked again on connecting.
+        self.outdated.store(false, Ordering::Release);
         self.pool.lock().unwrap().clear();
     }
     pub fn disconnect(&self) {
@@ -408,7 +430,8 @@ impl Bridge {
                                 bridge.learn(&records);
                                 bridge.pool.lock().unwrap().clear();
                                 bridge.connected(&client.instance);
-                                let _ = app.emit(SERVICE_EVENT, serde_json::json!({"connected": true, "instanceId": client.instance, "records": records}));
+                                bridge.outdated.store(client.outdated, Ordering::Release);
+                                let _ = app.emit(SERVICE_EVENT, serde_json::json!({"connected": true, "instanceId": client.instance, "records": records, "outdated": client.outdated}));
                                 poller = Some(client);
                                 delay = 100;
                             }
@@ -611,7 +634,7 @@ mod retirement_tests {
                 || {
                     // Another webview calls while the first stop is in flight.
                     bridge.retire_with(|_| {}, || panic!("duplicate stop"))?;
-                    Ok(())
+                    Ok(true)
                 },
             )
             .unwrap();
@@ -624,6 +647,27 @@ mod retirement_tests {
         bridge
             .retire_with(|_| {}, || panic!("stop after reconnect"))
             .unwrap();
+    }
+
+    #[test]
+    fn a_connected_previous_build_can_be_restarted_only_while_outdated() {
+        let bridge = Bridge::default();
+        bridge.connected("previous");
+        // A current service that is connected is never stopped from here.
+        bridge
+            .retire_with(|_| {}, || panic!("stop a current service"))
+            .unwrap();
+        bridge.outdated.store(true, Ordering::Release);
+        assert_eq!(bridge.status()["outdated"], true);
+        // Nothing was left to stop: the button comes back rather than waiting forever.
+        bridge.retire_with(|_| {}, || Ok(false)).unwrap();
+        assert_eq!(bridge.status()["retirement"]["state"], "idle");
+        bridge.retire_with(|_| {}, || Ok(true)).unwrap();
+        // The poller has not seen the old service exit yet.
+        assert_eq!(bridge.status()["retirement"]["state"], "reconnecting");
+        bridge.connected("replacement");
+        assert_eq!(bridge.status()["retirement"]["state"], "idle");
+        assert_eq!(bridge.status()["outdated"], false);
     }
 
     #[test]
@@ -641,7 +685,7 @@ mod retirement_tests {
                 |_| {},
                 || {
                     bridge.connected("replacement");
-                    Ok(())
+                    Ok(true)
                 },
             )
             .unwrap();

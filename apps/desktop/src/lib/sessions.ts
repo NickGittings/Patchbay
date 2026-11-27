@@ -10,6 +10,7 @@ import { sessionFromSnapshot } from './sessionState'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { releaseMapEdit, sessionForget, sessionsList, terminalCloseGuard } from './ipc'
+import { launchFailureText, warnReservedFolder } from './reservedWorktree'
 import { executeExtensionCommand } from '../extensions/host'
 import { extensionTerminalRun } from './ipc'
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
@@ -82,9 +83,13 @@ const SERVICE_EVENT = 'patchbay://service'
 const SERVICE_RETIREMENT_EVENT = 'patchbay://service-retirement'
 
 const serviceStatus = () =>
-  invoke<{ connected: boolean; instanceId: string; retirement?: ServiceRetirement }>(
-    'service_status',
-  )
+  invoke<{
+    connected: boolean
+    instanceId: string
+    retirement?: ServiceRetirement
+    /** A previous build kept running work through an update. */
+    outdated?: boolean
+  }>('service_status')
 
 /** Window event fired after the service connection comes back. */
 export const RECONNECTED_EVENT = 'patchbay:reconnected'
@@ -520,6 +525,14 @@ export async function startMapAgent(
 /** A handoff or Auto launch, whose caller reports every failure itself. */
 const reports = (launch: Launch) => !!(launch.kickoff || launch.auto || launch.story)
 
+/** A manual launch beside a running merge agent: see `warnReservedFolder`. */
+function warnReservedWorktree(launch: Launch) {
+  const worktree = launch.task
+    ? projectStateOf(launch.projectId)?.tasks.find((t) => t.id === launch.task)?.worktree
+    : launch.project.root
+  if (worktree) void warnReservedFolder(launch.projectId, launch.sid, worktree)
+}
+
 /** A handoff must learn its agent didn't start, where other launches just stop quietly. */
 const cancelled = (launch: Launch): Promise<undefined> =>
   reports(launch) ? Promise.reject(new LaunchCancelled()) : Promise.resolve(undefined)
@@ -651,13 +664,6 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
         const purpose =
           launch.purpose ??
           useStore.getState().sessionRecords.find((r) => r.id === sid)?.spec?.purpose
-        const conversationOptions: [boolean?, ('ordinary' | 'chat')?, string?] = launch.chatTeam
-          ? [!!launch.freshConversation, purpose, launch.chatTeam]
-          : purpose
-            ? [!!launch.freshConversation, purpose]
-            : launch.freshConversation
-              ? [true]
-              : []
         await taskRootStart(
           project,
           fix ? [] : launch.highlighted,
@@ -667,7 +673,10 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           kickoff,
           resume,
           auto,
-          ...conversationOptions,
+          !!launch.freshConversation,
+          purpose,
+          launch.chatTeam,
+          !reports(launch),
         )
         if (fix) fixSessions.add(sid)
       } else if (runtime?.commandId)
@@ -680,6 +689,7 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           runtime.terminal.command,
           runtime.key,
           task,
+          !reports(launch),
         )
       else if (componentId === MAP_SCOPE && terminalId === STACK_AGENT_TERMINAL)
         await stackAgentStart(
@@ -688,9 +698,10 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           requestId,
           !!launch.restart,
           launch.stackDetection,
+          !reports(launch),
         )
       else if (componentId === MAP_SCOPE)
-        await mapAgentStart(project, mapPreset(sid), requestId, !!launch.restart)
+        await mapAgentStart(project, mapPreset(sid), requestId, !!launch.restart, !reports(launch))
       else if (componentId === PLAN_SCOPE) {
         const terminal = planTerminals(useStore.getState().devices).find((t) => t.id === terminalId)
         if (!terminal) throw new Error(`Unknown planner terminal ${terminalId}`)
@@ -706,9 +717,9 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           launch.story,
           launch.scanRound,
           launch.task,
-          ...((launch.freshConversation || launch.planRequest
-            ? [!!launch.freshConversation, launch.planRequest]
-            : []) as [boolean?, string?]),
+          !!launch.freshConversation,
+          launch.planRequest,
+          !reports(launch),
         )
       } else {
         await terminalStart(
@@ -720,7 +731,8 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
           requestId,
           peersFor(componentId, launch.highlighted),
           resume,
-          ...(launch.freshConversation ? ([true] as const) : []),
+          !!launch.freshConversation,
+          !reports(launch),
         )
       }
       launchRequests.delete(sid)
@@ -754,9 +766,10 @@ function launchTerminal(launch: Launch): Promise<string | undefined> {
         }
         // Otherwise skip errors made stale by a reset.
         if (requestedEpoch === epoch)
-          useStore.getState().setMessage(String(e), undefined, undefined, 'error')
+          useStore.getState().setMessage(launchFailureText(e), undefined, undefined, 'error')
       }
     }
+    if (launch.started && !reports(launch)) warnReservedWorktree(launch)
     if (launch.started && sharedChat) {
       const run = await launchedRun(sid, requestId)
       if (requestedEpoch === epoch) claimPendingChat(sid, requestId, run)
@@ -1339,9 +1352,15 @@ export function reconcileSessions(force = true): Promise<void> {
       const status = await serviceStatus()
       if (status.retirement) applyRetirement(status.retirement)
       if (!status.connected) {
-        useStore.setState({ serviceConnected: false })
+        // An outdated service that is gone no longer needs a restart, unless one is under way.
+        useStore.setState((s) => ({
+          serviceConnected: false,
+          ...(s.serviceRetirement === 'idle' ? { serviceOutdated: false } : {}),
+        }))
         return
       }
+      if (!!status.outdated !== !!useStore.getState().serviceOutdated)
+        useStore.setState({ serviceOutdated: !!status.outdated })
       const records = await sessionsList()
       const current = useStore.getState()
       const changed = status.instanceId !== current.serviceInstance
@@ -1465,8 +1484,11 @@ export function reconcileSessions(force = true): Promise<void> {
       useStore.setState({
         serviceConnected: true,
         serviceIssue: undefined,
-        serviceRetirement: 'idle',
-        serviceRetirementError: undefined,
+        // A previous build stays connected while it stops for a restart, so only a new
+        // connection ends a retirement; otherwise the service's own status above stands.
+        ...(reconnecting
+          ? { serviceRetirement: 'idle' as const, serviceRetirementError: undefined }
+          : {}),
       })
       if (reconnecting) window.dispatchEvent(new Event(RECONNECTED_EVENT))
     } catch (e) {

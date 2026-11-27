@@ -28,6 +28,8 @@ import {
   MERGE_SCOPE,
   MAIN_PLANNING_TASK,
   TERMINAL_RUNNING,
+  LEGACY_WORKTREE_BUSY,
+  WORKTREE_BUSY,
   plannerSessionId,
   type AgentRole,
   type AutoBrief,
@@ -3202,6 +3204,14 @@ async function drive(projectId: string, task: string | null) {
         if (latest.stage === 'plan' && !initial.plannerTurn && !initial.sessionId)
           patch(projectId, task, { plannerTurn: false, planMark: undefined })
         pause('Close the current agent in this slot, then Resume')
+      } else if (String(e).includes(WORKTREE_BUSY)) {
+        // A merge agent holds the worktree; the refusal names it.
+        const reason = String(e)
+        pause(`${reason.slice(reason.indexOf(WORKTREE_BUSY))}, then Resume`)
+      } else if (String(e).includes(LEGACY_WORKTREE_BUSY)) {
+        // The previous build's service refuses beside a merge agent without naming it.
+        const reason = String(e)
+        pause(`${reason.slice(reason.indexOf(LEGACY_WORKTREE_BUSY))}, then Resume`)
       } else if (String(e).includes('The source changed since review')) {
         if (
           await recoverAuto(

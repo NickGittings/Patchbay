@@ -21,6 +21,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => () => {}) }))
 vi.mock('./ipc', () => ({
+  worktreeReservations: vi.fn(async () => []),
   sessionsList: vi.fn(async () => []),
   sessionForget: vi.fn(async () => {}),
   sessionResume: vi.fn(async () => ''),
@@ -399,6 +400,8 @@ test('Start new launches fresh even when a recorded conversation exists', async 
     expect.any(String),
     undefined,
     false,
+    false,
+    true,
   )
   expect(ipc.sessionResume).not.toHaveBeenCalled()
   expect(ipc.sessionsList).not.toHaveBeenCalled()
@@ -431,6 +434,8 @@ test('restart sends an agent its current command and peers for service compariso
     expect.any(String),
     ['web', 'api'],
     true,
+    false,
+    true,
   )
   expect(ipc.sessionsList).not.toHaveBeenCalled()
   expect(ipc.sessionResume).not.toHaveBeenCalled()
@@ -447,6 +452,8 @@ test('restarting a non-agent requests a fresh launch without conversation lookup
     expect.any(String),
     undefined,
     false,
+    false,
+    true,
   )
   expect(ipc.sessionsList).not.toHaveBeenCalled()
 })
@@ -465,6 +472,9 @@ test('planner restart applies the current highlights and clears the scope warnin
     undefined,
     undefined,
     null,
+    false,
+    undefined,
+    true,
   )
   const sid = sessionId(PLAN_SCOPE, 'claude', null, 'p')
   expect(useStore.getState().planStartedWith[sid]).toBe('web')
@@ -490,6 +500,10 @@ test('root agent restart prepares the current scope through taskRootStart', asyn
     undefined,
     true,
     undefined,
+    false,
+    undefined,
+    undefined,
+    true,
   )
 })
 
@@ -974,6 +988,9 @@ test('starting an agent an Auto run still tracks again sends its Auto brief and 
     undefined,
     undefined,
     null,
+    false,
+    undefined,
+    true,
   ])
   // Once the run moved on, the terminal starts like any other.
   tracking('other')
@@ -988,6 +1005,9 @@ test('starting an agent an Auto run still tracks again sends its Auto brief and 
     undefined,
     undefined,
     null,
+    false,
+    undefined,
+    true,
   ])
 })
 
@@ -1037,6 +1057,7 @@ for (const cached of [false, true]) {
       claude,
       expect.any(String),
       true,
+      true, // manual
     )
   })
 }
@@ -1052,6 +1073,7 @@ test('a successful detection launch keeps the new preset for restart', async () 
     codex,
     expect.any(String),
     true,
+    true, // manual
   )
 })
 
@@ -1266,6 +1288,9 @@ test('a story planner keeps its kickoff on Restart and forgets it after a plain 
     'story1',
     undefined,
     null,
+    false,
+    undefined,
+    false,
   )
   expect(useStore.getState()).toMatchObject({ planStory: 'story1', planStoryTerminal: 'claude' })
   await restartTerminal(PLAN_SCOPE, 'claude', null)
@@ -1280,6 +1305,9 @@ test('a story planner keeps its kickoff on Restart and forgets it after a plain 
     'story1',
     undefined,
     null,
+    false,
+    undefined,
+    false,
   )
   await startTerminal(PLAN_SCOPE, 'claude', null, 'p')
   expect(useStore.getState()).toMatchObject({ planStory: null, planStoryTerminal: null })
@@ -1290,6 +1318,9 @@ test('a story planner keeps its kickoff on Restart and forgets it after a plain 
     undefined,
     undefined,
     null,
+    false,
+    undefined,
+    true,
   ])
 })
 
@@ -1308,6 +1339,9 @@ test('a lost story planner reply still keeps the story for Restart', async () =>
     'story1',
     undefined,
     null,
+    false,
+    undefined,
+    false,
   ])
 })
 
@@ -1350,6 +1384,9 @@ test('another planner preset leaves the story planner linked for Restart and Imp
     'story1',
     undefined,
     null,
+    false,
+    undefined,
+    false,
   ])
 })
 test('a direct story launch cannot take an Auto planner even when its session is running', async () => {
@@ -1647,6 +1684,9 @@ test('an Auto planner uses its background worktree highlights with its own sessi
     undefined,
     undefined,
     'background',
+    false,
+    undefined,
+    false,
   )
   expect(useStore.getState().highlighted).toEqual([])
   expect(useStore.getState().activeTask).toBeNull()
@@ -1690,6 +1730,10 @@ test.each(['start', 'restart'] as const)(
       undefined,
       undefined,
       'background',
+      false,
+      undefined,
+      // The person started it from the Plan dock, so a merge agent's reservation doesn't apply.
+      true,
     )
     expect(useStore.getState().highlighted).toEqual([])
     expect(useStore.getState().planStartedWith[sid]).toBe('web')
@@ -1715,6 +1759,7 @@ test('explicit stack detection selects or clears the target while terminal resta
     expect.any(String),
     false,
     { stackId: 'stack-id' },
+    true, // manual
   )
   await restartTerminal(MAP_SCOPE, STACK_AGENT_TERMINAL, null)
   expect(ipc.stackAgentStart).toHaveBeenLastCalledWith(
@@ -1723,6 +1768,7 @@ test('explicit stack detection selects or clears the target while terminal resta
     expect.any(String),
     true,
     undefined,
+    true, // manual
   )
   expect(await startMapAgent('p', codex, STACK_AGENT_TERMINAL)).toBe(true)
   expect(ipc.stackAgentStart).toHaveBeenLastCalledWith(
@@ -1731,6 +1777,7 @@ test('explicit stack detection selects or clears the target while terminal resta
     expect.any(String),
     false,
     {},
+    true, // manual
   )
   // Starting a retained tile after reload has no in-memory detection request.
   await startTerminal(MAP_SCOPE, STACK_AGENT_TERMINAL, null)
@@ -1740,6 +1787,7 @@ test('explicit stack detection selects or clears the target while terminal resta
     expect.any(String),
     false,
     undefined,
+    true, // manual
   )
 })
 
@@ -1755,6 +1803,9 @@ test('New conversation sends an explicit fresh intent without stopping or replay
   expect(vi.mocked(ipc.taskRootStart).mock.lastCall?.slice(5)).toEqual([
     undefined,
     false,
+    undefined,
+    true,
+    undefined,
     undefined,
     true,
   ])
@@ -1849,4 +1900,26 @@ test('a lost fresh-launch reply is reconciled by request ID even when the new pr
     generation: 2,
   })
   expect(useStore.getState().message ?? '').not.toContain('Reply lost')
+})
+
+test('a manual launch beside a running merge agent starts and offers to stop the agent', async () => {
+  vi.mocked(ipc.worktreeReservations).mockResolvedValueOnce([
+    { id: 'merge', name: 'Merge feature → main' },
+  ])
+  await startTerminal('web', 'dev')
+  await vi.waitFor(() =>
+    expect(useStore.getState().message).toContain('“Merge feature → main” is still running'),
+  )
+  expect(ipc.terminalStart).toHaveBeenCalled()
+  expect(ipc.worktreeReservations).toHaveBeenCalledWith(useStore.getState().project!.root)
+  expect(useStore.getState().messageAction?.label).toBe('Stop merge agent')
+})
+
+test('an automated launch never asks about reservations', async () => {
+  const terminalId = useStore.getState().addRootTerminal(agent)
+  vi.mocked(ipc.taskRootStart).mockResolvedValue('')
+  await startTerminal(TASK_ROOT_SCOPE, terminalId, null, 'p', {
+    kickoff: { kind: 'implementPlan' },
+  })
+  expect(ipc.worktreeReservations).not.toHaveBeenCalled()
 })

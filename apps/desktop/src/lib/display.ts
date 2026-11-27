@@ -21,14 +21,16 @@ export function serviceBlock(state: {
   serviceIssue?: ServiceIssue
   serviceRetirement: 'idle' | 'stopping' | 'reconnecting'
   serviceRetirementError?: string
-}): 'older' | 'newer' | undefined {
-  if (state.serviceConnected) return undefined
+  serviceOutdated?: boolean
+}): 'older' | 'newer' | 'updated' | undefined {
+  // A previous build serves until the person restarts it, and stays named while it stops.
+  if (state.serviceConnected) return state.serviceOutdated ? 'updated' : undefined
   if (
     state.serviceIssue === 'olderServiceBusy' ||
     state.serviceRetirement !== 'idle' ||
     state.serviceRetirementError
   )
-    return 'older'
+    return state.serviceOutdated && state.serviceIssue !== 'olderServiceBusy' ? 'updated' : 'older'
   return state.serviceIssue === 'newerService' ? 'newer' : undefined
 }
 

@@ -16,6 +16,8 @@ import {
   type TerminalSpec,
   type WorkflowAction,
   type WorkflowState,
+  LEGACY_WORKTREE_BUSY,
+  WORKTREE_BUSY,
 } from '../types'
 import type { ProviderRun } from './orchestration'
 import { LEAD_STAGE_ACTIONS } from './leadStageRun'
@@ -778,14 +780,20 @@ async function driveLeadRequests(team: ChatTeam) {
         kind: 'requestState',
         id: request.id,
         // A stage's handoff has side effects, so it reports failure instead of retrying.
+        // A merge agent's reservation waits like Auto's pause does, until it finishes.
         state:
           !leadStage &&
-          ['An unfinished provider run controls this worktree', 'This worktree is controlled'].some(
-            (reason) => String(error).includes(reason),
-          )
+          [
+            'An unfinished provider run controls this worktree',
+            'This worktree is controlled',
+            WORKTREE_BUSY,
+            LEGACY_WORKTREE_BUSY,
+          ].some((reason) => String(error).includes(reason))
             ? 'waiting'
             : 'failed',
-        result: String(error),
+        result: [WORKTREE_BUSY, LEGACY_WORKTREE_BUSY].some((r) => String(error).includes(r))
+          ? `${String(error)}. Ask the user whether to stop that merge agent, then try again.`
+          : String(error),
       }).catch(() => {})
     }
   }

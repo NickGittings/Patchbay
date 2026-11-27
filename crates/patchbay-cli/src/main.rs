@@ -338,7 +338,8 @@ fn sessions(command: SessionsCmd) -> Result<()> {
                     "cli-{}-{:?}",
                     std::process::id(),
                     std::time::SystemTime::now()
-                )
+                ),
+                manual: false,
             })?
         ),
         SessionsCmd::SetConversation {

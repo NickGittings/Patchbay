@@ -27,7 +27,7 @@ fn independent_service_survives_clients_and_serializes_startup() {
     let id: String = client.call(Request::Start {
         request_id: "counter-request".into(),
         metadata: Box::new(Metadata { project_id: "project".into(), project_name: "P".into(), project_root: dir.display().to_string(), component_id: "api".into(), terminal_id: "counter".into(), task: None, task_title: None, name: "Counter".into(), kind: TerminalKind::Task, adapter: None, conversation_id: None, conversation_pinned: false, extension_id: None, command_id: None, key: None, branch: None, lane: None, command: String::new() }),
-        spec: SessionSpec { purpose: patchbay_core::pty::LaunchPurpose::Ordinary, resume_command: None, rerun_on_resume: false, owns_briefing: false, exclusive_cwd: false, merge_source: None, id: "discarded".into(), command: "echo process:$$; i=0; while :; do echo sequence:$i; i=$((i+1)); sleep 0.05; done".into(), cwd: dir.clone(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: Vec::new() },
+        spec: SessionSpec { purpose: patchbay_core::pty::LaunchPurpose::Ordinary, resume_command: None, rerun_on_resume: false, owns_briefing: false, exclusive_cwd: false, manual: false, merge_source: None, id: "discarded".into(), command: "echo process:$$; i=0; while :; do echo sequence:$i; i=$((i+1)); sleep 0.05; done".into(), cwd: dir.clone(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: Vec::new() },
     }).unwrap();
     std::thread::sleep(Duration::from_millis(200));
     let before: Option<Snapshot> = client
@@ -204,6 +204,7 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 id: "discard".into(),
                 command: format!("{command} 'kickoff merge'"),
@@ -273,7 +274,8 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
             client
                 .call::<String>(Request::Resume {
                     id: id.clone(),
-                    request_id: format!("duplicate-{name}")
+                    request_id: format!("duplicate-{name}"),
+                    manual: false,
                 })
                 .is_err()
         );
@@ -322,7 +324,8 @@ fn exact_provider_resume_retains_incarnations_and_rejects_duplicates() {
             client
                 .call::<String>(Request::Resume {
                     id: id.clone(),
-                    request_id: "missing-history".into()
+                    request_id: "missing-history".into(),
+                    manual: false,
                 })
                 .is_err()
         );

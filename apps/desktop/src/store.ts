@@ -309,6 +309,8 @@ interface State {
   serviceIssue?: ServiceIssue
   serviceRetirement: 'idle' | 'stopping' | 'reconnecting'
   serviceRetirementError?: string
+  /** Connected, but to a previous build's session service that kept running work through an update. */
+  serviceOutdated?: boolean
   /** The rail's open utility panel, Sessions and Activity included (UI only). */
   utilityPanel: UtilityPanel | null
   /** Remount an already open Auto draft when a story supplies a new goal. */

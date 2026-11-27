@@ -38,7 +38,7 @@ import {
   type ChatTeam,
   type TeamControl,
 } from './chatTeams'
-import type { AutoRun, SessionRecord, WorkflowAction } from '../types'
+import { WORKTREE_BUSY, type AutoRun, type SessionRecord, type WorkflowAction } from '../types'
 const preset = {
   id: 'codex',
   name: 'Codex',
@@ -519,6 +519,17 @@ test('a lead stage refused by a worktree owner fails instead of repeating its ha
   vi.mocked(startLeadStage).mockRejectedValueOnce(new Error('This worktree is controlled by Auto'))
   await refreshChatTeams('p')
   expect(saved.requests![0].state).toBe('failed')
+})
+test('a lead stage refused by a merge agent asks the lead to check with the user', async () => {
+  const saved = mockRequestDriver('startBuild')
+  vi.mocked(startLeadStage).mockRejectedValueOnce(
+    new Error(`${WORKTREE_BUSY} by “Merge feature → main”; stop it there first`),
+  )
+  await refreshChatTeams('p')
+  expect(saved.requests![0]).toMatchObject({
+    state: 'failed',
+    result: expect.stringContaining('Ask the user whether to stop that merge agent'),
+  })
 })
 test('a lead stage that cannot start reports why', async () => {
   const saved = mockRequestDriver('startFix')

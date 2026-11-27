@@ -185,6 +185,7 @@ pub fn action(
         rerun_on_resume: false,
         owns_briefing: false,
         exclusive_cwd: false,
+        manual: false,
         merge_source: None,
         ready_when: String::new(),
         service: false,

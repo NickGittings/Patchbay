@@ -39,6 +39,7 @@ import Menu, { MenuItem, MenuSeparator } from './Menu'
 import TerminalPane from './TerminalPane'
 import TerminalControl from './TerminalControl'
 import { confirmAction } from '../lib/confirm'
+import { launchFailure, warnAfterResume } from '../lib/reservedWorktree'
 
 const EMPTY: Record<SessionFilter, string> = {
   all: 'No sessions',
@@ -297,7 +298,14 @@ function SessionList({
                             {!live && r.metadata.adapter && (
                               <MenuItem
                                 disabled={unavailable}
-                                onClick={() => void perform(() => sessionResume(r.id))}
+                                onClick={() =>
+                                  void perform(async () => {
+                                    await sessionResume(r.id, undefined, true).catch((e) => {
+                                      throw launchFailure(e)
+                                    })
+                                    void warnAfterResume(r.id)
+                                  })
+                                }
                               >
                                 Resume
                               </MenuItem>
