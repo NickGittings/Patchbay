@@ -21,7 +21,9 @@ import {
   type ResolvedStoryStatus,
 } from '../../lib/stories'
 import { storyCreate, storyRemove, storySourceOpen } from '../../lib/ipc'
+import { confirmAction } from '../../lib/confirm'
 import ExtensionMenu from '../../extensions/ExtensionMenu'
+import Dialog from '../Dialog'
 import { shortTitle } from '../../lib/shortTitle'
 
 export default function StoryEditor({
@@ -63,6 +65,24 @@ export default function StoryEditor({
   const parents = stories.filter((s) => s.kind === (kind === 'feature' ? 'epic' : 'feature'))
   const validParent = parents.some((s) => s.id === parent) ? parent : ''
   const ready = !!title.trim() && (kind !== 'feature' || !!validParent)
+  const criteria = acceptance.map((a) => a.trim()).filter(Boolean)
+  const fieldsNow = () => JSON.stringify([title, description, parent, criteria, components])
+  // The fields as opened or last saved, not the live item: a board refresh isn't an edit.
+  const [baseline, setBaseline] = useState(fieldsNow)
+  const dirty = fieldsNow() !== baseline || statusEdit !== null || parentEdit !== null
+  // Escape and a stray click on the backdrop close the popup too, so unsaved edits ask first.
+  const requestClose = async () => {
+    if (
+      dirty &&
+      !(await confirmAction({
+        title: 'Discard changes',
+        message: `Close this ${kind} without saving your changes?`,
+        confirmLabel: 'Discard',
+      }))
+    )
+      return
+    onClose()
+  }
   const reopen = (item: Story) =>
     reopenStoryPatch(item, autoWorkspace(projectStateOf(projectId), item.task)?.auto)
   const save = async (statusPatch: StoryPatch = {}) => {
@@ -81,7 +101,7 @@ export default function StoryEditor({
       title,
       description,
       parent: validParent,
-      acceptance: acceptance.map((a) => a.trim()).filter(Boolean),
+      acceptance: criteria,
       components,
     }
     let saved = item
@@ -97,6 +117,7 @@ export default function StoryEditor({
     }
     if (!automatic || statusPatch.status !== undefined || statusPatch.reopen) setStatusEdit(null)
     setParentEdit(null)
+    setBaseline(fieldsNow())
     onSaved(saved)
     return saved
   }
@@ -118,8 +139,9 @@ export default function StoryEditor({
             ? reopen(item)
             : undefined,
       )
-      if (action === 'plan') await planStory(projectId, saved)
-      if (action === 'auto') autoStory(projectId, saved)
+      // The planner and the Auto panel open outside the popup, which would cover them.
+      if (action === 'plan' && (await planStory(projectId, saved))) onClose()
+      if (action === 'auto' && autoStory(projectId, saved)) onClose()
       if (action === 'worktree') newWorktreeForStory(projectId, saved)
     } catch (e) {
       setError(String(e))
@@ -130,15 +152,12 @@ export default function StoryEditor({
     }
   }
   return (
-    <aside className="story-editor" aria-label="Story editor">
-      <header>
-        <h3>
-          {item ? 'Edit' : 'New'} {kind}
-        </h3>
-        <button disabled={busy} onClick={onClose} aria-label="Close story editor" title="Close">
-          ×
-        </button>
-      </header>
+    <Dialog
+      className="story-editor"
+      title={`${item ? 'Edit' : 'New'} ${kind}`}
+      onClose={() => void requestClose()}
+      dismissible={!busy}
+    >
       {item?.source && (
         <div className="story-source" role="group" aria-label="Tracker source">
           <p className="story-hint">
@@ -377,6 +396,6 @@ export default function StoryEditor({
           {error}
         </p>
       )}
-    </aside>
+    </Dialog>
   )
 }

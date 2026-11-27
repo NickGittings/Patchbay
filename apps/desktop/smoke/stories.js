@@ -38,6 +38,13 @@
     [...document.querySelectorAll('.story-editor label')]
       .find((l) => l.firstChild?.textContent === name)
       ?.querySelector('input, textarea, select')
+  // The popup's ×. Unsaved edits ask before closing; `discard` answers that confirmation.
+  const closeEditor = async (discard = false) => {
+    click(query('.story-editor .utility-header button[title="Close"]'))
+    if (discard)
+      click(await until('discard confirmation', () => button('.confirm-dialog', 'Discard')))
+    await until('story editor closed', () => !query('.story-editor'))
+  }
   try {
     const opened = await smoke.openProject()
     state().loadProject(opened.project)
@@ -106,7 +113,7 @@
       click(query(`[aria-label="Add ${kind}"]`))
       await until(
         'editor',
-        () => query('.story-editor h3')?.textContent === `New ${kind}` && field('Title'),
+        () => query('.story-editor h2')?.textContent === `New ${kind}` && field('Title'),
       )
       assert(!query('.story-editor .story-status'), 'new draft shows derived progress')
       assert(field('Status'), 'new draft lost its Status select')
@@ -190,7 +197,7 @@
     edit(field('Status'), 'done')
     click(button('.story-editor', 'Save'))
     await until('manual completion saved', () => savedStory().status === 'done')
-    click(query('[aria-label="Close story editor"]'))
+    await closeEditor()
     chooseCard(story.title)
     click(await until('Reopen after reopening editor', () => button('.story-editor', 'Reopen')))
     await until(
@@ -330,6 +337,7 @@
     chooseCard(filterStory.title)
     await until('filtered story editor', () => field('Title')?.value === filterStory.title)
     const editor = query('.story-editor')
+    // The popup covers the filters; set them anyway to pin that a filter change keeps the editor.
     edit(field('Title'), 'Unsaved filtered title')
     edit(field('Description'), 'Unsaved filtered description')
     edit(field('Status'), 'done')
@@ -354,9 +362,9 @@
         ).length === 2,
     )
     assert(state().dirty === filteredDirty, 'status filters dirtied the map')
-    click(query('[aria-label="Close story editor"]'))
+    await closeEditor(true)
     click(query('[aria-label="Add story"]'))
-    await until('new filtered draft', () => query('.story-editor h3')?.textContent === 'New story')
+    await until('new filtered draft', () => query('.story-editor h2')?.textContent === 'New story')
     edit(field('Title'), 'Unsaved new filtered story')
     const draftEditor = query('.story-editor')
     for (const title of ['Epics', 'Features', 'Stories']) edit(statusFilter(title), 'all')
@@ -366,7 +374,18 @@
         field('Title').value === 'Unsaved new filtered story',
       'status filter discarded a new draft',
     )
-    click(query('[aria-label="Close story editor"]'))
+    await closeEditor(true)
+    // Search narrows every column by text and pauses drag sorting while it does.
+    const search = query('[aria-label="Search stories"]')
+    edit(search, 'PLANNED  filter')
+    await until(
+      'search narrows the board',
+      () => card(filterStory.title) && !card(filterSibling.title) && !card(filterUnassigned.title),
+    )
+    assert(!card(filterStory.title).draggable, 'searched cards stayed sortable')
+    edit(search, '')
+    await until('cleared search restores cards', () => card(filterSibling.title))
+    assert(card(filterSibling.title).draggable, 'cleared search kept sorting off')
     // Only card lists scroll; headers and their filters remain visible in all three columns.
     const beforeScrollStories = state().stories
     const scrollItems = ['epic', 'feature', 'story'].flatMap((kind) =>
@@ -578,7 +597,7 @@
         field('Title').value === 'Unsaved live filtered title',
       'live status updates discarded the editor or unsaved fields',
     )
-    click(query('[aria-label="Close story editor"]'))
+    await closeEditor(true)
     edit(statusFilter(), 'all')
     await updateStory(projectId, unassigned.id, { status: 'done' })
     state().patchTask(projectId, task.id, { auto: null })
@@ -689,7 +708,10 @@
       goal.value.includes(story.title) && goal.value.includes(story.description),
       'Auto lost the story title or description',
     )
-    click(button('.story-editor', 'Mark done'))
+    // The popup closes so it doesn't cover the Auto panel.
+    await until('editor closed for Auto', () => !query('.story-editor'))
+    chooseCard(story.title)
+    click(await until('Mark done after Auto', () => button('.story-editor', 'Mark done')))
     await until(
       'saved Done overrides worktree progress',
       () =>

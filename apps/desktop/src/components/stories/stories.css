@@ -62,15 +62,13 @@
   padding: 10px;
   gap: 8px;
 }
-.story-column > header,
-.story-editor > header {
+.story-column > header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
 }
-.story-column h3,
-.story-editor h3 {
+.story-column h3 {
   margin: 0;
   font-size: var(--text-sm);
   font-weight: 600;
@@ -204,12 +202,18 @@
   font-size: var(--text-sm);
   line-height: 1.5;
 }
-.story-editor {
-  width: 300px;
-  flex-shrink: 0;
-  border-left: 1px solid var(--border);
-  background: var(--panel);
-  padding: 12px;
+/* The editor opens as a popup over the board only: in Chat the chat stays usable beside it, and
+   app dialogs it opens (New worktree, extension commands) stack above it. */
+.story-board {
+  position: relative;
+}
+.extension-overlay.story-editor {
+  position: absolute;
+  z-index: calc(var(--z-modal) - 1);
+}
+.story-editor .dialog-shell {
+  width: min(560px, 90vw);
+  max-height: 85vh;
   overflow: auto;
 }
 .story-editor fieldset {
@@ -303,6 +307,13 @@
 }
 .story-board-actions:empty {
   display: none;
+}
+.story-search {
+  width: 180px;
+  min-height: 30px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: var(--text-sm);
 }
 .story-board-actions button {
   min-height: 30px;

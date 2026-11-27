@@ -25,6 +25,7 @@ vi.mock('./confirm', () => ({ confirmAction: vi.fn() }))
 const {
   tree,
   filterStories,
+  searchStories,
   storyStatuses,
   reopenStoryPatch,
   progressLabel,
@@ -395,7 +396,9 @@ test('Plan chooses the role, replaces highlights and marks Planned only after la
 test('Auto drafts carry story goals; linkage is recorded only once a run has a task', async () => {
   const item = story('s')
   useStore.setState({ stories: [item] })
-  autoStory('p', item)
+  // The editor closes only when the Auto panel opens.
+  expect(autoStory('other', item)).toBe(false)
+  expect(autoStory('p', item)).toBe(true)
   expect(autoDrafts.get(autoDraftKey('p', null))).toMatchObject({
     story: 's',
     goal: storyGoal(item),
@@ -497,13 +500,14 @@ test('Plan asks before replacing a manual planner, and cancellation leaves it al
   planner()
   vi.mocked(confirmAction).mockResolvedValue(false)
   vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ running: true } as never)
-  await planStory('p', story('s'))
+  // The editor stays open when the person keeps the running planner.
+  expect(await planStory('p', story('s'))).toBe(false)
   expect(confirmAction).toHaveBeenCalledOnce()
   expect(ipc.terminalStop).not.toHaveBeenCalled()
   expect(startTerminal).not.toHaveBeenCalled()
   vi.mocked(confirmAction).mockResolvedValue(true)
   vi.mocked(ipc.terminalSnapshot).mockResolvedValueOnce({ running: true } as never)
-  await planStory('p', story('s'))
+  expect(await planStory('p', story('s'))).toBe(true)
   expect(ipc.terminalStop).toHaveBeenCalledOnce()
   expect(startTerminal).toHaveBeenCalledOnce()
   vi.unstubAllGlobals()
@@ -520,7 +524,7 @@ test('story Auto preserves draft choices and refuses an unfinished run without l
   }
   autoDrafts.set(key, choices)
   useStore.setState({ auto: run() })
-  autoStory('p', story('blocked'))
+  expect(autoStory('p', story('blocked'))).toBe(true)
   expect(autoDrafts.get(key)).toBe(choices)
   expect(useStore.getState().message).toContain('already has an Auto run')
   useStore.setState({ auto: run({ status: 'done' }) })
@@ -864,4 +868,21 @@ test('board scope drops ids that no longer exist or sit outside the chosen epic'
   const scope = boardScope(tree(scopeItems), 'e1', 'f2')
   expect(scope.feature).toBeNull()
   expect(ids(scope.stories)).toEqual(['s1'])
+})
+
+test('search matches every term across title, description, criteria and tracker id', () => {
+  const items: Story[] = [
+    { ...story('title'), title: 'Login Page' },
+    { ...story('description'), description: 'Reset a forgotten password' },
+    { ...story('criteria'), acceptance: ['Shows an error toast'] },
+    { ...story('tracker'), source: { extension: 'github', externalId: 'owner/repo#42' } },
+  ]
+  expect(searchStories(items, '')).toBe(items)
+  expect(searchStories(items, '   ')).toBe(items)
+  expect(searchStories(items, 'login').map((s) => s.id)).toEqual(['title'])
+  expect(searchStories(items, 'PAGE login').map((s) => s.id)).toEqual(['title'])
+  expect(searchStories(items, 'login reset')).toEqual([])
+  expect(searchStories(items, 'forgotten').map((s) => s.id)).toEqual(['description'])
+  expect(searchStories(items, 'toast').map((s) => s.id)).toEqual(['criteria'])
+  expect(searchStories(items, 'repo#42').map((s) => s.id)).toEqual(['tracker'])
 })
