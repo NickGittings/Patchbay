@@ -16,6 +16,7 @@ import {
   PARENT_FILTERS,
   progressLabel,
   reorder,
+  searchStories,
   siblings,
   sourceName,
   STORY_FILTERS,
@@ -142,6 +143,10 @@ export default function StoryBoard() {
   const [feature, setFeature] = useState<string | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [draft, setDraft] = useState<StoryDraft | null>(null)
+  // Bumped when the editor opens on something else, so saving a new item keeps its popup.
+  const [editing, setEditing] = useState(0)
+  const [query, setQuery] = useState('')
+  const searching = !!query.trim()
   const [filters, setFilters] = useState<Record<StoryKind, StoryFilter>>({
     epic: 'all',
     feature: 'all',
@@ -200,38 +205,37 @@ export default function StoryBoard() {
     showAll()
   }
   const add = (kind: StoryKind) => {
+    const parent =
+      kind === 'feature'
+        ? (selectedEpic ?? hierarchy.epics[0]?.item.id)
+        : kind === 'story' && selectedFeature !== UNASSIGNED
+          ? selectedFeature
+          : null
+    // The same Add again keeps a draft in progress.
+    if (selected || draft?.kind !== kind || draft.parent !== parent) setEditing((n) => n + 1)
     setSelected(null)
-    setDraft({
-      kind,
-      title: '',
-      parent:
-        kind === 'feature'
-          ? (selectedEpic ?? hierarchy.epics[0]?.item.id)
-          : kind === 'story' && selectedFeature !== UNASSIGNED
-            ? selectedFeature
-            : null,
-    })
+    setDraft({ kind, title: '', parent })
   }
-  const choose = (item: Story) => {
+  /** Opens an item in the editor without changing what the board shows. */
+  const open = (item: Story) => {
+    if (draft || selected !== item.id) setEditing((n) => n + 1)
     setDraft(null)
     setSelected(item.id)
+  }
+  const choose = (item: Story) => {
+    open(item)
     if (item.kind === 'epic') {
       setEpic(item.id)
       setFeature(null)
     }
     if (item.kind === 'feature') setFeature(item.id)
   }
-  /** Opens an item in the editor without changing what the board shows. */
-  const open = (item: Story) => {
-    setDraft(null)
-    setSelected(item.id)
-  }
   const item = stories.find((s) => s.id === selected)
   const column = (kind: StoryKind, title: string, candidates: Story[], total: Story[]) => {
-    const items = filterStories(candidates, statuses, filters[kind])
-    const everything = filterStories(total, statuses, filters[kind]).length
-    // Hidden cards would make a filtered column's order ambiguous.
-    const sortable = filters[kind] === 'all'
+    const items = searchStories(filterStories(candidates, statuses, filters[kind]), query)
+    const everything = searchStories(filterStories(total, statuses, filters[kind]), query).length
+    // Hidden cards would make a filtered or searched column's order ambiguous.
+    const sortable = filters[kind] === 'all' && !searching
     return (
       <section className="story-column" aria-label={title}>
         <header>
@@ -374,9 +378,11 @@ export default function StoryBoard() {
           })}
           {!items.length && (
             <p className="story-hint">
-              {filters[kind] === 'all'
-                ? `No ${title.toLowerCase()} here yet.`
-                : 'No matches for this status'}
+              {searching
+                ? `No matches for “${query.trim()}”`
+                : filters[kind] === 'all'
+                  ? `No ${title.toLowerCase()} here yet.`
+                  : 'No matches for this status'}
             </p>
           )}
         </div>
@@ -390,7 +396,10 @@ export default function StoryBoard() {
             }}
           >
             Unassigned stories ·{' '}
-            {filterStories(hierarchy.unassigned, statuses, filters.story).length}
+            {
+              searchStories(filterStories(hierarchy.unassigned, statuses, filters.story), query)
+                .length
+            }
           </button>
         )}
       </section>
@@ -401,6 +410,21 @@ export default function StoryBoard() {
       <header className="story-board-header view-tabs-header">
         <StoryViewTabs />
         <div className="story-board-actions" role="group" aria-label="Story board actions">
+          <input
+            type="search"
+            className="story-search"
+            aria-label="Search stories"
+            placeholder="Search…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Clearing the search comes before widening the board.
+              if (e.key === 'Escape' && query) {
+                e.preventDefault()
+                setQuery('')
+              }
+            }}
+          />
           <ExtensionMenu slot="stories/toolbar" />
         </div>
       </header>
@@ -487,7 +511,7 @@ export default function StoryBoard() {
         </div>
         {projectId && (item || draft) && (
           <StoryEditor
-            key={`${projectId}/${item?.id ?? `new-${draft?.kind}-${draft?.parent}`}`}
+            key={`${projectId}/${editing}`}
             projectId={projectId}
             item={item}
             progress={item ? statuses.get(item.id) : undefined}

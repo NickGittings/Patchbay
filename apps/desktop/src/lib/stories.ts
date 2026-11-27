@@ -251,6 +251,21 @@ export function filterStories(
   })
 }
 
+/**
+ * Items whose title, description, acceptance criteria or tracker id contain every
+ * whitespace-separated term of `query`, ignoring case. A blank query keeps them all.
+ */
+export function searchStories(items: Story[], query: string): Story[] {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (!terms.length) return items
+  return items.filter((item) => {
+    const text = [item.title, item.description, ...item.acceptance, item.source?.externalId ?? '']
+      .join('\n')
+      .toLowerCase()
+    return terms.every((term) => text.includes(term))
+  })
+}
+
 type StoryRuns = Record<
   string,
   (Pick<AutoRun, 'runId' | 'status'> & Partial<Pick<AutoRun, 'stage'>>) | null | undefined
@@ -422,7 +437,8 @@ export async function updateStory(projectId: string, id: string, patch: StoryPat
   return updated
 }
 
-export async function planStory(projectId: string, story: Story) {
+/** Starts `story`'s planner; false when the person kept the planner already running. */
+export async function planStory(projectId: string, story: Story): Promise<boolean> {
   let s = useStore.getState()
   if (s.project?.id !== projectId) throw new Error('Select the story’s project first')
   // The chat the story was planned from, whichever worktree is shown once the planner starts.
@@ -440,7 +456,7 @@ export async function planStory(projectId: string, story: Story) {
         confirmLabel: 'Stop and replace',
       }))
     )
-      return
+      return false
     // The app kept running while the dialog was open: recheck what it was opened for.
     const answered = useStore.getState()
     if (answered.project?.id !== projectId || answered.activeTask !== task)
@@ -469,6 +485,7 @@ export async function planStory(projectId: string, story: Story) {
       origin: chat ? 'chat' : 'manual',
       ...(chat ? { text: story.title, atMs: planningAtMs } : {}),
     })
+  return true
 }
 
 /** Components a story's planner or Auto run covers: its own and its descendants'. */
@@ -554,9 +571,10 @@ export function newWorktreeForStory(projectId: string, story: Story) {
   })
 }
 
-export function autoStory(projectId: string, story: Story) {
+/** Opens the Auto panel for `story`; false when its project isn't the one shown. */
+export function autoStory(projectId: string, story: Story): boolean {
   const s = useStore.getState()
-  if (s.project?.id !== projectId || !projectOf(projectId)) return
+  if (s.project?.id !== projectId || !projectOf(projectId)) return false
   if (s.auto && !finished(s.auto.status)) {
     s.setMessage(
       'This worktree already has an Auto run. Stop it or choose another worktree first.',
@@ -565,7 +583,7 @@ export function autoStory(projectId: string, story: Story) {
       'warning',
     )
     s.showAutoPanel()
-    return
+    return true
   }
   const key = autoDraftKey(projectId, s.activeTask)
   autoDrafts.set(key, {
@@ -575,6 +593,7 @@ export function autoStory(projectId: string, story: Story) {
   })
   useStore.setState({ autoDraftVersion: s.autoDraftVersion + 1 })
   s.showAutoPanel()
+  return true
 }
 
 /** The run has already started; keep linkage errors separate from starting it. */

@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 
+const composing = (e: KeyboardEvent) => e.isComposing || e.keyCode === 229
+
 export default function Dialog({
   title,
   subtitle,
@@ -47,7 +49,7 @@ export default function Dialog({
       if (!card.current?.contains(document.activeElement)) card.current?.focus()
     }
     const escape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.defaultPrevented) latestClose.current()
+      if (e.key === 'Escape' && !e.defaultPrevented && !composing(e)) latestClose.current()
     }
     if (!takeFocus) window.addEventListener('keydown', escape)
     return () => {
@@ -73,7 +75,8 @@ export default function Dialog({
         aria-labelledby={heading}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === 'Escape' && !e.defaultPrevented) {
+          // Escape that cancels an IME composition belongs to the field, not the dialog.
+          if (e.key === 'Escape' && !e.defaultPrevented && !composing(e.nativeEvent)) {
             e.stopPropagation()
             close()
           }
