@@ -419,8 +419,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.story-scope-token.context .story-scope-name,
-span.story-scope-name {
+/* Only a token without a ✕ needs the pill's right inset on its name. */
+.story-scope-token.context .story-scope-name {
   padding-right: 9px;
 }
 .story-scope-remove {
@@ -436,7 +436,8 @@ span.story-scope-name {
   color: var(--muted);
   font-size: 10px;
 }
-.story-scope-remove:hover {
+/* Above the global `button:hover:not(:disabled)` fill. */
+.story-scope-token .story-scope-remove:hover:not(:disabled) {
   color: var(--text);
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
