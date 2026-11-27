@@ -43,7 +43,9 @@ const ease = (t: number) => 1 - (1 - t) ** 3
  */
 function useArranging(projectId: string | undefined) {
   const reduced = useReducedMotion()
-  const { fitView, getNode, setViewport } = useReactFlow()
+  const { fitView, getNode, getViewport, setViewport } = useReactFlow()
+  // Set while the camera glides to an arrangement, so a drag can stop it.
+  const [gliding, setGliding] = useState(false)
   const flow = useStoreApi()
   const [tween, setTween] = useState<{
     from: Record<string, Position>
@@ -54,7 +56,8 @@ function useArranging(projectId: string | undefined) {
   const fitDestination = useEffectEvent(() => {
     const destination = useStore.getState().nodes.map((n) => ({
       ...n,
-      measured: getNode(n.id)?.measured ?? n.measured,
+      // A node React Flow hasn't measured yet counts at its card size rather than as a point.
+      measured: getNode(n.id)?.measured ?? n.measured ?? { width: 260, height: 120 },
     }))
     if (!destination.length) return
     const { width, height, minZoom } = flow.getState()
@@ -67,7 +70,8 @@ function useArranging(projectId: string | undefined) {
       ARRANGE_FIT.maxZoom,
       ARRANGE_FIT.padding,
     )
-    void setViewport(viewport, { duration: ARRANGE_MS })
+    setGliding(true)
+    void setViewport(viewport, { duration: ARRANGE_MS }).then(() => setGliding(false))
   })
   const previousPositions = useEffectEvent(() => tween?.from)
   useEffect(() => {
@@ -112,15 +116,24 @@ function useArranging(projectId: string | undefined) {
     const frame = requestAnimationFrame(() => setTween(null))
     return () => cancelAnimationFrame(frame)
   }, [tween])
-  const interrupt = useCallback((ids: string[]) => {
-    if (!ids.length) return
-    setTween((current) => {
-      if (!current) return null
-      const from = { ...current.from }
-      for (const id of ids) delete from[id]
-      return { ...current, from }
-    })
-  }, [])
+  const interrupt = useCallback(
+    (ids: string[]) => {
+      if (!ids.length) return
+      // A user taking hold of a node also stops the camera where it is; a viewport set without a
+      // duration interrupts the running d3 transition.
+      if (gliding) {
+        setGliding(false)
+        void setViewport(getViewport())
+      }
+      setTween((current) => {
+        if (!current) return null
+        const from = { ...current.from }
+        for (const id of ids) delete from[id]
+        return { ...current, from }
+      })
+    },
+    [gliding, getViewport, setViewport],
+  )
   // A pan or zoom by the user interrupts the camera glide by itself: d3 drops a running transition
   // when a gesture starts.
   return { tween, interrupt }

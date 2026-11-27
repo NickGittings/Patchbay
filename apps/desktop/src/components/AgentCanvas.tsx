@@ -42,6 +42,7 @@ import type { ProviderJob } from '../lib/orchestration'
 import { useChatAgents } from '../lib/useChatAgents'
 import { useReducedMotion } from '../lib/useReducedMotion'
 import { CANVAS_GESTURES } from '../lib/canvasGestures'
+import { DETAILS_TRANSITIONING, transitionPanels } from '../lib/panelTransition'
 import { useTeamAction, type TeamWork } from '../lib/useTeamWork'
 import {
   AssignmentReport,
@@ -366,6 +367,8 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
   const worktree = useContext(SimpleWorktreeContext)
   const { cards, team, work } = useChatAgents(worktree)
   const [selected, setSelected] = useState<string>()
+  // The open details' card, read by the stable actions to tell an open from a switch.
+  const selectedRef = useRef<string>(undefined)
   const [undo, setUndo] = useState<ProviderJob>()
   const key = graphKey(cards)
   const [shown, setShown] = useState({ key, cards })
@@ -431,7 +434,10 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
   const actions = useMemo(
     () => ({
       select: (id: string) => {
-        setSelected(id)
+        // Opening the details slides the panel in from the right edge; switching cards swaps it.
+        if (selectedRef.current === undefined)
+          transitionPanels(() => setSelected(id), DETAILS_TRANSITIONING)
+        else setSelected(id)
         // Slide the chosen card out from under the details panel, keeping its left edge in view.
         const position = positions.find(({ card }) => card.id === id)
         const width = canvas.current?.clientWidth
@@ -452,16 +458,29 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
     [onOpenTerminal, positions, getViewport, setViewport, reducedMotion, dismiss],
   )
   const details = cards.find((card) => card.id === selected)
+  useEffect(() => {
+    selectedRef.current = details?.id
+  })
   const closeDetails = () => {
     if (details)
       canvas.current
         ?.querySelector<HTMLElement>(`[data-card="${CSS.escape(details.id)}"] .agent-card-name`)
         ?.focus({ preventScroll: true })
-    setSelected(undefined)
+    transitionPanels(() => setSelected(undefined), DETAILS_TRANSITIONING)
   }
   return (
     <AgentActions value={actions}>
-      <div className="agent-canvas" ref={canvas}>
+      <div
+        className="agent-canvas"
+        ref={canvas}
+        // Minimap pans and zooms reach d3 without a source event, so they are caught here.
+        onPointerDownCapture={(e) => {
+          if ((e.target as Element).closest('.react-flow__minimap')) userMoved.current = true
+        }}
+        onWheelCapture={(e) => {
+          if ((e.target as Element).closest('.react-flow__minimap')) userMoved.current = true
+        }}
+      >
         <ReactFlow
           proOptions={{ hideAttribution: true }}
           nodes={nodes}
@@ -484,7 +503,10 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
           deleteKeyCode={null}
           defaultEdgeOptions={{ type: 'smoothstep', style: { strokeWidth: 2 } }}
           onNodeClick={(_, node) => actions.select(node.id)}
-          onPaneClick={() => setSelected(undefined)}
+          onPaneClick={() => {
+            if (selectedRef.current !== undefined)
+              transitionPanels(() => setSelected(undefined), DETAILS_TRANSITIONING)
+          }}
         >
           <Background
             variant={BackgroundVariant.Dots}
@@ -497,6 +519,12 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
             className="canvas-controls"
             onFitView={() => {
               userMoved.current = false
+            }}
+            onZoomIn={() => {
+              userMoved.current = true
+            }}
+            onZoomOut={() => {
+              userMoved.current = true
             }}
           >
             <MinimapToggle />

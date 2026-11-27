@@ -45,7 +45,9 @@
   overflow-anchor: none;
 }
 /* New replies settle in instead of popping; reduced motion keeps only the fade. */
-.simple-thread :is(.simple-agent, .simple-result, .simple-narration, .chat-question) {
+/* Only the open section and pending questions: opening a folded earlier stage stays still. */
+.simple-thread > div > :is(.simple-agent, .simple-result, .simple-narration),
+.simple-thread > .chat-question {
   animation: chat-entry-in var(--dur-base) var(--ease-out);
 }
 @keyframes chat-entry-in {
@@ -55,7 +57,8 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .simple-thread :is(.simple-agent, .simple-result, .simple-narration, .chat-question) {
+  .simple-thread > div > :is(.simple-agent, .simple-result, .simple-narration),
+  .simple-thread > .chat-question {
     animation-name: scrim-in;
   }
 }
@@ -764,6 +767,24 @@
   box-shadow: var(--shadow-2);
   /* Opacity only: a transform would capture fixed popups opened from the panel. */
   animation: scrim-in var(--dur-fast) var(--ease-out);
+}
+/* Opening and closing run as a view transition (lib/panelTransition.ts): the snapshot slides, not
+   the panel, so popups opened from it still position against the window. */
+.details-transitioning .agent-details {
+  view-transition-name: agent-details;
+  animation: none;
+}
+::view-transition-new(agent-details):only-child {
+  animation: details-in var(--dur-base) var(--ease-out);
+}
+::view-transition-old(agent-details):only-child {
+  animation: details-in var(--dur-exit) var(--ease-in) reverse both;
+}
+@keyframes details-in {
+  from {
+    opacity: 0;
+    translate: 24px 0;
+  }
 }
 .agent-details:focus {
   outline: none;

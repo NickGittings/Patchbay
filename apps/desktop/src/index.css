@@ -4756,7 +4756,8 @@ kbd {
 .utility-resize::before {
   content: '';
   position: absolute;
-  inset: 0 -4px;
+  /* Only into the content beside it, clear of the panel's own scrollbar on the left. */
+  inset: 0 -8px 0 0;
 }
 .separator::after,
 .utility-resize::after {
@@ -5000,4 +5001,46 @@ kbd {
 .secret-dialog label {
   display: grid;
   gap: 4px;
+}
+
+/* Programmatic panel opens and closes glide (see lib/panelTransition.ts). The panels are named only
+   while a transition runs, so they form no stacking context otherwise. Snapshots keep their size
+   and are clipped by the moving edge, so text slides with it instead of stretching. */
+.panels-transitioning [id='App-pane-2'] {
+  view-transition-name: panel-canvas;
+}
+.panels-transitioning [id='App-pane-3'] {
+  view-transition-name: panel-map;
+}
+.panels-transitioning [id='App-pane-4'] {
+  view-transition-name: panel-dock;
+}
+.panels-transitioning [id='App-simple-chat'] {
+  view-transition-name: panel-chat;
+}
+::view-transition-group(panel-canvas),
+::view-transition-group(panel-map),
+::view-transition-group(panel-dock),
+::view-transition-group(panel-chat) {
+  overflow: clip;
+  animation-duration: var(--dur-base);
+  animation-timing-function: var(--ease-out);
+}
+::view-transition-old(panel-canvas),
+::view-transition-new(panel-canvas),
+::view-transition-old(panel-map),
+::view-transition-new(panel-map),
+::view-transition-old(panel-dock),
+::view-transition-new(panel-dock),
+::view-transition-old(panel-chat),
+::view-transition-new(panel-chat) {
+  height: 100%;
+  width: 100%;
+  object-fit: none;
+  object-position: left top;
+  animation-duration: var(--dur-base);
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur-base);
 }

@@ -1,6 +1,9 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { followScroll, initialFollow, receiveReplies, type ReplyMarker } from './chatNavigation'
 
+/** Longest a Jump to latest's smooth scroll is given before scrolling counts as the reader's. */
+const JUMP_SETTLE_MS = 1000
+
 export function useChatFollow(
   scope: string,
   boundary: string,
@@ -21,6 +24,7 @@ export function useChatFollow(
   // True from a Jump to latest until the smooth scroll lands or the reader takes over, so the
   // scroll events on the way down don't count as the reader leaving the bottom.
   const jumping = useRef(false)
+  const jumpTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const update = (next: typeof state) => {
     current.current = next
     setState(next)
@@ -33,6 +37,12 @@ export function useChatFollow(
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     jumping.current = !reduced
     el.scrollTo({ top: el.scrollHeight, behavior: reduced ? 'auto' : 'smooth' })
+    // A cancelled or never-run smooth scroll must not leave the reader's scrolling ignored.
+    clearTimeout(jumpTimer.current)
+    if (!reduced)
+      jumpTimer.current = setTimeout(() => {
+        jumping.current = false
+      }, JUMP_SETTLE_MS)
   }
   useLayoutEffect(() => {
     const el = threadRef.current
@@ -43,10 +53,13 @@ export function useChatFollow(
     el.addEventListener('wheel', takeOver, { passive: true })
     el.addEventListener('pointerdown', takeOver)
     el.addEventListener('keydown', takeOver)
+    el.addEventListener('scrollend', takeOver)
     return () => {
       el.removeEventListener('wheel', takeOver)
       el.removeEventListener('pointerdown', takeOver)
       el.removeEventListener('keydown', takeOver)
+      el.removeEventListener('scrollend', takeOver)
+      clearTimeout(jumpTimer.current)
     }
   }, [])
   // Layout effects keep the bottom in place before the browser paints a new reply or scope.

@@ -117,21 +117,29 @@ export default function Popover({
       const el = list.current
       const popup = el?.getBoundingClientRect()
       if (anchor && el && popup) {
+        // Mid-entrance the popup is scaled about its transform origin, which shifts and shrinks its
+        // rect; undo that so placement uses its laid-out box and it doesn't slide as it grows.
+        const width = el.offsetWidth
+        const height = el.offsetHeight
+        const scale = width ? popup.width / width : 1
+        const [ox = 0, oy = 0] = getComputedStyle(el).transformOrigin.split(' ').map(parseFloat)
+        const boxLeft = popup.left - ox * (1 - scale)
+        const boxTop = popup.top - oy * (1 - scale)
         // A filtered or transformed ancestor (a dialog's overlay) offsets fixed positioning.
-        const originX = popup.left - (parseFloat(el.style.left) || 0)
-        const originY = popup.top - (parseFloat(el.style.top) || 0)
+        const originX = boxLeft - (parseFloat(el.style.left) || 0)
+        const originY = boxTop - (parseFloat(el.style.top) || 0)
         const viewLeft = Math.max(
           8,
           Math.min(
-            open.at ? open.at.x : align === 'right' ? anchor.right - popup.width : anchor.left,
-            window.innerWidth - popup.width - 8,
+            open.at ? open.at.x : align === 'right' ? anchor.right - width : anchor.left,
+            window.innerWidth - width - 8,
           ),
         )
         const viewTop = Math.max(
           8,
           Math.min(
-            open.at ? open.at.y : above ? anchor.top - popup.height - 4 : anchor.bottom + 4,
-            window.innerHeight - popup.height - 8,
+            open.at ? open.at.y : above ? anchor.top - height - 4 : anchor.bottom + 4,
+            window.innerHeight - height - 8,
           ),
         )
         const left = viewLeft - originX

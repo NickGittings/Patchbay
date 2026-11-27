@@ -40,10 +40,6 @@ export default function Dialog({
   const reducedMotion = useReducedMotion()
   const [leaving, setLeaving] = useState(false)
   const leaveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const latestOnClose = useRef(onClose)
-  useEffect(() => {
-    latestOnClose.current = onClose
-  })
   useEffect(() => () => clearTimeout(leaveTimer.current), [])
   // The scrim fades out instead of vanishing, so closing never jumps the window's brightness. A
   // parent that unmounts the dialog itself (after a save) still closes at once.
@@ -53,8 +49,15 @@ export default function Dialog({
       onClose()
       return
     }
+    // The close that was asked for, even if the dialog shows something else by the time it lands.
+    const dismissed = onClose
     setLeaving(true)
-    leaveTimer.current = setTimeout(() => latestOnClose.current(), LEAVE_MS)
+    leaveTimer.current = setTimeout(() => {
+      leaveTimer.current = undefined
+      // A parent that keeps the dialog mounted gets it back visible and closable.
+      setLeaving(false)
+      dismissed()
+    }, LEAVE_MS)
   }
   const latestClose = useRef(close)
   useEffect(() => {
@@ -85,6 +88,8 @@ export default function Dialog({
     <div
       className={`extension-overlay ${className}`}
       data-leaving={leaving || undefined}
+      // Leaving, the dialog takes no more input: Escape then Enter can't confirm what was dismissed.
+      inert={leaving}
       onClick={close}
     >
       <div
