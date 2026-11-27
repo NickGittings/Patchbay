@@ -441,7 +441,10 @@ export default function StoryBoard() {
                 {scope.unassigned && (
                   <li>
                     <span className="story-scope-token">
-                      <span className="story-scope-name">Unassigned stories</span>
+                      <span className="story-scope-name">
+                        <i className="story-dot story" />
+                        <span className="story-scope-title">Unassigned stories</span>
+                      </span>
                       <button
                         className="story-scope-remove"
                         aria-label="Remove unassigned stories filter"
