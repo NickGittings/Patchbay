@@ -1,5 +1,5 @@
 import RailIcon from './RailIcon'
-import RailTooltip from './RailTooltip'
+import RailTooltip, { focusQuietly } from './RailTooltip'
 import UsagePanel from './UsagePanel'
 import { useUsage, usageWarnings } from '../lib/usage'
 import { useClockTick } from '../lib/clock'
@@ -76,9 +76,10 @@ function focusPanelTrigger(panel: UtilityPanel, views: ViewContribution[] = []) 
       ? `${host} [aria-label="${panelLabel(panel, views)}"]`
       : `${host} [data-extension-panel="${CSS.escape(view)}"]`,
   )
-  if (trigger?.getClientRects().length) trigger.focus()
-  else
-    document.querySelector<HTMLButtonElement>('.workspace-context [aria-label="Worktree"]')?.focus()
+  const target = trigger?.getClientRects().length
+    ? trigger
+    : document.querySelector<HTMLButtonElement>('.workspace-context [aria-label="Worktree"]')
+  if (target) focusQuietly(target)
 }
 export default function WorkspaceRail() {
   useClockTick()
