@@ -9,6 +9,7 @@ import {
   sessionResume,
 } from './ipc'
 import { logSimple } from './simpleActions'
+import { warnAfterResume } from './reservedWorktree'
 import { leadNotes, settleLeadNotes } from './chatTeams'
 import { persistReplies } from './simpleReplies'
 import type { SimpleStage } from './simple'
@@ -410,7 +411,9 @@ export async function deliverPrompt(
 
 /** Resume must succeed before the composer claims the run or attempts message delivery. */
 export async function resumeRecipient(sid: string, requestId: string, claim: () => Promise<void>) {
-  await sessionResume(sid, requestId)
+  // The person's own message resumes it, like a manual launch.
+  await sessionResume(sid, requestId, true)
+  void warnAfterResume(sid)
   await claim()
 }
 

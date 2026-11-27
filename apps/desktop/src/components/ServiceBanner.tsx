@@ -8,8 +8,8 @@ export default function ServiceBanner() {
   if (!blocked) return null
   return (
     <div className="recovery-banner" role="alert">
-      {blocked === 'older' ? (
-        <OutdatedServiceNotice />
+      {blocked === 'older' || blocked === 'updated' ? (
+        <OutdatedServiceNotice updated={blocked === 'updated'} />
       ) : (
         <span>
           A newer Patchbay version is running the session service, so this version can't connect.

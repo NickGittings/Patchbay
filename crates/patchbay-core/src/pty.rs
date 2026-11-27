@@ -50,6 +50,10 @@ pub struct SessionSpec {
     /// Reserve this worktree against all other terminals while running.
     #[serde(default)]
     pub exclusive_cwd: bool,
+    /// Launched by the person from a view, never by Chat, Auto or another agent. A manual
+    /// launch is never refused because an exclusive session (a merge agent) holds its worktree.
+    #[serde(default)]
+    pub manual: bool,
     /// Merge provenance. Writable, and needed to resume, only when also listed in `dirs` because
     /// the user confirmed that the agent should commit source changes.
     #[serde(default)]
@@ -1654,6 +1658,7 @@ mod tests {
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 id: "notice".into(),
                 command: "printf process-output".into(),
@@ -1706,6 +1711,7 @@ mod tests {
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 id: "c/t".into(),
                 command: "echo $PB_TEST; exit 3".into(),
@@ -1762,6 +1768,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
+            manual: false,
             merge_source: None,
             cwd: std::env::temp_dir(),
             env: BTreeMap::new(),
@@ -1793,6 +1800,7 @@ mod tests {
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 id: "c/agent".into(),
                 command:
@@ -1851,6 +1859,7 @@ mod tests {
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 id: "c/agent".into(),
                 command: "printf 'review\\n' > \"$PATCHBAY_STATUS_FILE\"".into(),
@@ -1896,6 +1905,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
+            manual: false,
             merge_source: None,
             id: "root/shell".into(),
             command: command.into(),
@@ -1933,6 +1943,7 @@ mod tests {
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 id: "stubborn".into(),
                 command: "trap '' HUP; echo ready; sleep 30".into(),
@@ -1972,6 +1983,7 @@ mod tests {
                     rerun_on_resume: false,
                     owns_briefing: false,
                     exclusive_cwd: false,
+                    manual: false,
                     merge_source: None,
                     id: "restart".into(),
                     command: format!("echo {text}"),
@@ -2016,6 +2028,7 @@ mod tests {
                             rerun_on_resume: false,
                             owns_briefing: false,
                             exclusive_cwd: false,
+                            manual: false,
                             merge_source: None,
                             id: "concurrent".into(),
                             command: "read line".into(),
@@ -2145,6 +2158,7 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 notice: None,
                 dirs: Vec::new(),
@@ -2256,6 +2270,7 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 notice: None,
                 dirs: Vec::new(),

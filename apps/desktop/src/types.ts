@@ -133,6 +133,10 @@ export type AutoStage =
   'scan' | 'plan' | 'implement' | 'validate' | 'review' | 'fix' | 'mergeGate' | 'merge' | 'done'
 /** The service's refusal of a launch into a session slot whose terminal still runs (`session.rs`). */
 export const TERMINAL_RUNNING = 'Terminal is already running; reconnect instead'
+/** The start of the refusal of an automated launch into a merge agent's reserved worktree. */
+export const WORKTREE_BUSY = 'This worktree is reserved'
+/** The same refusal from a session service built before manual launches skipped it. */
+export const LEGACY_WORKTREE_BUSY = 'An exclusive session requires an unused worktree'
 /**
  * A session Auto tracks. Auto owns one it launched while its process generation is the one it
  * launched: its start time, else (when that couldn't be read) its launch request is still its
@@ -926,6 +930,10 @@ export interface SessionRecord {
     resume_command?: string | null
     dirs?: string[]
     merge_source?: string | null
+    /** A merge agent's reservation of its worktree against automated launches. */
+    exclusive_cwd?: boolean
+    /** Launched by the person, so never refused for another session's reservation. */
+    manual?: boolean
   }
 }
 export interface WorkspaceProject {

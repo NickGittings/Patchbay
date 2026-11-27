@@ -921,6 +921,7 @@ async fn plan_start(
     scan_round: Option<String>,
     plan_request: Option<String>,
     planning_scope: patchbay_core::planning::PlanningScope,
+    manual: Option<bool>,
 ) -> CmdResult<String> {
     let (story_root, scoped) = task_repo(&state, &project_id)?;
     let access = scoped.access.snapshot();
@@ -1038,6 +1039,7 @@ async fn plan_start(
             kickoff,
         )
         .map_err(err)?;
+        spec.manual = manual.unwrap_or(false);
         if let Some(round) = scan_round {
             spec.env.insert("PATCHBAY_SCAN_ROUND".into(), round);
             if let Some(brief) = auto {
@@ -1942,6 +1944,7 @@ async fn terminal_start(
     extra_context: Option<Vec<ContextSection>>,
     task: Option<String>,
     peers: Option<Vec<String>>,
+    manual: Option<bool>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -1994,6 +1997,7 @@ async fn terminal_start(
             &dirs,
         )
         .map_err(err)?;
+        spec.manual = manual.unwrap_or(false);
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
@@ -2026,6 +2030,7 @@ async fn task_root_start(
     kickoff: Option<context::Kickoff>,
     review_session: Option<String>,
     chat_team: Option<String>,
+    manual: Option<bool>,
 ) -> CmdResult<String> {
     let scoped = state.project(&project_id)?;
     let access = scoped.access.snapshot();
@@ -2129,6 +2134,7 @@ async fn task_root_start(
             )
         }
         .map_err(err)?;
+        spec.manual = manual.unwrap_or(false);
         if terminal.kind == model::TerminalKind::Agent {
             agent_commands::inject(agent_server, &project_id, task.as_deref(), &mut spec);
         }
@@ -2454,9 +2460,25 @@ async fn merge_cleanup(
             bridge.call(patchbay_core::session::Request::List)?;
         let removed = PathBuf::from(&preview.removed_worktree);
         let trees = git::worktrees(&root);
+        // A merge agent runs in the destination, which cleanup keeps, so match it by its source:
+        // left running it would reserve the destination against later work indefinitely.
+        let merge_agent = |r: &patchbay_core::session::Record| {
+            preview.owns_merge_agent(
+                &request,
+                &r.metadata.component_id,
+                r.spec.merge_source.as_deref(),
+            )
+        };
+        let merge_agents: std::collections::HashSet<String> = records
+            .iter()
+            .filter(|r| merge_agent(r))
+            .map(|r| r.id.clone())
+            .collect();
         let owned: Vec<_> = records
             .into_iter()
-            .filter(|r| preview.owns_session(&request, &trees, &r.spec.cwd))
+            .filter(|r| {
+                merge_agents.contains(&r.id) || preview.owns_session(&request, &trees, &r.spec.cwd)
+            })
             .collect();
         for record in &owned {
             bridge.call::<serde_json::Value>(patchbay_core::session::Request::Stop {
@@ -2477,6 +2499,7 @@ async fn merge_cleanup(
             .filter(|_| preview.restore && cleanup.is_ok());
         for record in owned.into_iter().filter(|r| {
             r.spec.cwd.starts_with(&removed)
+                || merge_agents.contains(&r.id)
                 || finished_chat.is_some_and(|chat| {
                     r.metadata.kind == patchbay_core::TerminalKind::Agent
                         && r.metadata.project_id == project_id
@@ -2903,7 +2926,9 @@ async fn session_resume(
     state: State<'_, AppState>,
     session_id: String,
     request_id: String,
+    manual: Option<bool>,
 ) -> CmdResult<String> {
+    let manual = manual.unwrap_or(false);
     let bridge = state.service.clone();
     let extensions = state.extensions.clone();
     let projects: HashMap<_, _> = state.projects.read().unwrap().clone();
@@ -2960,10 +2985,10 @@ async fn session_resume(
                 )
                 .map_err(err)?
         {
-            return attempt.launch(|| bridge.resume_reporting(session_id, request_id));
+            return attempt.launch(|| bridge.resume_reporting(session_id, request_id, manual));
         }
         bridge
-            .resume_reporting(session_id, request_id)
+            .resume_reporting(session_id, request_id, manual)
             .map_err(|(e, _)| e)
     })
     .await
@@ -3518,6 +3543,7 @@ pub fn run() {
                 quit_patchbay,
                 service_status,
                 service_retire,
+                worktree_reservations,
                 project_fingerprint,
                 project_close,
                 window_open,
@@ -4092,6 +4118,23 @@ async fn project_relink(
 #[tauri::command]
 fn service_status(state: State<AppState>) -> serde_json::Value {
     state.service.status()
+}
+/// Running merge agents that reserve `path`, by the service's own (canonical) rule, so a manual
+/// launch there can say what still runs beside it.
+#[tauri::command]
+async fn worktree_reservations(
+    state: State<'_, AppState>,
+    path: String,
+) -> CmdResult<Vec<serde_json::Value>> {
+    let bridge = state.service.clone();
+    blocking(move || {
+        let records = bridge.list()?;
+        Ok(session::reservations(&records, Path::new(&path))
+            .into_iter()
+            .map(|r| serde_json::json!({"id": r.id, "name": r.metadata.name}))
+            .collect())
+    })
+    .await
 }
 /// Stop a session service left running by another Patchbay version, ending its
 /// running work, so this build's service can start (the bridge reconnects).

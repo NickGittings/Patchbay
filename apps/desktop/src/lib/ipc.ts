@@ -291,6 +291,8 @@ export const planStart = async (
   task: string | null = null,
   freshConversation = false,
   planRequest?: string,
+  /** Launched by the person: never refused because a merge agent holds the worktree. */
+  manual = false,
 ) =>
   invoke<string>('plan_start', {
     project,
@@ -306,6 +308,7 @@ export const planStart = async (
     kickoff,
     resume,
     ...(freshConversation ? { freshConversation } : {}),
+    ...(manual ? { manual } : {}),
     extraContext: [
       ...(await extraContext(project, componentIds)),
       ...transferredPlanContext(project.projectId ?? '', task),
@@ -353,6 +356,8 @@ export const terminalStart = async (
   peers?: string[],
   resume = false,
   freshConversation = false,
+  /** Launched by the person: never refused because a merge agent holds the worktree. */
+  manual = false,
 ) => {
   const terminal = project.components
     .find((c) => c.id === componentId)
@@ -369,6 +374,7 @@ export const terminalStart = async (
       terminal?.kind === 'agent' ? await extraContext(project, [componentId], caller, task) : [],
     task,
     peers,
+    ...(manual ? { manual } : {}),
   })
 }
 export const terminalWrite = (sessionId: string, data: string) =>
@@ -385,6 +391,9 @@ export const terminalSeen = (sessionId: string) => invoke<void>('terminal_seen',
 export const terminalReset = () => invoke<number>('terminal_reset')
 /** Stop an older Patchbay version's session service, ending its running work. */
 export const serviceRetire = () => invoke<void>('service_retire')
+/** Running merge agents that reserve `path` (or a folder overlapping it), by the service's rule. */
+export const worktreeReservations = (path: string) =>
+  invoke<{ id: string; name: string }[]>('worktree_reservations', { path })
 
 /** The main window hears every session; a pop-out only its own component's (`Bridge::route`). */
 export function onTerminalEvent(handler: (e: TerminalEvent) => void): Promise<UnlistenFn> {
@@ -521,8 +530,12 @@ export const terminalAttach = (sessionId: string, claim = false) =>
   invoke<void>('terminal_attach', { sessionId, claim })
 export const terminalDetach = (sessionId: string) => invoke<void>('terminal_detach', { sessionId })
 export const sessionsList = () => invoke<SessionRecord[]>('sessions_list')
-export const sessionResume = (sessionId: string, requestId: string = crypto.randomUUID()) =>
-  invoke<string>('session_resume', { sessionId, requestId })
+/** `manual`: the person resumed it, so a merge agent's reservation of its worktree doesn't apply. */
+export const sessionResume = (
+  sessionId: string,
+  requestId: string = crypto.randomUUID(),
+  manual = false,
+) => invoke<string>('session_resume', { sessionId, requestId, ...(manual ? { manual } : {}) })
 export const sessionConversation = (sessionId: string, conversationId: string) =>
   invoke<void>('session_conversation', { sessionId, conversationId })
 export const sessionForget = (sessionId: string) => invoke<void>('session_forget', { sessionId })
@@ -643,6 +656,8 @@ export const taskRootStart = async (
   freshConversation = false,
   purpose?: 'ordinary' | 'chat',
   chatTeam?: string,
+  /** Launched by the person: never refused because a merge agent holds the worktree. */
+  manual = false,
 ) =>
   invoke<string>('task_root_start', {
     projectId: project.projectId,
@@ -656,6 +671,7 @@ export const taskRootStart = async (
     ...(purpose ? { purpose } : {}),
     ...(freshConversation ? { freshConversation } : {}),
     ...(chatTeam ? { chatTeam } : {}),
+    ...(manual ? { manual } : {}),
     kickoff: kickoff?.kind === 'fixFindings' ? { kind: kickoff.kind } : kickoff,
     reviewSession: kickoff?.kind === 'fixFindings' ? kickoff.reviewSession : undefined,
     extraContext:

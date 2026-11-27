@@ -123,6 +123,7 @@ export default function TerminalPane({
         autoStarts &&
         !useStore.getState().sessions[sid]
       )
+        // Only interactive shells start on showing their pane, which the person did: manual.
         void startTerminal(componentId, terminal.id, task)
     }
     const failed = (e: unknown) => {

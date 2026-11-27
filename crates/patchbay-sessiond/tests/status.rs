@@ -154,6 +154,7 @@ fn pty_journal_delivers_native_reports_and_rejects_spoofed_launch_transport() {
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 id: "origin-session".into(),
                 cwd: fixture.0.clone(),

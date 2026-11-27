@@ -23,6 +23,7 @@ import { autoBlocker } from './workBlocker'
 import {
   TASK_ROOT_SCOPE,
   TERMINAL_RUNNING,
+  WORKTREE_BUSY,
   type AutoRun,
   type SessionRecord,
   type ReviewFindings,
@@ -3625,6 +3626,11 @@ test('Resume waits for the session service and never forgets a known start time'
 test.each([
   ['the slot runs another terminal', `Codex: Error: ${TERMINAL_RUNNING}`, 'paused'],
   ['its conversation runs elsewhere', 'Codex: Conversation is already running', 'failed'],
+  [
+    'a merge agent holds the worktree',
+    `Codex: Error: ${WORKTREE_BUSY} by “Merge feature → main”; stop it there first`,
+    'paused',
+  ],
 ] as const)('a review launch refused because %s', async (_name, error, status) => {
   load()
   vi.mocked(jobs.startReviewAgents).mockRejectedValue(new Error(error))
@@ -3635,6 +3641,10 @@ test.each([
     expect(autoRun('p', 't')?.pauseKind).toBe(status === 'paused' ? 'needsUser' : undefined)
     if (error.includes(TERMINAL_RUNNING))
       expect(autoRun('p', 't')?.reason).toBe('Close the current agent in this slot, then Resume')
+    if (error.includes(WORKTREE_BUSY))
+      expect(autoRun('p', 't')?.reason).toBe(
+        `${WORKTREE_BUSY} by “Merge feature → main”; stop it there first, then Resume`,
+      )
   })
 })
 

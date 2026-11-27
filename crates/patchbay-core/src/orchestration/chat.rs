@@ -2985,9 +2985,11 @@ pub fn continue_lead(
             let sid = t.lead.session_id.clone();
             save(root, s)?;
             // A transport failure leaves the same request reserved for reconciliation/retry.
+            // The person's message asked for it, like a manual resume.
             match serde_json::from_value::<ChatResume>(call(Request::ChatResume {
                 id: sid,
                 request_id,
+                manual: true,
             })?)? {
                 ChatResume::Resumed => return Ok((ContinuationOutcome::Resumed, records)),
                 ChatResume::HistoryUnavailable { .. } => {}
@@ -3123,6 +3125,8 @@ pub fn replace_lead(
             for key in crate::agent_bridge::BRIDGE_ENV {
                 spec.env.remove(key);
             }
+            // A replacement lead is Chat's own launch, whoever started the one it replaces.
+            spec.manual = false;
             Request::NewConversation {
                 request_id: reset.id.clone(),
                 metadata: Box::new(launch.metadata.clone()),
@@ -3486,7 +3490,7 @@ mod tests {
         Record {
             id: sid.into(),
             metadata: serde_json::from_value(serde_json::json!({"projectId":"p", "projectName":"P", "projectRoot":root, "componentId":"@task", "terminalId":sid, "name":"Codex", "kind":"agent", "adapter":"codex"})).unwrap(),
-            spec: SessionSpec { purpose: crate::pty::LaunchPurpose::Ordinary, id: sid.into(), command: "codex".into(), resume_command: None, rerun_on_resume: false, owns_briefing: false, exclusive_cwd: false, merge_source: None, cwd: root.into(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: vec![] },
+            spec: SessionSpec { purpose: crate::pty::LaunchPurpose::Ordinary, id: sid.into(), command: "codex".into(), resume_command: None, rerun_on_resume: false, owns_briefing: false, exclusive_cwd: false, manual: false, merge_source: None, cwd: root.into(), env: BTreeMap::new(), ready_when: String::new(), service: false, notice: None, dirs: vec![] },
             snapshot: Some(Snapshot { chat_startup: None, launch_directory: None, truncated: false, data: vec![], end: 0, generation: 1, running: true, exit_code: None, started_ms: 1, exited_ms: None,
                 status: SessionStatus { agent: Some(AgentReport { state: AgentState::Idle, since_ms: 10, message: None, prompt: None, provider: Some(crate::adapters::Adapter::Codex), conversation_id: Some("c1".into()), turn_id: Some("turn1".into()), authoritative: true, approval_pending: false, questions: None, limit_stopped_ms: None }), ..Default::default() }, activity: vec![], replies: vec![], last_reply: None, notice: None }),
             history: vec![], launch_command: String::new(), restart_context: None, briefing_backup: None, interrupted: false, request_ids: vec!["lead-request".into()],
@@ -6601,7 +6605,7 @@ mod tests {
             "saved transcript",
             |request| match request {
                 Request::List => Ok(serde_json::to_value(vec![lead.clone()]).unwrap()),
-                Request::ChatResume { id, request_id } => {
+                Request::ChatResume { id, request_id, .. } => {
                     assert_eq!(id, f.lead.id);
                     assert_eq!(
                         lead.metadata.conversation_id.as_deref(),

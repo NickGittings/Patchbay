@@ -24,6 +24,23 @@ test('a service block follows the issue and survives a stop in progress', () => 
   ).toBeUndefined()
 })
 
+test('a previous build left running by an update is named while connected and while it stops', () => {
+  const service = {
+    serviceConnected: true,
+    serviceRetirement: 'idle' as const,
+    serviceOutdated: true,
+  }
+  expect(serviceBlock(service)).toBe('updated')
+  expect(serviceBlock({ ...service, serviceOutdated: false })).toBeUndefined()
+  expect(
+    serviceBlock({ ...service, serviceConnected: false, serviceRetirement: 'reconnecting' }),
+  ).toBe('updated')
+  // An older protocol refusing to stop is the blocking case, whatever was connected before.
+  expect(
+    serviceBlock({ ...service, serviceConnected: false, serviceIssue: 'olderServiceBusy' }),
+  ).toBe('older')
+})
+
 const NOW = 1_000_000
 const status = (patch: Partial<SessionStatus> = {}): SessionStatus => ({
   lastOutputMs: null,

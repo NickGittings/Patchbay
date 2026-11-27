@@ -1117,6 +1117,7 @@ mod tests {
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 id: "s".into(),
                 command: String::new(),

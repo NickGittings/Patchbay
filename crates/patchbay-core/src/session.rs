@@ -55,6 +55,11 @@ const CAPTURE_TAIL: usize = 4096;
 /// The refusal of a launch into a session slot whose terminal still runs. Clients
 /// recognise it by this exact text (mirrored as `TERMINAL_RUNNING` in `types.ts`).
 pub const TERMINAL_RUNNING: &str = "Terminal is already running; reconnect instead";
+/// The start of the refusal of an automated launch into a worktree an exclusive session (a merge
+/// agent) holds. Mirrored as `WORKTREE_BUSY` in `types.ts`; the merge agent's name follows.
+/// Services before it refused with "An exclusive session requires an unused worktree…"
+/// (`LEGACY_WORKTREE_BUSY` in `types.ts`), and ignore `SessionSpec::manual`.
+pub const WORKTREE_BUSY: &str = "This worktree is reserved";
 /// Reply timeout for quick requests; slow ones (spawning, stopping, resuming) get `SLOW_TIMEOUT`.
 const TIMEOUT: Duration = Duration::from_secs(10);
 const SLOW_TIMEOUT: Duration = Duration::from_secs(90);
@@ -228,6 +233,73 @@ pub struct Endpoint {
     pub port: u16,
     pub token: String,
     pub instance: String,
+    /// When the service's binary was built (its modification time, in ms since the epoch); 0
+    /// from services older than this field. An app update replaces the binary, so a service
+    /// built before the app's helper runs the previous version's code.
+    #[serde(default)]
+    pub built_ms: u64,
+    /// The service's binary; empty from services older than this field. Only a binary rebuilt
+    /// in place is an update: another install or a development build keeps its own service.
+    #[serde(default)]
+    pub binary: PathBuf,
+}
+/// Whether either folder contains the other, comparing canonical spellings where they exist.
+fn folders_overlap(a: &Path, b: &Path) -> bool {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let (a, b) = (canonical(a), canonical(b));
+    a.starts_with(&b) || b.starts_with(&a)
+}
+/// The running exclusive sessions (merge agents) among `records` that reserve a folder
+/// overlapping `cwd`, by the same rule that refuses automated launches there.
+#[must_use]
+pub fn reservations<'a>(records: &'a [Record], cwd: &Path) -> Vec<&'a Record> {
+    records
+        .iter()
+        .filter(|r| {
+            r.spec.exclusive_cwd
+                && r.snapshot.as_ref().is_some_and(|s| s.running)
+                && folders_overlap(cwd, &r.spec.cwd)
+        })
+        .collect()
+}
+/// When the binary at `path` was last written, in ms since the epoch; 0 when unknown.
+#[must_use]
+pub fn built_ms(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|d| u64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
+}
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BuildAge {
+    Current,
+    /// `helper` replaced the service's own binary since it started: an in-place update.
+    Updated,
+    /// A service from before endpoints named their binary, so whether it is this install is
+    /// unknown. It is replaced only when idle, and never offered for a restart.
+    Legacy,
+}
+/// How the service of `endpoint` relates to `helper`. Only an older build of the same binary
+/// is an update, so two installs (or a development build) never retire each other's service.
+fn build_age(endpoint: &Endpoint, helper: &Path) -> BuildAge {
+    let helper_ms = built_ms(helper);
+    if endpoint.protocol != PROTOCOL || helper_ms == 0 || endpoint.built_ms >= helper_ms {
+        return BuildAge::Current;
+    }
+    if endpoint.binary.as_os_str().is_empty() {
+        return BuildAge::Legacy;
+    }
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    if canonical(&endpoint.binary) == canonical(helper) {
+        BuildAge::Updated
+    } else {
+        BuildAge::Current
+    }
+}
+fn read_endpoint(dir: &Path) -> Option<Endpoint> {
+    serde_json::from_slice(&std::fs::read(dir.join("endpoint.json")).ok()?).ok()
 }
 /// Where the session service keeps its endpoint, locks and records.
 ///
@@ -516,10 +588,18 @@ pub enum Request {
     Resume {
         id: String,
         request_id: String,
+        /// The person resumed it from a view; see `SessionSpec::manual`. Decided per resume,
+        /// never taken from the record, so an agent's resume of a session first started by
+        /// hand still waits for a merge agent.
+        #[serde(default)]
+        manual: bool,
     },
     ChatResume {
         id: String,
         request_id: String,
+        /// The person's message resumes it; see `Resume::manual`.
+        #[serde(default)]
+        manual: bool,
     },
     /// Bounded original briefing for durable lead recovery, without private launch settings.
     ChatBriefing {
@@ -608,6 +688,9 @@ impl Response {
 pub struct Client {
     stream: TcpStream,
     pub instance: String,
+    /// The service runs an older build of this protocol and refused to stop for running work;
+    /// it still serves this client, but `retire_outdated_build` should finish the update.
+    pub outdated: bool,
     /// Set after a transport error or timeout: the stream may still hold the
     /// reply to an abandoned request, so it must never be read again.
     broken: bool,
@@ -641,6 +724,7 @@ impl Client {
         Ok(Self {
             stream,
             instance: endpoint.instance,
+            outdated: false,
             broken: false,
         })
     }
@@ -666,8 +750,18 @@ impl Client {
         client: Option<&str>,
         until: Instant,
     ) -> Result<Self> {
-        if let Ok(client) = Self::connect_until(dir, client, until) {
-            return Ok(client);
+        if let Ok(mut connected) = Self::connect_until(dir, client, until) {
+            // After an update, an idle service of the previous build is replaced by this one's
+            // helper; one with running work keeps serving until the person restarts it.
+            match retire_build_until(dir, helper, false, until) {
+                Ok(true) => {}
+                Err(e) if e.is::<RetirementRefused>() => {
+                    connected.outdated = read_endpoint(dir)
+                        .is_some_and(|e| build_age(&e, helper) == BuildAge::Updated);
+                    return Ok(connected);
+                }
+                Ok(false) | Err(_) => return Ok(connected),
+            }
         }
         private_dir(dir)?;
         // Waiting for other launchers also consumes the startup budget.
@@ -812,6 +906,42 @@ fn retire_outdated_until(dir: &Path, stop_running: bool, until: Instant) -> Resu
             Err(e)
         }
     }
+}
+
+/// Shut down a service of this protocol whose binary predates `helper`, as an app update leaves
+/// behind, and wait for it to exit so the next connection starts `helper`. Returns whether one
+/// was retired. With `stop_running`, its running work ends; its records persist for resuming.
+///
+/// # Errors
+/// Fails on a running-work refusal ([`RetirementRefused`]), another service error, or a
+/// transport failure or timeout.
+pub fn retire_outdated_build(dir: &Path, helper: &Path, stop_running: bool) -> Result<bool> {
+    let timeout = if stop_running { SLOW_TIMEOUT } else { TIMEOUT };
+    retire_build_until(dir, helper, stop_running, Instant::now() + timeout)
+}
+fn retire_build_until(
+    dir: &Path,
+    helper: &Path,
+    stop_running: bool,
+    until: Instant,
+) -> Result<bool> {
+    let Some(endpoint) = read_endpoint(dir) else {
+        return Ok(false);
+    };
+    let age = build_age(&endpoint, helper);
+    // Running work of a service that may belong to another install is never stopped from here.
+    if age == BuildAge::Current
+        || (age == BuildAge::Legacy && stop_running)
+        || service_stopped(dir)?
+    {
+        return Ok(false);
+    }
+    retire(&endpoint, stop_running, until)?;
+    while !service_stopped(dir)? {
+        remaining(until).context("The previous session service is still stopping")?;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(true)
 }
 
 /// Authenticate using the endpoint's protocol. Normal clients first require a
@@ -1511,24 +1641,37 @@ impl Service {
             TERMINAL_RUNNING
         );
         let cwd = spec.cwd.canonicalize()?;
-        let busy = self.records.lock().unwrap().values().any(|r| {
-            if (mode.new_conversation() && r.id == id)
-                || !(spec.exclusive_cwd || r.spec.exclusive_cwd)
-                || !self.pty.is_running(&r.id)
-            {
-                return false;
+        // A person's own launch is never refused for a merge agent holding the worktree; only
+        // automated work (and a merge agent itself) must wait for it.
+        let blocker = if spec.manual && !spec.exclusive_cwd {
+            None
+        } else {
+            self.records
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|r| {
+                    if (mode.new_conversation() && r.id == id)
+                        || !(spec.exclusive_cwd || r.spec.exclusive_cwd)
+                        || !self.pty.is_running(&r.id)
+                    {
+                        return false;
+                    }
+                    folders_overlap(&cwd, &r.spec.cwd)
+                })
+                // A merge agent's reservation is named first: it is what the refusal is about.
+                .max_by_key(|r| r.spec.exclusive_cwd)
+                .map(|r| (r.metadata.name.clone(), r.spec.exclusive_cwd))
+        };
+        if let Some((name, exclusive)) = blocker {
+            if exclusive {
+                bail!("{WORKTREE_BUSY} by “{name}”; stop it there first");
             }
-            let other = r
-                .spec
-                .cwd
-                .canonicalize()
-                .unwrap_or_else(|_| r.spec.cwd.clone());
-            cwd.starts_with(&other) || other.starts_with(&cwd)
-        });
-        anyhow::ensure!(
-            !busy,
-            "An exclusive session requires an unused worktree; stop other terminals there first"
-        );
+            // Only a merge agent's own launch gets here; `WORKTREE_BUSY` stays its reservation's.
+            bail!(
+                "A merge needs its destination to itself, but “{name}” is running there; stop it first"
+            );
+        }
         if let (Some(adapter), Some(conversation)) = (metadata.adapter, &metadata.conversation_id) {
             let running = self.records.lock().unwrap().values().any(|r| {
                 r.metadata.adapter == Some(adapter)
@@ -1663,6 +1806,8 @@ impl Service {
             if let Some(purpose) = purpose {
                 spec.purpose = purpose;
             }
+            // Chat resets a lead on its own, so a stored manual launch never carries over.
+            spec.manual = false;
             // A resumed process's command includes its conversation ID. Restore the
             // original launch before choosing its fresh, non-kickoff resume template.
             if !r.launch_command.is_empty() {
@@ -1832,14 +1977,16 @@ impl Service {
             self.dirty.store(true, Ordering::Release);
         }
     }
+    #[cfg(test)]
     fn resume(self: &Arc<Self>, id: &str, request_id: String) -> Result<String> {
-        self.resume_with_purpose(id, request_id, None)
+        self.resume_with_purpose(id, request_id, None, false)
     }
     fn resume_with_purpose(
         self: &Arc<Self>,
         id: &str,
         request_id: String,
         purpose: Option<crate::pty::LaunchPurpose>,
+        manual: bool,
     ) -> Result<String> {
         let (metadata, mut spec, launch_command, restart_context, briefing_backup) = {
             let records = self.records.lock().unwrap();
@@ -1858,6 +2005,7 @@ impl Service {
         if let Some(purpose) = purpose {
             spec.purpose = purpose;
         }
+        spec.manual = manual;
         crate::context::restore_briefing(&spec, briefing_backup.as_deref())?;
         let original = prepare_resume(&metadata, &mut spec, &launch_command)?;
         // Keep the original launch command for later resumes; context environment persists.
@@ -2249,11 +2397,16 @@ impl Service {
                 };
                 serde_json::to_value(text)?
             }
-            Request::ChatResume { id, request_id } => {
+            Request::ChatResume {
+                id,
+                request_id,
+                manual,
+            } => {
                 let outcome = match self.resume_with_purpose(
                     &id,
                     request_id,
                     Some(crate::pty::LaunchPurpose::Chat),
+                    manual,
                 ) {
                     Ok(_) => ChatResume::Resumed,
                     Err(e) if e.is::<crate::adapters::HistoryUnavailable>() => {
@@ -2281,9 +2434,11 @@ impl Service {
                 };
                 serde_json::to_value(outcome)?
             }
-            Request::Resume { id, request_id } => {
-                serde_json::to_value(self.resume(&id, request_id)?)?
-            }
+            Request::Resume {
+                id,
+                request_id,
+                manual,
+            } => serde_json::to_value(self.resume_with_purpose(&id, request_id, None, manual)?)?,
             Request::Forget { id } => {
                 let _operation = self.operation.lock().unwrap();
                 anyhow::ensure!(
@@ -2809,11 +2964,15 @@ pub fn serve(dir: &Path) -> Result<()> {
     let service = Service::load(dir)?;
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     listener.set_nonblocking(true)?;
+    let binary = std::env::current_exe().unwrap_or_default();
+    let built = built_ms(&binary);
     let endpoint = Endpoint {
         protocol: PROTOCOL,
         port: listener.local_addr()?.port(),
         token: uuid::Uuid::new_v4().to_string(),
         instance: service.instance.clone(),
+        built_ms: built,
+        binary: binary.clone(),
     };
     atomic_write(&dir.join("endpoint.json"), &serde_json::to_vec(&endpoint)?)?;
     let token = Arc::new(endpoint.token);
@@ -2877,6 +3036,8 @@ pub fn serve(dir: &Path) -> Result<()> {
                     port: endpoint.port,
                     token: token.to_string(),
                     instance: service.instance.clone(),
+                    built_ms: built,
+                    binary: binary.clone(),
                 })?,
             )?;
             idle = Instant::now();
@@ -3193,6 +3354,8 @@ mod tests {
             port: listener.local_addr().unwrap().port(),
             token: "secret".into(),
             instance: "old".into(),
+            built_ms: 0,
+            binary: PathBuf::new(),
         };
         atomic_write(
             &dir.join("endpoint.json"),
@@ -3250,6 +3413,79 @@ mod tests {
         drop(lifetime);
         let _ = std::fs::remove_dir_all(dir);
     }
+    #[test]
+    fn retires_a_previous_build_of_this_protocol_only_after_an_update() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        private_dir(&dir).unwrap();
+        let helper = dir.join("helper");
+        std::fs::write(&helper, "").unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let save = |built_ms, binary: &Path| {
+            let endpoint = Endpoint {
+                protocol: PROTOCOL,
+                port: listener.local_addr().unwrap().port(),
+                token: "secret".into(),
+                instance: "previous".into(),
+                built_ms,
+                binary: binary.to_path_buf(),
+            };
+            atomic_write(
+                &dir.join("endpoint.json"),
+                &serde_json::to_vec(&endpoint).unwrap(),
+            )
+            .unwrap();
+        };
+        let lifetime = lock(&dir.join("service.lock")).unwrap();
+        lifetime.try_lock().unwrap();
+        // A service built with or after the helper is current: nothing is asked of it.
+        save(u64::MAX, &helper);
+        assert!(!retire_outdated_build(&dir, &helper, false).unwrap());
+        // Nor is a previous build when this app has no helper binary to replace it with.
+        save(0, &helper);
+        assert!(!retire_outdated_build(&dir, &dir.join("missing"), false).unwrap());
+        // Another install's (or a development build's) older service is left alone.
+        let other = dir.join("other-install");
+        std::fs::write(&other, "").unwrap();
+        save(0, &other);
+        assert!(!retire_outdated_build(&dir, &helper, true).unwrap());
+        // A service that predates named binaries is never stopped with its running work.
+        save(0, Path::new(""));
+        assert!(!retire_outdated_build(&dir, &helper, true).unwrap());
+        save(0, &helper);
+        // A previous build refuses while work runs, then stops for `stop_running`.
+        let server = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let hello: Hello = read_frame(&mut stream).unwrap();
+                assert_eq!(hello.protocol, PROTOCOL);
+                write_frame(&mut stream, &Response::result(Ok(serde_json::Value::Null))).unwrap();
+                let Request::Shutdown { stop_running } = read_frame(&mut stream).unwrap() else {
+                    panic!("expected a shutdown");
+                };
+                asked.push(stop_running);
+                let reply = if stop_running {
+                    Ok(serde_json::Value::Null)
+                } else {
+                    Err(anyhow::anyhow!(SHUTDOWN_REFUSED))
+                };
+                write_frame(&mut stream, &Response::result(reply)).unwrap();
+                if stop_running {
+                    drop(lifetime);
+                    return asked;
+                }
+            }
+            asked
+        });
+        assert!(
+            retire_outdated_build(&dir, &helper, false)
+                .unwrap_err()
+                .is::<RetirementRefused>()
+        );
+        assert!(retire_outdated_build(&dir, &helper, true).unwrap());
+        assert_eq!(server.join().unwrap(), [false, true]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
     struct RetirementFixture {
         dir: PathBuf,
         endpoint: Endpoint,
@@ -3266,6 +3502,8 @@ mod tests {
                 port: listener.local_addr().unwrap().port(),
                 token: "secret".into(),
                 instance: "older".into(),
+                built_ms: 0,
+                binary: PathBuf::new(),
             };
             let lifetime = lock(&dir.join("service.lock")).unwrap();
             lifetime.try_lock().unwrap();
@@ -3416,6 +3654,8 @@ mod tests {
                     port: listener.local_addr().unwrap().port(),
                     token: "secret".into(),
                     instance: "replacement".into(),
+                    built_ms: 0,
+                    binary: PathBuf::new(),
                 })
                 .unwrap(),
             )
@@ -3498,6 +3738,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
+            manual: false,
             merge_source: None,
             id: String::new(),
             command: "cat".into(),
@@ -3593,6 +3834,7 @@ mod tests {
                         rerun_on_resume: false,
                         owns_briefing: false,
                         exclusive_cwd: false,
+                        manual: false,
                         merge_source: None,
                         id: String::new(),
                         command: "cat".into(),
@@ -3729,6 +3971,7 @@ mod tests {
                             rerun_on_resume: false,
                             owns_briefing: false,
                             exclusive_cwd: false,
+                            manual: false,
                             merge_source: None,
                             id: String::new(),
                             command: command.into(),
@@ -3899,6 +4142,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
+            manual: false,
             merge_source: None,
             id: String::new(),
             command: "echo retained; sleep 30".into(),
@@ -3996,6 +4240,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
+            manual: false,
             merge_source: None,
             id: "ignored".into(),
             command: "printf done".into(),
@@ -4064,6 +4309,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
+            manual: false,
             merge_source: None,
             id: String::new(),
             command: "cat".into(),
@@ -4256,6 +4502,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
+            manual: false,
             merge_source: None,
             id: "ignored".into(),
             command: "read line".into(),
@@ -4528,6 +4775,7 @@ mod tests {
             let mut client = Client {
                 stream,
                 instance: "test".into(),
+                outdated: false,
                 broken: false,
             };
             assert!(
@@ -4607,6 +4855,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: true,
+            manual: false,
             merge_source: None,
             id: "ignored".into(),
             command: "sleep 30".into(),
@@ -4634,7 +4883,7 @@ mod tests {
                 .start("competing".into(), second.clone(), spec.clone())
                 .unwrap_err()
                 .to_string()
-                .contains("exclusive session requires an unused worktree")
+                .contains(&format!("{WORKTREE_BUSY} by “Exclusive”"))
         );
         // Regular task agents and development terminals cannot enter any part of the reserved
         // worktree, including a component folder or a symlink spelling of that folder.
@@ -4655,7 +4904,45 @@ mod tests {
                 );
             }
         }
+        // The desktop asks by the same canonical rule which merge agent holds a folder.
+        let records = service.list();
+        for cwd in [&worktree, &nested, &alias] {
+            let holders: Vec<_> = reservations(&records, cwd)
+                .iter()
+                .map(|r| r.id.clone())
+                .collect();
+            assert_eq!(holders, std::slice::from_ref(&id));
+        }
+        assert!(reservations(&records, &other).is_empty());
         std::fs::remove_file(alias).unwrap();
+        // A terminal the person launches themselves is never refused for the reservation.
+        let mut manual = spec.clone();
+        manual.exclusive_cwd = false;
+        manual.manual = true;
+        second.kind = TerminalKind::Shell;
+        second.terminal_id = "manual".into();
+        let manual_id = service
+            .start("manual".into(), second.clone(), manual.clone())
+            .unwrap();
+        // Its own reservation still applies to another merge agent, and names the blocker.
+        let mut merge = second.clone();
+        merge.terminal_id = "second-merge".into();
+        let mut exclusive_manual = manual;
+        exclusive_manual.exclusive_cwd = true;
+        assert!(
+            service
+                .start("second-merge".into(), merge, exclusive_manual)
+                .unwrap_err()
+                .to_string()
+                .starts_with(WORKTREE_BUSY)
+        );
+        service.pty.stop(&manual_id);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while service.pty.is_running(&manual_id) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        second.terminal_id = "another-agent".into();
         let mut other_spec = spec.clone();
         other_spec.cwd = other;
         let other_id = service
@@ -4674,12 +4961,16 @@ mod tests {
         let replacement = service
             .start("after-stop".into(), second, ordinary)
             .unwrap();
-        // An idle-but-running task agent also prevents an exclusive launch.
+        // An idle-but-running task agent also prevents an exclusive launch, and is named.
+        let refused = service
+            .start("blocked-by-task".into(), metadata, spec)
+            .unwrap_err()
+            .to_string();
         assert!(
-            service
-                .start("blocked-by-task".into(), metadata, spec)
-                .is_err()
+            refused.starts_with("A merge needs its destination to itself"),
+            "{refused}"
         );
+        assert!(!refused.contains(WORKTREE_BUSY), "{refused}");
         service.pty.stop(&replacement);
         service.pty.stop(&other_id);
         std::fs::remove_dir_all(dir).unwrap();
@@ -4856,6 +5147,7 @@ mod tests {
                     rerun_on_resume: false,
                     owns_briefing: false,
                     exclusive_cwd: false,
+                    manual: false,
                     merge_source: None,
                     id: "ignored".into(),
                     command: command.into(),
@@ -4945,6 +5237,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
+            manual: false,
             merge_source: None,
             id: "ignored".into(),
             command: "i=0; while :; do printf 'number:%s\\n' \"$i\"; i=$((i+1)); sleep 0.05; done"
@@ -5114,6 +5407,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
+            manual: false,
             merge_source: None,
             id: "ignored".into(),
             command: "exec cat".into(),
@@ -5206,6 +5500,7 @@ mod tests {
             rerun_on_resume: false,
             owns_briefing: false,
             exclusive_cwd: false,
+            manual: false,
             merge_source: None,
             cwd: dir.clone(),
             env: BTreeMap::from([(
@@ -5753,6 +6048,8 @@ mod tests {
             TERMINAL_RUNNING,
             "Terminal is already running; reconnect instead"
         );
+        // Pinned beside `WORKTREE_BUSY` in `types.ts`.
+        assert_eq!(WORKTREE_BUSY, "This worktree is reserved");
         service.pty.reset();
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -6738,6 +7035,7 @@ for line in sys.stdin:
                 Request::ChatResume {
                     id: id.clone(),
                     request_id: "legacy-chat-resume".into(),
+                    manual: false,
                 },
             )
             .unwrap();
@@ -6907,6 +7205,7 @@ for line in sys.stdin:
                 rerun_on_resume: false,
                 owns_briefing: false,
                 exclusive_cwd: false,
+                manual: false,
                 merge_source: None,
                 id: "s".into(),
                 command: String::new(),
@@ -6967,6 +7266,7 @@ for line in sys.stdin:
                 Request::ChatResume {
                     id: "lead".into(),
                     request_id: "resume1".into(),
+                    manual: false,
                 },
             )
             .unwrap();
@@ -6985,6 +7285,7 @@ for line in sys.stdin:
                 Request::ChatResume {
                     id: "lead".into(),
                     request_id: "resume2".into(),
+                    manual: false,
                 },
             )
             .unwrap();
