@@ -40,6 +40,8 @@ export function transitionPanels(update: () => void, rootClass = PANELS_TRANSITI
       })
     }
   })
+  // A skipped transition (a hidden document, say) also rejects `ready`, which nothing awaits.
+  transition.ready.catch(() => {})
   void transition.finished
     .finally(() => {
       const left = (running.get(rootClass) ?? 1) - 1

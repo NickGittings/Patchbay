@@ -3416,6 +3416,11 @@ pub fn run() {
             let _main = main.build()?;
             #[cfg(debug_assertions)]
             smoke::conceal(&_main);
+            // A window built hidden (as smoke runs build it) ignores the config's `maximized`
+            // and stays at its saved size once shown; a visible build is maximized already.
+            if config.maximized && !_main.is_maximized().unwrap_or(true) {
+                _main.maximize()?;
+            }
             #[cfg(target_os = "windows")]
             window_controls::verify(&_main)?;
             #[cfg(target_os = "macos")]

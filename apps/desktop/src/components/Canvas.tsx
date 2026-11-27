@@ -15,7 +15,7 @@ import {
   type Connection,
   type Edge,
 } from '@xyflow/react'
-import { useCallback, useEffect, useEffectEvent, useMemo, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { onArranged } from '../lib/arrange'
 import type { Position } from '../lib/layout'
@@ -139,6 +139,36 @@ function useArranging(projectId: string | undefined) {
   return { tween, interrupt }
 }
 
+type Viewport = { x: number; y: number; zoom: number }
+
+/**
+ * Keeps the map's viewport in the store. With pan-on-scroll on, React Flow reports a move's end
+ * 150 ms late, so a view switch inside that window would lose it: the last move it hasn't reported
+ * yet is saved on unmount instead, unless another project became active meanwhile.
+ */
+function useSavedViewport(projectId: string | undefined) {
+  const pending = useRef<{ projectId: string | undefined; viewport: Viewport } | null>(null)
+  useEffect(
+    () => () => {
+      const last = pending.current
+      pending.current = null
+      const store = useStore.getState()
+      if (last && (store.activeProjectId ?? undefined) === last.projectId)
+        store.setViewport(last.viewport)
+    },
+    [],
+  )
+  return {
+    onMove: (_: unknown, viewport: Viewport) => {
+      pending.current = { projectId, viewport }
+    },
+    onMoveEnd: (_: unknown, viewport: Viewport) => {
+      pending.current = null
+      useStore.getState().setViewport(viewport)
+    },
+  }
+}
+
 /** Centers the component `focusComponent` asked for, on mount (after a view switch) or later. */
 function useFocusRequests() {
   const reduced = useReducedMotion()
@@ -232,6 +262,7 @@ export default function Canvas({ covered = false }: { covered?: boolean }) {
   )
   const inspectorShown = useStore(showsInspector)
   const { tween, interrupt } = useArranging(project?.id)
+  const savedViewport = useSavedViewport(project?.id)
   useFocusRequests()
   const rescan = useRescanProject()
   const addRepo = useAddFolder()
@@ -316,7 +347,7 @@ export default function Canvas({ covered = false }: { covered?: boolean }) {
         colorMode="dark"
         defaultViewport={useStore.getState().viewport}
         {...CANVAS_GESTURES}
-        onMoveEnd={(_, viewport) => useStore.getState().setViewport(viewport)}
+        {...savedViewport}
         fitView={!useStore.getState().viewport}
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
         nodesConnectable={!planning}
