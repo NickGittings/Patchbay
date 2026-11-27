@@ -1,10 +1,13 @@
 import { useReducedMotion } from '../lib/useReducedMotion'
+import { CANVAS_GESTURES } from '../lib/canvasGestures'
 import { planningHighlights, togglePlanningHighlight, usePlanningTask } from '../lib/planningScope'
 import { StoryViewTabs } from './stories/StoryBoard'
 import {
   Background,
   BackgroundVariant,
   Controls,
+  getNodesBounds,
+  getViewportForBounds,
   Panel,
   ReactFlow,
   useReactFlow,
@@ -30,6 +33,7 @@ import { FOCUS_COMPONENT_EVENT, takeFocusRequest } from '../lib/navigation'
 const nodeTypes = { component: ComponentNode }
 
 const ARRANGE_MS = 400
+const ARRANGE_FIT = { padding: 0.25, maxZoom: 1 }
 
 const ease = (t: number) => 1 - (1 - t) ** 3
 
@@ -39,12 +43,32 @@ const ease = (t: number) => 1 - (1 - t) ** 3
  */
 function useArranging(projectId: string | undefined) {
   const reduced = useReducedMotion()
-  const { fitView, getNode } = useReactFlow()
+  const { fitView, getNode, setViewport } = useReactFlow()
+  const flow = useStoreApi()
   const [tween, setTween] = useState<{
     from: Record<string, Position>
     t: number
-    fit: boolean
   } | null>(null)
+  // The camera glides to frame the destination alongside the nodes rather than after them. React
+  // Flow still draws the starting positions, so the frame comes from the store's end state.
+  const fitDestination = useEffectEvent(() => {
+    const destination = useStore.getState().nodes.map((n) => ({
+      ...n,
+      measured: getNode(n.id)?.measured ?? n.measured,
+    }))
+    if (!destination.length) return
+    const { width, height, minZoom } = flow.getState()
+    if (!width || !height) return
+    const viewport = getViewportForBounds(
+      getNodesBounds(destination),
+      width,
+      height,
+      minZoom,
+      ARRANGE_FIT.maxZoom,
+      ARRANGE_FIT.padding,
+    )
+    void setViewport(viewport, { duration: ARRANGE_MS })
+  })
   const previousPositions = useEffectEvent(() => tween?.from)
   useEffect(() => {
     let frame = 0
@@ -54,7 +78,7 @@ function useArranging(projectId: string | undefined) {
       if (reduced) {
         setTween(null)
         frame = requestAnimationFrame(() => {
-          void fitView({ padding: 0.25, maxZoom: 1, duration: 0 })
+          void fitView({ ...ARRANGE_FIT, duration: 0 })
         })
         return
       }
@@ -69,7 +93,8 @@ function useArranging(projectId: string | undefined) {
         setTween((current) => (current ? { ...current, t: ease(t) } : null))
         if (t < 1) frame = requestAnimationFrame(step)
       }
-      setTween({ from, t: 0, fit: true })
+      setTween({ from, t: 0 })
+      fitDestination()
       frame = requestAnimationFrame(step)
     })
     return () => {
@@ -84,30 +109,21 @@ function useArranging(projectId: string | undefined) {
   }, [reduced])
   useEffect(() => {
     if (!tween || tween.t !== 1) return
-    // Let React Flow receive the final positions before it queues a fit. Both this render and
-    // the next show the destination, so fitting cannot frame the tween's starting positions.
-    const frame = requestAnimationFrame(() => {
-      if (tween.fit) void fitView({ padding: 0.25, maxZoom: 1, duration: ARRANGE_MS })
-      setTween(null)
-    })
+    const frame = requestAnimationFrame(() => setTween(null))
     return () => cancelAnimationFrame(frame)
-  }, [fitView, tween])
+  }, [tween])
   const interrupt = useCallback((ids: string[]) => {
     if (!ids.length) return
     setTween((current) => {
       if (!current) return null
       const from = { ...current.from }
       for (const id of ids) delete from[id]
-      // A user taking control of the map also cancels the automatic viewport move.
-      return { ...current, from, fit: false }
+      return { ...current, from }
     })
   }, [])
-  /** A pan or zoom by the user cancels the automatic viewport move too. */
-  const keepViewport = useCallback(
-    () => setTween((current) => (current?.fit ? { ...current, fit: false } : current)),
-    [],
-  )
-  return { tween, interrupt, keepViewport }
+  // A pan or zoom by the user interrupts the camera glide by itself: d3 drops a running transition
+  // when a gesture starts.
+  return { tween, interrupt }
 }
 
 /** Centers the component `focusComponent` asked for, on mount (after a view switch) or later. */
@@ -202,7 +218,7 @@ export default function Canvas({ covered = false }: { covered?: boolean }) {
     })),
   )
   const inspectorShown = useStore(showsInspector)
-  const { tween, interrupt, keepViewport } = useArranging(project?.id)
+  const { tween, interrupt } = useArranging(project?.id)
   useFocusRequests()
   const rescan = useRescanProject()
   const addRepo = useAddFolder()
@@ -286,10 +302,7 @@ export default function Canvas({ covered = false }: { covered?: boolean }) {
         }}
         colorMode="dark"
         defaultViewport={useStore.getState().viewport}
-        onMoveStart={(event) => {
-          // Programmatic moves, such as the fit itself, come without an event.
-          if (event) keepViewport()
-        }}
+        {...CANVAS_GESTURES}
         onMoveEnd={(_, viewport) => useStore.getState().setViewport(viewport)}
         fitView={!useStore.getState().viewport}
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}

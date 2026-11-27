@@ -18,6 +18,9 @@ export function useChatFollow(
     repliesKey: string
     contentKey: string
   }>(undefined)
+  // True from a Jump to latest until the smooth scroll lands or the reader takes over, so the
+  // scroll events on the way down don't count as the reader leaving the bottom.
+  const jumping = useRef(false)
   const update = (next: typeof state) => {
     current.current = next
     setState(next)
@@ -25,8 +28,27 @@ export function useChatFollow(
   const jump = () => {
     anchor.current = undefined
     update(followScroll(current.current, true))
-    threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight })
+    const el = threadRef.current
+    if (!el) return
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    jumping.current = !reduced
+    el.scrollTo({ top: el.scrollHeight, behavior: reduced ? 'auto' : 'smooth' })
   }
+  useLayoutEffect(() => {
+    const el = threadRef.current
+    if (!el) return
+    const takeOver = () => {
+      jumping.current = false
+    }
+    el.addEventListener('wheel', takeOver, { passive: true })
+    el.addEventListener('pointerdown', takeOver)
+    el.addEventListener('keydown', takeOver)
+    return () => {
+      el.removeEventListener('wheel', takeOver)
+      el.removeEventListener('pointerdown', takeOver)
+      el.removeEventListener('keydown', takeOver)
+    }
+  }, [])
   // Layout effects keep the bottom in place before the browser paints a new reply or scope.
   useLayoutEffect(() => {
     const last = previous.current
@@ -86,6 +108,10 @@ export function useChatFollow(
       const el = threadRef.current
       if (!el) return
       const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 70
+      if (jumping.current) {
+        if (!bottom) return
+        jumping.current = false
+      }
       if (bottom) anchor.current = undefined
       else {
         const top = el.getBoundingClientRect().top

@@ -2,6 +2,7 @@ import WorkFeedback from './WorkFeedback'
 import { autoBlocker } from '../lib/workBlocker'
 import { availableReviewBase } from '../lib/reviewAgents'
 import PanelStatus from './PanelStatus'
+import EmptyState from './EmptyState'
 import CommitDetails from './changes/CommitDetails'
 import { setChosenCommit as setHistory, useChosenCommit } from '../lib/gitSync'
 import { useStepKeys } from './changes/useStepKeys'
@@ -482,10 +483,9 @@ export default function ReviewView() {
                 )}
                 {!review && !error && <PanelStatus kind="loading" message="Loading changes…" />}
                 {review && !groups.length && (
-                  <div className="review-empty">
-                    <div className="review-empty-mark">✓</div>
+                  <EmptyState compact tone="ok" icon="✓" title="Nothing to review">
                     {base ? `No changes since merge base with ${base}.` : 'No uncommitted changes.'}
-                  </div>
+                  </EmptyState>
                 )}
                 {shown.map((g) => {
                   const open = !collapsed[g.id]

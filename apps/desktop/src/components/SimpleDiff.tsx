@@ -13,6 +13,7 @@ import DiffView from './changes/DiffView'
 import DiffStat from './changes/DiffStat'
 import ChangeGroupCard from './changes/ChangeGroupCard'
 import PanelStatus from './PanelStatus'
+import EmptyState from './EmptyState'
 import { plural } from '../lib/display'
 import { lineTotals } from '../lib/review'
 
@@ -97,12 +98,11 @@ function ChangesContent({ scopeKey, selection, reader }: Props) {
           ) : !reader.data ? (
             <PanelStatus kind="loading" message="Loading changes…" />
           ) : !groups.length ? (
-            <div className="review-empty">
-              <div className="review-empty-mark">✓</div>
+            <EmptyState compact tone="ok" icon="✓" title="Nothing to review">
               {reader.base
                 ? `No changes since merge base with ${reader.base}.`
                 : 'No uncommitted changes.'}
-            </div>
+            </EmptyState>
           ) : null}
           {groups.map((g) => {
             const open = !collapsed[g.id]

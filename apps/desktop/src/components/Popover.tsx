@@ -103,7 +103,7 @@ export default function Popover({
   // Where a portalled popup renders, resolved before first paint (undefined until then) so a
   // `keepMounted` popup mounts once, in place.
   const [container, setContainer] = useState<HTMLElement>()
-  const [position, setPosition] = useState({ left: 0, top: 0 })
+  const [position, setPosition] = useState({ left: 0, top: 0, origin: '' })
   const contains = (active: Node | null) =>
     !!active && (!!root.current?.contains(active) || !!list.current?.contains(active))
 
@@ -120,23 +120,32 @@ export default function Popover({
         // A filtered or transformed ancestor (a dialog's overlay) offsets fixed positioning.
         const originX = popup.left - (parseFloat(el.style.left) || 0)
         const originY = popup.top - (parseFloat(el.style.top) || 0)
-        const left =
-          Math.max(
-            8,
-            Math.min(
-              open.at ? open.at.x : align === 'right' ? anchor.right - popup.width : anchor.left,
-              window.innerWidth - popup.width - 8,
-            ),
-          ) - originX
-        const top =
-          Math.max(
-            8,
-            Math.min(
-              open.at ? open.at.y : above ? anchor.top - popup.height - 4 : anchor.bottom + 4,
-              window.innerHeight - popup.height - 8,
-            ),
-          ) - originY
-        setPosition((old) => (old.left === left && old.top === top ? old : { left, top }))
+        const viewLeft = Math.max(
+          8,
+          Math.min(
+            open.at ? open.at.x : align === 'right' ? anchor.right - popup.width : anchor.left,
+            window.innerWidth - popup.width - 8,
+          ),
+        )
+        const viewTop = Math.max(
+          8,
+          Math.min(
+            open.at ? open.at.y : above ? anchor.top - popup.height - 4 : anchor.bottom + 4,
+            window.innerHeight - popup.height - 8,
+          ),
+        )
+        const left = viewLeft - originX
+        const top = viewTop - originY
+        // Grow from the point that opened it (the trigger's corner or the pointer), even after
+        // the popup was pushed back inside the window.
+        const pointX = open.at ? open.at.x : align === 'right' ? anchor.right : anchor.left
+        const pointY = open.at ? open.at.y : above ? anchor.top : anchor.bottom
+        const origin = `${Math.round(pointX - viewLeft)}px ${Math.round(pointY - viewTop)}px`
+        setPosition((old) =>
+          old.left === left && old.top === top && old.origin === origin
+            ? old
+            : { left, top, origin },
+        )
       }
       frame = requestAnimationFrame(place)
     }
@@ -246,7 +255,13 @@ export default function Popover({
       aria-label={title}
       style={
         portal
-          ? { position: 'fixed', left: position.left, top: position.top, right: 'auto' }
+          ? {
+              position: 'fixed',
+              left: position.left,
+              top: position.top,
+              right: 'auto',
+              transformOrigin: position.origin || undefined,
+            }
           : undefined
       }
       tabIndex={-1}

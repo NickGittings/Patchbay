@@ -41,6 +41,7 @@ import type { Health } from '../lib/display'
 import type { ProviderJob } from '../lib/orchestration'
 import { useChatAgents } from '../lib/useChatAgents'
 import { useReducedMotion } from '../lib/useReducedMotion'
+import { CANVAS_GESTURES } from '../lib/canvasGestures'
 import { useTeamAction, type TeamWork } from '../lib/useTeamWork'
 import {
   AssignmentReport,
@@ -404,12 +405,20 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
   const { fitView, getViewport, setViewport } = useReactFlow()
   const reducedMotion = useReducedMotion()
   const topology = positions.map(({ card, x, y }) => `${card.id}:${x}:${y}`).join('|')
+  // Once the person pans or zooms, agents starting and finishing no longer move their view; the
+  // fit control hands framing back to the canvas.
+  const userMoved = useRef(false)
+  const fitted = useRef(false)
   useEffect(() => {
+    if (userMoved.current) return
     const frame = requestAnimationFrame(() => {
-      void fitView(FIT_VIEW)
+      // The first fit lands in place; later ones glide to the new arrangement.
+      const duration = fitted.current && !reducedMotion ? 300 : 0
+      fitted.current = true
+      void fitView({ ...FIT_VIEW, duration })
     })
     return () => cancelAnimationFrame(frame)
-  }, [fitView, topology, size])
+  }, [fitView, topology, size, reducedMotion])
   const { setDismissed } = work
   const dismiss = useCallback(
     (job: ProviderJob) => {
@@ -461,6 +470,11 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
           colorMode="dark"
           fitView
           fitViewOptions={FIT_VIEW}
+          {...CANVAS_GESTURES}
+          onMoveStart={(event) => {
+            // Programmatic moves (fits, sliding a card clear of the details) come without an event.
+            if (event) userMoved.current = true
+          }}
           minZoom={0.3}
           nodesDraggable={false}
           nodesConnectable={false}
@@ -478,7 +492,13 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
             size={1}
             color="color-mix(in srgb, var(--border) 55%, transparent)"
           />
-          <Controls showInteractive={false} className="canvas-controls">
+          <Controls
+            showInteractive={false}
+            className="canvas-controls"
+            onFitView={() => {
+              userMoved.current = false
+            }}
+          >
             <MinimapToggle />
           </Controls>
           <CanvasMinimap nodeColor={minimapColor} />

@@ -76,10 +76,10 @@
   width: 32px;
   height: 18px;
   margin: 0;
-  border-radius: 9px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--muted) 40%, transparent);
   cursor: inherit;
-  transition: background-color 160ms ease-out;
+  transition: background-color var(--dur-fast) var(--ease-out);
 }
 .auto-toggle input[type='checkbox']::after {
   content: '';
@@ -89,9 +89,9 @@
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
-  transition: transform 200ms cubic-bezier(0.3, 0.7, 0.4, 1);
+  background: var(--on-accent);
+  box-shadow: var(--shadow-1);
+  transition: transform var(--dur-base) var(--ease-out);
 }
 .auto-toggle input[type='checkbox']:checked {
   background: var(--accent);
@@ -233,6 +233,7 @@
   font-size: var(--text-md);
   font-weight: 600;
   line-height: 1.35;
+  letter-spacing: var(--tracking-heading);
   white-space: normal !important;
 }
 

@@ -7,7 +7,7 @@ import { notificationLinkLabel, toastPlacement } from '../lib/notificationToast'
 import { focusTerminal } from '../lib/terminals'
 
 const HIDE_AFTER_MS = 8000
-/** Matches the leave transition in index.css. */
+/** Matches `--dur-exit`, the leave transition in index.css. */
 const LEAVE_MS = 160
 
 /**

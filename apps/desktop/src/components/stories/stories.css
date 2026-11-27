@@ -349,7 +349,7 @@
   background: color-mix(in srgb, var(--panel) 82%, transparent);
   backdrop-filter: blur(12px) saturate(160%);
   font-size: var(--text-sm);
-  animation: story-scope-in 180ms ease-out;
+  animation: story-scope-in var(--dur-surface) var(--ease-out);
 }
 @keyframes story-scope-in {
   from {
@@ -388,7 +388,7 @@
   /* Fixed height, so a token with no ✕ (the epic as context) matches one with it. */
   height: 24px;
   border: 1px solid var(--accent);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--accent-soft);
   color: var(--text);
 }
@@ -411,7 +411,7 @@
   min-width: 0;
   padding: 0 4px 0 9px;
   /* The hover and press fills follow the pill's curve. */
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 .story-scope-title {
   min-width: 0;
@@ -443,7 +443,7 @@ span.story-scope-name {
 .story-scope-token button:active,
 .story-scope-all:active {
   transform: scale(0.97);
-  transition: transform 100ms ease-out;
+  transition: transform var(--dur-fast) var(--ease-out);
 }
 .story-scope-all {
   margin-left: auto;

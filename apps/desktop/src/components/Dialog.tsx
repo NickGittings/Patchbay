@@ -1,4 +1,8 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useReducedMotion } from '../lib/useReducedMotion'
+
+/** Matches `--dur-exit`, the leave transition on `.extension-overlay[data-leaving]`. */
+const LEAVE_MS = 160
 
 export default function Dialog({
   title,
@@ -33,8 +37,24 @@ export default function Dialog({
   const card = useRef<HTMLDivElement>(null)
   // Capture before child autoFocus runs during the mount commit.
   const previous = useRef(returnFocus !== undefined ? returnFocus : document.activeElement)
+  const reducedMotion = useReducedMotion()
+  const [leaving, setLeaving] = useState(false)
+  const leaveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const latestOnClose = useRef(onClose)
+  useEffect(() => {
+    latestOnClose.current = onClose
+  })
+  useEffect(() => () => clearTimeout(leaveTimer.current), [])
+  // The scrim fades out instead of vanishing, so closing never jumps the window's brightness. A
+  // parent that unmounts the dialog itself (after a save) still closes at once.
   const close = () => {
-    if (dismissible) onClose()
+    if (!dismissible || leaveTimer.current) return
+    if (reducedMotion) {
+      onClose()
+      return
+    }
+    setLeaving(true)
+    leaveTimer.current = setTimeout(() => latestOnClose.current(), LEAVE_MS)
   }
   const latestClose = useRef(close)
   useEffect(() => {
@@ -62,7 +82,11 @@ export default function Dialog({
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   return (
-    <div className={`extension-overlay ${className}`} onClick={close}>
+    <div
+      className={`extension-overlay ${className}`}
+      data-leaving={leaving || undefined}
+      onClick={close}
+    >
       <div
         ref={card}
         tabIndex={-1}

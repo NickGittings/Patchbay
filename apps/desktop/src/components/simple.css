@@ -40,11 +40,24 @@
 .simple-thread {
   overflow: auto;
   flex: 1;
-  padding: 12px;
-}
-.simple-thread {
   min-height: 0;
+  padding: 12px;
   overflow-anchor: none;
+}
+/* New replies settle in instead of popping; reduced motion keeps only the fade. */
+.simple-thread :is(.simple-agent, .simple-result, .simple-narration, .chat-question) {
+  animation: chat-entry-in var(--dur-base) var(--ease-out);
+}
+@keyframes chat-entry-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .simple-thread :is(.simple-agent, .simple-result, .simple-narration, .chat-question) {
+    animation-name: scrim-in;
+  }
 }
 :is(.simple-agent, .agent-card, .agent-role) {
   --role: var(--role-agent);
@@ -107,6 +120,19 @@
 .simple-earlier-plan {
   color: var(--muted);
   margin: 16px 0;
+}
+/* A live dot beside the label, so work in progress reads at a glance. */
+.simple-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.simple-working .status-dot {
+  width: 6px;
+  height: 6px;
+}
+.simple-working p {
+  min-width: 0;
 }
 .simple-working p {
   margin: 0;
@@ -236,7 +262,7 @@
     0 0 0 1px var(--border-strong),
     var(--shadow-2);
   transform-origin: bottom left;
-  animation: mention-in 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: mention-in var(--dur-surface) var(--ease-out);
 }
 .simple-mention-list[data-placement='below'] {
   transform-origin: top left;
@@ -300,8 +326,7 @@
   max-width: 40%;
   overflow: hidden;
   color: var(--muted);
-  font-size: 11px;
-  letter-spacing: 0.01em;
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -449,17 +474,12 @@
   margin-right: 6px;
 }
 
-.simple-usage-warning {
-  margin: 0 0 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--muted);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
-}
+/* Usage and limit notices above the composer share one quiet amber edge, like a pending question. */
+.simple-usage-warning,
 .chat-limit-notice {
   margin: 0 0 8px;
   padding: 8px 10px;
-  border: 1px solid var(--muted);
+  border: 1px solid color-mix(in srgb, var(--input) 40%, var(--border));
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
 }
@@ -631,7 +651,7 @@
   border: 0;
   border-radius: var(--radius-lg);
   background: var(--panel);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-menu);
 }
 
 .message-meta {

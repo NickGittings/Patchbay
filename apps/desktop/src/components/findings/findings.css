@@ -67,7 +67,7 @@
   font-variant-numeric: tabular-nums;
   display: inline-flex;
   align-items: center;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 1px 8px;
   font-size: var(--text-sm);
   font-weight: 600;
@@ -75,7 +75,6 @@
   --tone: var(--muted);
   color: var(--tone);
   background: color-mix(in srgb, var(--tone) 14%, transparent);
-  border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent);
 }
 .verdict-clean {
   --tone: var(--ok);
@@ -110,12 +109,12 @@
   background: var(--tone);
 }
 
+/* The tone edge and a raised fill carry the card; an outline on top would only compete. */
 .finding-card {
   margin-top: 10px;
-  border: 1px solid var(--border);
   border-left: 3px solid var(--tone);
   border-radius: var(--radius);
-  background: var(--panel);
+  background: var(--panel-2);
   overflow: hidden;
 }
 .finding-header {

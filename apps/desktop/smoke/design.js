@@ -230,7 +230,7 @@
       await until('chat failure', () => query('.simple-diff [role="alert"]'))
       response = 'empty'
       click(query('.simple-diff .panel-status button'))
-      await until('chat empty state', () => query('.simple-diff .review-empty-mark'))
+      await until('chat empty state', () => query(".simple-diff .empty-state[data-tone='ok']"))
     } finally {
       window.fetch = reviewFetch
     }
