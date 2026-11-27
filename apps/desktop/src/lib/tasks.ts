@@ -20,8 +20,10 @@ import { forgetTeamChat } from './chatTeams'
 import { invalidateGitRefresh, requestGitRefresh } from './git'
 import { reconcileFreshSessions, launching } from './sessions'
 import {
+  planRead,
   planTransfer,
   planTransferPending,
+  planWrite,
   taskActivate,
   taskAttach,
   taskCreate,
@@ -239,7 +241,8 @@ export function followActiveTask() {
   }
 }
 
-export async function createTask(draft: TaskDraft): Promise<Task> {
+/** `goal` becomes the new worktree's saved plan when it has none yet. */
+export async function createTask(draft: TaskDraft, goal?: string): Promise<Task> {
   const projectId = useStore.getState().project?.id
   if (!projectId) throw new Error('Open a project first')
   if (onNewTask?.copyPlan) {
@@ -256,7 +259,7 @@ export async function createTask(draft: TaskDraft): Promise<Task> {
   const task = await taskCreate(draft, projectId)
   await refreshTasks(projectId)
   activateTaskIn(projectId, task.id)
-  await afterNewTask(task, projectId, true)
+  await afterNewTask(task, projectId, true, goal)
   return task
 }
 
@@ -264,13 +267,14 @@ export async function attachTask(
   worktree: string,
   components: string[],
   title?: string,
+  goal?: string,
 ): Promise<Task> {
   const projectId = useStore.getState().project?.id
   if (!projectId) throw new Error('Open a project first')
   const task = await taskAttach(worktree, title, components, projectId)
   await refreshTasks(projectId)
   activateTaskIn(projectId, task.id)
-  await afterNewTask(task, projectId, false)
+  await afterNewTask(task, projectId, false, goal)
   return task
 }
 
@@ -313,8 +317,10 @@ export async function removeTask(id: string, deleteWorktree: boolean) {
 
 /** How the open New worktree dialog was asked for. */
 interface NewTaskSeed {
-  /** The worktree's title to start from. */
+  /** The worktree's name to start from. */
   title?: string
+  /** The goal to start from; saved as the worktree's plan, never used for its name. */
+  goal?: string
   /** Explicit project-draft transfer; ordinary creation and attachment inherit nothing. */
   copyPlan?: boolean
   components?: string[]
@@ -330,13 +336,32 @@ export function cancelNewTask() {
   useStore.getState().setNewTask(null)
 }
 
-async function afterNewTask(task: Task, projectId: string, created: boolean) {
+async function afterNewTask(task: Task, projectId: string, created: boolean, goal?: string) {
   const pending = onNewTask
   onNewTask = null
-  if (!pending) return
   // Before the follow-up, so an Auto panel it opens already infers its goal from the copy.
-  if (created && pending.copyPlan) await transferProjectDraft(projectId, task.id)
-  pending.then?.(task, projectId)
+  if (created && pending?.copyPlan) await transferProjectDraft(projectId, task.id)
+  // After any transfer, so the goal never replaces a carried or existing plan.
+  if (goal?.trim()) await saveGoalAsPlan(projectId, task.id, goal.trim())
+  pending?.then?.(task, projectId)
+}
+
+/** Write `goal` as the worktree's plan if it has none; a failure only warns. */
+async function saveGoalAsPlan(projectId: string, task: string, goal: string) {
+  try {
+    const current = await planRead(projectId, task)
+    if (current.cut || current.text.trim()) return
+    await planWrite(projectId, task, `${goal}\n`, current.text)
+  } catch (e) {
+    useStore
+      .getState()
+      .setMessage(
+        `Worktree created, but its goal could not be saved as the plan: ${String(e)}`,
+        undefined,
+        undefined,
+        'warning',
+      )
+  }
 }
 
 /** A transfer cannot move a live planner or race a launch already in flight. */
@@ -405,7 +430,7 @@ export async function transferProjectDraft(projectId: string, task: string) {
  */
 export function seedNewTask(
   then?: (task: Task, projectId: string) => void,
-  { title, copyPlan = false, components }: NewTaskSeed = {},
+  { title, goal, copyPlan = false, components }: NewTaskSeed = {},
 ) {
   onNewTask = then || copyPlan ? { then, copyPlan } : null
   const s = useStore.getState()
@@ -414,32 +439,14 @@ export function seedNewTask(
       components ??
       (s.highlighted.length ? [...s.highlighted] : s.selectedId ? [s.selectedId] : []),
     title,
+    goal,
   })
-}
-
-/** A worktree title from a goal: its first nonempty line, without a heading mark, kept short. */
-export function titleFor(goal: string, max = 72) {
-  const line =
-    goal
-      .split('\n')
-      .map((l) => l.replace(/^\s*#+\s*/, '').trim())
-      .find(Boolean) ?? ''
-  // Counted in code points, so a cut never splits an emoji's surrogate pair.
-  const chars = Array.from(line)
-  if (chars.length <= max) return line
-  // At a word boundary, keeping a word the cut ends right after, unless that loses most of it.
-  const words = chars
-    .slice(0, max + 1)
-    .join('')
-    .replace(/\S*$/, '')
-    .trimEnd()
-  return Array.from(words).length >= max / 2 ? words : chars.slice(0, max).join('').trimEnd()
 }
 
 /** Branch names, and the worktree folders named after them, stay this short. */
 const BRANCH_LIMIT = 60
 
-/** A branch name from a title: `Fix login bug` → `fix-login-bug`. */
+/** A branch name from a worktree name: `Fix login bug` → `fix-login-bug`. */
 export function branchFor(title: string) {
   return title
     .toLowerCase()

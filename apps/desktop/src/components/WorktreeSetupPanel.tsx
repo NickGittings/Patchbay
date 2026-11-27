@@ -16,7 +16,7 @@ export default function WorktreeSetupPanel() {
   return (
     <section className="worktree-setup-editor" aria-label="Worktree preparation">
       <p className="hint">
-        Runs at the worktree root before implementation. Changes apply to new tasks.
+        Runs at the worktree root before implementation. Changes apply to new worktrees.
       </p>
       <label className="settings-field">
         Command
@@ -51,7 +51,7 @@ export default function WorktreeSetupPanel() {
               .then((saved) => {
                 if (saved) {
                   setDraft(null)
-                  setMessage('Preparation saved for new tasks.')
+                  setMessage('Preparation saved for new worktrees.')
                 } else setError('The project could not be saved. Check its map saving status.')
               })
               .catch((e) => setError(String(e)))

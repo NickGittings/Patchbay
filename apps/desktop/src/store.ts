@@ -447,9 +447,9 @@ interface State {
   activeTask: string | null
   setTasks: (tasks: Task[]) => void
   setActiveTask: (id: string | null, exact?: boolean) => void
-  /** Components and goal title to seed the new-task dialog with while it is open (UI only). */
-  newTask: { components: string[]; title?: string } | null
-  setNewTask: (seed: { components: string[]; title?: string } | null) => void
+  /** Components, name and goal to seed the New worktree dialog with while it is open (UI only). */
+  newTask: { components: string[]; title?: string; goal?: string } | null
+  setNewTask: (seed: State['newTask']) => void
   /** Opens the rail's Auto panel, from the attention list or a new Auto worktree (UI only). */
   showAutoPanel: () => void
   /** Components the planner's pending proposal names, outlined in Plan until applied (UI only). */

@@ -562,7 +562,7 @@ export function StackReview({ pending, projectId }: { pending: PendingStack; pro
               onChange={(e) => setIncludeSetup(e.target.checked)}
             />
             <span className="validator-suggestion-details">
-              <span>Worktree preparation (for new tasks)</span>
+              <span>Worktree preparation (for new worktrees)</span>
               <code>{pending.worktreeSetup.command}</code>
               <span className="hint">{pending.worktreeSetup.reason}</span>
               <span className="hint">

@@ -16,10 +16,10 @@ export default function TaskActions() {
       <button
         className="header-action"
         disabled={!git}
-        title={git ? 'Create a task workspace' : 'Named tasks require a Git repository'}
+        title={git ? 'Create a worktree' : 'Worktrees require a Git repository'}
         onClick={() => seedNewTask()}
       >
-        ＋ New task
+        ＋ New worktree
       </button>
     </div>
   )

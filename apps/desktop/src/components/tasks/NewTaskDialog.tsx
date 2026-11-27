@@ -10,13 +10,14 @@ export default function NewTaskDialog() {
   const seed = useStore((s) => s.newTask)
   return seed ? <NewTask seed={seed} /> : null
 }
-function NewTask({ seed }: { seed: { components: string[]; title?: string } }) {
+function NewTask({ seed }: { seed: { components: string[]; title?: string; goal?: string } }) {
   const nodes = useStore((s) => s.nodes)
   const tasks = useStore((s) => s.tasks)
   const projectId = useStore((s) => s.project?.id)
   const close = cancelNewTask
   const [mode, setMode] = useState<'new' | 'attach'>('new')
   const [title, setTitle] = useState(seed.title ?? '')
+  const [goal, setGoal] = useState(seed.goal ?? '')
   const [branch, setBranch] = useState(() => branchFor(seed.title ?? ''))
   const [branchEdited, setBranchEdited] = useState(false)
   const [base, setBase] = useState('')
@@ -48,8 +49,9 @@ function NewTask({ seed }: { seed: { components: string[]; title?: string } }) {
     setBusy(true)
     setError('')
     try {
-      if (mode === 'new') await createTask({ title, branch, base: base || undefined, components })
-      else await attachTask(chosen!, components, title)
+      if (mode === 'new')
+        await createTask({ title, branch, base: base || undefined, components }, goal)
+      else await attachTask(chosen!, components, title, goal)
       if (useStore.getState().project?.id === projectId) close()
     } catch (e) {
       setError(String(e))
@@ -58,7 +60,7 @@ function NewTask({ seed }: { seed: { components: string[]; title?: string } }) {
     }
   }
   return (
-    <Dialog title="New task" onClose={close} dismissible={!busy}>
+    <Dialog title="New worktree" onClose={close} dismissible={!busy}>
       <form
         className="task-dialog"
         onSubmit={(e) => {
@@ -67,7 +69,7 @@ function NewTask({ seed }: { seed: { components: string[]; title?: string } }) {
         }}
       >
         <label>
-          Goal title
+          Name
           <input
             autoFocus
             value={title}
@@ -78,13 +80,22 @@ function NewTask({ seed }: { seed: { components: string[]; title?: string } }) {
             }}
           />
         </label>
-        <div className="view-tabs" role="group" aria-label="Task checkout">
+        <label>
+          Goal (optional)
+          <textarea
+            rows={4}
+            value={goal}
+            placeholder="What this worktree should accomplish. Saved as its plan."
+            onChange={(e) => setGoal(e.target.value)}
+          />
+        </label>
+        <div className="view-tabs" role="group" aria-label="Worktree checkout">
           <button
             type="button"
             className={mode === 'new' ? 'active' : ''}
             onClick={() => setMode('new')}
           >
-            New worktree
+            New branch
           </button>
           <button
             type="button"
@@ -140,7 +151,7 @@ function NewTask({ seed }: { seed: { components: string[]; title?: string } }) {
         )}
         {assigned && (
           <p className="hint">
-            This checkout belongs to “{assigned.title}”. Creating activates that task.
+            This checkout belongs to “{assigned.title}”. Creating activates that worktree.
           </p>
         )}
         <div className="section-title">Components in scope (optional)</div>
@@ -172,7 +183,7 @@ function NewTask({ seed }: { seed: { components: string[]; title?: string } }) {
             Cancel
           </button>
           <button type="submit" className="primary" disabled={!ready || busy}>
-            {busy ? 'Creating…' : assigned ? 'Activate task' : 'Create task'}
+            {busy ? 'Creating…' : assigned ? 'Activate worktree' : 'Create worktree'}
           </button>
         </div>
       </form>

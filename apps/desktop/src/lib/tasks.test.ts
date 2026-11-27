@@ -35,7 +35,6 @@ const {
   seedNewTask,
   refreshTasks,
   removeTask,
-  titleFor,
 } = await import('./tasks')
 const { autoDraftKey, autoDrafts, emptyAutoDraft } = await import('./autoDrafts')
 const {
@@ -225,9 +224,7 @@ test("removing a worktree drops its Auto draft, not the project folder's", async
   expect(autoDrafts.has(autoDraftKey('p', null))).toBe(true)
 })
 
-test('a goal seeds a short, single-line worktree title', () => {
-  expect(titleFor('\n## Optimize tokens\n\nCut the briefing in half.')).toBe('Optimize tokens')
-  expect(titleFor('   ')).toBe('')
+test('a worktree title shortens to its first sentence', () => {
   expect(shortTitle('Fix trends nutrition graphs. When navigating between timeframes it is')).toBe(
     'Fix trends nutrition graphs…',
   )
@@ -258,19 +255,6 @@ test('a goal seeds a short, single-line worktree title', () => {
   expect(shortTitle('Fix login\n\n')).toBe('Fix login')
   expect(shortTitle('Fix login\nwith details')).toBe('Fix login…')
   expect(shortTitle('Add a settings  page.')).toBe('Add a settings page')
-  const long = titleFor('word '.repeat(40))
-  expect(long.length).toBeLessThanOrEqual(72)
-  expect(long).not.toMatch(/\s$/)
-  expect(titleFor('x'.repeat(100))).toHaveLength(72)
-})
-
-test('a long title keeps a word ending at the limit and cuts a long word hard', () => {
-  // The 73rd character is a space, so the 72nd ends a whole word.
-  const exact = `${'a'.repeat(70)} b c`
-  expect(titleFor(exact)).toBe(`${'a'.repeat(70)} b`)
-  // A boundary that would leave only the first word cuts mid-word instead.
-  const path = `Fix ${'apps/desktop/src/components/'.repeat(4)}`
-  expect(titleFor(path)).toBe(path.slice(0, 72))
 })
 
 test('a removal that succeeded is cleaned up even when refreshing the list fails', async () => {
@@ -346,12 +330,53 @@ test('a failed copy keeps the new worktree and says so', async () => {
   expect(planTransfer).not.toHaveBeenCalledWith('p', 'n', true)
 })
 
-test('a cut title never splits an emoji', () => {
-  // The 72nd code unit is the first half of the emoji's surrogate pair.
-  const goal = `${'a'.repeat(71)}😀${'b'.repeat(10)}`
-  const title = titleFor(goal)
-  expect(title).toBe(`${'a'.repeat(71)}😀`)
-  expect(title).not.toMatch(/[\uD800-\uDBFF]$/)
+test('a goal becomes the plan of a new or attached worktree that has none', async () => {
+  removalProject(null)
+  vi.mocked(taskCreate).mockResolvedValue(fresh)
+  vi.mocked(taskAttach).mockResolvedValue(fresh)
+  vi.mocked(taskList).mockResolvedValue([fresh])
+  vi.mocked(planRead).mockResolvedValue({ text: ' \n', cut: false })
+  seedNewTask()
+  await createTask({ title: 'N', branch: 'n', components: [] }, '  Fix the login flow\n')
+  expect(planWrite).toHaveBeenCalledExactlyOnceWith('p', 'n', 'Fix the login flow\n', ' \n')
+  vi.mocked(planWrite).mockClear()
+  await attachTask('/p-n', [], 'N', 'Attach goal')
+  expect(planWrite).toHaveBeenCalledExactlyOnceWith('p', 'n', 'Attach goal\n', ' \n')
+  vi.mocked(planWrite).mockClear()
+  await createTask({ title: 'N', branch: 'n', components: [] }, '   ')
+  expect(planWrite).not.toHaveBeenCalled()
+})
+
+test.each([
+  ['saved', { text: '# Plan', cut: false }],
+  ['cut', { text: '# Long', cut: true }],
+])('a goal never replaces a %s plan', async (_, plan) => {
+  removalProject(null)
+  vi.mocked(taskCreate).mockResolvedValue(fresh)
+  vi.mocked(taskList).mockResolvedValue([fresh])
+  vi.mocked(planRead).mockResolvedValue(plan)
+  await createTask({ title: 'N', branch: 'n', components: [] }, 'Goal')
+  expect(planWrite).not.toHaveBeenCalled()
+})
+
+test('a goal written after a draft transfer, and failing only warns', async () => {
+  removalProject(null)
+  vi.mocked(taskCreate).mockResolvedValue(fresh)
+  vi.mocked(taskList).mockResolvedValue([fresh])
+  vi.mocked(planRead).mockResolvedValue({ text: '', cut: false })
+  vi.mocked(planWrite).mockRejectedValueOnce(new Error('disk full'))
+  const then = vi.fn()
+  seedNewTask(then, { copyPlan: true })
+  await expect(createTask({ title: 'N', branch: 'n', components: [] }, 'Goal')).resolves.toEqual(
+    fresh,
+  )
+  expect(vi.mocked(planTransfer).mock.invocationCallOrder.at(-1)!).toBeLessThan(
+    vi.mocked(planWrite).mock.invocationCallOrder[0],
+  )
+  expect(then).toHaveBeenCalledExactlyOnceWith(fresh, 'p')
+  expect(useStore.getState().message).toMatch(
+    /goal could not be saved as the plan: Error: disk full/,
+  )
 })
 
 test('a stale task list keeps the Chat draft of a worktree created after it was requested', async () => {

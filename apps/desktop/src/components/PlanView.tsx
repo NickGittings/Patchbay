@@ -378,7 +378,7 @@ export default function PlanView() {
                   )
                 }
               >
-                ＋ New task
+                ＋ New worktree
               </button>
             </div>
             <div className="row plan-implement">

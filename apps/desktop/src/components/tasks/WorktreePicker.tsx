@@ -105,13 +105,13 @@ function WorktreeOverview({
       <button
         className="worktree-new primary"
         disabled={!git}
-        title={git ? undefined : 'Named tasks require a Git repository'}
+        title={git ? undefined : 'Worktrees require a Git repository'}
         onClick={() => {
           close()
           seedNewTask(undefined, { copyPlan })
         }}
       >
-        ＋ New task
+        ＋ New worktree
       </button>
       <PanelSection title="Worktrees">
         <div className="worktree-list">

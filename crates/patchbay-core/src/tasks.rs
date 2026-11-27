@@ -426,7 +426,7 @@ pub(crate) fn create_existing(root: &Path, branch: &str) -> Result<Task> {
 fn create_inner(root: &Path, draft: TaskDraft, require_existing: bool) -> Result<Task> {
     let title = draft.title.trim();
     if title.is_empty() {
-        bail!("Give the task a title");
+        bail!("Give the worktree a name");
     }
     let repo = repo_of(root)?;
     let branch = draft.branch.trim();
@@ -567,7 +567,7 @@ pub fn update(root: &Path, id: &str, patch: TaskPatch) -> Result<Task> {
             .ok_or_else(|| anyhow!("There is no task {id}"))?;
         if let Some(title) = patch.title.map(|t| t.trim().to_string()) {
             if title.is_empty() {
-                bail!("Give the task a title");
+                bail!("Give the worktree a name");
             }
             task.title = title;
         }

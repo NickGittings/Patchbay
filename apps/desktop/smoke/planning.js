@@ -227,9 +227,9 @@
       return e && !e.disabled && e
     })
     input(editor, '# Unsaved editor handoff\n\nKeep scope independent.')
-    button('＋ New task').click()
+    button('＋ New worktree').click()
     const dialog = await until('new worktree dialog', () =>
-      document.querySelector('[role="dialog"][aria-label="New task"]'),
+      document.querySelector('[role="dialog"][aria-label="New worktree"]'),
     )
     input(dialog.querySelector('input'), 'Draft handoff')
     ;(
