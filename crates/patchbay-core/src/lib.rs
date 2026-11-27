@@ -34,6 +34,7 @@ pub mod pty;
 pub mod remote;
 pub mod reviews;
 pub mod secrets;
+pub mod settings_bundle;
 pub mod status;
 pub mod stories;
 pub mod tasks;

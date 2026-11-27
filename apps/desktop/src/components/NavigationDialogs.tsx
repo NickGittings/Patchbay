@@ -4,6 +4,7 @@ import SettingsDialog, { SettingsFeedback } from './SettingsDialog'
 import { useEffect, useState } from 'react'
 import { editorDiscover, editorPreferences, editorSavePreferences } from '../lib/ipc'
 import { EDITOR_SETTINGS_EVENT } from '../lib/navigation'
+import { SETTINGS_IMPORTED_EVENT } from '../lib/settingsBackup'
 import type { EditorKind, EditorLauncher, EditorPreferences } from '../types'
 
 const labels: Record<EditorKind, string> = {
@@ -27,8 +28,14 @@ function PreferredEditorDialog() {
       setError('')
       setOpen(true)
     }
+    // An import replaces the saved preferences; close so a stale form can't overwrite them.
+    const close = () => setOpen(false)
     window.addEventListener(EDITOR_SETTINGS_EVENT, show)
-    return () => window.removeEventListener(EDITOR_SETTINGS_EVENT, show)
+    window.addEventListener(SETTINGS_IMPORTED_EVENT, close)
+    return () => {
+      window.removeEventListener(EDITOR_SETTINGS_EVENT, show)
+      window.removeEventListener(SETTINGS_IMPORTED_EVENT, close)
+    }
   }, [])
   useEffect(() => {
     if (!open) return

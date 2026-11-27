@@ -4,6 +4,7 @@ import { listAgentProfiles, saveAgentProfile, type AgentProfile } from '../lib/a
 import { listDevices, agentHooksCheck, agentHooksConfigure } from '../lib/ipc'
 import { rememberProfileHooks } from '../lib/agentHooks'
 import { useStore } from '../store'
+import { SETTINGS_IMPORTED_EVENT } from '../lib/settingsBackup'
 
 const empty = (): AgentProfile => ({
   id: '',
@@ -29,13 +30,28 @@ export default function AgentProfilesPanel({ onClose }: { onClose: () => void })
   const [isError, setIsError] = useState(false)
   const [loading, setLoading] = useState(true)
   useEffect(() => {
-    void listAgentProfiles()
-      .then(setProfiles)
-      .catch((e) => {
-        setIsError(true)
-        setMessage(String(e))
-      })
-      .finally(() => setLoading(false))
+    const load = () =>
+      void listAgentProfiles()
+        .then(setProfiles)
+        .catch((e) => {
+          setIsError(true)
+          setMessage(String(e))
+        })
+        .finally(() => setLoading(false))
+    load()
+    // An import replaces profiles underneath this panel; drop the stale form so a save can't
+    // overwrite what was imported.
+    const reload = () => {
+      setProfile(empty())
+      setEnvironment('{}')
+      setKey('')
+      setClearKey(false)
+      setIsError(false)
+      setMessage('Profiles changed by Import settings.')
+      load()
+    }
+    window.addEventListener(SETTINGS_IMPORTED_EVENT, reload)
+    return () => window.removeEventListener(SETTINGS_IMPORTED_EVENT, reload)
   }, [])
   const select = (next: AgentProfile) => {
     setProfile(next)

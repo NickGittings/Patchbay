@@ -1922,6 +1922,107 @@ async fn agent_profile_save(
     blocking(move || patchbay_core::profiles::save(profile, key, clear_key).map_err(err)).await
 }
 
+/// Export machine-wide settings to a file the user picks in a backend dialog. `None` when
+/// they cancel; otherwise the path written.
+#[tauri::command]
+async fn settings_export(
+    window: WebviewWindow,
+    settings: serde_json::Map<String, serde_json::Value>,
+) -> CmdResult<Option<String>> {
+    use patchbay_core::settings_bundle;
+    main_only(&window)?;
+    blocking(move || {
+        let mut bundle = settings_bundle::export(settings).map_err(err)?;
+        if settings_bundle::has_environments(&bundle) {
+            let private = if cfg!(unix) {
+                "It is saved readable only by you; "
+            } else {
+                ""
+            };
+            let include = window
+                .dialog()
+                .message(format!(
+                    "Some agent profiles set environment variables, which may hold tokens. \
+                     Include their values in the exported file? {private}don't share it if it \
+                     holds secrets. Leaving them out keeps this machine's values on import."
+                ))
+                .title("Export settings")
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Include".into(),
+                    "Leave out".into(),
+                ))
+                .parent(&window)
+                .blocking_show();
+            if !include {
+                settings_bundle::drop_environments(&mut bundle);
+            }
+        }
+        let name = format!("patchbay-settings-{}.json", &bundle.exported_at[..10]);
+        let Some(path) = window
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title("Export settings")
+            .set_file_name(name)
+            .add_filter("Patchbay settings", &["json"])
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let path = path.into_path().map_err(err)?;
+        settings_bundle::write(&path, &bundle).map_err(err)?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+}
+
+/// Import a settings file the user picks and confirms in backend dialogs. Editor preferences
+/// and profiles are saved here; the workspace settings are returned for the frontend to apply.
+#[tauri::command]
+async fn settings_import(
+    window: WebviewWindow,
+) -> CmdResult<Option<patchbay_core::settings_bundle::Imported>> {
+    use patchbay_core::settings_bundle;
+    main_only(&window)?;
+    blocking(move || {
+        let Some(path) = window
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title("Import settings")
+            .add_filter("Patchbay settings", &["json"])
+            .blocking_pick_file()
+        else {
+            return Ok(None);
+        };
+        let path = path.into_path().map_err(err)?;
+        let bundle = settings_bundle::read(&path).map_err(err)?;
+        let profiles = bundle.agent_profiles.len();
+        let confirmed = window
+            .dialog()
+            .message(format!(
+                "Replace your agent roles, chat, Auto, notification, usage and editor settings \
+                 with those exported on {}?\n\n{profiles} agent profile(s) will be added or \
+                 updated; other profiles are kept. Keychain API keys are never part of the file.",
+                bundle.exported_at.get(..10).unwrap_or("an unknown date")
+            ))
+            .title("Import settings")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Import".into(),
+                "Cancel".into(),
+            ))
+            .parent(&window)
+            .blocking_show();
+        if !confirmed {
+            return Ok(None);
+        }
+        settings_bundle::import(bundle).map(Some).map_err(err)
+    })
+    .await
+}
+
 #[tauri::command]
 fn save_device(device: DeviceManifest) -> CmdResult<String> {
     devices::save_device(&device)
@@ -3555,6 +3656,8 @@ pub fn run() {
                 save_device,
                 agent_profiles_list,
                 agent_profile_save,
+                settings_export,
+                settings_import,
                 terminal_start,
                 terminal_attach,
                 terminal_detach,

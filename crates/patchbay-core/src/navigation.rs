@@ -79,6 +79,15 @@ pub fn preferences() -> Result<EditorPreferences> {
 /// # Errors
 /// Fails if a custom executable is empty or preferences cannot be saved.
 pub fn save_preferences(prefs: &EditorPreferences) -> Result<()> {
+    validate_preferences(prefs)?;
+    workspace::atomic_write(
+        &workspace::home()?.join("editor.json"),
+        &serde_json::to_vec_pretty(prefs)?,
+    )
+}
+/// # Errors
+/// Fails if a custom executable is empty or there are too many arguments.
+pub fn validate_preferences(prefs: &EditorPreferences) -> Result<()> {
     ensure!(
         prefs.editor != EditorKind::Custom || !prefs.executable.trim().is_empty(),
         "Set a custom editor executable"
@@ -87,10 +96,7 @@ pub fn save_preferences(prefs: &EditorPreferences) -> Result<()> {
         prefs.arguments.len() <= 100,
         "At most 100 editor arguments are supported"
     );
-    workspace::atomic_write(
-        &workspace::home()?.join("editor.json"),
-        &serde_json::to_vec_pretty(prefs)?,
-    )
+    Ok(())
 }
 
 fn executable(path: &Path) -> bool {
