@@ -421,6 +421,24 @@ Service crashes and machine reboots mark prior work **Interrupted**; recovery is
 Moved folders must be relinked, and a resumed conversation still needs its recorded working
 directory and provider history.
 
+### Backing up settings
+
+**Settings → Export settings…** saves one JSON file with your agent roles, chat agent, Auto,
+review council, notification, usage and editor preferences, and agent profiles. The file is
+readable only by you. When profiles set environment variables, which may hold tokens, export asks
+whether to include their values. **Settings → Import settings…** replaces those settings from such
+a file after confirming. Imported profiles are added or updated by id, and other profiles are kept.
+API keys never leave the OS keychain, so OpenRouter profiles imported on another machine need their
+key entered again in **Agent profiles**. Import also names profiles whose executable is missing and
+role presets this machine doesn't have.
+
+Some things aren't included:
+- the component map, since `patchbay.json` belongs in the repository
+- per-project layouts, recovery drafts and pending merge cleanups
+- tasks and stories, kept in each repository's `.git/patchbay/`
+- extensions and custom terminal presets in `~/.patchbay/devices/`
+- `~/.patchbay/sessiond/`, which is machine-local and should never be copied
+
 Agent terminals/devices accept `"adapter": "claude"` or `"adapter": "codex"`. Recognized direct
 provider commands get defaults; select an adapter for a custom command. **Reconnect**
 attaches to a live process. **Resume** explicitly resumes an ended conversation by its stored

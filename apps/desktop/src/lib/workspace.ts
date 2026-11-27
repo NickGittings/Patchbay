@@ -102,6 +102,12 @@ export function workspaceDocument(): WorkspaceDocument {
     }),
   }
 }
+/** Why the workspace can't be saved right now, or null when it can. */
+export function workspaceSaveBlocked(): string | null {
+  if (useStore.getState().restoring) return 'Wait until Patchbay finishes restoring the workspace'
+  if (recoveryBlocked) return 'The saved workspace could not be read; resolve that first'
+  return null
+}
 export function flushWorkspace(strict = false) {
   clearTimeout(timer)
   if (useStore.getState().restoring || recoveryBlocked)

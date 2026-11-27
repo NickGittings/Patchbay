@@ -12,6 +12,7 @@ import { configureEditor, showFileSearch, showNavigationCanvas } from './navigat
 import { mapEditsBlocked } from './mapSave'
 import { offerDependencies } from './dependencies'
 import { arrangeNow } from './arrange'
+import { exportSettings, importSettings } from './settingsBackup'
 import { railViews, selectPanel, selectRailView, useRail } from './rail'
 
 export interface WorkspaceAction {
@@ -130,6 +131,20 @@ export function useWorkspaceActions(): WorkspaceAction[] {
       group: 'settings',
       enabled: true,
       run: setting('notifications'),
+    },
+    {
+      id: 'settings-export',
+      title: 'Export settings…',
+      group: 'settings',
+      enabled: true,
+      run: exportSettings,
+    },
+    {
+      id: 'settings-import',
+      title: 'Import settings…',
+      group: 'settings',
+      enabled: true,
+      run: importSettings,
     },
     {
       id: 'story-board',
