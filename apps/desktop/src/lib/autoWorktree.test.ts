@@ -99,9 +99,9 @@ beforeEach(() => {
 test("a worktree from Auto's prompt starts with its own plan", async () => {
   // Outside Plan, as the dialog is in Navigation, the prompt still copies the plan.
   expect(useStore.getState().view).toBe('navigation')
-  // The goal the dialog filled in titles the worktree but isn't kept as typed.
+  // The goal the dialog filled in from the current plan neither names nor seeds the worktree.
   seedAutoTask(folder, 'Planned goal', true)
-  expect(useStore.getState().newTask?.title).toBe('Planned goal')
+  expect(useStore.getState().newTask).toMatchObject({ title: undefined, goal: undefined })
   let goal = ''
   const panel = useStore.subscribe((s, prev) => {
     // The panel's first snapshot already sees the copy.
@@ -125,10 +125,10 @@ test("attaching a worktree from Auto's prompt copies no plan", async () => {
   expect((await autoSnapshot('p', 'n', run, true)).goal).toBe('N')
 })
 
-test('a typed goal titles the worktree and moves to its draft with the other choices', async () => {
+test('a typed goal seeds the dialog goal, not its name, and moves to its draft', async () => {
   autoDrafts.set(folder, { ...emptyAutoDraft(), overrides: { maxRounds: 5 }, destination: 'main' })
   seedAutoTask(folder, '  Typed goal\nmore  ')
-  expect(useStore.getState().newTask?.title).toBe('Typed goal')
+  expect(useStore.getState().newTask).toMatchObject({ title: undefined, goal: 'Typed goal\nmore' })
   await createTask({ title: 'N', branch: 'n', components: [] })
   expect(autoDrafts.has(folder)).toBe(false)
   expect(autoDrafts.get(target)).toMatchObject({

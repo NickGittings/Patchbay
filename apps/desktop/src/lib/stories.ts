@@ -551,6 +551,7 @@ export function newWorktreeForStory(projectId: string, story: Story) {
     s.toggleHighlight(id)
   seedNewTask((task, pid) => void linkStory(pid, story.id, task.id), {
     title: story.title,
+    goal: story.description.trim() || undefined,
   })
 }
 

@@ -99,26 +99,26 @@
     state().toggleHighlight('docs')
     click(
       await until('New worktree', () =>
-        button(document.querySelector('.plan-scope'), '＋ New task'),
+        button(document.querySelector('.plan-scope'), '＋ New worktree'),
       ),
     )
     const dialog = await until('New worktree dialog', () =>
-      document.querySelector('[aria-label="New task"]'),
+      document.querySelector('[aria-label="New worktree"]'),
     )
     assert(
       dialog.querySelectorAll('.chip.active').length === 2,
       'worktree lost highlighted components',
     )
-    assert(dialog.textContent.includes('Goal title'), 'worktree purpose label missing')
+    assert(dialog.textContent.includes('Name'), 'worktree name label missing')
     edit(dialog.querySelector('input'), 'Smoke task')
     await until(
-      'branch from purpose',
+      'branch from name',
       () => dialog.querySelectorAll('input')[1].value === 'smoke-task',
     )
     edit(dialog.querySelectorAll('input')[1], 'smoke/task')
     click(
       await until('Create worktree button', () => {
-        const create = button(dialog, 'Create task')
+        const create = button(dialog, 'Create worktree')
         return create && !create.disabled && create
       }),
     )
@@ -887,15 +887,18 @@
     // The Main worktree tab stands for the open checkout, so the dialog doesn't offer it again.
     click(
       await until('new task control', () =>
-        button(document.querySelector('.task-tab-actions'), '＋ New task'),
+        button(document.querySelector('.task-tab-actions'), '＋ New worktree'),
       ),
     )
     const newTaskDialog = await until('new task dialog', () =>
-      document.querySelector('[aria-label="New task"]'),
+      document.querySelector('[aria-label="New worktree"]'),
     )
     assert(!button(newTaskDialog, 'Current checkout'), 'dialog still offers the current checkout')
     click(button(newTaskDialog, 'Cancel'))
-    await until('new task dialog closed', () => !document.querySelector('[aria-label="New task"]'))
+    await until(
+      'new worktree dialog closed',
+      () => !document.querySelector('[aria-label="New worktree"]'),
+    )
     assert(state().sessions[mainSid]?.running, 'the dialog stopped the open checkout session')
     await smoke.report(
       'PASS tasks: isolated workspaces, planner proposal, root agent CLI, environment/checks, retained processes, remove',

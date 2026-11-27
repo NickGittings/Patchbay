@@ -1,6 +1,6 @@
 import { useStore } from '../store'
 import { autoDraftKey, autoDrafts, emptyAutoDraft } from './autoDrafts'
-import { seedNewTask, titleFor } from './tasks'
+import { seedNewTask } from './tasks'
 
 /** Carry Auto's goal and dialog choices into a new worktree with an independent plan. */
 export function seedAutoTask(draftKey: string, goal: string, inferred = false) {
@@ -23,6 +23,7 @@ export function seedAutoTask(draftKey: string, goal: string, inferred = false) {
       const s = useStore.getState()
       if (s.project?.id === projectId && s.activeTask === created.id) s.showAutoPanel()
     },
-    { title: titleFor(goal) || undefined },
+    // The goal becomes the plan; the user names the worktree.
+    { goal: carried || undefined },
   )
 }
