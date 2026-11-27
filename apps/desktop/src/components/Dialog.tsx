@@ -40,7 +40,16 @@ export default function Dialog({
   const reducedMotion = useReducedMotion()
   const [leaving, setLeaving] = useState(false)
   const leaveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  useEffect(() => () => clearTimeout(leaveTimer.current), [])
+  // The dismissed dialog's onClose, until the leave delay hands it over.
+  const pendingClose = useRef<() => void>(undefined)
+  useEffect(
+    () => () => {
+      // Unmounted mid-fade (a scope switch): the close that was asked for still happens.
+      clearTimeout(leaveTimer.current)
+      pendingClose.current?.()
+    },
+    [],
+  )
   // The scrim fades out instead of vanishing, so closing never jumps the window's brightness. A
   // parent that unmounts the dialog itself (after a save) still closes at once.
   const close = () => {
@@ -51,14 +60,23 @@ export default function Dialog({
     }
     // The close that was asked for, even if the dialog shows something else by the time it lands.
     const dismissed = onClose
+    pendingClose.current = dismissed
     setLeaving(true)
     leaveTimer.current = setTimeout(() => {
       leaveTimer.current = undefined
+      pendingClose.current = undefined
       // A parent that keeps the dialog mounted gets it back visible and closable.
       setLeaving(false)
       dismissed()
     }, LEAVE_MS)
   }
+  // `inert` dropped focus to <body>; a dialog its parent kept takes it back, so Escape and Tab work.
+  const wasLeaving = useRef(false)
+  useEffect(() => {
+    if (wasLeaving.current && !leaving && document.activeElement === document.body)
+      card.current?.focus()
+    wasLeaving.current = leaving
+  }, [leaving])
   const latestClose = useRef(close)
   useEffect(() => {
     latestClose.current = close

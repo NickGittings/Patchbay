@@ -201,7 +201,7 @@ function NavigationView() {
     undefined,
     CHAT_OPEN_SIZES,
     { group, panel: CANVAS_PANEL, defaultSize: CHAT_DEFAULT_SIZE, minSize: CHAT_MIN_SIZE },
-    { keepCollapsed: true, onReveal: clearChatReveal },
+    { keepCollapsed: true, onReveal: clearChatReveal, glide: true },
   )
   const showChatRef = useRef<HTMLButtonElement>(null)
   // Show chat renders only once the panel reports itself collapsed; focus it then.
@@ -255,7 +255,9 @@ function NavigationView() {
     [activeSession, terminalReveal],
   )
   // Dragged shut, the dock stays so until it is dragged open or a terminal is revealed in it.
-  const dockPanel = useCollapsed('App-pane-4', dock, dockReveal)
+  const dockPanel = useCollapsed('App-pane-4', dock, dockReveal, undefined, undefined, undefined, {
+    glide: true,
+  })
   return (
     <SimpleChanges simple={reading} reader={reader}>
       <SimpleWorktreeContext value={reader.scope}>

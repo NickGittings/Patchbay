@@ -30,13 +30,22 @@ export function transitionPanels(update: () => void, rootClass = PANELS_TRANSITI
   const root = document.documentElement
   running.set(rootClass, (running.get(rootClass) ?? 0) + 1)
   root.classList.add(rootClass)
-  const transition = document.startViewTransition(() => flushSync(update))
+  const transition = document.startViewTransition(() => {
+    try {
+      flushSync(update)
+    } catch (error) {
+      // Report it as an uncaught error would be; the transition itself just ends.
+      queueMicrotask(() => {
+        throw error
+      })
+    }
+  })
   void transition.finished
     .finally(() => {
       const left = (running.get(rootClass) ?? 1) - 1
       running.set(rootClass, left)
       if (left === 0) root.classList.remove(rootClass)
     })
-    // An update that throws surfaces through React; the transition only needs its cleanup.
+    // A skipped transition rejects; the update's own errors were reported above.
     .catch(() => {})
 }

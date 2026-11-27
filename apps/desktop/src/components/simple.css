@@ -772,7 +772,14 @@
    the panel, so popups opened from it still position against the window. */
 .details-transitioning .agent-details {
   view-transition-name: agent-details;
-  animation: none;
+}
+/* Where the slide runs it is the entrance; the fade stays for reduced motion and older engines. */
+@supports (view-transition-name: none) {
+  @media (prefers-reduced-motion: no-preference) {
+    .agent-details {
+      animation: none;
+    }
+  }
 }
 ::view-transition-new(agent-details):only-child {
   animation: details-in var(--dur-base) var(--ease-out);

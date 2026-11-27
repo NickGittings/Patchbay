@@ -461,12 +461,21 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
   useEffect(() => {
     selectedRef.current = details?.id
   })
+  // Deferred to the transition, so it clears only the details being closed: a card chosen in the
+  // meantime stays open.
+  const closeSelection = () => {
+    const closing = selectedRef.current
+    transitionPanels(
+      () => setSelected((id) => (id === closing ? undefined : id)),
+      DETAILS_TRANSITIONING,
+    )
+  }
   const closeDetails = () => {
     if (details)
       canvas.current
         ?.querySelector<HTMLElement>(`[data-card="${CSS.escape(details.id)}"] .agent-card-name`)
         ?.focus({ preventScroll: true })
-    transitionPanels(() => setSelected(undefined), DETAILS_TRANSITIONING)
+    closeSelection()
   }
   return (
     <AgentActions value={actions}>
@@ -474,8 +483,10 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
         className="agent-canvas"
         ref={canvas}
         // Minimap pans and zooms reach d3 without a source event, so they are caught here.
-        onPointerDownCapture={(e) => {
-          if ((e.target as Element).closest('.react-flow__minimap')) userMoved.current = true
+        // A drag on the minimap pans; a plain press there leaves auto-fit alone.
+        onPointerMoveCapture={(e) => {
+          if (e.buttons && (e.target as Element).closest('.react-flow__minimap'))
+            userMoved.current = true
         }}
         onWheelCapture={(e) => {
           if ((e.target as Element).closest('.react-flow__minimap')) userMoved.current = true
@@ -504,8 +515,9 @@ function AgentGraph({ onOpenTerminal }: { onOpenTerminal: (record: SessionRecord
           defaultEdgeOptions={{ type: 'smoothstep', style: { strokeWidth: 2 } }}
           onNodeClick={(_, node) => actions.select(node.id)}
           onPaneClick={() => {
-            if (selectedRef.current !== undefined)
-              transitionPanels(() => setSelected(undefined), DETAILS_TRANSITIONING)
+            if (selectedRef.current !== undefined) closeSelection()
+            // A card that left the graph keeps no selection to reopen on its return.
+            else setSelected(undefined)
           }}
         >
           <Background

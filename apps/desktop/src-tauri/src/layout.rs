@@ -79,16 +79,26 @@ pub fn clamp_to_monitors(
     };
     let requested_x = finite("x").unwrap_or(80.0);
     let requested_y = finite("y").unwrap_or(80.0);
+    let contains = |m: &&tauri::Monitor, x: f64, y: f64| {
+        let scale = m.scale_factor();
+        let p = m.position();
+        let size = m.size();
+        x >= f64::from(p.x) / scale
+            && x < f64::from(p.x) / scale + f64::from(size.width) / scale
+            && y >= f64::from(p.y) / scale
+            && y < f64::from(p.y) / scale + f64::from(size.height) / scale
+    };
+    // By its centre first: a window maximized on Windows sits a few pixels outside its display,
+    // so its origin alone would pick the primary one.
+    let centre_x = requested_x + finite("width").unwrap_or(0.0) / 2.0;
+    let centre_y = requested_y + finite("height").unwrap_or(0.0) / 2.0;
     let monitor = monitors
         .iter()
-        .find(|m| {
-            let scale = m.scale_factor();
-            let p = m.position();
-            let size = m.size();
-            requested_x >= f64::from(p.x) / scale
-                && requested_x < f64::from(p.x) / scale + f64::from(size.width) / scale
-                && requested_y >= f64::from(p.y) / scale
-                && requested_y < f64::from(p.y) / scale + f64::from(size.height) / scale
+        .find(|m| contains(m, centre_x, centre_y))
+        .or_else(|| {
+            monitors
+                .iter()
+                .find(|m| contains(m, requested_x, requested_y))
         })
         .or_else(|| monitors.first())
         .ok_or("No displays available")?;

@@ -97,7 +97,16 @@ export function useCollapsed(
     defaultSize: number
     minSize?: number
   },
-  { keepCollapsed = false, onReveal }: { keepCollapsed?: boolean; onReveal?: () => void } = {},
+  {
+    keepCollapsed = false,
+    onReveal,
+    glide: glides = false,
+  }: {
+    keepCollapsed?: boolean
+    onReveal?: () => void
+    /** Opens and closes glide as a view transition; the panel needs a name in index.css. */
+    glide?: boolean
+  } = {},
 ) {
   const panelRef = usePanelRef()
   const visibilityRef = useRef<Visibility | undefined>(undefined)
@@ -131,6 +140,7 @@ export function useCollapsed(
     const opening = shouldOpenPanel({ shown, reveal }, previous, keepCollapsed)
     // Only a measured panel glides; restoring a layout at launch lands in place.
     const glide =
+      glides &&
       !settling &&
       measuredRef.current &&
       (opening ? p.isCollapsed() : !shown && !p.isCollapsed()) &&
@@ -140,11 +150,14 @@ export function useCollapsed(
       transitionPanels(() => {
         pendingRef.current = false
         settlingRef.current = true
-        if (opening)
-          openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize, minSize)
-        else closePanel(p, id, openSizes, fillGroup?.current, fillPanel)
-        // Re-run with the latest visibility to confirm the change and finish the request.
-        setAttempt((n) => n + 1)
+        try {
+          if (opening)
+            openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize, minSize)
+          else closePanel(p, id, openSizes, fillGroup?.current, fillPanel)
+        } finally {
+          // Re-run with the latest visibility to confirm the change and finish the request.
+          setAttempt((n) => n + 1)
+        }
       })
       return
     }
@@ -178,6 +191,7 @@ export function useCollapsed(
     keepCollapsed,
     minSize,
     onReveal,
+    glides,
   ])
   const onResize = (size: PanelSize, _: unknown, prev: PanelSize | undefined) => {
     // A restored zero-size panel can report its first size after the mount layout effect, and an
@@ -195,9 +209,10 @@ export function useCollapsed(
   const expand = () => {
     const p = panelRef.current
     if (!p) return
-    transitionPanels(() =>
-      openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize, minSize),
-    )
+    const open = () =>
+      openPanel(p, id, openSizes, fillGroup?.current, fillPanel, defaultSize, minSize)
+    if (glides) transitionPanels(open)
+    else open()
   }
   /**
    * Returns whether the panel is collapsed afterwards, or, while the close glides, whether it will
@@ -206,7 +221,7 @@ export function useCollapsed(
   const collapse = () => {
     const p = panelRef.current
     if (!p) return false
-    if (!canTransitionPanels() || p.isCollapsed())
+    if (!glides || !canTransitionPanels() || p.isCollapsed())
       return closePanel(p, id, openSizes, fillGroup?.current, fillPanel)
     transitionPanels(() => closePanel(p, id, openSizes, fillGroup?.current, fillPanel))
     return true
