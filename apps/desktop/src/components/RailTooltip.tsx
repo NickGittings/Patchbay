@@ -9,6 +9,17 @@ import {
 import { tooltipDelay } from '../lib/tooltipDelay'
 import { createPortal } from 'react-dom'
 
+let quiet = false
+/** Restore focus to a rail button without opening its tooltip. */
+export function focusQuietly(el: HTMLElement) {
+  quiet = true
+  try {
+    el.focus()
+  } finally {
+    quiet = false
+  }
+}
+
 /** A rail button with a delayed pointer tooltip outside the rail's scrolling/clipping area. */
 export default function RailTooltip({
   tooltip,
@@ -78,7 +89,9 @@ export default function RailTooltip({
         aria-describedby={open ? id : undefined}
         onPointerEnter={delay.pointer}
         onPointerLeave={close}
-        onFocus={delay.focus}
+        onFocus={() => {
+          if (!quiet) delay.focus()
+        }}
         onBlur={close}
         onClick={(event) => {
           close()
