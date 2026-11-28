@@ -33,7 +33,7 @@ Prerequisites: Rust via rustup (edition 2024) and Node.js matching `apps/desktop
 | Run frontend unit tests            | `npm test`                                                       |
 | Run all smoke tests / pop-out only | `npm run smoke:all` / `npm run smoke`                            |
 | Run a smoke subset                 | `node scripts/smoke-all.mjs views git --bail`                    |
-| Run smoke scripts one at a time    | `node scripts/smoke-all.mjs --jobs 1` (default: 3 in parallel)   |
+| Run smoke scripts one at a time    | `node scripts/smoke-all.mjs --jobs 1` (default: 4 in parallel)   |
 | Retake README screenshots (macOS)  | `npm run screenshots`                                            |
 
 For code changes, run the Rust formatting, lint and test checks and `npm run check`. Before merging into `main`, run the desktop smoke suite (`npm run smoke:all`) on the proposed merge result in a temporary worktree. Update `main` after the suite passes. If a desktop session is unavailable, report the blocker before updating `main`. `npm run check` includes TypeScript, Oxlint, Prettier, Vitest, and Node smoke-fixture tests. See `package.json` for area-specific `smoke:*` scripts. Install optional nextest with `cargo install cargo-nextest --locked`.
@@ -54,7 +54,7 @@ Follow `.editorconfig`: spaces, LF, final newline, two-space indentation except 
 
 Name strings that code matches on (scopes, sentinels, event names, storage keys) as constants in the module that owns them, and import them rather than repeating the literal. Window events are `patchbay:<kebab>` with a `*_EVENT` constant; localStorage keys are `patchbay.<camelCase>`. Display copy stays inline. Tests may use the literal values, which pins them to the Rust mirror. Each Tauri command has one wrapper; see [Rust/TS sync](docs/architecture/rust-ts-sync.md).
 
-Workspace lints forbid unsafe Rust. The desktop adapter uses `deny` so macOS-only `writing_tools.rs` can locally allow its Objective-C calls; keep its other lints aligned with the workspace. Clippy checks run with `-D warnings`, including truncation, wrap, and sign-loss cast warnings: use checked conversions or targeted allowances. Public fallible functions carry applicable `# Errors` / `# Panics` docs; pure getters use `#[must_use]`.
+Workspace lints forbid unsafe Rust. The desktop adapter uses `deny` so macOS-only `writing_tools.rs` and the debug-only smoke hooks in `smoke.rs` can locally allow their Objective-C calls; keep its other lints aligned with the workspace. Clippy checks run with `-D warnings`, including truncation, wrap, and sign-loss cast warnings: use checked conversions or targeted allowances. Public fallible functions carry applicable `# Errors` / `# Panics` docs; pure getters use `#[must_use]`.
 
 Use concise commit subjects describing the change. PRs explain behavior, link related issues, report validation, and include screenshots for UI changes.
 

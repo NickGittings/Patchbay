@@ -2,7 +2,7 @@
 //   node scripts/smoke-all.mjs                  every script, then a summary
 //   node scripts/smoke-all.mjs views git        just those (the `npm run smoke:*` entries)
 //   node scripts/smoke-all.mjs --bail           stop at the first failure
-//   node scripts/smoke-all.mjs --jobs 1         one script at a time, output streamed (default 3)
+//   node scripts/smoke-all.mjs --jobs 1         one script at a time, output streamed (default 4)
 // Each script gets its own TMPDIR, so the fixed fixture paths under it never collide. With more
 // than one job, a script's output goes to a log printed when it finishes; `serial` scripts run
 // alone after the rest.
@@ -74,8 +74,6 @@ const SCRIPTS = {
       'chat-team-fixture.sh',
     ),
     run: ['scripts/chat-team.mjs'],
-    // Its restart loses the saved draft under parallel load.
-    serial: true,
   },
   'chat-controls': smoke('chat-controls.js', {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,
@@ -158,11 +156,9 @@ const SCRIPTS = {
     PATCHBAY_SMOKE_ROOT_2: defaultFixture,
   }),
   status: { run: ['scripts/status.mjs'] },
-  // These time out under parallel load (the minimap toggle, the context observation), so they
-  // run alone after the rest, like chat-team.
-  'conversation-context': { run: ['scripts/conversation-context.mjs'], serial: true },
+  'conversation-context': { run: ['scripts/conversation-context.mjs'] },
   lifecycle: { run: ['scripts/lifecycle.mjs'] },
-  navigation: { run: ['scripts/navigation-smoke.mjs'], serial: true },
+  navigation: { run: ['scripts/navigation-smoke.mjs'] },
   maintenance: smoke(
     'maintenance.js',
     {
@@ -201,11 +197,22 @@ const SCRIPTS = {
   },
 }
 // Started first, so the longest scripts don't queue behind short ones and stretch the run.
-const LONGEST = ['simple', 'stack', 'merge', 'tasks', 'chat-team', 'workspace', 'stories']
+const LONGEST = [
+  'simple',
+  'conversation-context',
+  'chat-team',
+  'merge',
+  'status',
+  'auto',
+  'planning',
+  'git',
+  'tasks',
+  'lifecycle',
+]
 
 const args = process.argv.slice(2)
 const bail = args.includes('--bail')
-let jobs = 3
+let jobs = 4
 const names = []
 for (let i = 0; i < args.length; i++) {
   const arg = args[i]
