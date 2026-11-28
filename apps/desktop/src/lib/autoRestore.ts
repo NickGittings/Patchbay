@@ -70,7 +70,20 @@ export function restoredAuto(value: unknown): AutoRun | null {
     Array.isArray(r.usageWait.providers) &&
     r.usageWait.providers.length > 0 &&
     r.usageWait.providers.every((p) => p === 'claude' || p === 'codex')
-      ? r.usageWait
+      ? {
+          providers: r.usageWait.providers,
+          atMs: r.usageWait.atMs,
+          // A malformed list only loses the early resume, never the wait itself.
+          ...(Array.isArray(r.usageWait.windows) &&
+          r.usageWait.windows.length > 0 &&
+          r.usageWait.windows.every(
+            (w) =>
+              (w?.provider === 'claude' || w?.provider === 'codex') &&
+              (w?.key === 'fiveHour' || w?.key === 'weekly'),
+          )
+            ? { windows: r.usageWait.windows }
+            : {}),
+        }
       : undefined
   const trigger = r.resumeTrigger
   const scheduled =

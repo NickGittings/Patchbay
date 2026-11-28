@@ -1044,13 +1044,12 @@ async function pauseAtUsageLimit(
   const paused = autoRun(projectId, task)
   if (paused?.runId !== run.runId || paused.status !== 'paused' || paused.pauseKind !== 'usage')
     return
-  const resets = providers.flatMap((provider) =>
-    exhaustedWindows(usage, provider, Date.now()).map((w) => w.window.resetsAtMs),
-  )
-  if (!resets.length) return
-  const atMs = Math.max(...resets)
+  const exhausted = providers.flatMap((provider) => exhaustedWindows(usage, provider, Date.now()))
+  if (!exhausted.length) return
+  const atMs = Math.max(...exhausted.map((w) => w.window.resetsAtMs))
+  const windows = exhausted.map(({ provider, key }) => ({ provider, key }))
   patch(projectId, task, {
-    usageWait: { providers, atMs },
+    usageWait: { providers, atMs, windows },
     resumeTrigger: paused.resumeOnUsageReset ? { kind: 'usage', atMs } : paused.resumeTrigger,
   })
 }
@@ -2931,6 +2930,7 @@ async function drive(projectId: string, task: string | null) {
           const usageWait = {
             providers: [...new Set(warnings.map((w) => w.provider))],
             atMs: Math.max(...warnings.map((w) => w.window.resetsAtMs)),
+            windows: warnings.map(({ provider, key }) => ({ provider, key })),
           }
           pause(blocked, 'usage')
           patch(projectId, task, {
@@ -3275,14 +3275,14 @@ export function setAutoUsageResume(projectId: string, task: string | null, enabl
 }
 /** A usage wait ends before its reset time once a newer reading is back under the limit. */
 function usageResetEarly(run: AutoRun) {
-  const providers = run.usageWait?.providers
+  const windows = run.usageWait?.windows
   return (
     run.resumeTrigger?.kind === 'usage' &&
-    !!providers &&
+    !!windows &&
     run.pausedMs !== undefined &&
     usageClearedSince(
       useUsage.getState().usage,
-      providers,
+      windows,
       run.pausedMs,
       useStore.getState().usageSettings,
       Date.now(),
@@ -3313,7 +3313,11 @@ async function driveScheduledResume(projectId: string, task: string | null) {
       if (useStore.getState().usageSettings.gateAuto && blocked.length) {
         patch(projectId, task, {
           usageWait: run.usageWait
-            ? { ...run.usageWait, atMs: Math.max(...blocked.map((w) => w.window.resetsAtMs)) }
+            ? {
+                ...run.usageWait,
+                atMs: Math.max(...blocked.map((w) => w.window.resetsAtMs)),
+                windows: blocked.map(({ provider, key }) => ({ provider, key })),
+              }
             : undefined,
           resumeTrigger: {
             kind: 'usage',

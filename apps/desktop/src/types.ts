@@ -177,7 +177,12 @@ export interface AutoRun {
   resumeOnUsageReset?: boolean
   /** One persisted, one-time continuation; executed only while Patchbay is open. */
   resumeTrigger?: { kind: 'time' | 'usage'; atMs: number }
-  usageWait?: { providers: ('claude' | 'codex')[]; atMs: number }
+  usageWait?: {
+    providers: ('claude' | 'codex')[]
+    atMs: number
+    /** The windows that caused the wait; without them it never ends before `atMs`. */
+    windows?: UsageWaitWindow[]
+  }
   /** Providers whose agents stopped at a limit mid-turn, known even without a reset time. */
   limitedProviders?: ('claude' | 'codex')[]
   pauseKind?: 'user' | 'restored' | 'inactive' | 'interrupted' | 'needsUser' | 'usage' | 'scheduled'
@@ -1174,6 +1179,8 @@ export interface StatusLineCapture {
   chained: string | null
   source: string
 }
+export type UsageWaitWindow = { provider: 'claude' | 'codex'; key: 'fiveHour' | 'weekly' }
+
 export interface Usage {
   claude: ProviderUsage | null
   codex: ProviderUsage | null

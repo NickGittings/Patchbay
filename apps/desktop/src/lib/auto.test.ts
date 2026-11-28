@@ -4948,9 +4948,11 @@ test.each([
   ['a newer reading still at the limit', 100, 1500, false],
   ['a reading from before the pause', 20, 500, false],
   ['no reading', null, 0, false],
+  ['a newer reading without the waited window', 20, 1500, false, 'fiveHour'],
+  ['a wait saved without its windows', 20, 1500, false, null],
 ] as const)(
   'a usage wait ends before its reset time on %s',
-  async (_name, percent, observedMs, resumes) => {
+  async (_name, percent, observedMs, resumes, waited: 'weekly' | 'fiveHour' | null = 'weekly') => {
     vi.useFakeTimers()
     vi.setSystemTime(2000)
     load()
@@ -4977,7 +4979,11 @@ test.each([
       pauseKind: 'usage',
       pausedMs: 1000,
       resumeOnUsageReset: true,
-      usageWait: { providers: ['codex'], atMs: 100_000 },
+      usageWait: {
+        providers: ['codex'],
+        atMs: 100_000,
+        ...(waited ? { windows: [{ provider: 'codex', key: waited }] } : {}),
+      },
       resumeTrigger: { kind: 'usage', atMs: 100_000 },
     })
     try {

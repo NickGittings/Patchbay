@@ -4,6 +4,7 @@ import {
   DEFAULT_NOTIFICATIONS,
   type SessionState,
   type Usage,
+  type UsageWaitWindow,
   type UsageWindow,
 } from '../types'
 import {
@@ -487,16 +488,20 @@ test.each([
   expect(presetProvider({ command })).toBe(provider)
 })
 
-test('a reset is seen only in a newer, unexpired reading under the limit', () => {
+test('a reset is seen only in a newer reading of each waited window, under the limit', () => {
   const since = now - 1
-  expect(usageClearedSince(usage(20), ['claude'], since, DEFAULT_USAGE, now)).toBe(true)
-  expect(usageClearedSince(usage(100), ['claude'], since, DEFAULT_USAGE, now)).toBe(false)
+  const five: UsageWaitWindow[] = [{ provider: 'claude', key: 'fiveHour' }]
+  const clear = (u: Usage | null, windows = five, settings = DEFAULT_USAGE, at = since) =>
+    usageClearedSince(u, windows, at, settings, now)
+  expect(clear(usage(20))).toBe(true)
+  expect(clear(usage(100))).toBe(false)
   // At the Auto pause threshold only while Auto is gated on it.
-  expect(usageClearedSince(usage(96), ['claude'], since, DEFAULT_USAGE, now)).toBe(false)
-  const ungated = { ...DEFAULT_USAGE, gateAuto: false }
-  expect(usageClearedSince(usage(96), ['claude'], since, ungated, now)).toBe(true)
-  expect(usageClearedSince(usage(20), ['claude'], now, DEFAULT_USAGE, now)).toBe(false)
-  expect(usageClearedSince(usage(20, now), ['claude'], since, DEFAULT_USAGE, now)).toBe(false)
-  expect(usageClearedSince(usage(20), ['claude', 'codex'], since, DEFAULT_USAGE, now)).toBe(false)
-  expect(usageClearedSince(usage(20), [], since, DEFAULT_USAGE, now)).toBe(false)
+  expect(clear(usage(96))).toBe(false)
+  expect(clear(usage(96), five, { ...DEFAULT_USAGE, gateAuto: false })).toBe(true)
+  expect(clear(usage(20), five, DEFAULT_USAGE, now)).toBe(false)
+  expect(clear(usage(20, now))).toBe(false)
+  // A newer reading that leaves out the waited window says nothing about it.
+  expect(clear(usage(20), [{ provider: 'claude', key: 'weekly' }])).toBe(false)
+  expect(clear(usage(20), [...five, { provider: 'codex', key: 'weekly' }])).toBe(false)
+  expect(clear(usage(20), [])).toBe(false)
 })

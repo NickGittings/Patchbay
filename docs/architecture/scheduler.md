@@ -50,7 +50,7 @@ full background plan/build/validate/review/merge path while another worktree rem
 `AutoRun.resumeOnUsageReset` defaults to false. The existing launch usage gate records a `usage`
 pause and structured `usageWait` (required providers and latest blocking reset). Opted-in runs
 also record `resumeTrigger: { kind: 'usage', atMs }`. Before resuming, usage is refreshed; all
-blocking provider windows must clear. Extended reset deadlines update both the pending trigger and saved usage wait. A limit reset can lower usage without moving the window's reset time, so the trigger also fires early once `usageClearedSince` (`lib/usage.ts`) sees, for every waited provider, an unexpired reading observed after `pausedMs` that is under the limit (and under the pause threshold while Auto is gated); a missing reading or one from before the pause waits for `atMs`.
+blocking provider windows must clear. Extended reset deadlines update both the pending trigger and saved usage wait. A limit reset can lower usage without moving the window's reset time, so the trigger also fires early once `usageClearedSince` (`lib/usage.ts`) sees each window that caused the wait (`usageWait.windows`, recorded at the pause) present and unexpired in a reading observed after `pausedMs`, with its provider under the limit (and under the pause threshold while Auto is gated). A missing reading or window, one from before the pause, or a wait saved without its windows waits for `atMs`.
 Missing or expired windows retain the existing allow-through behavior. The launch gate does not
 cover scan/worker launches.
 

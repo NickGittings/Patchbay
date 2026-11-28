@@ -22,6 +22,8 @@ const SESSIONS_FILE: &str = "claude-sessions.json";
 /// Longer than the weekly window, so a session seen in the current window is never forgotten.
 const SESSION_TTL_MS: u64 = 8 * 24 * 60 * 60 * 1000;
 const SESSION_CAP: usize = 64;
+/// How long a capture waits for another session's capture to finish before skipping.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
 /// After the chained shell exits, how long a background child may keep its output open.
 const EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 /// File names of the executables Patchbay installs as a status-line reporter.
@@ -623,9 +625,15 @@ fn save_capture(dir: &Path, input: &Value, now_ms: u64) -> Result<Option<Provide
     };
     crate::workspace::private_dir(dir)?;
     let lock = crate::workspace::lock(&dir.join("capture.lock"))?;
-    // Parallel Claude sessions must never wait on another capture.
-    if lock.try_lock().is_err() {
-        return Ok(Some(usage));
+    // A capture holds the lock for a few small reads and writes. Waiting briefly keeps a
+    // contended reading from going unrecorded, which would make its later redraws look new;
+    // a capture stuck longer than that is skipped, so no Claude session waits on another.
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    while lock.try_lock().is_err() {
+        if std::time::Instant::now() >= deadline {
+            return Ok(Some(usage));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let path = dir.join("claude.json");
     let previous: Option<ProviderUsage> = std::fs::read(&path)
@@ -651,9 +659,10 @@ fn save_capture(dir: &Path, input: &Value, now_ms: u64) -> Result<Option<Provide
                 continue;
             }
             let keep = match sent {
-                // Without a session id, a lower reading in the same window can't be told
-                // from an idle redraw.
-                None if session.is_none() => {
+                // Without a session id, or from a session not seen yet (first capture after an
+                // upgrade, or one pruned), a lower reading in the same window can't be told from
+                // an idle redraw.
+                None => {
                     saved.resets_at_ms > incoming.resets_at_ms
                         || (saved.resets_at_ms == incoming.resets_at_ms
                             && saved.used_percent > incoming.used_percent)
@@ -673,6 +682,16 @@ fn save_capture(dir: &Path, input: &Value, now_ms: u64) -> Result<Option<Provide
             }
         }
     }
+    // Unchanged values are still rewritten now and then, so the snapshot's age stays honest.
+    if !previous.is_some_and(|p| {
+        p.five_hour == usage.five_hour
+            && p.weekly == usage.weekly
+            && now_ms.abs_diff(p.observed_ms) < OBSERVED_REFRESH_MS
+    }) {
+        agent_hooks::atomic_replace(&path, &serde_json::to_vec(&usage)?, false)?;
+    }
+    // Recorded only once the merged reading is saved, so a failed save never marks a reading
+    // as already sent (which would make its repeats count as redraws).
     if let (Some(id), Some(raw)) = (session, claude_input(input, now_ms)) {
         let reading = SessionReading {
             five_hour: raw.five_hour,
@@ -693,14 +712,6 @@ fn save_capture(dir: &Path, input: &Value, now_ms: u64) -> Result<Option<Provide
                 false,
             )?;
         }
-    }
-    // Unchanged values are still rewritten now and then, so the snapshot's age stays honest.
-    if !previous.is_some_and(|p| {
-        p.five_hour == usage.five_hour
-            && p.weekly == usage.weekly
-            && now_ms.abs_diff(p.observed_ms) < OBSERVED_REFRESH_MS
-    }) {
-        agent_hooks::atomic_replace(&path, &serde_json::to_vec(&usage)?, false)?;
     }
     Ok(Some(usage))
 }
@@ -1252,6 +1263,18 @@ mod tests {
     }
 
     #[test]
+    fn an_unseen_sessions_first_reading_cannot_lower_the_saved_one() {
+        let fixture = Fixture::new();
+        weekly_after(&fixture, "busy", 100, 10);
+        // A session first seen now (after an upgrade or pruning) may be redrawing an old reading.
+        assert_eq!(weekly_after(&fixture, "idle", 30, 20), 100.0);
+        // The busy session's repeat still holds the saved reading.
+        assert_eq!(weekly_after(&fixture, "busy", 100, 30), 100.0);
+        // Once the new session reports something new, it stands.
+        assert_eq!(weekly_after(&fixture, "idle", 20, 40), 20.0);
+    }
+
+    #[test]
     fn captures_without_a_session_keep_the_higher_reading_and_record_nothing() {
         let fixture = Fixture::new();
         let input = |weekly: u32| json!({"rate_limits": {"seven_day":{"used_percentage":weekly,"resets_at":600}}});
@@ -1259,6 +1282,23 @@ mod tests {
         let merged = save_capture(&fixture.0, &input(20), 20).unwrap().unwrap();
         assert_eq!(merged.weekly.unwrap().used_percent, 100.0);
         assert!(!fixture.0.join(SESSIONS_FILE).exists());
+    }
+
+    #[test]
+    fn a_capture_waits_briefly_for_another_sessions_capture() {
+        let fixture = Fixture::new();
+        crate::workspace::private_dir(&fixture.0).unwrap();
+        let held = crate::workspace::lock(&fixture.0.join("capture.lock")).unwrap();
+        held.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            drop(held);
+        });
+        weekly_after(&fixture, "a", 60, 10);
+        release.join().unwrap();
+        // The contended reading was recorded, so its redraw later is still a redraw.
+        assert!(read_sessions(&fixture.0).contains_key("a"));
+        assert!(fixture.0.join("claude.json").exists());
     }
 
     #[test]

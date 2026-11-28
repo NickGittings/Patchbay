@@ -2,7 +2,7 @@ import { commandProfile } from './agentProfiles'
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import { useStore } from '../store'
-import type { SessionState, Usage, UsageSettings, UsageWindow } from '../types'
+import type { SessionState, Usage, UsageSettings, UsageWaitWindow, UsageWindow } from '../types'
 import { usageRead } from './ipc'
 import { sendUsageNotification } from './notifications'
 export { restoredUsage, mergeRestoredUsage, parseThreshold } from './usageSettings'
@@ -114,26 +114,31 @@ export function usageBlock(
   return null
 }
 
-/** Whether readings taken after `sinceMs` show every provider back under its limit, as after a
- * limit reset that leaves the window's reset time unchanged. A missing reading is unknown. */
+/** Whether readings taken after `sinceMs` show each waited window present, unexpired and back
+ * under its limit, as after a limit reset that leaves the reset time unchanged. A missing
+ * reading or window is unknown, so it never clears a wait. */
 export function usageClearedSince(
   usage: Usage | null,
-  providers: readonly ('claude' | 'codex')[],
+  windows: readonly UsageWaitWindow[],
   sinceMs: number,
   settings: UsageSettings,
   now: number,
 ) {
   const warnings = usageWarnings(usage, settings, now)
+  const blocked = (provider: 'claude' | 'codex') =>
+    exhaustedWindows(usage, provider, now).length > 0 ||
+    (settings.gateAuto && warnings.some((w) => w.provider === provider && w.level === 'limit'))
   return (
-    providers.length > 0 &&
-    providers.every((provider) => {
+    windows.length > 0 &&
+    windows.every(({ provider, key }) => {
       const reading = usage?.[provider]
+      const window = reading?.[key]
       return (
         !!reading &&
         reading.observedMs > sinceMs &&
-        USAGE_WINDOWS.some((key) => (reading[key]?.resetsAtMs ?? 0) > now) &&
-        !exhaustedWindows(usage, provider, now).length &&
-        !(settings.gateAuto && warnings.some((w) => w.provider === provider && w.level === 'limit'))
+        !!window &&
+        window.resetsAtMs > now &&
+        !blocked(provider)
       )
     })
   )
