@@ -212,7 +212,8 @@ test('Chat reconnect uses the existing reveal path and keeps an unlisted planner
     activeTask: 'one',
     activeSession: r.id,
   })
-  expect(useSimpleUi.getState().worktrees[simpleKey('p', 'one')]).toMatchObject({
+  // The drawer belongs to the project's one conversation, wherever the focus moved.
+  expect(useSimpleUi.getState().worktrees[simpleKey('p', null)]).toMatchObject({
     terminal: 'user',
     terminalSession: { id: r.id, generation: 7, pinned: true },
   })

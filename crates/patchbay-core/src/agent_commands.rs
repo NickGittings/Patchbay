@@ -452,8 +452,22 @@ pub fn dispatch(app: &impl Host, launch: &LaunchContext, action: Action) -> Resu
                     .into_iter()
                     .filter(|r| r.chat_team.as_deref() == Some(&team.id))
                     .collect();
+            let root = Path::new(&project.root);
+            // The project's lead works in every worktree; a legacy worktree team sees its own.
+            let sessions: Vec<_> = records
+                .iter()
+                .filter(|r| {
+                    r.metadata.project_id == launch.project_id
+                        && (team.task.is_none() || r.metadata.task == team.task)
+                })
+                .collect();
+            let worktrees = if team.task.is_none() {
+                crate::orchestration::chat::lead_worktrees(root)
+            } else {
+                vec![]
+            };
             Ok(
-                json!({"team": team, "rounds": rounds, "sessions": records.iter().filter(|r| r.metadata.project_id == launch.project_id && r.metadata.task == team.task).collect::<Vec<_>>()}),
+                json!({"team": team, "rounds": rounds, "worktrees": worktrees, "sessions": sessions}),
             )
         }
         Action::ProviderRun { command } => {
@@ -1054,10 +1068,12 @@ mod tests {
     }
 
     #[test]
-    fn team_sessions_are_bound_to_the_authenticated_project_and_task() {
+    fn the_project_lead_sees_its_projects_sessions_in_every_worktree() {
         use crate::orchestration::chat::{self, Checkpoint, Command, Initialize};
 
-        for task in [None, Some("task")] {
+        // One lead per project, in the project folder.
+        let task: Option<&str> = None;
+        {
             let root = std::env::temp_dir()
                 .join(format!("patchbay-team-sessions-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&root).unwrap();
@@ -1122,9 +1138,16 @@ mod tests {
                 },
             )
             .unwrap();
-            let sessions = result["sessions"].as_array().unwrap();
-            assert_eq!(sessions.len(), 1);
-            assert_eq!(sessions[0]["id"], "one");
+            let mut ids: Vec<_> = result["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["id"].as_str().unwrap().to_owned())
+                .collect();
+            ids.sort();
+            // Another worktree's agent is the lead's to coordinate; another project's is not.
+            assert_eq!(ids, ["one", "other-task"]);
+            assert!(result["worktrees"].is_array());
             std::fs::remove_dir_all(root).unwrap();
         }
     }
@@ -1358,6 +1381,8 @@ mod tests {
         );
         let root = root.canonicalize().unwrap();
         let mut lead_record = record("one", "task");
+        // The project's lead runs in the project folder.
+        lead_record["metadata"]["task"] = Value::Null;
         lead_record["snapshot"] = json!({
             "data":"", "end":0, "generation":1, "running":true,
             "startedMs":1, "status":crate::status::SessionStatus::default()
@@ -1366,7 +1391,7 @@ mod tests {
         worker["id"] = json!("worker");
         let records = serde_json::from_value::<Vec<Record>>(json!([lead_record, worker])).unwrap();
         chat::initialize(&root, "p", &root, Initialize {
-            task: Some("task".into()),
+            task: None,
             session_id: "one".into(),
             preset: serde_json::from_value(json!({
                 "id":"codex", "name":"Codex", "kind":"agent", "command":"codex", "adapter":"codex"
@@ -1387,6 +1412,7 @@ mod tests {
         };
         let lead = LaunchContext {
             generation: Some(1),
+            task: None,
             ..launch()
         };
         let planner = LaunchContext {

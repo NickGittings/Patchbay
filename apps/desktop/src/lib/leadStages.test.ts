@@ -197,6 +197,10 @@ test('a finished planner reports whether it saved a plan', async () => {
   vi.mocked(planRead).mockResolvedValueOnce({ text: 'Plan', savedMs: 150, cut: false })
   await settleLeadStage(team, planRun)
   expect(lastControl()).toMatchObject({ state: 'completed' })
+  // The lead works from the project folder, so it is pointed at this worktree's plan.
+  expect(lastControl()).toMatchObject({
+    result: expect.stringContaining('"$(dirname "$PATCHBAY_PLAN_FILE")/t1.md"'),
+  })
 })
 
 test('a merge goes to the default destination through the merge role', async () => {

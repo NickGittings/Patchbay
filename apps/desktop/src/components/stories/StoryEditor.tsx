@@ -25,6 +25,7 @@ import { confirmAction } from '../../lib/confirm'
 import ExtensionMenu from '../../extensions/ExtensionMenu'
 import Dialog from '../Dialog'
 import { shortTitle } from '../../lib/shortTitle'
+import { focusWork } from '../../lib/workFocus'
 
 export default function StoryEditor({
   projectId,
@@ -121,6 +122,8 @@ export default function StoryEditor({
     onSaved(saved)
     return saved
   }
+  // The worktree this item's work runs in, which Focus work brings into view.
+  const linked = useStore((s) => s.tasks.find((t) => t.id === item?.task))
   const act = async (action?: 'plan' | 'auto' | 'delete' | 'worktree' | 'done' | 'reopen') => {
     if (busy) return
     setBusy(true)
@@ -357,6 +360,15 @@ export default function StoryEditor({
             <button type="button" disabled={!ready} onClick={() => void act('auto')}>
               Auto…
             </button>
+            {linked && !linked.missing && (
+              <button
+                type="button"
+                title={`Show ${linked.title}${linked.branch ? ` (${linked.branch})` : ''} in Chat and the views`}
+                onClick={() => focusWork(linked.id)}
+              >
+                Focus work
+              </button>
+            )}
           </div>
           {item && !deleting && (
             <button type="button" className="danger" onClick={() => setDeleting(true)}>

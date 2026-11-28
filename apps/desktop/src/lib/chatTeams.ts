@@ -3,7 +3,8 @@ import { limitStopped } from './chat'
 import { planTerminals } from './plan'
 import { checkHooks, hooksUsable } from './agentHooks'
 import { ProviderSetupRequired, requireProviderAuth } from './providerAuth'
-import { agentProvider } from './ipc'
+import { agentProvider, taskList } from './ipc'
+import { LEAD_HOME_TASK } from './chatHome'
 import { profileHookProvider } from './agentProfiles'
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
@@ -12,6 +13,7 @@ import {
   LEAD_RECIPIENT,
   type Project,
   type SessionRecord,
+  type Task,
   type TerminalSpec,
   type WorkflowAction,
   type WorkflowState,
@@ -141,6 +143,116 @@ export type TeamControl =
   | { kind: 'handoffApplied'; id: string }
   | { kind: 'note'; id: string; text: string; sessions: string[] }
   | { kind: 'notesDelivered'; ids: string[] }
+
+/**
+ * The team as seen from the worktree a lead request works in (its `worktree` setting, a task id),
+ * so stages and Auto launch there. The project's lead keeps its own task otherwise.
+ */
+export function requestTeam(
+  team: ChatTeam,
+  request: { settings: Record<string, unknown> },
+  /** A started request settles from its saved run even once a cleanup removed its worktree. */
+  { started = false } = {},
+): ChatTeam {
+  const id = request.settings.worktree
+  if (typeof id !== 'string' || id === team.task) return team
+  const task = projectStateOf(team.projectId)?.tasks.find((t) => t.id === id)
+  if (started && (!task || task.missing)) return { ...team, task: id, target: task?.worktree ?? '' }
+  if (!task || task.missing)
+    throw new Error(`Worktree ${id} is no longer open. Run agent team for the open worktrees.`)
+  return { ...team, task: id, target: task.worktree }
+}
+
+/**
+ * The team in worktree `id` as the service lists it: null when it is gone, undefined when the
+ * list can't be read.
+ */
+function workspaceTask(
+  team: ChatTeam,
+  id: unknown,
+  tasks: readonly Task[] | null,
+): ChatTeam | null | undefined {
+  if (typeof id !== 'string') return null
+  if (!tasks) return undefined
+  const task = tasks.find((t) => t.id === id && !t.missing)
+  return task ? { ...team, task: id, target: task.worktree } : null
+}
+
+/** Lead request states that haven't started anything yet. */
+export const PENDING_REQUESTS: readonly WorkflowState[] = ['queued', 'waiting']
+/** Lead request states still under way: they keep the lead at work. */
+export const UNSETTLED_REQUESTS: readonly WorkflowState[] = [
+  ...PENDING_REQUESTS,
+  'starting',
+  'running',
+]
+
+/** Lead requests that pause, resume or stop an Auto run. */
+const AUTO_CONTROLS: readonly string[] = ['pauseAuto', 'resumeAuto', 'stopAuto']
+
+export { LEAD_HOME_TASK }
+
+/** The project's lead team, wherever the user's focus is. */
+export function projectTeam(projectId: string) {
+  return teamFor(projectId, LEAD_HOME_TASK)
+}
+
+/**
+ * The worktree a lead request works in: its `worktree`, the worktree a `newWorktree` Auto created
+ * (from its saved run, else its linked story once settled; undefined until it exists), the run a
+ * pauseAuto, resumeAuto or stopAuto `request` controls, else the lead's own.
+ */
+export function requestWorktree(
+  team: Pick<ChatTeam, 'task' | 'projectId' | 'requests'>,
+  request: NonNullable<ChatTeam['requests']>[number],
+): string | null | undefined {
+  const target = request.settings.request
+  if (AUTO_CONTROLS.includes(request.action) && typeof target === 'string') {
+    const started = team.requests?.find((r) => r.id === target && r.action === 'startAuto')
+    if (started) return requestWorktree(team, started)
+  }
+  const named = request.settings.worktree
+  if (typeof named === 'string') return named
+  if (request.settings.newWorktree) {
+    try {
+      const task = (JSON.parse(request.result ?? '') as { task?: unknown } | null)?.task
+      if (typeof task === 'string') return task
+    } catch {
+      // A settled request's result is its outcome text.
+    }
+    const story = projectStateOf(team.projectId)?.stories.find(
+      (s) => s.id === request.settings.story,
+    )
+    return story?.task ?? undefined
+  }
+  return team.task
+}
+
+/**
+ * The project's lead as one worktree's stages see it: only its requests for that worktree, its
+ * paused or stopped state only where it has requests, and its status only where its latest stage
+ * or Auto request works. Older per-worktree teams are not
+ * consulted.
+ */
+export function focusTeam(team: ChatTeam | undefined, task: string | null) {
+  if (!team) return team
+  const requests = team.requests ?? []
+  const latest = requests.findLast(
+    (r) =>
+      LEAD_STAGE_ACTIONS.includes(r.action) ||
+      r.action === 'startAuto' ||
+      r.action === 'startCouncilReview' ||
+      r.action === 'startReview',
+  )
+  const here = requests.filter((r) => requestWorktree(team, r) === task)
+  return {
+    ...team,
+    // Pausing or stopping the lead halts only the worktrees it has work in.
+    state: task === team.task || here.length ? team.state : 'running',
+    status: !latest || requestWorktree(team, latest) === task ? team.status : null,
+    requests: here,
+  }
+}
 
 export const useChatTeams = create<{
   teams: Record<string, ChatTeam[]>
@@ -401,6 +513,8 @@ export async function resetLead(team: ChatTeam, session = team.lead.sessionId) {
     throw error
   }
 }
+/** Mirrors core: a completion waits while the lead runs work in other worktrees; retry later. */
+export const LEAD_BUSY_ELSEWHERE = 'The lead is still at work in other worktrees'
 /**
  * Start the next task with a fresh lead, unless the lead has moved on since `sinceMs`. `id` must
  * be stable for this completion, so retries apply once. Reads durable teams, because the cache may
@@ -588,9 +702,12 @@ export async function refreshChatTeams(projectId: string) {
       ),
     )
   }
-  const teams = await readChatTeams(projectId)
+  let teams = await readChatTeams(projectId)
   useChatTeams.setState((s) => ({ teams: { ...s.teams, [projectId]: teams } }))
+  teams = await retireWorktreeLeads(projectId, teams)
   for (const savedTeam of teams) {
+    // A retired worktree lead has nothing left to drive.
+    if (savedTeam.task !== LEAD_HOME_TASK && savedTeam.state === 'stopped') continue
     const team = await syncTeamCatalog(savedTeam)
     await applyTeamHandoff(team)
     await driveLeadRequests(team)
@@ -613,7 +730,9 @@ export async function refreshChatTeams(projectId: string) {
   })
   for (const [key, workspace] of workspaces) {
     const task = key || null
+    // One lead per project: only the project folder's Chat adopts its saved agent as the lead.
     if (
+      task !== LEAD_HOME_TASK ||
       !workspace.simple?.selectedAgent ||
       teams.some((t) => t.task === task) ||
       (workspace.auto && !['done', 'stopped'].includes(workspace.auto.status))
@@ -625,6 +744,69 @@ export async function refreshChatTeams(projectId: string) {
     if (record) await initializeTeam(projectId, task, record, true).catch(() => {})
   }
 }
+/**
+ * Unfinished requests, a pending replacement, a running round, an unfinished Auto run in its
+ * worktree, a lead message still to deliver or a lead still in a turn keep a team at work.
+ * `lead` is the lead's session as the service reports it.
+ */
+export function teamAtWork(
+  team: ChatTeam,
+  runs: readonly ProviderRun[],
+  lead: SessionRecord | undefined,
+) {
+  const state = projectStateOf(team.projectId)
+  const auto = state ? workspaceOf(state, team.task).auto : null
+  const live = lead?.snapshot
+  return (
+    !!team.reset ||
+    (team.requests ?? []).some((r) => UNSETTLED_REQUESTS.includes(r.state)) ||
+    runs.some((r) => r.chatTeam === team.id && ['running', 'paused'].includes(r.state)) ||
+    (!!auto && !['done', 'stopped'].includes(auto.status)) ||
+    team.messages.some(
+      (m) => m.recipient === LEAD_RECIPIENT && m.state !== 'delivered' && !m.passive,
+    ) ||
+    (!!live?.running && ['working', 'needsInput'].includes(live.status?.agent?.state ?? ''))
+  )
+}
+
+/** How often a project's older per-worktree leads are checked for retirement. */
+const RETIRE_CHECK_MS = 15_000
+const retireChecked = new Map<string, number>()
+
+/**
+ * Before one lead per project, each worktree could have its own. Such a team is stopped once its
+ * work settles, which releases its worktree to the project's lead; its chat stays readable when
+ * that worktree is in focus. A team still at work finishes first, so nothing it started is cut
+ * short. Rounds and sessions are read from the service, since the caches may not be loaded yet.
+ */
+async function retireWorktreeLeads(projectId: string, teams: ChatTeam[]) {
+  const legacy = teams.filter((t) => t.task !== LEAD_HOME_TASK && t.state !== 'stopped')
+  // Without the project's state its Auto runs are unknown, and might still be working.
+  if (!legacy.length || !projectStateOf(projectId)) return teams
+  // A legacy team's work takes a while to settle, so the service is asked only now and then.
+  const now = Date.now()
+  if (now - (retireChecked.get(projectId) ?? 0) < RETIRE_CHECK_MS) return teams
+  retireChecked.set(projectId, now)
+  const { providerRuns } = await import('./orchestration')
+  const { sessionsList } = await import('./ipc')
+  const [runs, records] = await Promise.all([
+    providerRuns(projectId).catch(() => null),
+    sessionsList().catch(() => null),
+  ])
+  // Unknown rounds or sessions might still be working.
+  if (!runs || !records) return teams
+  const result: ChatTeam[] = []
+  for (const team of teams) {
+    const lead = records.find((r) => r.id === team.lead.sessionId)
+    if (!legacy.includes(team) || teamAtWork(team, runs, lead)) {
+      result.push(team)
+      continue
+    }
+    result.push(await controlTeam(team, { kind: 'stop' }).catch(() => team))
+  }
+  return result
+}
+
 export function autoOwnership(
   projectId: string,
   task: string | null,
@@ -641,30 +823,60 @@ export function autoOwnership(
 /** Claim durably before invoking existing workflow controls. Lost replies are never replayed. */
 async function driveLeadRequests(team: ChatTeam) {
   if (team.state !== 'running' || team.reset) return
+  // One listing from the service per pass, read only when the store doesn't know a worktree.
+  let listing: Promise<Task[] | null> | undefined
   for (const request of team.requests ?? []) {
     // Another Patchbay build's action: leave it for that build instead of claiming it.
     if (request.action === 'unknown') continue
+    // Its worktree may have been deleted since, such as by a merge's cleanup. A request that
+    // hasn't started then fails, saying so; one already under way still settles from its saved
+    // run, never from the project folder's state.
+    let scoped = team
+    // Settled requests only read their saved outcome, so they never need the disk.
+    const acting =
+      UNSETTLED_REQUESTS.includes(request.state) ||
+      (request.action === 'startAuto' && request.state === 'failed')
+    try {
+      scoped = requestTeam(team, request, { started: !acting })
+    } catch (error) {
+      // The store's task list can lag behind a worktree created since, so ask the disk first.
+      listing ??= taskList(team.projectId).catch(() => null)
+      const listed = workspaceTask(team, request.settings.worktree, await listing)
+      if (listed === undefined) continue
+      if (listed) scoped = listed
+      else if (!PENDING_REQUESTS.includes(request.state))
+        scoped = requestTeam(team, request, { started: true })
+      else {
+        await controlTeam(team, {
+          kind: 'requestState',
+          id: request.id,
+          state: 'failed',
+          result: String(error),
+        }).catch(() => {})
+        continue
+      }
+    }
     const reviewRound = ['startCouncilReview', 'startReview'].includes(request.action)
     const leadStage = LEAD_STAGE_ACTIONS.includes(request.action)
     if (leadStage && request.state === 'running') {
       const { settleLeadStage } = await import('./leadStages')
       // A concurrent refresh may settle it first; the next one sees the saved outcome.
-      await settleLeadStage(team, request).catch(() => {})
+      await settleLeadStage(scoped, request).catch(() => {})
       continue
     }
     if (request.action === 'startAuto' && request.state === 'running') {
       const { settleLeadAuto } = await import('./leadAuto')
-      await settleLeadAuto(team, request).catch(() => {})
+      await settleLeadAuto(scoped, request).catch(() => {})
       continue
     }
     if (request.action === 'startAuto' && request.state === 'failed') {
       const { followLeadAuto } = await import('./leadAuto')
-      await followLeadAuto(team, request).catch(() => {})
+      await followLeadAuto(scoped, request).catch(() => {})
       continue
     }
     if (reviewRound && ['running', 'starting'].includes(request.state)) {
       try {
-        await driveCouncil(team, request)
+        await driveCouncil(scoped, request)
       } catch (error) {
         await controlTeam(team, {
           kind: 'requestState',
@@ -697,17 +909,17 @@ async function driveLeadRequests(team: ChatTeam) {
         continue
       }
       if (reviewRound) {
-        await driveCouncil(team, request)
+        await driveCouncil(scoped, request)
         continue
       }
       if (leadStage) {
         const { startLeadStage } = await import('./leadStages')
-        await startLeadStage(team, request)
+        await startLeadStage(scoped, request)
         continue
       }
       if (request.action === 'startAuto') {
         const { startLeadAuto } = await import('./leadAuto')
-        await startLeadAuto(team, request)
+        await startLeadAuto(scoped, request)
         continue
       }
       const auto = await import('./auto')
@@ -734,13 +946,13 @@ async function driveLeadRequests(team: ChatTeam) {
             },
           ],
         })
-      } else if (['pauseAuto', 'resumeAuto', 'stopAuto'].includes(request.action)) {
+      } else if (AUTO_CONTROLS.includes(request.action)) {
         // `request` names the startAuto whose run to control, such as a story's own worktree.
         const target = request.settings.request
         const task =
           typeof target === 'string'
             ? (await import('./leadAuto')).leadAutoTask(team, target)
-            : team.task
+            : scoped.task
         if (request.action === 'pauseAuto') auto.pauseAuto(team.projectId, task)
         else if (request.action === 'resumeAuto') await auto.resumeAuto(team.projectId, task)
         else auto.stopAuto(team.projectId, task)

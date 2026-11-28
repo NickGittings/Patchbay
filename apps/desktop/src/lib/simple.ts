@@ -861,13 +861,17 @@ export function thread(snapshot: SimpleSnapshot, worktree: SimpleWorktree) {
             : undefined,
       })
   }
-  items.sort(
-    (a, b) =>
-      a.atMs - b.atMs ||
-      Number(b.kind === 'plan') - Number(a.kind === 'plan') ||
-      a.id.localeCompare(b.id),
-  )
+  items.sort(timelineOrder)
   return { stage, planReady: currentPlan, records, foreign, items, planningStarted: start, lead }
+}
+
+/** Chat's timeline order: by time, a plan first on a tie, then by id. */
+export function timelineOrder(a: TimelineItem, b: TimelineItem) {
+  return (
+    a.atMs - b.atMs ||
+    Number(b.kind === 'plan') - Number(a.kind === 'plan') ||
+    a.id.localeCompare(b.id)
+  )
 }
 
 /** A review's counts without the zeros, e.g. `1 high, 2 low`; `clean` when nothing was found. */

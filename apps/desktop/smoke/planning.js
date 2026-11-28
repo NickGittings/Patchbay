@@ -38,6 +38,9 @@
   const smoke = await until('smoke hooks', () => window.__patchbaySmoke)
   const state = () => smoke.store.getState()
   const text = () => document.querySelector('.simple-thread')?.textContent ?? ''
+  // Chat's one conversation lives in the project folder, wherever the focus is.
+  const home = () =>
+    state().activeTask === null ? state().simple : state().taskWorkspaces['']?.simple
   const draft = '_project_draft'
   let phase = 'open fixture'
   try {
@@ -63,9 +66,12 @@
       await smoke.startTerminal('@plan', fake.id, task, pid)
       const sid = smoke.sessionId('@plan', fake.id, task)
       await until('planner available', () => state().sessionRecords.some((r) => r.id === sid))
+      // Chat's one conversation talks to agents in the project folder; worktree planners run
+      // beside it without one.
+      if (task !== null) return sid
       // This manual-planning fixture addresses its planner, rather than starting a Chat lead.
-      state().patchTask(pid, task, {
-        simple: { ...state().simple, selectedAgent: sid },
+      state().patchTask(pid, null, {
+        simple: { startedMs: Date.now(), log: [], ...home(), selectedAgent: sid },
       })
       return sid
     }
@@ -85,7 +91,7 @@
     state().setActiveTask(first.id)
     state().setSimpleMode(true)
     await until('first chat', () => document.querySelector('.simple-chat'))
-    const sid = await startPlanner(first.id)
+    const sid = await startPlanner(null)
     input(document.querySelector('[aria-label="Message agent"]'), 'Original prompt to clear')
     ;(
       await until('Send ready', () => {
@@ -101,7 +107,7 @@
     const confirm = await soon('clear confirmation', () => confirmDialog('Clear chat'))
     button('Cancel', confirm).click()
     assert(
-      state().simple.log.some((e) => e.text === 'Original prompt to clear'),
+      home().log.some((e) => e.text === 'Original prompt to clear'),
       'Cancel cleared history',
     )
     input(
@@ -114,7 +120,7 @@
         return b && !b.disabled && b
       })
     ).click()
-    const chatKey = smoke.simpleKey(pid, first.id)
+    const chatKey = smoke.simpleKey(pid, null)
     const queued = smoke.simpleUi.getState().worktrees[chatKey].queued
     assert(queued, 'message was not queued')
     ;(await chatMenu('Clear chat')).click()
@@ -122,14 +128,11 @@
     smoke.simpleUi.getState().patch(chatKey, { pendingAction: true })
     await until('confirmation guard', () => button('Clear', confirm2).disabled)
     button('Clear', confirm2).click()
-    assert(state().simple.log.length > 0, 'pending action bypassed guard')
+    assert(home().log.length > 0, 'pending action bypassed guard')
     smoke.simpleUi.getState().patch(chatKey, { pendingAction: false })
     await until('confirmation enabled', () => !button('Clear', confirm2).disabled)
     button('Clear', confirm2).click()
-    await until(
-      'history cleared',
-      () => state().simple.log.length === 0 && state().simple.clearBoundary,
-    )
+    await until('history cleared', () => home().log.length === 0 && home().clearBoundary)
     assert(
       smoke.simpleUi.getState().worktrees[chatKey].queued === queued,
       'clear changed the queued message',
@@ -143,16 +146,16 @@
     )
     await smoke.reconcileSessions(false)
     assert(
-      !state().simple.log.some((e) => e.text === 'Original prompt to clear'),
+      !home().log.some((e) => e.text === 'Original prompt to clear'),
       'reconcile replayed the cleared prompt',
     )
     assert(
-      (await smoke.planRead(pid, first.id)).text.includes('Simple fixture plan'),
+      (await smoke.planRead(pid, null)).text.includes('Simple fixture plan'),
       'clear removed the plan',
     )
     phase = 'sibling planner'
     state().setActiveTask(sibling.id)
-    await until('sibling chat', () => !text().includes('I planned the'))
+    await until('sibling focus', () => state().activeTask === sibling.id)
     assert(!(await smoke.planRead(pid, sibling.id)).text.trim(), 'sibling inherited another plan')
     const siblingSid = await startPlanner(sibling.id)
     await until(

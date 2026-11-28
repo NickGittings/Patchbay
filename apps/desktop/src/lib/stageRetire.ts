@@ -1,6 +1,6 @@
 import { projectStateOf, useStore, workspaceOf } from '../store'
 import type { SessionState } from '../types'
-import { teamFor } from './chatTeams'
+import { projectTeam } from './chatTeams'
 import { terminalStop } from './ipc'
 import { launchOrigin, workflowLog, type SimpleState } from './simple'
 import { awaitingTurn } from './simpleFlow'
@@ -78,7 +78,7 @@ export async function retireStageAgents(
     sessions: useStore.getState().sessions,
     launched,
     foreign,
-    leadSession: teamFor(projectId, task)?.lead.sessionId,
+    leadSession: projectTeam(projectId)?.lead.sessionId,
     queuedSession: useSimpleUi.getState().worktrees[simpleKey(projectId, task)]?.queued?.sessionId,
     autoStatus: workspace.auto?.status,
   })

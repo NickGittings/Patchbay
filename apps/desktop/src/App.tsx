@@ -19,6 +19,7 @@ import AgentCanvas from './components/AgentCanvas'
 import { useSimpleData } from './lib/useSimpleData'
 import { useChatReading, WorktreeReaderContext } from './lib/useStageModel'
 import { pinChatTerminal, simpleKey, useSimpleUi } from './lib/simpleUi'
+import { LEAD_HOME_TASK } from './lib/chatHome'
 import ChatMode from './components/ChatMode'
 import { followNotifications } from './lib/notifications'
 import { followUsage } from './lib/usage'
@@ -232,7 +233,12 @@ function NavigationView() {
   const openAgentTerminal = (record: SessionRecord) => {
     const s = useStore.getState()
     if (simple) {
-      pinChatTerminal(scopeKey, record.id, s.sessions[record.id]?.generation)
+      // Chat's drawer belongs to the project's one conversation, wherever the focus is.
+      pinChatTerminal(
+        simpleKey(s.project?.id, LEAD_HOME_TASK),
+        record.id,
+        s.sessions[record.id]?.generation,
+      )
       if (chatPanel.collapsed) chatPanel.expand()
       return
     }

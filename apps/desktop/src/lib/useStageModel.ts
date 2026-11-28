@@ -1,8 +1,8 @@
-import { createContext, useContext } from 'react'
+import { createContext, useContext, useMemo } from 'react'
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../store'
-import { useChatTeams } from './chatTeams'
+import { focusTeam, LEAD_HOME_TASK, useChatTeams } from './chatTeams'
 import { useExpiredDeadline } from './clock'
 import { chatReviewBase } from './reviewAgents'
 import { LAUNCH_RECORD_GRACE_MS, pendingLaunch, recordStage, thread } from './simple'
@@ -36,9 +36,22 @@ export function useStageModel(explicit?: WorktreeReader) {
     })),
   )
   const key = simpleKey(s.project?.id, s.activeTask)
-  const team = useChatTeams((state) =>
-    state.teams[s.project?.id ?? '']?.find((t) => t.task === s.activeTask),
-  )
+  const teams = useChatTeams((state) => state.teams[s.project?.id ?? ''])
+  const team = useMemo(() => {
+    // A worktree's own lead from before one lead per project still drives that worktree's strip
+    // and work controls until `retireWorktreeLeads` stops it.
+    const earlier =
+      s.activeTask !== LEAD_HOME_TASK
+        ? teams?.find((t) => t.task === s.activeTask && t.state !== 'stopped')
+        : undefined
+    return (
+      earlier ??
+      focusTeam(
+        teams?.find((t) => t.task === LEAD_HOME_TASK),
+        s.activeTask,
+      )
+    )
+  }, [teams, s.activeTask])
   const ui = useSimpleUi((u) => u.worktrees[key] ?? EMPTY_SIMPLE_UI)
   const data = reader?.data
   const snapshot = {

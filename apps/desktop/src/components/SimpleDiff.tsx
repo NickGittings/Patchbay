@@ -9,6 +9,7 @@ import { changePosition, changeRefs, resolveChangeSelection, stepChange } from '
 import { useSimpleUi, type SimpleDiff as Selection } from '../lib/simpleUi'
 import type { useSimpleData } from '../lib/useSimpleData'
 import ChangeList from './changes/ChangeList'
+import AllWorkChanges from './changes/AllWorkChanges'
 import DiffView from './changes/DiffView'
 import DiffStat from './changes/DiffStat'
 import ChangeGroupCard from './changes/ChangeGroupCard'
@@ -62,6 +63,7 @@ function ChangesContent({ scopeKey, selection, reader }: Props) {
       </header>
       <div className="simple-diff-body" ref={body}>
         <aside className="review-list" aria-label="Changed files">
+          <AllWorkChanges />
           <div className="review-header">
             <ReviewContext
               title={title}

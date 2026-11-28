@@ -3,7 +3,7 @@ import { useStore } from '../store'
 import { councilSettings, cancelCouncil, savedCouncil } from '../lib/council'
 import { commandProfile } from '../lib/agentProfiles'
 import { agentDevices } from '../lib/plan'
-import { controlTeam, useChatTeams } from '../lib/chatTeams'
+import { controlTeam, LEAD_HOME_TASK, useChatTeams } from '../lib/chatTeams'
 import { SettingsSection } from './SettingsDialog'
 
 export default function CouncilSettings() {
@@ -11,7 +11,6 @@ export default function CouncilSettings() {
   const roles = useStore((s) => s.agentRoles)
   const devices = useStore((s) => s.devices)
   const projectId = useStore((s) => s.project?.id)
-  const task = useStore((s) => s.activeTask)
   const teams = useChatTeams((s) => s.teams)
   const [error, setError] = useState('')
   const value = councilSettings(settings.reviewCouncil, roles.review)
@@ -25,7 +24,7 @@ export default function CouncilSettings() {
         reviewCouncil: { ...next, enabled: next.enabled && next.members.length >= 2 },
       },
     }))
-  const team = teams[projectId ?? '']?.find((t) => t.task === task)
+  const team = teams[projectId ?? '']?.find((t) => t.task === LEAD_HOME_TASK)
   const running =
     team?.requests?.filter(
       (r) =>

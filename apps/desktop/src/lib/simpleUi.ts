@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import type { SessionRecord, SessionState } from '../types'
+import { LEAD_HOME_TASK } from './chatHome'
 export interface Mention {
   id: string
   token: string
@@ -123,6 +124,26 @@ export const emptySimpleUi = (): SimpleUi => ({
 })
 export const simpleKey = (projectId: string | undefined, task: string | null) =>
   JSON.stringify([projectId ?? '', task])
+/**
+ * Before one conversation per project, each worktree's Chat kept its own draft. Fold those saved
+ * drafts (queued prompts are saved as drafts) into their project's conversation once, so nothing
+ * typed there goes missing. A folded worktree keeps no draft, so folding again changes nothing.
+ */
+export function foldWorktreeDrafts(worktrees: Record<string, SimpleUi>) {
+  const folded = { ...worktrees }
+  for (const [key, ui] of Object.entries(worktrees)) {
+    const [project, task] = JSON.parse(key) as [string, string | null]
+    if (task === LEAD_HOME_TASK || !ui.draft.trim()) continue
+    const home = simpleKey(project, LEAD_HOME_TASK)
+    folded[home] = {
+      ...emptySimpleUi(),
+      ...folded[home],
+      ...appendDraft(folded[home] ?? emptySimpleUi(), ui),
+    }
+    folded[key] = { ...ui, draft: '', mentions: [] }
+  }
+  return folded
+}
 export const useSimpleUi = create<{
   worktrees: Record<string, SimpleUi>
   patch: (key: string, patch: Partial<SimpleUi>) => void
@@ -140,6 +161,10 @@ export const useSimpleUi = create<{
     }),
     {
       name: 'patchbay.chat-drafts',
+      merge: (persisted, current) => {
+        const saved = (persisted as { worktrees?: Record<string, SimpleUi> } | null)?.worktrees
+        return saved ? { ...current, worktrees: foldWorktreeDrafts(saved) } : current
+      },
       storage: createJSONStorage(() => ({
         getItem: (key) => {
           try {

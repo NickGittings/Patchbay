@@ -1,7 +1,7 @@
 import { projectStateOf, workspaceOf } from '../store'
 import type { AutoRun, Story } from '../types'
 import { autoOverrides, defaultAutoEffort } from './autoSettings'
-import { controlTeam, type ChatTeam } from './chatTeams'
+import { controlTeam, requestTeam, type ChatTeam } from './chatTeams'
 import { gitBranches, gitWorktrees } from './ipc'
 
 type Workflow = NonNullable<ChatTeam['requests']>[number]
@@ -109,7 +109,7 @@ export function leadAutoTask(team: ChatTeam, id: string): string | null {
   const fresh = newWorktreeSettings(started.settings.newWorktree)
   const saved = savedAutoRun(started.result)
   if (saved && (saved.task || !fresh)) return saved.task
-  if (!fresh) return team.task
+  if (!fresh) return requestTeam(team, started, { started: true }).task
   // A settled request's result is its outcome text; its story still names the worktree.
   const story = projectStateOf(team.projectId)?.stories.find((s) => s.id === started.settings.story)
   if (!story?.task) throw new Error(`Workflow ${id}'s story is no longer linked to its worktree`)
@@ -128,7 +128,8 @@ const ASK_MERGE = { mode: 'ask', destinationBranch: '' } as const
 async function prepare(team: ChatTeam, request: Workflow) {
   const state = projectStateOf(team.projectId)
   if (!state) throw new Error('Project is unavailable')
-  const { story: storyId, newWorktree, ...requested } = request.settings
+  // `worktree` chose where the run works (`requestTeam`); it is no Auto setting.
+  const { story: storyId, newWorktree, worktree: _worktree, ...requested } = request.settings
   const fresh = newWorktreeSettings(newWorktree)
   if (fresh && typeof storyId !== 'string') throw new Error('newWorktree needs a story')
   // Loaded only for a story, the board's code and its imports aren't needed otherwise.
@@ -200,11 +201,14 @@ export async function startLeadAuto(team: ChatTeam, request: Workflow) {
     // Linked once the run started, as the Auto panel does.
     if (story) await stories!.linkAutoStory(team.projectId, team.task, story.id)
     const runId = workspaceOf(projectStateOf(team.projectId) ?? state, team.task).auto?.runId
+    // A run in another worktree is named by its branch, so the lead can tell the user where.
+    const branch = team.task ? state.tasks.find((t) => t.id === team.task)?.branch : undefined
     // Without a runId, `settleLeadAuto` adopts the worktree's run on its next look.
     await save(team, request, {
       task: team.task,
       ...(runId ? { runId } : {}),
       ...(story ? { story: story.id } : {}),
+      ...(branch ? { branch } : {}),
     })
     return
   }

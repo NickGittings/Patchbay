@@ -28,9 +28,11 @@ import {
 import { shortTitle } from '../../lib/shortTitle'
 import StoryEditor from './StoryEditor'
 import ExtensionMenu from '../../extensions/ExtensionMenu'
+import { leadStories, setAllWork, useAllWorkOn } from '../../lib/workFocus'
+import { LEAD_HOME_TASK, useChatTeams } from '../../lib/chatTeams'
 import './stories.css'
 
-/** The Agents tab counts work for the selected worktree. */
+/** The Agents tab counts the project's agents, in every worktree. */
 function AgentsTab({ scopeKey, active }: { scopeKey: string; active: boolean }) {
   const { cards, team, work } = useChatAgents(useContext(SimpleWorktreeContext))
   const count = cards.filter((card) => card.row !== 'finished').length
@@ -92,7 +94,24 @@ export function StoryViewTabs() {
         </button>
       )}
       <AgentsTab scopeKey={key} active={agents} />
+      <AllWorkToggle />
     </div>
+  )
+}
+
+/** One worktree (the focus) or every open worktree, for the Map, Stories and Changes. */
+function AllWorkToggle() {
+  const projectId = useStore((s) => s.project?.id ?? '')
+  const on = useAllWorkOn()
+  return (
+    <button
+      className={on ? 'active' : ''}
+      aria-pressed={on}
+      title="Show every open worktree’s work, not only the focused one"
+      onClick={() => setAllWork(projectId, !on)}
+    >
+      All work
+    </button>
   )
 }
 
@@ -176,6 +195,11 @@ export default function StoryBoard() {
     if (activeTask) runs[activeTask] = auto
     return runs
   }, [taskWorkspaces, activeTask, auto])
+  // Stories the project's lead is running Auto on now, such as a backlog run's.
+  const leadRequests = useChatTeams(
+    (t) => t.teams[projectId ?? '']?.find((team) => team.task === LEAD_HOME_TASK)?.requests,
+  )
+  const leading = useMemo(() => leadStories(leadRequests), [leadRequests])
   const statuses = useMemo(
     () => storyStatuses(stories, tasks, runs, projectId ?? '', sessionRecords),
     [stories, tasks, runs, projectId, sessionRecords],
@@ -346,6 +370,11 @@ export default function StoryBoard() {
                 </span>
                 <span className="story-card-meta">
                   <span className={`chip story-status ${value}`}>{progressLabel(value)}</span>
+                  {leading.has(item.id) && (
+                    <span className="chip story-lead" title="The lead is running this story">
+                      Lead
+                    </span>
+                  )}
                   <span>{item.components.length} components</span>
                   {item.source && (
                     <span
@@ -362,6 +391,7 @@ export default function StoryBoard() {
                 {worktree && (
                   <span className="story-worktree" title={worktree.worktree}>
                     {shortTitle(worktree.title)}
+                    {worktree.branch ? ` · ${worktree.branch}` : ''}
                     {worktree.missing ? ' · missing' : ''}
                   </span>
                 )}
@@ -409,6 +439,11 @@ export default function StoryBoard() {
     <div className="story-board" aria-label="Story board" onKeyDown={escape}>
       <header className="story-board-header view-tabs-header">
         <StoryViewTabs />
+        {leading.size > 0 && (
+          <span className="story-lead-count" role="status">
+            Lead running {leading.size} {leading.size === 1 ? 'story' : 'stories'}
+          </span>
+        )}
         <div className="story-board-actions" role="group" aria-label="Story board actions">
           <input
             type="search"

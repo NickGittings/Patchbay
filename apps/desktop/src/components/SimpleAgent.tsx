@@ -1,6 +1,7 @@
 import { useContext } from 'react'
 import { SimpleChangesContext } from './stories/simpleChanges'
 import { pinChatTerminal, simpleKey, type SimpleDiff } from '../lib/simpleUi'
+import { LEAD_HOME_TASK } from '../lib/chatHome'
 import type { SimpleEntry } from '../lib/simple'
 import { useChatIdentity } from '../lib/chatIdentity'
 import { chatReplyId } from '../lib/chatNavigation'
@@ -47,8 +48,9 @@ export default function SimpleAgent({
             title={`View ${identity.role} terminal`}
             onClick={() => {
               const s = useStore.getState()
+              // The drawer belongs to the conversation, wherever the focus is.
               pinChatTerminal(
-                simpleKey(s.project?.id, s.activeTask),
+                simpleKey(s.project?.id, LEAD_HOME_TASK),
                 sessionId,
                 session?.generation,
               )

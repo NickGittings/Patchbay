@@ -3,6 +3,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn(async () => {}) }))
 vi.mock('./ipc', () => ({
   sessionsList: vi.fn(),
+  taskList: vi.fn(async () => []),
   gitBranches: vi.fn(async () => ['main', 'import']),
   gitWorktrees: vi.fn(async () => []),
 }))
@@ -37,6 +38,7 @@ vi.mock('./tasks', () => ({
 import { startAuto, pauseAuto } from './auto'
 import { settleLeadStage, startLeadStage } from './leadStages'
 import { invoke } from '@tauri-apps/api/core'
+import { taskList } from './ipc'
 import { useStore, workspaceOf } from '../store'
 import { useSimpleUi, simpleKey } from './simpleUi'
 import { clearSimpleChat } from './simpleActions'
@@ -547,6 +549,26 @@ test('a running lead stage is checked for its agent finishing', async () => {
   vi.mocked(settleLeadStage).mockResolvedValueOnce(undefined)
   await refreshChatTeams('p')
   expect(settleLeadStage).toHaveBeenCalledOnce()
+  expect(startLeadStage).not.toHaveBeenCalled()
+})
+test('a queued request in a worktree the store has not loaded yet starts there', async () => {
+  const saved = mockRequestDriver('startBuild', { worktree: 'w2' })
+  vi.mocked(taskList).mockResolvedValueOnce([
+    { id: 'w2', worktree: '/p-w2', missing: false } as Task,
+  ])
+  await refreshChatTeams('p')
+  expect(startLeadStage).toHaveBeenCalledOnce()
+  expect(vi.mocked(startLeadStage).mock.calls[0][0]).toMatchObject({ task: 'w2', target: '/p-w2' })
+  expect(saved.requests![0].state).toBe('starting')
+})
+test('a queued request waits while the worktree list cannot be read, and fails once it is gone', async () => {
+  const saved = mockRequestDriver('startBuild', { worktree: 'gone' })
+  vi.mocked(taskList).mockRejectedValueOnce(new Error('offline'))
+  await refreshChatTeams('p')
+  expect(saved.requests![0].state).toBe('queued')
+  await refreshChatTeams('p')
+  expect(saved.requests![0]).toMatchObject({ state: 'failed' })
+  expect(saved.requests![0].result).toContain('Worktree gone is no longer open')
   expect(startLeadStage).not.toHaveBeenCalled()
 })
 test('a lead stage refused by a worktree owner fails instead of repeating its handoff', async () => {

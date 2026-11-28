@@ -1,6 +1,7 @@
 import { useStore } from '../store'
 import { PROJECT_DRAFT, plannerChatTask, plannerSessionId, type MergeRequest } from '../types'
-import { noteLead, teamFor } from './chatTeams'
+import { noteLead, projectTeam } from './chatTeams'
+import { stageWhere } from './worktreeLabel'
 import type { SimpleOrigin, SimpleStage } from './simple'
 import { logLaunch } from './simpleActions'
 import { retireStageAgents } from './stageRetire'
@@ -24,7 +25,7 @@ const WHAT: Record<StageAction, string> = {
   plan: 'planning',
   implement: 'a build of the saved plan',
   fix: 'fixes for the review findings',
-  review: 'a review of this worktree',
+  review: 'a review',
   merge: 'a merge',
 }
 const WHERE: Record<SimpleOrigin, string> = {
@@ -93,9 +94,10 @@ export async function recordStageLaunch(launch: StageLaunch) {
   if (origin !== 'chat' && origin !== 'manual') return
   const ids = launched.map((a) => a.sessionId)
   if (RETIRING.has(action)) await retireStageAgents(projectId, task, ids, launch.foreign)
+  // The project's one lead hears about work in every worktree, and where it runs.
   await noteLead(
-    teamFor(projectId, task),
-    launch.what ?? WHAT[action],
+    projectTeam(projectId),
+    `${launch.what ?? WHAT[action]}${stageWhere({ projectId, task })}`,
     ids,
     launched[0].requestId,
     launch.from ?? WHERE[origin],

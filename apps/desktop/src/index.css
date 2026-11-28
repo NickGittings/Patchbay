@@ -1041,6 +1041,19 @@ input[type='radio'] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* All work: which open worktree works on this component; a click focuses it. */
+.work-badge {
+  font-size: var(--text-2xs);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border: none;
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .terminal-chips {
   display: flex;
   flex-wrap: wrap;

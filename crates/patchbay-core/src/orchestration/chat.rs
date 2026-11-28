@@ -523,6 +523,11 @@ fn member<'a>(store: &'a Store, t: &Team, id: &str) -> Option<&'a Job> {
         .flat_map(|r| &r.jobs)
         .find(|j| j.id == id)
 }
+/// The project's lead reaches agents in every worktree it works in; a legacy worktree team only
+/// its own.
+fn reaches(t: &Team, r: &Record) -> bool {
+    t.task.is_none() || r.metadata.task == t.task
+}
 fn record<'a>(records: &'a [Record], project: &str, sid: &str) -> Result<&'a Record> {
     records
         .iter()
@@ -715,6 +720,11 @@ pub fn initialize(
         supported(&preset),
         "Chat teams support Claude and Codex presets with status integration"
     );
+    // One lead per project: it runs in the project folder and works in every worktree.
+    ensure!(
+        task.is_none(),
+        "Chat's lead works from the project folder; open the project folder's Chat"
+    );
     modify(root, |s| {
         if let Some(t) = s
             .teams
@@ -829,6 +839,30 @@ pub fn retire_task(root: &Path, project: &str, task: Option<&str>) -> Result<Vec
         Ok(sessions.into_iter().collect())
     })
 }
+/// The project's open worktrees as the lead names them in `worktree` settings, with the story
+/// linked to each. A project without Git, or whose task store can't be read, lists none.
+#[must_use]
+pub fn lead_worktrees(root: &Path) -> Vec<serde_json::Value> {
+    let stories = crate::stories::load(root).unwrap_or_default();
+    crate::tasks::list(root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| !t.missing)
+        .map(|t| {
+            let story = stories
+                .iter()
+                .find(|s| s.task.as_deref() == Some(t.id.as_str()))
+                .map(|s| serde_json::json!({"id": s.id, "title": s.title}));
+            serde_json::json!({
+                "id": t.id,
+                "title": t.title,
+                "branch": t.branch,
+                "worktree": t.worktree,
+                "story": story,
+            })
+        })
+        .collect()
+}
 pub fn list(root: &Path, project: &str) -> Result<Vec<Team>> {
     modify(root, |s| {
         Ok(s.teams
@@ -891,26 +925,28 @@ fn actor(s: &Store, launch: &LaunchContext, records: &[Record]) -> Result<(usize
             && r.snapshot.as_ref().is_some_and(|s| s.running),
         "Session launch ownership changed"
     );
-    for (i, t) in s
-        .teams
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| t.project_id == launch.project_id)
-    {
-        if t.lead.session_id == launch.agent_session {
-            ensure!(
-                t.lead.generation == generation(r)?
-                    && t.reset
-                        .as_ref()
-                        .is_none_or(|r| r.phase == ResetPhase::Queued),
-                "This lead was superseded or is being replaced"
-            );
-            return Ok((i, LEAD_RECIPIENT.into()));
-        }
+    let teams = || {
+        s.teams
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.project_id == launch.project_id)
+    };
+    // A team's own lead is never another team's member, whatever scope it was given.
+    if let Some((i, t)) = teams().find(|(_, t)| t.lead.session_id == launch.agent_session) {
+        ensure!(
+            t.lead.generation == generation(r)?
+                && t.reset
+                    .as_ref()
+                    .is_none_or(|r| r.phase == ResetPhase::Queued),
+            "This lead was superseded or is being replaced"
+        );
+        return Ok((i, LEAD_RECIPIENT.into()));
+    }
+    for (i, t) in teams() {
         if t.scopes
             .get(&launch.agent_session)
             .is_some_and(|scope| Some(scope.generation) == launch.generation)
-            && r.metadata.task == t.task
+            && reaches(t, r)
         {
             return Ok((i, launch.agent_session.clone()));
         }
@@ -995,7 +1031,7 @@ pub fn command(
                         "Choose an existing agent"
                     );
                     ensure!(
-                        member(s, &t, &to).is_some() || recipient.metadata.task == t.task,
+                        member(s, &t, &to).is_some() || reaches(&t, recipient),
                         "Agent is outside this worktree"
                     );
                     let generation = generation(recipient)?;
@@ -1079,8 +1115,17 @@ pub fn command(
                 ensure!(lead, "Only the lead coordinates scope");
                 let r = record(records, &t.project_id, &session)?;
                 ensure!(
-                    r.metadata.task == t.task && session != t.lead.session_id,
+                    reaches(&t, r) && session != t.lead.session_id,
                     "Agent is outside this worktree"
+                );
+                ensure!(
+                    !s.teams.iter().any(|o| {
+                        o.project_id == t.project_id
+                            && o.id != t.id
+                            && o.state != State::Stopped
+                            && (o.lead.session_id == session || o.scopes.contains_key(&session))
+                    }),
+                    "Agent belongs to another chat team"
                 );
                 ensure!(
                     components
@@ -1119,6 +1164,38 @@ pub fn command(
                         "Request ID already used"
                     );
                 } else {
+                    // The project's lead names the worktree each stage or Auto run works in. Checked
+                    // first, so a malformed one isn't mistaken for none by the checks below.
+                    if let Some(worktree) = settings.get("worktree").filter(|v| !v.is_null()) {
+                        ensure!(
+                            action.is_stage()
+                                || matches!(
+                                    action,
+                                    WorkflowAction::StartAuto
+                                        | WorkflowAction::PauseAuto
+                                        | WorkflowAction::ResumeAuto
+                                        | WorkflowAction::StopAuto
+                                ),
+                            "startAgent works in the project folder and takes no worktree"
+                        );
+                        ensure!(
+                            t.task.is_none(),
+                            "Only the project's lead works in other worktrees"
+                        );
+                        ensure!(
+                            !new_worktree(&settings)
+                                && settings
+                                    .get("request")
+                                    .is_none_or(serde_json::Value::is_null),
+                            "Use worktree, newWorktree or request, not more than one"
+                        );
+                        let worktree = worktree.as_str().ok_or_else(|| {
+                            anyhow!("worktree is a worktree id from `agent team` (worktrees)")
+                        })?;
+                        crate::tasks::find(root, worktree).map_err(|error| {
+                            anyhow!("{error}. Run `agent team` for the open worktrees' ids.")
+                        })?;
+                    }
                     // A story id is checked once, when the request is made, so a replay of
                     // the same request survives the story's later deletion.
                     if let Some(story) = settings.get("story").filter(|v| !v.is_null()) {
@@ -1133,7 +1210,7 @@ pub fn command(
                         // none unless the request creates one.
                         ensure!(
                             action != WorkflowAction::StartAuto
-                                || t.task.is_some()
+                                || request_worktree(&t, &settings).is_some()
                                 || new_worktree(&settings),
                             "Auto can take a story only in a worktree. Use newWorktree: true or ask the user to start one."
                         );
@@ -1174,7 +1251,10 @@ pub fn command(
                         t.council.validate(&t.presets)?;
                     }
                     if action.is_stage() {
-                        ensure!(!stage_active(&t), STAGE_ACTIVE);
+                        ensure!(
+                            !stage_active(&t, request_worktree(&t, &settings)),
+                            STAGE_ACTIVE
+                        );
                         ensure!(settings.is_object(), "Stage settings must be an object");
                         ensure!(
                             action != WorkflowAction::StartPlan
@@ -1356,8 +1436,7 @@ pub fn command(
                     to == LEAD_RECIPIENT
                         || member(s, &t, &to).is_some()
                         || (lead
-                            && record(records, &t.project_id, &to)
-                                .is_ok_and(|r| r.metadata.task == t.task)),
+                            && record(records, &t.project_id, &to).is_ok_and(|r| reaches(&t, r))),
                     "Recipient belongs to another team or does not exist"
                 );
                 if lead && to != LEAD_RECIPIENT && member(s, &t, &to).is_none() {
@@ -1728,9 +1807,19 @@ fn new_worktree(settings: &serde_json::Value) -> bool {
 
 const STAGE_ACTIVE: &str = "A plan, build, fix, review or merge is already active in this worktree";
 
-fn stage_active(team: &Team) -> bool {
+/// The worktree a request works in: the task its `worktree` names, else the team's own.
+fn request_worktree<'a>(team: &'a Team, settings: &'a serde_json::Value) -> Option<&'a str> {
+    settings
+        .get("worktree")
+        .and_then(serde_json::Value::as_str)
+        .or(team.task.as_deref())
+}
+
+/// One stage at a time in each worktree; the project's lead can run stages in several at once.
+fn stage_active(team: &Team, worktree: Option<&str>) -> bool {
     team.requests.iter().any(|r| {
         r.action.is_stage()
+            && request_worktree(team, &r.settings) == worktree
             && matches!(
                 r.state,
                 WorkflowState::Queued
@@ -1806,7 +1895,6 @@ pub fn control(
             }
             Control::RetryCouncil { id } => {
                 ensure!(t.council.enabled, "Review council is disabled");
-                ensure!(!stage_active(&t), STAGE_ACTIVE);
                 let previous = t
                     .requests
                     .iter()
@@ -1817,6 +1905,10 @@ pub fn control(
                     })
                     .ok_or_else(|| anyhow!("No failed council to retry"))?;
                 let settings = previous.settings.clone();
+                ensure!(
+                    !stage_active(&t, request_worktree(&t, &settings)),
+                    STAGE_ACTIVE
+                );
                 t.council.validate(&t.presets)?;
                 t.requests.push(WorkflowRequest {
                     id: new_id(),
@@ -2209,7 +2301,7 @@ pub fn side_message(
 /// Heading of the lead's role in its launch briefing; a lead launched with it needs no
 /// startup handoff, and a retained briefing ends before it.
 pub(crate) const LEAD_ROLE_HEADING: &str = "## Lead role";
-const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. Remain available while agents and Auto run.
+const INSTRUCTIONS: &str = r#"You are this project's persistent Patchbay lead, the only agent in the user's Chat. You work from the project folder and run work in any of the project's worktrees. Remain available while agents and Auto run.
 
 ### How you work
 
@@ -2217,7 +2309,7 @@ const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. 
 - Agents do the work. You do not plan, implement, review, fix, merge, investigate or edit project files yourself, however small the task. Read team state, results and the saved plan only as far as coordinating and reporting need.
 - When `team.agentRoles.worker` is missing or empty, sub-builders are off. Do not use `team-delegate`, `team-delegate-shared` or `startAgent`. For implementation use `startPlan` → `startBuild`, or `startAuto`. For investigation ask the user to turn sub-builders on. Never do the work yourself.
 - Start the matching agent without asking permission to delegate:
-  - Plan: when the user asks for a plan, request `startPlan` with their request as `goal`. When it completes, read `$PATCHBAY_PLAN_FILE` and summarize the plan. Do not build it unless asked.
+  - Plan: when the user asks for a plan, request `startPlan` with their request as `goal`. When it completes, read the plan file its result names (`$PATCHBAY_PLAN_FILE` for the project folder; each worktree's plan sits beside it as `<task id>.md`) and summarize the plan. Do not build it unless asked.
   - Build: build a saved plan with `startBuild`. Other implementation goes to `code` workers when sub-builders are on.
   - Review: review this branch's changes with `startReview`, or `startCouncilReview` for several independent reviewers, never with a `report` worker.
   - Fix: fix review findings with `startFix`, only when the user asks.
@@ -2228,6 +2320,12 @@ const INSTRUCTIONS: &str = r#"You are this worktree's persistent Patchbay lead. 
 - Keep the chat status current with `agent team-status`: set it when you take on a request, when you start a stage and after each stage result. It is what the user sees as the state of the work.
 - Do not use provider-native subagents. Use only Patchbay-managed workers and configured presets.
 - Distinguish reported from verified results.
+- Several worktrees can be in progress at once. Whenever you relay another agent's result, finding or question, name its worktree and branch (from `agent team` `worktrees`), for example "Reviewer in story-login (feat/login): 2 findings". Never present a result without saying where it comes from.
+
+### Worktrees
+
+- `agent team` lists the project's open `worktrees` (`id`, `title`, `branch`, `worktree` path, the `story` linked to it) and every agent session in them. The project folder is the worktree you run in; it has no id.
+- Stages and Auto take `worktree: <id>` to work in that worktree instead of the project folder. Choose it from what the user said ("the login branch", a story, the worktree on screen). When it is unclear which worktree they mean, ask. Use `newWorktree` to start a story in a fresh worktree.
 
 ### Commands
 
@@ -2245,9 +2343,10 @@ Run each command below as {cli}.
   - `startReview` settings: `{base: optional-branch-name, focus: optional-review-focus}`. Starts the configured reviewers against `base`, else the branch's last review base, else its merge destination. The result names the base used. Wait for it, then report the verdict and findings. The full report is in Review. It does not authorize fixes or merges.
   - `startFix` settings: `{}`. Starts a fix agent on this worktree's latest finished review. Wait for its durable result, then inspect the work.
   - `startMerge` settings: `{destination: optional-branch-name, commitSource: optional-change-list}`. Starts a merge agent for this worktree's branch into `destination`, else the default merge destination. With uncommitted changes it fails and lists them: ask the user, and only if they agree retry under a new id with exactly those entries as `commitSource`. A confirmed merge needs no report from you, because Chat shows it.
-  - Only one `startPlan`, `startBuild`, `startFix`, `startReview`, `startCouncilReview` or `startMerge` can be active at a time.
+  - `startPlan`, `startBuild`, `startReview`, `startFix`, `startMerge`, `startCouncilReview` and `startAuto` also take `worktree` (a worktree id from `agent team`) to run in that worktree. Without it they run in the project folder.
+  - Only one `startPlan`, `startBuild`, `startFix`, `startReview`, `startCouncilReview` or `startMerge` can be active at a time in each worktree.
   - `startAuto` accepts `goal`, `story` (a story id: the story's text becomes the goal and the story is linked to the run), `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`), `stage`, `autonomous`, `background`, `resumeOnUsageReset` and `newWorktree` (`true` or `{branch, base}`, with `story` only: creates a worktree for that story, off `base` else the merge destination, without switching the user to it, and runs Auto there autonomously in the background); omit fields to use app defaults. Never automatically enable merge approval bypass. Its result arrives when the run settles: done, waiting for the user's merge approval, failed or stopped, or needing the user. Waits that resume by themselves (a usage reset, a scheduled resume, an autonomous restart) keep it running; any other pause counts as needing the user. A story's run that needed the user or was paused by them goes on after its result, and a later note says how it ended.
-  - `pauseAuto`, `resumeAuto` and `stopAuto` settings: `{request: optional-startAuto-request-id}`. Without `request` they control this worktree's Auto; with it, the run that `startAuto` request started, such as a backlog story's worktree.
+  - `pauseAuto`, `resumeAuto` and `stopAuto` settings: `{request: optional-startAuto-request-id}` or `{worktree: worktree-id}`. Without either they control the project folder's Auto; with `request`, the run that `startAuto` request started, such as a backlog story's worktree; with `worktree`, that worktree's run.
   - Backlog runs: when the user asks you to work through the board (for example "up to 6 stories, 3 at a time"; at most 3 at a time unless they say otherwise), read `agent stories` and start `next` with `startAuto` and `newWorktree: true`, under a new request id each time, until that many runs are active. Each settled result frees its slot: record it and start the next `next`, so a story that needs the user never holds up the rest. A story whose Auto did not start returns to the backlog: skip it for the following story rather than retrying it, unless the user asks. Stop starting stories at the user's total or when `next` is empty. Never merge, approve merges or answer agents' questions for the user. When the last run settles, summarize every story's worktree branch and state, those needing the user first.
   - `startCouncilReview` settings: `{base: branch-name, focus: optional-review-focus}`, only when `team.council.enabled`. Use only this workflow for a council and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges.
 - `agent stories [--id <story-id>]`: the story board in priority order (each epic, its features and their stories, then unassigned stories), with `next`, the top Backlog story without linked work. Stories show their saved stage and epics and features show Active or Closed. `--id` adds that item's full briefing as `section`.
@@ -2407,6 +2506,8 @@ fn lead_moved_on(s: &Store, t: &Team, lead: &Record, since_ms: Option<u64>) -> b
         })
         || team_active(s, t)
 }
+/// Why a completion waits: the lead still runs work in other worktrees. The frontend mirrors it.
+pub const LEAD_BUSY_ELSEWHERE: &str = "The lead is still at work in other worktrees";
 /// Decide a completion once. It joins a pending fresh conversation rather than competing with it.
 fn complete_task(
     s: &Store,
@@ -2417,13 +2518,39 @@ fn complete_task(
     records: &[Record],
 ) -> Result<()> {
     // The merge that finished this task may be the lead's own stage. It is done, so it neither
-    // counts as open work nor needs reporting.
-    for r in t.requests.iter_mut().filter(|r| {
-        r.action == WorkflowAction::StartMerge
+    // counts as open work nor needs reporting. The project's lead may be merging other
+    // worktrees too; those merges settle by themselves.
+    let home = t.task.clone();
+    let unsettled = |r: &WorkflowRequest| {
+        matches!(
+            r.state,
+            WorkflowState::Queued
+                | WorkflowState::Waiting
+                | WorkflowState::Starting
+                | WorkflowState::Running
+        )
+    };
+    // Work the lead runs in other worktrees: a fresh conversation would lose track of it.
+    let elsewhere = t.requests.iter().any(|r| {
+        unsettled(r)
+            && (request_worktree(t, &r.settings) != home.as_deref() || new_worktree(&r.settings))
+    });
+    // Decide once that work settles, so the completion isn't used up meanwhile; callers retry.
+    ensure!(!elsewhere, "{LEAD_BUSY_ELSEWHERE}");
+    for r in &mut t.requests {
+        let here = r
+            .settings
+            .get("worktree")
+            .and_then(serde_json::Value::as_str)
+            .or(home.as_deref())
+            == home.as_deref();
+        if here
+            && r.action == WorkflowAction::StartMerge
             && matches!(r.state, WorkflowState::Starting | WorkflowState::Running)
-    }) {
-        r.state = WorkflowState::Completed;
-        r.result = Some("Merge confirmed.".into());
+        {
+            r.state = WorkflowState::Completed;
+            r.result = Some("Merge confirmed.".into());
+        }
     }
     let lead = record(records, project, &t.lead.session_id).ok();
     if !lead.is_some_and(|r| lead_moved_on(s, t, r, since_ms)) {
@@ -2615,8 +2742,13 @@ pub fn reconcile(
             for record in records
                 .iter()
                 .filter(|r| {
+                    // The project's lead follows other worktrees' agents only when it was told
+                    // about them; every Auto agent there finishing would otherwise wake it.
                     r.metadata.project_id == project
-                        && r.metadata.task == t.task
+                        && (r.metadata.task == t.task
+                            || (t.task.is_none()
+                                && (t.noted_agents.contains(&r.id)
+                                    || t.observed_agents.contains_key(&r.id))))
                         && r.metadata.kind == crate::TerminalKind::Agent
                 })
                 .collect::<Vec<_>>()
@@ -3290,7 +3422,7 @@ fn deliver_at(
                     .or_else(|| {
                         record(records, project, &recipient)
                             .ok()
-                            .filter(|r| r.metadata.task == t.task)
+                            .filter(|r| reaches(&t, r))
                             .map(|r| r.id.clone())
                     })
             };
@@ -3730,6 +3862,42 @@ mod tests {
         );
     }
     #[test]
+    fn lead_busy_elsewhere_matches_the_frontend() {
+        // Mirrored in lib/chatTeams.ts, which matches on it.
+        assert_eq!(
+            LEAD_BUSY_ELSEWHERE,
+            "The lead is still at work in other worktrees"
+        );
+    }
+    #[test]
+    fn the_lead_cannot_scope_another_teams_lead() {
+        let f = Fixture::new();
+        let older = session(&f.dir, "older-lead");
+        modify(&f.dir, |s| {
+            let mut t = s.teams[0].clone();
+            t.id = "older-team".into();
+            t.task = Some("tree".into());
+            t.lead.session_id = older.id.clone();
+            t.scopes.clear();
+            s.teams.push(t);
+            Ok(())
+        })
+        .unwrap();
+        let refused = command(
+            &f.dir,
+            &f.project,
+            &f.auth(),
+            &[f.lead.clone(), older.clone()],
+            Command::Coordinate {
+                session: older.id.clone(),
+                components: vec![],
+                paths: vec!["src/b.rs".into()],
+            },
+        )
+        .unwrap_err();
+        assert!(refused.to_string().contains("another chat team"));
+    }
+    #[test]
     fn delegation_is_rejected_while_sub_builders_are_off() {
         let f = Fixture::new_without_sub_builders();
         let isolated = || Command::Delegate {
@@ -4115,6 +4283,186 @@ mod tests {
         assert!(instructions.contains("agent team-status"));
         assert!(!instructions.to_lowercase().contains("continue locally"));
         assert!(!instructions.contains("trivial"));
+    }
+
+    #[test]
+    fn the_project_lead_runs_one_stage_at_a_time_in_each_worktree() {
+        let f = Fixture::new();
+        let task = crate::tasks::create(
+            &f.dir,
+            crate::tasks::TaskDraft {
+                title: "Login".into(),
+                branch: "feat/login".into(),
+                base: None,
+                components: vec![],
+            },
+        )
+        .unwrap();
+        let request = |id: &str, action: &str, settings| Command::Request {
+            id: id.into(),
+            action: action.into(),
+            settings,
+        };
+        let there = serde_json::json!({"worktree": task.id});
+        f.cmd(request("there", "startBuild", there.clone()))
+            .unwrap();
+        // Another stage in that worktree waits; the project folder is free.
+        let busy = f
+            .cmd(request("again", "startReview", there.clone()))
+            .unwrap_err();
+        assert!(busy.to_string().contains(STAGE_ACTIVE));
+        f.cmd(request("here", "startReview", serde_json::json!({})))
+            .unwrap();
+        assert_eq!(f.state().requests.len(), 2);
+        // Auto takes a story in a named worktree as it does in a new one.
+        let story = crate::stories::create(
+            &f.dir,
+            serde_json::from_value(serde_json::json!({"kind": "story", "title": "Sign in"}))
+                .unwrap(),
+        )
+        .unwrap();
+        f.cmd(request(
+            "auto",
+            "startAuto",
+            serde_json::json!({"worktree": task.id, "story": story.id}),
+        ))
+        .unwrap();
+        f.cmd(request(
+            "pause",
+            "pauseAuto",
+            serde_json::json!({"worktree": task.id}),
+        ))
+        .unwrap();
+        for (action, settings, error) in [
+            (
+                "startBuild",
+                serde_json::json!({"worktree": "missing"}),
+                "agent team",
+            ),
+            (
+                "startAgent",
+                serde_json::json!({"worktree": task.id}),
+                "takes no worktree",
+            ),
+            (
+                "startAuto",
+                serde_json::json!({"worktree": task.id, "story": story.id, "newWorktree": true}),
+                "not more than one",
+            ),
+            (
+                "stopAuto",
+                serde_json::json!({"worktree": task.id, "request": "auto"}),
+                "not more than one",
+            ),
+            (
+                "startAuto",
+                serde_json::json!({"worktree": 5, "story": story.id}),
+                "worktree id",
+            ),
+        ] {
+            let refused = f.cmd(request("bad", action, settings)).unwrap_err();
+            assert!(refused.to_string().contains(error), "{action}: {refused}");
+        }
+        let instructions = lead_instructions();
+        assert!(instructions.contains("`worktree: <id>`"));
+        assert!(instructions.contains("name its worktree and branch"));
+        let listed = lead_worktrees(&f.dir);
+        assert!(
+            listed
+                .iter()
+                .any(|w| w["id"] == task.id && w["branch"] == "feat/login")
+        );
+    }
+
+    #[test]
+    fn finishing_the_project_folders_task_leaves_other_worktrees_work_running() {
+        let f = Fixture::new();
+        let task = crate::tasks::create(
+            &f.dir,
+            crate::tasks::TaskDraft {
+                title: "Login".into(),
+                branch: "feat/login".into(),
+                base: None,
+                components: vec![],
+            },
+        )
+        .unwrap();
+        f.cmd(Command::Request {
+            id: "merge".into(),
+            action: "startMerge".into(),
+            settings: serde_json::json!({"worktree": task.id}),
+        })
+        .unwrap();
+        let apply = |control| control_team(&f, control);
+        apply(Control::RequestState {
+            id: "merge".into(),
+            state: WorkflowState::Running,
+            result: Some("{}".into()),
+            passive: false,
+        });
+        let complete = || {
+            control(
+                &f.dir,
+                "p",
+                &f.team.id,
+                Control::CompleteTask {
+                    id: "done".into(),
+                    since_ms: None,
+                },
+                std::slice::from_ref(&f.lead),
+            )
+        };
+        let waiting = complete().unwrap_err();
+        assert!(waiting.to_string().contains(LEAD_BUSY_ELSEWHERE));
+        let t = f.state();
+        // That merge settles by itself, and the lead keeps its conversation to follow it.
+        assert_eq!(t.requests[0].state, WorkflowState::Running);
+        assert!(t.reset.is_none());
+        // The completion isn't used up: once that work settles, its retry applies.
+        assert!(!t.finished.tasks.contains("done"));
+        apply(Control::RequestState {
+            id: "merge".into(),
+            state: WorkflowState::Completed,
+            result: Some("merged".into()),
+            passive: false,
+        });
+        complete().unwrap();
+        assert!(f.state().finished.tasks.contains("done"));
+    }
+
+    fn control_team(f: &Fixture, change: Control) -> Team {
+        control(
+            &f.dir,
+            "p",
+            &f.team.id,
+            change,
+            std::slice::from_ref(&f.lead),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn chat_leads_start_only_in_the_project_folder() {
+        let f = Fixture::new();
+        let target = f.dir.join("tree");
+        std::fs::create_dir_all(&target).unwrap();
+        let mut lead = session(&f.dir, "tree-lead");
+        lead.metadata.task = Some("tree".into());
+        let refused = initialize(
+            &f.dir,
+            "p",
+            &target,
+            Initialize {
+                task: Some("tree".into()),
+                session_id: lead.id.clone(),
+                preset: preset(),
+                paused: false,
+                checkpoint: Checkpoint::default(),
+            },
+            &[lead],
+        )
+        .unwrap_err();
+        assert!(refused.to_string().contains("project folder"));
     }
 
     #[test]
@@ -5751,7 +6099,7 @@ mod tests {
             lead_instructions()
         );
         let seed = |session_id: &str, paused, goal: &str| Initialize {
-            task: Some(session_id.into()),
+            task: None,
             session_id: session_id.into(),
             preset: preset(),
             paused,
@@ -5764,10 +6112,11 @@ mod tests {
         let start = |name: &str, briefing: Option<&str>, paused, goal: &str| {
             let target = f.dir.join(name);
             std::fs::create_dir_all(&target).unwrap();
+            // One lead per project, so each case gets a project of its own.
             let mut lead = session(&f.dir, name);
-            lead.metadata.task = Some(name.into());
+            lead.metadata.project_id = name.into();
             lead.briefing_backup = briefing.map(Into::into);
-            initialize(&f.dir, "p", &target, seed(name, paused, goal), &[lead]).unwrap()
+            initialize(&f.dir, name, &target, seed(name, paused, goal), &[lead]).unwrap()
         };
         let fresh = start("fresh", Some(&briefing), false, "");
         assert!(!fresh.recovery);

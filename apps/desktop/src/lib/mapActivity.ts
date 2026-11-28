@@ -9,6 +9,7 @@ import {
   type ActivityRoots,
   type RoleActivity,
 } from './activity'
+import { useAllWork } from './workFocus'
 
 /**
  * Role agents' file activity on the visible map (Navigation and Chat): `active` pulses for ten
@@ -89,6 +90,28 @@ export function useMapActivityFeedback() {
         roots,
         now,
       )
+      // All work pulses for every open worktree, as the project's lead works in all of them.
+      if (useAllWork.getState().projects[s.project.id]) {
+        const others = [
+          { id: null, worktree: s.project.root },
+          ...s.tasks.filter((t) => !t.missing).map((t) => ({ id: t.id, worktree: t.worktree })),
+        ].filter((t) => t.id !== s.activeTask)
+        for (const other of others) {
+          const more = componentActivity(
+            s.sessionRecords,
+            s.sessions,
+            s.project.id,
+            other.id,
+            other.worktree,
+            activityRoots(
+              s.nodes.map((n) => ({ id: n.id, path: n.data.path })),
+              other.worktree,
+            ),
+            now,
+          )
+          for (const [id, entries] of more) found.set(id, [...(found.get(id) ?? []), ...entries])
+        }
+      }
       const previous = useMapActivity.getState()
       const roles: Record<string, RoleActivity[]> = {}
       let changed = Object.keys(previous.roles).some((id) => !found.has(id))
@@ -118,9 +141,11 @@ export function useMapActivityFeedback() {
       )
         update()
     })
+    const unsubscribeAll = useAllWork.subscribe(update)
     update()
     return () => {
       unsubscribe()
+      unsubscribeAll()
       clearTimeout(timer)
       useMapActivity.setState({ active: [], roles: {} })
     }
