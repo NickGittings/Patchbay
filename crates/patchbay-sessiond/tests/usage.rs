@@ -89,6 +89,21 @@ fn status_line_captures_without_journals_and_always_exits_successfully() {
     }
 }
 
+#[test]
+fn a_limit_reset_in_the_same_window_shows_on_the_next_line() {
+    let fixture = Fixture::new();
+    let reset = patchbay_core::pty::now_ms() / 1000 + 7200;
+    let payload = |percent: u32| {
+        json!({"session_id":"claude-session","rate_limits":{
+            "seven_day":{"used_percentage":percent,"resets_at":reset}
+        }})
+        .to_string()
+    };
+    let line = |output: std::process::Output| String::from_utf8(output.stdout).unwrap();
+    assert_eq!(line(fixture.run(&payload(100))).trim(), "7d 100%");
+    assert_eq!(line(fixture.run(&payload(20))).trim(), "7d 20%");
+}
+
 #[cfg(unix)]
 #[test]
 fn chained_status_line_gets_exact_stdin_and_failure_or_timeout_is_harmless() {

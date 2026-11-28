@@ -114,6 +114,31 @@ export function usageBlock(
   return null
 }
 
+/** Whether readings taken after `sinceMs` show every provider back under its limit, as after a
+ * limit reset that leaves the window's reset time unchanged. A missing reading is unknown. */
+export function usageClearedSince(
+  usage: Usage | null,
+  providers: readonly ('claude' | 'codex')[],
+  sinceMs: number,
+  settings: UsageSettings,
+  now: number,
+) {
+  const warnings = usageWarnings(usage, settings, now)
+  return (
+    providers.length > 0 &&
+    providers.every((provider) => {
+      const reading = usage?.[provider]
+      return (
+        !!reading &&
+        reading.observedMs > sinceMs &&
+        USAGE_WINDOWS.some((key) => (reading[key]?.resetsAtMs ?? 0) > now) &&
+        !exhaustedWindows(usage, provider, now).length &&
+        !(settings.gateAuto && warnings.some((w) => w.provider === provider && w.level === 'limit'))
+      )
+    })
+  )
+}
+
 /** Time until a reset: minutes, then hours, then days. */
 export function resetsIn(resetsAtMs: number, now: number): string {
   const minutes = Math.max(1, Math.ceil((resetsAtMs - now) / 60_000))

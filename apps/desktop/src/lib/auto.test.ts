@@ -20,6 +20,7 @@ import { beforeEach, afterEach, expect, test, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { useStore } from '../store'
 import { autoBlocker } from './workBlocker'
+import { useUsage } from './usage'
 import {
   TASK_ROOT_SCOPE,
   TERMINAL_RUNNING,
@@ -4939,6 +4940,61 @@ test.each([false, true])(
       expect(jobs.startReviewAgent).toHaveBeenCalledTimes(2)
       expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
     })
+  },
+)
+
+test.each([
+  ['a newer reading under the limit', 20, 1500, true],
+  ['a newer reading still at the limit', 100, 1500, false],
+  ['a reading from before the pause', 20, 500, false],
+  ['no reading', null, 0, false],
+] as const)(
+  'a usage wait ends before its reset time on %s',
+  async (_name, percent, observedMs, resumes) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2000)
+    load()
+    const data = {
+      claude: null,
+      codex:
+        percent === null
+          ? null
+          : {
+              provider: 'codex' as const,
+              fiveHour: null,
+              // A limit reset lowers usage without moving the window's reset time.
+              weekly: { usedPercent: percent, resetsAtMs: 100_000, windowMinutes: 10080 },
+              observedMs,
+            },
+      claudeCapture: { installed: false, chained: null, source: '/settings.json' },
+      claudeError: null,
+      codexError: null,
+    }
+    vi.mocked(ipc.usageRead).mockResolvedValue(data)
+    useUsage.setState({ usage: data, error: null })
+    setRun({
+      status: 'paused',
+      pauseKind: 'usage',
+      pausedMs: 1000,
+      resumeOnUsageReset: true,
+      usageWait: { providers: ['codex'], atMs: 100_000 },
+      resumeTrigger: { kind: 'usage', atMs: 100_000 },
+    })
+    try {
+      await withFollower(async () => {
+        await flush()
+        await flush()
+      })
+      if (resumes) {
+        expect(autoRun('p', 't')?.resumeTrigger).toBeUndefined()
+        expect(autoRun('p', 't')?.log.filter((l) => l.text.startsWith('Resumed:'))).toHaveLength(1)
+      } else {
+        expect(autoRun('p', 't')?.status).toBe('paused')
+        expect(autoRun('p', 't')?.resumeTrigger).toEqual({ kind: 'usage', atMs: 100_000 })
+      }
+    } finally {
+      useUsage.setState({ usage: null, error: null })
+    }
   },
 )
 

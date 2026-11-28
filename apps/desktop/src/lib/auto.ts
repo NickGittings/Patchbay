@@ -15,7 +15,9 @@ import {
   providerName,
   refreshUsage,
   usageBlock,
+  usageClearedSince,
   usageWarnings,
+  useUsage,
 } from './usage'
 import { shallow } from 'zustand/shallow'
 import { projectOf, projectStateOf, useStore } from '../store'
@@ -3271,6 +3273,22 @@ export function setAutoUsageResume(projectId: string, task: string | null, enabl
     enabled ? 'Usage reset resume enabled' : 'Usage reset resume disabled',
   )
 }
+/** A usage wait ends before its reset time once a newer reading is back under the limit. */
+function usageResetEarly(run: AutoRun) {
+  const providers = run.usageWait?.providers
+  return (
+    run.resumeTrigger?.kind === 'usage' &&
+    !!providers &&
+    run.pausedMs !== undefined &&
+    usageClearedSince(
+      useUsage.getState().usage,
+      providers,
+      run.pausedMs,
+      useStore.getState().usageSettings,
+      Date.now(),
+    )
+  )
+}
 async function driveScheduledResume(projectId: string, task: string | null) {
   const run = autoRun(projectId, task)
   const trigger = run?.resumeTrigger
@@ -3279,7 +3297,7 @@ async function driveScheduledResume(projectId: string, task: string | null) {
     !trigger ||
     run.status !== 'paused' ||
     !['usage', 'scheduled'].includes(run.pauseKind ?? '') ||
-    trigger.atMs > Date.now() ||
+    (trigger.atMs > Date.now() && !usageResetEarly(run)) ||
     !useStore.getState().serviceConnected ||
     !driveable(projectId, task, run)
   )

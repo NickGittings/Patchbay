@@ -11,6 +11,7 @@ import {
   presetProvider,
   usageAlerts,
   usageBlock,
+  usageClearedSince,
   usageLevel,
   usageWarnings,
   usageAge,
@@ -484,4 +485,18 @@ test.each([
   ['codex && echo done', null],
 ])('a preset without an adapter takes its provider from %s', (command, provider) => {
   expect(presetProvider({ command })).toBe(provider)
+})
+
+test('a reset is seen only in a newer, unexpired reading under the limit', () => {
+  const since = now - 1
+  expect(usageClearedSince(usage(20), ['claude'], since, DEFAULT_USAGE, now)).toBe(true)
+  expect(usageClearedSince(usage(100), ['claude'], since, DEFAULT_USAGE, now)).toBe(false)
+  // At the Auto pause threshold only while Auto is gated on it.
+  expect(usageClearedSince(usage(96), ['claude'], since, DEFAULT_USAGE, now)).toBe(false)
+  const ungated = { ...DEFAULT_USAGE, gateAuto: false }
+  expect(usageClearedSince(usage(96), ['claude'], since, ungated, now)).toBe(true)
+  expect(usageClearedSince(usage(20), ['claude'], now, DEFAULT_USAGE, now)).toBe(false)
+  expect(usageClearedSince(usage(20, now), ['claude'], since, DEFAULT_USAGE, now)).toBe(false)
+  expect(usageClearedSince(usage(20), ['claude', 'codex'], since, DEFAULT_USAGE, now)).toBe(false)
+  expect(usageClearedSince(usage(20), [], since, DEFAULT_USAGE, now)).toBe(false)
 })

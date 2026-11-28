@@ -17,6 +17,11 @@ const WINDOW_SPLIT_MINUTES: u64 = 1739;
 /// A capture with unchanged values still refreshes `observed_ms` this often.
 const OBSERVED_REFRESH_MS: u64 = 60_000;
 const RESET_ROUND_MS: u64 = 60_000;
+/// Per-session Claude readings, beside `claude.json`.
+const SESSIONS_FILE: &str = "claude-sessions.json";
+/// Longer than the weekly window, so a session seen in the current window is never forgotten.
+const SESSION_TTL_MS: u64 = 8 * 24 * 60 * 60 * 1000;
+const SESSION_CAP: usize = 64;
 /// After the chained shell exits, how long a background child may keep its output open.
 const EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 /// File names of the executables Patchbay installs as a status-line reporter.
@@ -579,6 +584,39 @@ pub fn configure_status_line(
     )
 }
 
+/// The raw windows a Claude session last sent, so its idle redraws can be told from new readings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionReading {
+    five_hour: Option<Window>,
+    weekly: Option<Window>,
+    seen_ms: u64,
+}
+
+type Sessions = std::collections::BTreeMap<String, SessionReading>;
+
+fn read_sessions(dir: &Path) -> Sessions {
+    std::fs::read(dir.join(SESSIONS_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Drop sessions unseen for longer than the weekly window, then the oldest beyond the cap.
+fn prune_sessions(sessions: &mut Sessions, now_ms: u64) {
+    sessions.retain(|_, s| now_ms.saturating_sub(s.seen_ms) <= SESSION_TTL_MS);
+    while sessions.len() > SESSION_CAP {
+        let Some(oldest) = sessions
+            .iter()
+            .min_by_key(|(_, s)| s.seen_ms)
+            .map(|(id, _)| id.clone())
+        else {
+            break;
+        };
+        sessions.remove(&oldest);
+    }
+}
+
 fn save_capture(dir: &Path, input: &Value, now_ms: u64) -> Result<Option<ProviderUsage>> {
     let Some(mut usage) = claude_input(input, now_ms) else {
         return Ok(None);
@@ -593,20 +631,67 @@ fn save_capture(dir: &Path, input: &Value, now_ms: u64) -> Result<Option<Provide
     let previous: Option<ProviderUsage> = std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
+    let session = input.get("session_id").and_then(Value::as_str);
+    let mut sessions = session.map(|_| read_sessions(dir)).unwrap_or_default();
+    // What this session last sent, before merging; `None` for a session not seen yet.
+    let last = session.and_then(|id| sessions.get(id));
     if let Some(previous) = previous.as_ref().filter(|p| p.provider == Adapter::Claude) {
-        for (incoming, saved) in [
-            (&mut usage.five_hour, &previous.five_hour),
-            (&mut usage.weekly, &previous.weekly),
+        for (incoming, saved, sent) in [
+            (
+                &mut usage.five_hour,
+                &previous.five_hour,
+                last.map(|l| &l.five_hour),
+            ),
+            (&mut usage.weekly, &previous.weekly, last.map(|l| &l.weekly)),
         ] {
-            if let (Some(incoming), Some(saved)) = (incoming, saved)
-                && saved.resets_at_ms > now_ms
-                && (saved.resets_at_ms > incoming.resets_at_ms
-                    || (saved.resets_at_ms == incoming.resets_at_ms
-                        && saved.used_percent > incoming.used_percent))
-            {
-                // An idle session may redraw an old reading after a busier one.
+            let (Some(incoming), Some(saved)) = (incoming, saved) else {
+                continue;
+            };
+            if saved.resets_at_ms <= now_ms {
+                continue;
+            }
+            let keep = match sent {
+                // Without a session id, a lower reading in the same window can't be told
+                // from an idle redraw.
+                None if session.is_none() => {
+                    saved.resets_at_ms > incoming.resets_at_ms
+                        || (saved.resets_at_ms == incoming.resets_at_ms
+                            && saved.used_percent > incoming.used_percent)
+                }
+                // A session repeating what it last sent is redrawing, not reporting: it never
+                // moves the saved window, up or down.
+                Some(sent) if sent.as_ref() == Some(&*incoming) => {
+                    saved.resets_at_ms >= incoming.resets_at_ms
+                }
+                // A new or changed reading followed a response, so it stands even when lower in
+                // the same window, as after a limit reset. An older window never replaces a
+                // newer one.
+                _ => saved.resets_at_ms > incoming.resets_at_ms,
+            };
+            if keep {
                 *incoming = saved.clone();
             }
+        }
+    }
+    if let (Some(id), Some(raw)) = (session, claude_input(input, now_ms)) {
+        let reading = SessionReading {
+            five_hour: raw.five_hour,
+            weekly: raw.weekly,
+            seen_ms: now_ms,
+        };
+        let stale = sessions.get(id).is_none_or(|l| {
+            l.five_hour != reading.five_hour
+                || l.weekly != reading.weekly
+                || now_ms.abs_diff(l.seen_ms) >= OBSERVED_REFRESH_MS
+        });
+        if stale {
+            sessions.insert(id.to_owned(), reading);
+            prune_sessions(&mut sessions, now_ms);
+            agent_hooks::atomic_replace(
+                &dir.join(SESSIONS_FILE),
+                &serde_json::to_vec(&sessions)?,
+                false,
+            )?;
         }
     }
     // Unchanged values are still rewritten now and then, so the snapshot's age stays honest.
@@ -1123,6 +1208,93 @@ mod tests {
         let window = stale.five_hour.unwrap();
         assert_eq!(window.used_percent, 5.0);
         assert_eq!(window.resets_at_ms, 900_000);
+    }
+
+    fn session_input(session: &str, weekly: u32) -> Value {
+        json!({"session_id": session, "rate_limits": {
+            "seven_day":{"used_percentage":weekly,"resets_at":600}
+        }})
+    }
+
+    fn weekly_after(fixture: &Fixture, session: &str, percent: u32, now_ms: u64) -> f64 {
+        save_capture(&fixture.0, &session_input(session, percent), now_ms)
+            .unwrap()
+            .unwrap()
+            .weekly
+            .unwrap()
+            .used_percent
+    }
+
+    #[test]
+    fn a_reset_in_the_same_window_lowers_usage() {
+        let fixture = Fixture::new();
+        assert_eq!(weekly_after(&fixture, "a", 100, 10), 100.0);
+        // A limit reset lowers the reading without moving the window's reset time.
+        assert_eq!(weekly_after(&fixture, "a", 20, 20), 20.0);
+        let saved: ProviderUsage =
+            serde_json::from_slice(&std::fs::read(fixture.0.join("claude.json")).unwrap()).unwrap();
+        assert_eq!(saved.weekly.unwrap().used_percent, 20.0);
+    }
+
+    #[test]
+    fn another_sessions_idle_redraw_cannot_raise_a_reset_reading_back() {
+        let fixture = Fixture::new();
+        weekly_after(&fixture, "idle", 100, 10);
+        weekly_after(&fixture, "busy", 100, 20);
+        assert_eq!(weekly_after(&fixture, "busy", 20, 30), 20.0);
+        // The idle session repeats what it last sent, which is not a new reading.
+        assert_eq!(weekly_after(&fixture, "idle", 100, 40), 20.0);
+        // Nor may an idle redraw lower a busier session's reading.
+        assert_eq!(weekly_after(&fixture, "busy", 35, 50), 35.0);
+        assert_eq!(weekly_after(&fixture, "idle", 100, 60), 35.0);
+        // Once the idle session reports something new, it stands.
+        assert_eq!(weekly_after(&fixture, "idle", 36, 70), 36.0);
+    }
+
+    #[test]
+    fn captures_without_a_session_keep_the_higher_reading_and_record_nothing() {
+        let fixture = Fixture::new();
+        let input = |weekly: u32| json!({"rate_limits": {"seven_day":{"used_percentage":weekly,"resets_at":600}}});
+        save_capture(&fixture.0, &input(100), 10).unwrap();
+        let merged = save_capture(&fixture.0, &input(20), 20).unwrap().unwrap();
+        assert_eq!(merged.weekly.unwrap().used_percent, 100.0);
+        assert!(!fixture.0.join(SESSIONS_FILE).exists());
+    }
+
+    #[test]
+    fn session_readings_are_pruned_by_age_and_count() {
+        let reading = |seen_ms| SessionReading {
+            five_hour: None,
+            weekly: None,
+            seen_ms,
+        };
+        let now = SESSION_TTL_MS + 1_000;
+        let mut sessions: Sessions = (0..SESSION_CAP + 5)
+            .map(|i| (format!("s{i}"), reading(now - i as u64)))
+            .collect();
+        sessions.insert("old".into(), reading(0));
+        prune_sessions(&mut sessions, now);
+        assert_eq!(sessions.len(), SESSION_CAP);
+        assert!(!sessions.contains_key("old"));
+        assert!(sessions.contains_key("s0"));
+        assert!(!sessions.contains_key(&format!("s{}", SESSION_CAP)));
+    }
+
+    #[test]
+    fn codex_reports_a_lower_reading_after_a_reset_in_the_same_window() {
+        let event = |percent: u32, at: &str| {
+            json!({"timestamp": at, "type":"event_msg","payload":{"type":"token_count",
+                "rate_limits":{"limit_id":"codex",
+                    "primary":{"used_percent":percent,"window_minutes":10080,"resets_at":600}}}})
+            .to_string()
+        };
+        let tail = format!(
+            "{}\n{}\n",
+            event(100, "2026-11-28T00:00:00Z"),
+            event(20, "2026-11-28T00:05:00Z")
+        );
+        let usage = codex_tail(tail.as_bytes(), 1).unwrap();
+        assert_eq!(usage.weekly.unwrap().used_percent, 20.0);
     }
 
     #[test]
