@@ -208,7 +208,8 @@
     await until('completed assignment in Agents', () =>
       agentCard(results, 'Inspected the committed baseline'),
     )
-    assert(agentCard(results, 'Implemented worker file'), 'Code awaiting integration disappeared')
+    // The worker may still be finishing a turn; its card then shows that before its summary.
+    await until('code awaiting integration', () => agentCard(results, 'Implemented worker file'))
     agentCard(results, 'Inspected the committed baseline')
       .querySelector('[aria-label^="Dismiss "]')
       .click()
@@ -291,8 +292,18 @@
     )
     await smoke.createTask({ title: 'Other chat', branch: 'other-chat', components: ['app'] })
     await until('other worktree', () => state().activeTask !== null)
-    await until('another worktree without the first team', () => agentsTab() && !agentCount())
-    assert(!state().simple?.selectedAgent, 'another worktree inherited the lead')
+    // One lead per project: another worktree's focus keeps the project's conversation and lead,
+    // and Agents still shows the whole project.
+    await until('another worktree shows the project lead', () => agentsTab() && agentCount() > 0)
+    assert(
+      state().taskWorkspaces['']?.simple?.selectedAgent === team().lead.sessionId,
+      "the focus moved the conversation's lead",
+    )
+    assert(!state().simple?.selectedAgent, 'another worktree got a lead of its own')
+    assert(
+      !smoke.chatTeams.getState().teams[projectId]?.some((t) => t.task === state().activeTask),
+      'another worktree started a team of its own',
+    )
     state().setActiveTask(null)
     await until('original worktree team', () => agentCount() > 0)
     ;(await chatMenu('Stop work')).click()

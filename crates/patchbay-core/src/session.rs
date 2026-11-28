@@ -1659,6 +1659,14 @@ impl Service {
                     {
                         return false;
                     }
+                    // Chat's lead lives in the project folder and coordinates without editing
+                    // files, so a merge into that checkout runs beside it.
+                    if spec.exclusive_cwd
+                        && !r.spec.exclusive_cwd
+                        && r.spec.purpose == crate::pty::LaunchPurpose::Chat
+                    {
+                        return false;
+                    }
                     folders_overlap(&cwd, &r.spec.cwd)
                 })
                 // A merge agent's reservation is named first: it is what the refusal is about.
@@ -4967,11 +4975,11 @@ mod tests {
         ordinary.exclusive_cwd = false;
         ordinary.cwd = nested;
         let replacement = service
-            .start("after-stop".into(), second, ordinary)
+            .start("after-stop".into(), second.clone(), ordinary.clone())
             .unwrap();
         // An idle-but-running task agent also prevents an exclusive launch, and is named.
         let refused = service
-            .start("blocked-by-task".into(), metadata, spec)
+            .start("blocked-by-task".into(), metadata.clone(), spec.clone())
             .unwrap_err()
             .to_string();
         assert!(
@@ -4980,6 +4988,22 @@ mod tests {
         );
         assert!(!refused.contains(WORKTREE_BUSY), "{refused}");
         service.pty.stop(&replacement);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while service.pty.is_running(&replacement) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Chat's lead coordinates from the project folder without editing it, so a merge into
+        // that checkout launches beside it.
+        second.terminal_id = "chat-lead".into();
+        let mut lead = ordinary;
+        lead.purpose = crate::pty::LaunchPurpose::Chat;
+        let lead_id = service.start("chat-lead".into(), second, lead).unwrap();
+        let merge_id = service
+            .start("beside-the-lead".into(), metadata, spec)
+            .unwrap();
+        service.pty.stop(&merge_id);
+        service.pty.stop(&lead_id);
         service.pty.stop(&other_id);
         std::fs::remove_dir_all(dir).unwrap();
     }

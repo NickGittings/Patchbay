@@ -48,6 +48,9 @@
     el.dispatchEvent(new Event('input', { bubbles: true }))
   }
   const chatText = () => document.querySelector('.simple-thread')?.textContent ?? ''
+  // Only the lead talks in Chat; the agents its stages start keep their replies in their terminals.
+  const agentSaid = (text) =>
+    Object.values(state().sessions).some((s) => s.replies?.some((r) => r.text.includes(text)))
   const workflowText = () => document.querySelector('.chat-stepper')?.textContent ?? ''
   const inChat = () => assert(state().simpleMode && state().view === 'navigation', 'flow left Chat')
   try {
@@ -83,11 +86,10 @@
     await until('root chat layout saved', () => smoke.chatPanel.width() > 0)
     const initialRootChatWidth = smoke.chatPanel.width()
     const initialRootLayout = { ...state().panels['App-simple'] }
-    await smoke.createTask({
-      title: 'Simple chat build',
-      branch: 'simple-chat-build',
-      components: ['app'],
-    })
+    // Chat's one conversation lives in the project folder; the lead plans there and runs the
+    // worktree's stages once it exists.
+    const home = () =>
+      state().activeTask === null ? state().simple : state().taskWorkspaces['']?.simple
     state().setSimpleMode(true)
     if (!state().panels['App-simple']) state().setPanelLayout('App-simple', initialRootLayout)
     state().revealChat({ projectId, task: state().activeTask })
@@ -103,28 +105,15 @@
         .getAttribute('aria-pressed') === 'false',
       'Full Navigation is pressed in Chat',
     )
-    // Planning is an existing workspace session; Chat must explicitly select its recipient.
-    await smoke.startTerminal('@plan', fake.id, state().activeTask, projectId)
-    const plannerRecord = await until('planner available in picker', () =>
-      state().sessionRecords.find(
-        (r) => r.metadata.componentId === '@plan' && r.metadata.terminalId === fake.id,
-      ),
-    )
-    // Seed this manual-workflow fixture explicitly; the UI only offers preset switching.
-    state().patchTask(projectId, state().activeTask, {
-      simple: { ...state().simple, selectedAgent: plannerRecord.id },
+    // Chat starts the project's lead in the project folder on the first message.
+    smoke.store.setState({
+      workspaceSettings: { ...state().workspaceSettings, chatAgent: fake.id },
     })
-    await until('planner selected', () => state().simple?.selectedAgent === plannerRecord.id)
-    const team = () =>
-      smoke.chatTeams.getState().teams[projectId]?.find((t) => t.task === state().activeTask)
-    await smoke.refreshChatTeams(projectId)
-    await until('planner adopted as lead', () => team()?.lead.sessionId === plannerRecord.id)
-    if (team().state === 'paused') click(await chatMenu('Continue work'))
-    await until('coordination running', () => team()?.state === 'running')
+    const team = () => smoke.chatTeams.getState().teams[projectId]?.find((t) => t.task === null)
     const composer = document.querySelector('[aria-label="Message agent"]')
     const requestStage = async (id, { waitForResult = true } = {}) => {
       const textarea = document.querySelector('.simple-composer:not([hidden]) textarea')
-      input(textarea, `smoke-stage ${id}`)
+      input(textarea, `smoke-stage ${id} ${state().activeTask}`)
       click(
         await until(`send ${id}`, () => {
           const send = button('Send', textarea.closest('.simple-composer'))
@@ -153,7 +142,7 @@
       new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
     )
     await until('Enter selects mention', () => composer.value === 'Plan the fixture feature @app')
-    assert(!state().simple?.log.some((e) => e.kind === 'prompt'), 'mention Enter sent a prompt')
+    assert(!home()?.log.some((e) => e.kind === 'prompt'), 'mention Enter sent a prompt')
     await until(
       'completed mention closes autocomplete',
       () => !document.querySelector('.simple-composer [role="option"]'),
@@ -166,10 +155,13 @@
       new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
     )
     const firstPrompt = await until('planner working', () => {
-      const entry = state().simple?.log.find((e) => e.kind === 'prompt')
+      const entry = home()?.log.find((e) => e.kind === 'prompt')
       return entry && state().sessions[entry.sessionId]?.status?.agent?.state === 'working' && entry
     })
     assert(firstPrompt.mentions.includes('app'), 'consecutive Enter lost mention scope')
+    await until('Chat lead started', () => team()?.lead.sessionId === firstPrompt.sessionId)
+    if (team().state === 'paused') click(await chatMenu('Continue work'))
+    await until('coordination running', () => team()?.state === 'running')
     input(document.querySelector('[aria-label="Message agent"]'), 'Queued fixture follow-up @a')
     await until('queue mention options', () =>
       document.querySelector('.simple-composer [role="option"]'),
@@ -199,9 +191,7 @@
     })
     await until('queue cleared', () => !document.querySelector('.simple-queued'))
     assert(
-      state().simple.log.some(
-        (e) => e.kind === 'prompt' && e.text === 'Queued fixture follow-up @a',
-      ),
+      home().log.some((e) => e.kind === 'prompt' && e.text === 'Queued fixture follow-up @a'),
       'queued prompt not logged',
     )
     await until(
@@ -216,9 +206,7 @@
       }),
     )
     await until('forced prompt delivered', () =>
-      state().simple.log.some(
-        (e) => e.kind === 'prompt' && e.text === 'Immediate fixture follow-up',
-      ),
+      home().log.some((e) => e.kind === 'prompt' && e.text === 'Immediate fixture follow-up'),
     )
     assert(!document.querySelector('.simple-queued'), 'Send anyway queued instead of sending')
     input(document.querySelector('[aria-label="Message agent"]'), 'Command shortcut follow-up @')
@@ -229,9 +217,7 @@
       .querySelector('[aria-label="Message agent"]')
       .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }))
     await until('Command+Enter sends through autocomplete', () =>
-      state().simple.log.some(
-        (e) => e.kind === 'prompt' && e.text === 'Command shortcut follow-up @',
-      ),
+      home().log.some((e) => e.kind === 'prompt' && e.text === 'Command shortcut follow-up @'),
     )
     await until('planner reply', () => chatText().includes('I planned the fixture feature'))
     await until(
@@ -242,9 +228,9 @@
     assert(!button('Review options'), 'Review options remain in Chat')
     assert(!document.querySelector('.chat-stepper button'), 'stage strip still shows actions')
     inChat()
-    const planner = state().simple.log.find((e) => e.kind === 'prompt').sessionId
+    const planner = home().log.find((e) => e.kind === 'prompt').sessionId
     assert(
-      state().simple.log.some((e) => e.kind === 'reply' && e.sessionId === planner),
+      home().log.some((e) => e.kind === 'reply' && e.sessionId === planner),
       'reply not persisted',
     )
     click(document.querySelector('[aria-label="Hide chat"]'))
@@ -270,8 +256,13 @@
     await until('composer visible after closing the drawer', () =>
       document.querySelector('.simple-composer:not([hidden])'),
     )
+    // The worktree starts from the plan's goal, saved as its plan.
+    await smoke.createTask(
+      { title: 'Simple chat build', branch: 'simple-chat-build', components: ['app'] },
+      'Simple fixture plan',
+    )
     await requestStage('build')
-    await until('build reply', () => chatText().includes('Built the fixture feature.'))
+    await until('build reply', () => agentSaid('Built the fixture feature.'))
     inChat()
     click(button('View Lead terminal', document.querySelector('.simple-composer')))
     await until('planner drawer reopened', () =>
@@ -288,7 +279,7 @@
     state().setActiveTask(task)
     await until('worktree chat width restored', () => Math.abs(chatWidth() - taskChatWidth) < 0.1)
     assert(
-      state().simple.log.some((e) => e.kind === 'prompt' && e.sessionId === planner),
+      home().log.some((e) => e.kind === 'prompt' && e.sessionId === planner),
       'conversation not carried into worktree',
     )
     await until(
@@ -297,7 +288,7 @@
         document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm') &&
         document.querySelector('.simple-composer[hidden]'),
     )
-    assert(state().simple.selectedAgent === planner, 'workflow changed selected agent')
+    assert(home().selectedAgent === planner, 'workflow changed selected agent')
     const draft = document.querySelector('.simple-composer textarea').value
     click(button('Close terminal', document.querySelector('.chat-terminal-panel')))
     await until('drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
@@ -331,6 +322,14 @@
       () => state().activeTask === task && document.querySelector('.simple-chat'),
     )
     assert(chatWidth() >= 20, 'revealed Chat is below its minimum')
+    // The builder isn't in the conversation, so View opens its terminal in Chat's drawer.
+    const builderDrawer = await until('builder terminal in the drawer', () =>
+      document.querySelector('.chat-terminal-panel'),
+    )
+    click(button('Close terminal', builderDrawer))
+    await until('composer after the builder drawer', () =>
+      document.querySelector('.simple-composer:not([hidden]) textarea'),
+    )
     await smoke.report('INFO simple: worktree widths and unsaved-layout reveal passed')
     await smoke.terminalWrite(builder, 'smoke-changes\n')
     await until('three changed files', () => button('Changes 3'))
@@ -343,7 +342,9 @@
       document.querySelector(`.agent-card[data-session="${CSS.escape(builder)}"]`),
     )
     // Changes opens on the newest edit, once the agent's activity has reported it.
-    await until('builder edit reported', () => button('Edited src/third.txt'))
+    await until('builder edit reported', () =>
+      state().sessions[builder]?.activity?.some((a) => a.target?.endsWith('src/third.txt')),
+    )
     click(
       await until('Changes tab', () =>
         [...document.querySelectorAll('.view-tabs button')].find((b) =>
@@ -485,13 +486,24 @@
     click(button('Map', pane))
     await until('Map returns', () => !document.querySelector('.simple-diff'))
     assert(!document.querySelector('.simple-file'), 'Changes card remains in the thread')
-    click(await until('Agents before edited file', agentsTab))
-    click(await until('latest edited file link', () => button('Edited src/third.txt')))
+    // Only the lead's blocks show in Chat, so the builder's edit is picked from Changes.
+    click(
+      await until('Changes tab for the edited file', () =>
+        [...document.querySelectorAll('.view-tabs button')].find((b) =>
+          b.textContent.trim().startsWith('Changes '),
+        ),
+      ),
+    )
+    click(
+      await until('edited file row', () =>
+        document.querySelector('.simple-diff .change-row[data-path="src/third.txt"]'),
+      ),
+    )
     const editedDiff = () =>
       document.querySelector(
         '.simple-diff .change-row[data-path="src/third.txt"][aria-selected="true"]',
       )
-    await until('Edited opens Changes', editedDiff)
+    await until('edited file selected in Changes', editedDiff)
     smoke.selectRailView('plan')
     await until('Full Plan', () => !document.querySelector('.navigation-shell'))
     smoke.selectRailView('navigation')
@@ -556,23 +568,26 @@
     state().setView('navigation')
     state().setSimpleMode(true)
     const reviewer = state().simple.log.findLast((e) => e.action === 'review').sessionId
+    // Only the lead's blocks show in Chat; the reviewer's terminal opens from its Agents card.
+    click(await until('Agents before the reviewer terminal', agentsTab))
     click(
-      await until('reviewer terminal button', () => {
-        const article = document.querySelector(`[data-session="${reviewer}"]`)
-        return article && button('View Reviewer terminal', article)
-      }),
+      await until('reviewer terminal button', () =>
+        document.querySelector(
+          `.agent-card[data-session="${CSS.escape(reviewer)}"] button[aria-label^="View "]`,
+        ),
+      ),
     )
     await until('reviewer drawer shows its terminal', () =>
       document.querySelector('.simple-terminal-drawer[aria-label="Reviewer terminal"] .xterm'),
     )
-    assert(state().simple.selectedAgent === planner, 'reviewer View changed selected agent')
+    assert(home().selectedAgent === planner, 'reviewer View changed selected agent')
     click(button('Close terminal', document.querySelector('.chat-terminal-panel')))
     await until('reviewer drawer closed', () => !document.querySelector('.simple-terminal-drawer'))
     await smoke.report('INFO simple: changes and review passed')
     await requestStage('fix')
-    await until('fix reply', () => chatText().includes('Fixed the review finding.'))
+    await until('fix reply', () => agentSaid('Fixed the review finding.'))
     await requestStage('review-again')
-    await until('clean follow-up review', () => chatText().includes('The review is clean.'))
+    await until('clean follow-up review', () => agentSaid('The review is clean.'))
     await requestStage('merge', { waitForResult: false })
     await until('lead merge recorded', () =>
       [...(state().simple.retainedWorkflow ?? []), ...state().simple.log].some(
@@ -596,9 +611,10 @@
       'Chat cleared after merging into main',
       () => state().simple.clearBoundary && !state().simple.log.length,
     )
+    // One worktree's merge clears its own results; the project's conversation keeps the lead's.
     assert(
-      !chatText().includes('I planned the fixture feature'),
-      'merged Chat still shows old replies',
+      chatText().includes('I planned the fixture feature'),
+      "merging a worktree cleared the project's conversation",
     )
     assert(
       state().sessions[planner]?.generation === leadBeforeClear.generation &&
@@ -607,100 +623,22 @@
     )
     await smoke.terminalStop(merger)
     await until('merge agent stopped', () => !state().sessions[merger]?.running)
-    // Release the preserved lead's planner slot before testing fresh runs outside Chat.
-    if (state().sessions[planner]?.running) await smoke.terminalStop(planner)
-    await until(
-      'lead stopped for external planner checks',
-      () => !state().sessions[planner]?.running,
-    )
-    // View must keep an external run's output open after exit without claiming the run.
-    for (const exitCode of [0, 1]) {
-      const previousGeneration = state().sessions[planner]?.generation
-      await smoke.startTerminal('@plan', fake.id, task, projectId)
-      await until('external planner ready', () => {
-        const session = state().sessions[planner]
-        const agent = session?.status?.agent
-        return (
-          session?.running &&
-          session.generation !== previousGeneration &&
-          agent?.authoritative &&
-          ['idle', 'review'].includes(agent.state)
-        )
-      })
-      await smoke.terminalWrite(planner, `smoke-exit-${exitCode}\n`)
-      await until('external planner exited', () => !state().sessions[planner]?.running)
-      click(document.querySelector('[aria-label="Hide chat"]'))
-      await until(
-        'chat hidden before external reveal',
-        () => !document.querySelector('.simple-chat'),
-      )
-      smoke.revealTerminal({ sid: planner, componentId: '@plan' })
-      await until('external planner drawer', () =>
-        document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm'),
-      )
-      // Reconciliation reruns inputDrawer after View and used to clear the drawer's target.
-      await smoke.reconcileSessions(false)
-      await sleep(300)
-      assert(
-        document.querySelector('.simple-terminal-drawer[aria-label="Lead terminal"] .xterm'),
-        `View lost external planner after exit ${exitCode}`,
-      )
-      assert(!state().revealed, 'external planner reveal was not consumed')
-      assert(state().activeTask === task, 'external planner View changed chats')
-      inChat()
-      click(button('Close terminal', document.querySelector('.chat-terminal-panel')))
-      await until(
-        'external planner hidden',
-        () => !document.querySelector('.simple-terminal-drawer'),
-      )
-    }
-    // A permission wait belongs to its originating agent and opens only when requested.
-    const stoppedGeneration = state().sessions[planner]?.generation
-    await smoke.startTerminal('@plan', fake.id, task, projectId)
-    // Input written before the new run reports its prompt can reach the old generation.
-    await until('planner restarted', () => {
+    // A permission wait belongs to the lead that asks and opens only when requested.
+    await until('lead ready for input', () => {
       const session = state().sessions[planner]
-      const agent = session?.status?.agent
       return (
         session?.running &&
-        session.generation !== stoppedGeneration &&
-        agent?.authoritative &&
-        ['idle', 'review'].includes(agent.state) &&
-        // The ready lead takes its pending coordination first; input typed into that paste
-        // would arrive as part of it.
-        !smoke.leadDeliveryPending(projectId, task, planner, session.generation)
+        ['idle', 'review'].includes(session.status?.agent?.state) &&
+        !smoke.leadDeliveryPending(projectId, null, planner, session.generation)
       )
-    }).catch((e) => {
-      const session = state().sessions[planner]
-      const agent = session?.status?.agent
-      throw new Error(
-        `${e.message}: running=${session?.running} generation=${session?.generation} (stopped ${stoppedGeneration}) authoritative=${agent?.authoritative} state=${agent?.state} pending=${session && smoke.leadDeliveryPending(projectId, task, planner, session.generation)}`,
-      )
-    })
-    state().patchTask(projectId, task, {
-      simple: {
-        ...state().simple,
-        log: [
-          ...state().simple.log,
-          {
-            id: 'smoke-plan',
-            kind: 'action',
-            action: 'plan',
-            stage: 'plan',
-            sessionId: planner,
-            generation: state().sessions[planner].generation,
-            atMs: Date.now(),
-          },
-        ],
-      },
     })
     await smoke.terminalWrite(planner, 'smoke-input\n')
-    const question = await until('planner input question', () =>
+    const question = await until('lead input question', () =>
       [...document.querySelectorAll('.chat-question')].find((el) =>
         el.textContent.includes('Allow fixture tool?'),
       ),
     )
-    assert(state().simple.selectedAgent === planner, 'input wait changed selected agent')
+    assert(home().selectedAgent === planner, 'input wait changed selected agent')
     click(question.querySelector('summary'))
     await until('question terminal opened', () => question.querySelector('.xterm'))
     input(
@@ -725,27 +663,68 @@
     )
     await smoke.terminalStop(planner)
     await until('stopped agent question closes', () => !document.querySelector('.chat-question'))
+    // View must keep an external run's output open after exit without claiming the run.
+    const external = smoke.sessionId('@plan', fake.id, task)
+    for (const exitCode of [0, 1]) {
+      const previousGeneration = state().sessions[external]?.generation
+      await smoke.startTerminal('@plan', fake.id, task, projectId)
+      await until('external planner ready', () => {
+        const session = state().sessions[external]
+        const agent = session?.status?.agent
+        return (
+          session?.running &&
+          session.generation !== previousGeneration &&
+          agent?.authoritative &&
+          ['idle', 'review'].includes(agent.state)
+        )
+      })
+      await smoke.terminalWrite(external, `smoke-exit-${exitCode}\n`)
+      await until('external planner exited', () => !state().sessions[external]?.running)
+      click(document.querySelector('[aria-label="Hide chat"]'))
+      await until(
+        'chat hidden before external reveal',
+        () => !document.querySelector('.simple-chat'),
+      )
+      smoke.revealTerminal({ sid: external, componentId: '@plan' })
+      const externalDrawer = () =>
+        document.querySelector('.simple-terminal-drawer[aria-label$=" terminal"] .xterm')
+      await until('external planner drawer', externalDrawer)
+      // Reconciliation reruns inputDrawer after View and used to clear the drawer's target.
+      await smoke.reconcileSessions(false)
+      await sleep(300)
+      assert(externalDrawer(), `View lost external planner after exit ${exitCode}`)
+      assert(!state().revealed, 'external planner reveal was not consumed')
+      assert(state().activeTask === task, 'external planner View changed the focus')
+      inChat()
+      click(button('Close terminal', document.querySelector('.chat-terminal-panel')))
+      await until(
+        'external planner hidden',
+        () => !document.querySelector('.simple-terminal-drawer'),
+      )
+    }
     const saved = smoke.workspaceDocument().projects.find((p) => p.id === projectId).layout
     assert(
       saved.taskWorkspaces[task].simple.clearBoundary &&
-        !saved.taskWorkspaces[task].simple.log.some(
-          (e) => e.kind === 'reply' && e.text.includes('I planned the fixture feature'),
-        ),
-      'merged Chat clear missing from saved workspace',
+        !saved.taskWorkspaces[task].simple.log.length,
+      'merged worktree clear missing from saved workspace',
     )
     state().setSimpleMode(false)
     state().setSimpleMode(true)
     await sleep(300)
     assert(
-      !chatText().includes('I planned the fixture feature'),
-      'old replies returned after remount',
+      chatText().includes('I planned the fixture feature') && !state().simple.log.length,
+      "remount lost the conversation or restored the merged worktree's results",
     )
     await smoke.report(
-      'PASS simple: chat resize/hide/show and worktree widths, Enter queues and delivers, Changes tab/Map, collapsed history, lead launches Build/Review/Fix/Merge in one conversation, automatic Chat cleanup without terminal reset, drawer input waits and persisted clear',
+      'PASS simple: chat resize/hide/show and worktree widths, Enter queues and delivers, Changes tab/Map, collapsed history, lead launches Build/Review/Fix/Merge in one conversation, merged worktree cleanup that keeps the project conversation and the lead terminal, drawer input waits and persisted clear',
     )
   } catch (e) {
     await smoke.report(
-      `FAIL simple: ${String(e)} ${e.stack ?? ''} view=${state().view} simple=${state().simpleMode} board=${state().storyBoard} workflow=${workflowText()} chat=${chatText().slice(-1800)} message=${state().message}`,
+      `FAIL simple: ${String(e)} ${e.stack ?? ''} view=${state().view} simple=${state().simpleMode} board=${state().storyBoard} workflow=${workflowText()} chat=${chatText().slice(-1800)} message=${state().message} drawer=${document.querySelector('.simple-terminal-drawer')?.getAttribute('aria-label')} xterm=${!!document.querySelector('.simple-terminal-drawer .xterm')} tabs=${[...document.querySelectorAll('.view-tabs button')].map((b) => b.textContent.trim()).join('|')} active=${state().activeTask} wlog=${JSON.stringify([...(state().simple?.retainedWorkflow ?? []), ...(state().simple?.log ?? [])].map((e) => [e.kind, e.action, e.origin]))} req=${JSON.stringify(
+        Object.values(smoke.chatTeams.getState().teams)
+          .flat()
+          .flatMap((t) => (t.requests ?? []).map((r) => [r.id, r.state, r.result?.slice(0, 160)])),
+      )}`,
     )
   }
 })()
