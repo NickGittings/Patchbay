@@ -2966,6 +2966,7 @@ dependencies = [
  "dispatch2",
  "keepawake",
  "objc2",
+ "objc2-foundation",
  "objc2-io-kit",
  "objc2-web-kit",
  "patchbay-core",

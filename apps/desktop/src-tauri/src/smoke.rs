@@ -60,8 +60,9 @@ pub fn project_root(second: bool) -> Option<std::path::PathBuf> {
     .map(std::path::PathBuf::from)
 }
 
-/// Smoke windows run in the background (see [`setup`]), where WebKit would otherwise throttle
-/// or suspend their timers. Applied to the main window and every pop-out.
+/// Prepares a smoke window before it's built: hidden until [`conceal`] shows it, background
+/// throttling off (the hidden-page timer throttling is [`unthrottle`]'s, after the build), and
+/// a WebKit store of the run's own. Applied to the main window and every pop-out.
 pub fn window<'a>(
     builder: tauri::WebviewWindowBuilder<'a, Wry, tauri::AppHandle>,
 ) -> tauri::WebviewWindowBuilder<'a, Wry, tauri::AppHandle> {
@@ -85,7 +86,17 @@ pub fn window<'a>(
         return builder;
     };
     #[cfg(target_os = "macos")]
-    let builder = builder.data_store_identifier(store_identifier(&state));
+    let builder = {
+        let identifier = store_identifier(&state);
+        let (builder, attached) = with_store(builder, identifier);
+        // Each store persists under ~/Library/WebKit; the launchers' `stopService` reads this
+        // file and deletes the run's store once the run is over.
+        if attached {
+            let id = uuid_string(identifier);
+            let _ = std::fs::write(std::path::Path::new(&state).join("webkit-store"), id);
+        }
+        builder
+    };
     #[cfg(not(target_os = "macos"))]
     let builder = builder.data_directory(std::path::PathBuf::from(state).join("webview"));
     builder
@@ -101,6 +112,7 @@ pub fn conceal(window: &tauri::WebviewWindow) {
     if std::env::var_os("PATCHBAY_SMOKE_SCRIPT").is_none() || foreground() {
         return;
     }
+    unthrottle(window);
     let _ = window.set_ignore_cursor_events(true);
     if let Ok(ns_window) = window.ns_window() {
         // SAFETY: `ns_window` is the live `NSWindow` of a window just built on the main thread
@@ -112,8 +124,88 @@ pub fn conceal(window: &tauri::WebviewWindow) {
     let _ = window.show();
 }
 
+/// A concealed window's page reports itself hidden, and WebKit aligns a hidden page's timers to
+/// one second (`setTimeout(0)` included) whatever the background throttling policy, which made
+/// every smoke wait cost a second. Turns that off, and the process suppression that goes with it,
+/// through WebKit's preference SPI; a WebKit without them keeps the throttled timers.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn unthrottle(window: &tauri::WebviewWindow) {
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2::{msg_send, sel};
+    let _ = window.with_webview(|webview| {
+        // SAFETY: `inner` is the live `WKWebView` of this window, on the main thread where
+        // `with_webview` runs; `configuration` and `preferences` return objects it keeps alive.
+        // Each setter is sent only when the preferences object responds to it, and takes a BOOL.
+        unsafe {
+            let Some(view) = webview.inner().cast::<AnyObject>().as_ref() else {
+                return;
+            };
+            let configuration: *mut AnyObject = msg_send![view, configuration];
+            let Some(configuration) = configuration.as_ref() else {
+                return;
+            };
+            let preferences: *mut AnyObject = msg_send![configuration, preferences];
+            let Some(preferences) = preferences.as_ref() else {
+                return;
+            };
+            let responds = |selector| -> bool {
+                let answer: Bool = msg_send![preferences, respondsToSelector: selector];
+                answer.as_bool()
+            };
+            if responds(sel!(_setHiddenPageDOMTimerThrottlingEnabled:)) {
+                let _: () =
+                    msg_send![preferences, _setHiddenPageDOMTimerThrottlingEnabled: Bool::NO];
+            }
+            if responds(sel!(_setPageVisibilityBasedProcessSuppressionEnabled:)) {
+                let _: () = msg_send![
+                    preferences,
+                    _setPageVisibilityBasedProcessSuppressionEnabled: Bool::NO
+                ];
+            }
+        }
+    });
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn conceal(_window: &tauri::WebviewWindow) {}
+
+/// Gives the window the WebKit store `identifier` names. wry ignores `data_store_identifier` when
+/// the builder carries a webview configuration, and every window gets one from
+/// [`crate::writing_tools::disable`], so the store goes on a fresh copy of that configuration,
+/// which replaces it. Before macOS 14, which has no custom stores, the window keeps the shared one.
+/// Returns whether the window got the store.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn with_store(
+    builder: tauri::WebviewWindowBuilder<'_, Wry, tauri::AppHandle>,
+    identifier: [u8; 16],
+) -> (tauri::WebviewWindowBuilder<'_, Wry, tauri::AppHandle>, bool) {
+    use objc2::ClassType;
+    use objc2_foundation::NSUUID;
+    use objc2_web_kit::WKWebsiteDataStore;
+    // A class method, so the metaclass answers for it.
+    let class = WKWebsiteDataStore::class().metaclass();
+    if !class.responds_to(objc2::sel!(dataStoreForIdentifier:)) {
+        return (builder, false);
+    }
+    // Without a configuration `writing_tools::disable` attached none either, so wry honours the
+    // identifier itself.
+    let (Some(mtm), Some(config)) = (
+        objc2::MainThreadMarker::new(),
+        crate::writing_tools::configuration(),
+    ) else {
+        return (builder.data_store_identifier(identifier), true);
+    };
+    // SAFETY: on the main thread, with the selector checked above; the identifier is never all
+    // zeros (its version bits are set), the one value `dataStoreForIdentifier` rejects.
+    unsafe {
+        let store =
+            WKWebsiteDataStore::dataStoreForIdentifier(&NSUUID::from_bytes(identifier), mtm);
+        config.setWebsiteDataStore(&store);
+    }
+    (builder.with_webview_configuration(config), true)
+}
 
 /// A UUID-shaped identifier (version 4 bits set) stable for one state dir.
 #[cfg(target_os = "macos")]
@@ -128,6 +220,20 @@ fn store_identifier(state: &std::ffi::OsStr) -> [u8; 16] {
     id[6] = (id[6] & 0x0f) | 0x40;
     id[8] = (id[8] & 0x3f) | 0x80;
     id
+}
+
+/// `identifier` in the lowercase hyphenated form WebKit names the store's folder with.
+#[cfg(target_os = "macos")]
+fn uuid_string(identifier: [u8; 16]) -> String {
+    let hex: String = identifier.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
 }
 
 /// Prepares the app for a smoke run; does nothing outside one.

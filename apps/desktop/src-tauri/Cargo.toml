@@ -38,10 +38,11 @@ windows = { version = "0.62.2", features = ["Win32_System_Power"] }
 dispatch2 = "0.3"
 objc2-io-kit = { version = "0.3.2", features = ["ps"] }
 objc2 = "0.6"
-objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSUUID"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
 
 # The workspace lints, except `unsafe_code` is `deny` rather than `forbid`, so `writing_tools.rs`
-# can allow the Objective-C calls WebKit's Writing Tools switch needs. Keep the rest in step.
+# and the debug-only `smoke.rs` can allow the Objective-C calls they need. Keep the rest in step.
 [lints.rust]
 unsafe_code = "deny"
 

@@ -27,8 +27,11 @@
     await until('agent process without bridge', () =>
       smoke.terminalText(sid).text.includes('app-open-without-bridge'),
     )
-    if (!state().sessions[sid]?.notice?.includes("the desktop bridge didn't start"))
-      throw new Error('Missing agent-command notice')
+    // The notice comes with the start event, which can reach the store after the backlog the
+    // output check reads.
+    await until('agent-command notice', () =>
+      state().sessions[sid]?.notice?.includes("the desktop bridge didn't start"),
+    )
     await smoke.report(
       'PASS bridge: startup failure keeps app and agent terminals usable with notice',
     )

@@ -1,6 +1,9 @@
 // Shared by the smoke launchers (`smoke.mjs`, `lifecycle.mjs`, `readme-shots.mjs`): start the
-// desktop app, stop a run's session service, and outlive an interrupt long enough to do that.
+// desktop app, stop a run's session service and delete its WebKit store, and outlive an interrupt
+// long enough to do that.
 import { spawn, execFileSync } from 'node:child_process'
+import { readFileSync, readdirSync, rmSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { resolve, join } from 'node:path'
 export const desktop = resolve(import.meta.dirname, '..')
 export const root = resolve(desktop, '../..')
@@ -43,6 +46,44 @@ export function stopService(env) {
   } catch (e) {
     // No service was started, or it already exited; a missing binary is a runner bug.
     if (e.code === 'ENOENT') throw e
+  }
+  removeWebKitStore(env)
+}
+
+/**
+ * Delete the WebKit store the run's app recorded in `webkit-store` (`smoke::window`), which
+ * otherwise stays under ~/Library/WebKit/<app>/WebsiteDataStore after every run.
+ */
+function removeWebKitStore(env) {
+  if (process.platform !== 'darwin' || !env.PATCHBAY_STATE_DIR) return
+  let id
+  try {
+    id = readFileSync(join(env.PATCHBAY_STATE_DIR, 'webkit-store'), 'utf8').trim()
+  } catch {
+    return // The app never built a window.
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) return
+  const webkit = join(homedir(), 'Library', 'WebKit')
+  let apps = []
+  try {
+    apps = readdirSync(webkit)
+  } catch {
+    return
+  }
+  // Named after the binary or bundle; the identifier is unique, so look under each. WebKit's
+  // network process can still be writing into it just after the app exits, so retry, and leave
+  // a store that won't go rather than fail the run.
+  for (const app of apps) {
+    try {
+      rmSync(join(webkit, app, 'WebsiteDataStore', id), {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 200,
+      })
+    } catch {
+      // The store stays behind; the run's result doesn't depend on it.
+    }
   }
 }
 

@@ -34,9 +34,13 @@
       const sid = smoke.sessionId(node.id, shell.id)
       await smoke.startTerminal(node.id, shell.id)
       await until('shell to start', () => smoke.store.getState().sessions[sid]?.running)
+      // Input typed before the shell prints its prompt can be swallowed by its startup.
+      await until('shell prompt', () => textOf(sid).trim())
       // Arithmetic so the typed command never matches the expected output.
       await smoke.terminalWrite(sid, 'echo backlog-$((40+2))\r')
-      await until('marker output', () => textOf(sid).includes('backlog-42'))
+      await until('marker output', () => textOf(sid).includes('backlog-42')).catch((e) => {
+        throw new Error(`${e.message}; terminal showed ${JSON.stringify(textOf(sid).slice(-400))}`)
+      })
       const state = smoke.store.getState()
       state.clearHighlights()
       state.select(node.id)
