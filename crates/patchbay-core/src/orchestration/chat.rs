@@ -1129,15 +1129,44 @@ pub fn command(
                             ),
                             "Only startPlan and startAuto take a story"
                         );
-                        // Auto links its story to the run's worktree; the project checkout has none.
+                        // Auto links its story to the run's worktree; the project checkout has
+                        // none unless the request creates one.
                         ensure!(
-                            action != WorkflowAction::StartAuto || t.task.is_some(),
-                            "Auto can take a story only in a worktree. Ask the user to start one."
+                            action != WorkflowAction::StartAuto
+                                || t.task.is_some()
+                                || new_worktree(&settings),
+                            "Auto can take a story only in a worktree. Use newWorktree: true or ask the user to start one."
                         );
                         let story = story.as_str().unwrap_or_default();
                         ensure!(
                             crate::stories::load(root)?.iter().any(|s| s.id == story),
                             "Unknown story {story:?}. Run `agent stories` for the board's ids."
+                        );
+                    }
+                    ensure!(
+                        !new_worktree(&settings)
+                            || (action == WorkflowAction::StartAuto
+                                && settings["story"].is_string()),
+                        "newWorktree is only for startAuto with a story"
+                    );
+                    // Pause, resume and stop may target the run of an earlier startAuto, such as
+                    // a story's own worktree, instead of this worktree's.
+                    if let Some(target) = settings.get("request").filter(|v| !v.is_null()) {
+                        ensure!(
+                            matches!(
+                                action,
+                                WorkflowAction::PauseAuto
+                                    | WorkflowAction::ResumeAuto
+                                    | WorkflowAction::StopAuto
+                            ),
+                            "Only pauseAuto, resumeAuto and stopAuto take a request"
+                        );
+                        let target = target.as_str().unwrap_or_default();
+                        ensure!(
+                            t.requests
+                                .iter()
+                                .any(|r| r.id == target && r.action == WorkflowAction::StartAuto),
+                            "Unknown startAuto request {target:?}"
                         );
                     }
                     if action == WorkflowAction::StartCouncilReview {
@@ -1690,6 +1719,13 @@ pub(super) fn reserve_check(s: &Store, project: &str, run: &str, job: &str) -> R
     Ok(())
 }
 
+/// A `startAuto` that creates its own worktree: `newWorktree: true` or `{branch?, base?}`.
+fn new_worktree(settings: &serde_json::Value) -> bool {
+    settings
+        .get("newWorktree")
+        .is_some_and(|v| v.as_bool() == Some(true) || v.is_object())
+}
+
 const STAGE_ACTIVE: &str = "A plan, build, fix, review or merge is already active in this worktree";
 
 fn stage_active(team: &Team) -> bool {
@@ -2210,7 +2246,9 @@ Run each command below as {cli}.
   - `startFix` settings: `{}`. Starts a fix agent on this worktree's latest finished review. Wait for its durable result, then inspect the work.
   - `startMerge` settings: `{destination: optional-branch-name, commitSource: optional-change-list}`. Starts a merge agent for this worktree's branch into `destination`, else the default merge destination. With uncommitted changes it fails and lists them: ask the user, and only if they agree retry under a new id with exactly those entries as `commitSource`. A confirmed merge needs no report from you, because Chat shows it.
   - Only one `startPlan`, `startBuild`, `startFix`, `startReview`, `startCouncilReview` or `startMerge` can be active at a time.
-  - `startAuto` accepts `goal`, `story` (a story id: the story's text becomes the goal and the story is linked to the run), `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`) and `stage`; omit fields to use app defaults. Never automatically enable merge approval bypass.
+  - `startAuto` accepts `goal`, `story` (a story id: the story's text becomes the goal and the story is linked to the run), `effort` (light/standard/thorough), `device`, `agents`, `reviewers`, `workers`, `merge` (`{mode: ask, destinationBranch}`), `stage`, `autonomous`, `background`, `resumeOnUsageReset` and `newWorktree` (`true` or `{branch, base}`, with `story` only: creates a worktree for that story, off `base` else the merge destination, without switching the user to it, and runs Auto there autonomously in the background); omit fields to use app defaults. Never automatically enable merge approval bypass. Its result arrives when the run settles: done, waiting for the user's merge approval, failed or stopped, or needing the user. Waits that resume by themselves (a usage reset, a scheduled resume, an autonomous restart) keep it running; any other pause counts as needing the user. A story's run that needed the user or was paused by them goes on after its result, and a later note says how it ended.
+  - `pauseAuto`, `resumeAuto` and `stopAuto` settings: `{request: optional-startAuto-request-id}`. Without `request` they control this worktree's Auto; with it, the run that `startAuto` request started, such as a backlog story's worktree.
+  - Backlog runs: when the user asks you to work through the board (for example "up to 6 stories, 3 at a time"; at most 3 at a time unless they say otherwise), read `agent stories` and start `next` with `startAuto` and `newWorktree: true`, under a new request id each time, until that many runs are active. Each settled result frees its slot: record it and start the next `next`, so a story that needs the user never holds up the rest. A story whose Auto did not start returns to the backlog: skip it for the following story rather than retrying it, unless the user asks. Stop starting stories at the user's total or when `next` is empty. Never merge, approve merges or answer agents' questions for the user. When the last run settles, summarize every story's worktree branch and state, those needing the user first.
   - `startCouncilReview` settings: `{base: branch-name, focus: optional-review-focus}`, only when `team.council.enabled`. Use only this workflow for a council and wait for its durable result. It uses additional model usage. Summarize its findings with reviewer attribution, consolidate duplicates, explain disagreements and incomplete coverage, and never discard findings by majority vote or treat failed/stale reviews as clean. Council review does not authorize fixes or merges.
 - `agent stories [--id <story-id>]`: the story board in priority order (each epic, its features and their stories, then unassigned stories), with `next`, the top Backlog story without linked work. Stories show their saved stage and epics and features show Active or Closed. `--id` adds that item's full briefing as `section`.
 - `agent story-create --kind <epic|feature|story> --title <title> [--parent <id>] [--description <text>] [--acceptance <criterion>]... [--component <id>]...`: create an item and get its saved record. A feature needs an epic. A story may belong to a feature or be unassigned.
@@ -4124,6 +4162,54 @@ mod tests {
             ))
             .is_err()
         );
+        // ...unless the request makes one for the story.
+        f.cmd(request(
+            "auto",
+            "startAuto",
+            serde_json::json!({"story": story.id, "newWorktree": true}),
+        ))
+        .unwrap();
+        for (action, settings) in [
+            ("startAuto", serde_json::json!({"newWorktree": true})),
+            (
+                "startPlan",
+                serde_json::json!({"story": story.id, "newWorktree": {"base": "main"}}),
+            ),
+        ] {
+            let error = f.cmd(request("fresh", action, settings)).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("newWorktree is only for startAuto")
+            );
+        }
+        // Pause, resume and stop can control that request's run by its id.
+        f.cmd(request(
+            "resume",
+            "resumeAuto",
+            serde_json::json!({"request": "auto"}),
+        ))
+        .unwrap();
+        for (action, target) in [("stopAuto", "plan"), ("pauseAuto", "missing")] {
+            let error = f
+                .cmd(request(
+                    "stop",
+                    action,
+                    serde_json::json!({"request": target}),
+                ))
+                .unwrap_err();
+            assert!(error.to_string().contains("Unknown startAuto request"));
+        }
+        assert!(
+            f.cmd(request(
+                "other",
+                "startBuild",
+                serde_json::json!({"request": "auto"}),
+            ))
+            .unwrap_err()
+            .to_string()
+            .contains("Only pauseAuto, resumeAuto and stopAuto take a request")
+        );
         // The request is checked once: replaying it after deletion stays idempotent.
         crate::stories::remove(&f.dir, &story.id, false).unwrap();
         f.cmd(request(
@@ -4135,6 +4221,9 @@ mod tests {
         let instructions = lead_instructions();
         assert!(instructions.contains("agent stories"));
         assert!(instructions.contains("story: optional-story-id"));
+        assert!(instructions.contains("`newWorktree: true`"));
+        assert!(instructions.contains("Its result arrives when the run settles"));
+        assert!(instructions.contains("Never merge, approve merges or answer agents' questions"));
     }
 
     #[test]

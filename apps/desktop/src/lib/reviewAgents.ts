@@ -71,7 +71,7 @@ export function reconcileMergeDestination(
 
 /** Prefer the open checkout, then local main/master; otherwise require a choice. */
 export function defaultMergeDestination(
-  source: Worktree,
+  source: Worktree | undefined,
   worktrees: Worktree[],
   branches?: string[],
 ) {

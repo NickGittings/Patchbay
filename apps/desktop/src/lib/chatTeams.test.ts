@@ -1,7 +1,11 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('./sessions', () => ({ reconcileFreshSessions: vi.fn(async () => {}) }))
-vi.mock('./ipc', () => ({ sessionsList: vi.fn() }))
+vi.mock('./ipc', () => ({
+  sessionsList: vi.fn(),
+  gitBranches: vi.fn(async () => ['main', 'import']),
+  gitWorktrees: vi.fn(async () => []),
+}))
 vi.mock('./auto', () => ({
   startAuto: vi.fn(),
   pauseAuto: vi.fn(),
@@ -10,9 +14,25 @@ vi.mock('./auto', () => ({
 }))
 vi.mock('./leadStages', () => ({ startLeadStage: vi.fn(), settleLeadStage: vi.fn() }))
 vi.mock('./stories', () => ({
-  findStory: vi.fn(async (_project: string, id: string) => ({ id, title: 'Import' })),
+  findStory: vi.fn(async (_project: string, id: string) => ({
+    id,
+    title: 'Import',
+    components: [],
+  })),
   storyGoal: vi.fn(() => 'Import\n\n- [ ] Works'),
   linkAutoStory: vi.fn(async () => {}),
+  updateStory: vi.fn(async () => {}),
+  descendants: vi.fn(() => []),
+}))
+// The real module loads the board's own code; only the default merge destination is needed.
+vi.mock('./reviewAgents', () => ({
+  defaultMergeDestination: vi.fn((_source: unknown, _worktrees: unknown, branches?: string[]) =>
+    branches?.includes('main') ? 'main' : '',
+  ),
+}))
+vi.mock('./tasks', () => ({
+  branchFor: vi.fn((title: string) => title.toLowerCase()),
+  createBackgroundTask: vi.fn(async () => ({ id: 'wt', worktree: '/p-import-2' })),
 }))
 import { startAuto, pauseAuto } from './auto'
 import { settleLeadStage, startLeadStage } from './leadStages'
@@ -38,7 +58,14 @@ import {
   type ChatTeam,
   type TeamControl,
 } from './chatTeams'
-import { WORKTREE_BUSY, type AutoRun, type SessionRecord, type WorkflowAction } from '../types'
+import {
+  WORKTREE_BUSY,
+  type AutoRun,
+  type SessionRecord,
+  type Story,
+  type Task,
+  type WorkflowAction,
+} from '../types'
 const preset = {
   id: 'codex',
   name: 'Codex',
@@ -474,6 +501,14 @@ function mockRequestDriver(action: WorkflowAction, settings = {}) {
   })
   return saved
 }
+/** The mocked Auto start records a run, as the real one does. */
+function startsRun() {
+  vi.mocked(startAuto).mockImplementation(async (projectId, task) => {
+    useStore.getState().patchTask(projectId, task, {
+      auto: { runId: 'run', status: 'running', stage: 'plan' } as AutoRun,
+    })
+  })
+}
 test('lead workflow controls claim requests once before applying the existing Auto handler', async () => {
   const saved = mockRequestDriver('pauseAuto')
   await Promise.all([refreshChatTeams('p'), refreshChatTeams('p')])
@@ -542,13 +577,14 @@ test('a lead stage that cannot start reports why', async () => {
 })
 test('an overlapping Auto start remains waiting and can be retried after scope release', async () => {
   const saved = mockRequestDriver('startAuto', { goal: 'New task' })
+  startsRun()
   vi.mocked(startAuto).mockRejectedValueOnce(
     new Error('An unfinished provider run controls this worktree'),
   )
   await refreshChatTeams('p')
   expect(saved.requests![0].state).toBe('waiting')
   await refreshChatTeams('p')
-  expect(saved.requests![0].state).toBe('completed')
+  expect(saved.requests![0].state).toBe('running')
   expect(startAuto).toHaveBeenLastCalledWith(
     'p',
     null,
@@ -590,12 +626,13 @@ test.each([
     }
     useStore.setState({ simpleMode })
     useStore.getState().patchTask('p', null, { auto: previous })
+    startsRun()
     const saved = mockRequestDriver('startAuto', {
       ...(effort ? { effort } : {}),
       ...(stage ? { stage } : {}),
     })
     await refreshChatTeams('p')
-    expect(saved.requests![0].state).toBe('completed')
+    expect(saved.requests![0].state).toBe('running')
     expect(startAuto).toHaveBeenCalledExactlyOnceWith('p', null, {
       goal: 'Goal',
       effort: expectedEffort,
@@ -617,8 +654,12 @@ test.each([
 test('a lead Auto start for a story uses its text as the goal and links it once started', async () => {
   const stories = await import('./stories')
   const saved = mockRequestDriver('startAuto', { story: 's1', goal: 'Something else' })
+  startsRun()
   await refreshChatTeams('p')
-  expect(saved.requests![0].state).toBe('completed')
+  expect(saved.requests![0]).toMatchObject({
+    state: 'running',
+    result: JSON.stringify({ task: null, runId: 'run', story: 's1' }),
+  })
   const settings = vi.mocked(startAuto).mock.calls[0][2]
   expect(settings.goal).toBe('Import\n\n- [ ] Works')
   expect(settings).not.toHaveProperty('story')
@@ -626,6 +667,248 @@ test('a lead Auto start for a story uses its text as the goal and links it once 
   expect(vi.mocked(startAuto).mock.invocationCallOrder[0]).toBeLessThan(
     vi.mocked(stories.linkAutoStory).mock.invocationCallOrder[0],
   )
+})
+
+test('a lead Auto start in a new worktree creates it in the background and links its story first', async () => {
+  const stories = await import('./stories')
+  const tasks = await import('./tasks')
+  const saved = mockRequestDriver('startAuto', {
+    story: 's1',
+    newWorktree: true,
+    merge: { mode: 'ask', destinationBranch: 'main' },
+    autonomous: false,
+    background: false,
+  })
+  startsRun()
+  await refreshChatTeams('p')
+  await vi.waitFor(() => expect(saved.requests![0].result).toContain('runId'))
+  // Saved before Auto starts, so a restart during the worktree's setup reuses the worktree.
+  const results = vi
+    .mocked(invoke)
+    .mock.calls.flatMap(([cmd, args]) =>
+      cmd === 'chat_team_control' ? [(args as { control: TeamControl }).control] : [],
+    )
+  expect(results).toContainEqual({
+    kind: 'requestState',
+    id: 'request',
+    state: 'running',
+    result: JSON.stringify({ task: 'wt', story: 's1', branch: 'import-2' }),
+  })
+  expect(tasks.createBackgroundTask).toHaveBeenCalledExactlyOnceWith('p', {
+    title: 'Import',
+    branch: 'import-2',
+    base: 'main',
+    components: [],
+  })
+  expect(stories.updateStory).toHaveBeenCalledExactlyOnceWith('p', 's1', { task: 'wt' })
+  const settings = vi.mocked(startAuto).mock.calls[0][2]
+  expect(vi.mocked(startAuto).mock.calls[0][1]).toBe('wt')
+  // The lead may turn autonomy off, but a run beside the user's screen keeps driving.
+  expect(settings).toMatchObject({ autonomous: false, background: true, resumeOnUsageReset: true })
+  expect(settings).not.toHaveProperty('newWorktree')
+  expect(stories.linkAutoStory).toHaveBeenCalledExactlyOnceWith('p', 'wt', 's1')
+  expect(saved.requests![0]).toMatchObject({
+    state: 'running',
+    result: JSON.stringify({ task: 'wt', story: 's1', branch: 'import-2', runId: 'run' }),
+  })
+})
+
+test("a new worktree starts from the merge defaults, not the lead worktree's last run", async () => {
+  const tasks = await import('./tasks')
+  useStore.getState().patchTask('p', null, {
+    auto: {
+      runId: 'old',
+      status: 'done',
+      stage: 'done',
+      merge: { mode: 'auto', destinationBranch: 'release' },
+    } as AutoRun,
+  })
+  const saved = mockRequestDriver('startAuto', { story: 's1', newWorktree: true })
+  startsRun()
+  await refreshChatTeams('p')
+  await vi.waitFor(() => expect(saved.requests![0].result).toContain('runId'))
+  // It starts where its run will merge, the local main, not the checkout's open HEAD.
+  expect(vi.mocked(tasks.createBackgroundTask).mock.calls[0]?.[1].base).toBe('main')
+  expect(vi.mocked(startAuto).mock.calls[0][2].merge).toEqual({
+    mode: 'ask',
+    destinationBranch: '',
+  })
+})
+
+test('a story whose Auto does not start in its new worktree fails once and returns to the backlog', async () => {
+  const stories = await import('./stories')
+  const tasks = await import('./tasks')
+  useStore.setState({ stories: [{ id: 's1', task: 'wt' } as Story] })
+  const saved = mockRequestDriver('startAuto', { story: 's1', newWorktree: true })
+  vi.mocked(startAuto).mockRejectedValue(new Error('This worktree is controlled by another run'))
+  await refreshChatTeams('p')
+  await vi.waitFor(() => expect(saved.requests![0].state).toBe('failed'))
+  expect(saved.requests![0].result).toContain(
+    'Worktree branch import-2 was created for story s1, but Auto did not start',
+  )
+  expect(stories.updateStory).toHaveBeenLastCalledWith('p', 's1', { task: '' })
+  // An ownership error never makes it wait for a retry that would create another worktree.
+  await refreshChatTeams('p')
+  expect(tasks.createBackgroundTask).toHaveBeenCalledOnce()
+})
+
+test('a worktree creation failure is never retried', async () => {
+  const tasks = await import('./tasks')
+  const saved = mockRequestDriver('startAuto', { story: 's1', newWorktree: true })
+  vi.mocked(tasks.createBackgroundTask).mockRejectedValue(
+    new Error('An unfinished provider run controls this worktree'),
+  )
+  await refreshChatTeams('p')
+  await vi.waitFor(() => expect(saved.requests![0].state).toBe('failed'))
+  expect(saved.requests![0].result).toContain("Story s1's worktree could not be created")
+  await refreshChatTeams('p')
+  expect(tasks.createBackgroundTask).toHaveBeenCalledOnce()
+})
+
+test('a story the board could not link to its new worktree fails, naming the branch', async () => {
+  const stories = await import('./stories')
+  const saved = mockRequestDriver('startAuto', { story: 's1', newWorktree: true })
+  vi.mocked(stories.updateStory).mockRejectedValue(new Error('store locked'))
+  await refreshChatTeams('p')
+  await vi.waitFor(() => expect(saved.requests![0].state).toBe('failed'))
+  expect(saved.requests![0]).toMatchObject({
+    state: 'failed',
+    result: expect.stringContaining(
+      'Worktree branch import-2 was created for story s1, but the story could not be linked',
+    ),
+  })
+  expect(startAuto).not.toHaveBeenCalled()
+})
+
+test('a new worktree start interrupted by a restart starts again in the same worktree', async () => {
+  const tasks = await import('./tasks')
+  const saved = mockRequestDriver('startAuto', { story: 's1', newWorktree: true })
+  saved.requests![0].state = 'running'
+  saved.requests![0].result = JSON.stringify({ task: 'wt', story: 's1', branch: 'import-2' })
+  startsRun()
+  await refreshChatTeams('p')
+  await vi.waitFor(() => expect(saved.requests![0].result).toContain('"runId":"run"'))
+  expect(vi.mocked(startAuto).mock.calls[0][1]).toBe('wt')
+  expect(tasks.createBackgroundTask).not.toHaveBeenCalled()
+})
+
+test('a restart before the worktree was saved reuses the worktree made for its branch', async () => {
+  const tasks = await import('./tasks')
+  useStore.setState({ tasks: [{ id: 'wt', branch: 'import-2' } as Task] })
+  // The project checkout's own run is not this request's.
+  useStore.getState().patchTask('p', null, {
+    auto: { runId: 'mine', status: 'running', stage: 'plan' } as AutoRun,
+  })
+  const saved = mockRequestDriver('startAuto', { story: 's1', newWorktree: true })
+  saved.requests![0].state = 'running'
+  saved.requests![0].result = JSON.stringify({ task: null, story: 's1', branch: 'import-2' })
+  startsRun()
+  await refreshChatTeams('p')
+  await vi.waitFor(() => expect(saved.requests![0].result).toContain('"runId":"run"'))
+  expect(tasks.createBackgroundTask).not.toHaveBeenCalled()
+  expect(vi.mocked(startAuto).mock.calls[0][1]).toBe('wt')
+})
+
+test('a story whose Auto settings fail in the background still returns to the backlog', async () => {
+  const stories = await import('./stories')
+  useStore.setState({ stories: [{ id: 's1', task: 'wt' } as Story] })
+  const saved = mockRequestDriver('startAuto', { story: 's1', newWorktree: true })
+  saved.requests![0].state = 'running'
+  saved.requests![0].result = JSON.stringify({ task: 'wt', story: 's1', branch: 'import-2' })
+  vi.mocked(stories.findStory).mockRejectedValue(new Error('Unknown story s1'))
+  await refreshChatTeams('p')
+  await vi.waitFor(() => expect(saved.requests![0].state).toBe('failed'))
+  expect(stories.updateStory).toHaveBeenLastCalledWith('p', 's1', { task: '' })
+  expect(saved.requests![0].result).toContain('The story is in the backlog again')
+})
+
+test('a story started while another worktree is still being created gets its own branch', async () => {
+  const tasks = await import('./tasks')
+  const saved = mockRequestDriver('startAuto', { story: 's1', newWorktree: true })
+  // The first worktree is still being created, so git doesn't list its branch yet.
+  let finishFirst = () => {}
+  vi.mocked(tasks.createBackgroundTask).mockReturnValueOnce(
+    new Promise((resolve) => {
+      finishFirst = () => resolve({ id: 'wt' } as Task)
+    }),
+  )
+  await refreshChatTeams('p')
+  await vi.waitFor(() => expect(tasks.createBackgroundTask).toHaveBeenCalledOnce())
+  saved.requests![0] = {
+    id: 'second',
+    action: 'startAuto',
+    settings: { story: 's2', newWorktree: true },
+    state: 'queued',
+    result: null,
+  }
+  startsRun()
+  await refreshChatTeams('p')
+  await vi.waitFor(() => expect(tasks.createBackgroundTask).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(tasks.createBackgroundTask).mock.calls.map(([, d]) => d.branch)).toEqual([
+    'import-2',
+    'import-3',
+  ])
+  finishFirst()
+  await vi.waitFor(() => expect(startAuto).toHaveBeenCalledTimes(2))
+})
+
+test('a started run whose id was not saved is adopted instead of failing', async () => {
+  const saved = mockRequestDriver('startAuto', { story: 's1', newWorktree: true })
+  saved.requests![0].state = 'running'
+  saved.requests![0].result = JSON.stringify({ task: 'wt', story: 's1', branch: 'import-2' })
+  useStore.getState().patchTask('p', 'wt', {
+    auto: { runId: 'run', status: 'running', stage: 'plan' } as AutoRun,
+  })
+  await refreshChatTeams('p')
+  expect(saved.requests![0]).toMatchObject({
+    state: 'running',
+    result: JSON.stringify({ task: 'wt', story: 's1', branch: 'import-2', runId: 'run' }),
+  })
+  expect(startAuto).not.toHaveBeenCalled()
+})
+
+test('pause controls the run of the startAuto request it names', async () => {
+  const saved = mockRequestDriver('pauseAuto', { request: 'story-run' })
+  saved.requests!.push({
+    id: 'story-run',
+    action: 'startAuto',
+    settings: { story: 's1', newWorktree: true },
+    state: 'running',
+    result: JSON.stringify({ task: 'wt', runId: 'run', story: 's1' }),
+  })
+  await refreshChatTeams('p')
+  expect(pauseAuto).toHaveBeenCalledExactlyOnceWith('p', 'wt')
+})
+
+test('a new worktree needs a story', async () => {
+  const tasks = await import('./tasks')
+  const saved = mockRequestDriver('startAuto', { newWorktree: true })
+  await refreshChatTeams('p')
+  expect(saved.requests![0]).toMatchObject({
+    state: 'failed',
+    result: expect.stringContaining('newWorktree needs a story'),
+  })
+  expect(tasks.createBackgroundTask).not.toHaveBeenCalled()
+})
+
+test('a running lead Auto request settles once its run waits for merge approval', async () => {
+  const saved = mockRequestDriver('startAuto', { story: 's1' })
+  saved.requests![0].state = 'running'
+  saved.requests![0].result = JSON.stringify({ task: null, runId: 'run', story: 's1' })
+  useStore.getState().patchTask('p', null, {
+    auto: { runId: 'run', status: 'running', stage: 'review' } as AutoRun,
+  })
+  await refreshChatTeams('p')
+  expect(saved.requests![0].state).toBe('running')
+  useStore.getState().patchTask('p', null, {
+    auto: { runId: 'run', status: 'waitingOnYou', stage: 'mergeGate' } as AutoRun,
+  })
+  await refreshChatTeams('p')
+  expect(saved.requests![0]).toMatchObject({
+    state: 'completed',
+    result: expect.stringContaining('waiting for the user'),
+  })
+  expect(startAuto).not.toHaveBeenCalled()
 })
 
 test('live continuation resolves the durable lead once and keeps the transcript and draft', async () => {

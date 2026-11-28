@@ -3,7 +3,7 @@
 The scheduler supports **Keep going in background**, opt-in **Resume when usage resets**,
 one-time **Resume at** schedules for paused Auto runs, and restart continuation for active
 **Autonomous execution** runs. Recurring schedules, delayed initial starts,
-standalone agent scheduling, queueing and power/window controls are not implemented.
+standalone agent scheduling, queueing and power/window controls are not implemented. The Chat lead's backlog runs (`startAuto` with `newWorktree`, see [Chat mode](chat-mode.md)) are the only way stories follow one another, and they need the lead's team running: a restart pauses the team, so no new story starts until the user continues it, while the runs already started keep their own restart continuation.
 `AutoRun.background` is per-run workspace UI state, restored by `restoredAuto`, never map data or
 `dirty`. `driveable` allows an active worktree, or a background or autonomous run whose project remains open in
 `projectOrder`. The main window's existing `followAuto` drives every open project. It still needs

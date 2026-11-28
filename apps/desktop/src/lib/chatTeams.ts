@@ -8,7 +8,6 @@ import { profileHookProvider } from './agentProfiles'
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
 import { projectOf, projectStateOf, useStore, workspaceOf } from '../store'
-import { autoOverrides, defaultAutoEffort } from './autoSettings'
 import {
   LEAD_RECIPIENT,
   type Project,
@@ -653,6 +652,16 @@ async function driveLeadRequests(team: ChatTeam) {
       await settleLeadStage(team, request).catch(() => {})
       continue
     }
+    if (request.action === 'startAuto' && request.state === 'running') {
+      const { settleLeadAuto } = await import('./leadAuto')
+      await settleLeadAuto(team, request).catch(() => {})
+      continue
+    }
+    if (request.action === 'startAuto' && request.state === 'failed') {
+      const { followLeadAuto } = await import('./leadAuto')
+      await followLeadAuto(team, request).catch(() => {})
+      continue
+    }
     if (reviewRound && ['running', 'starting'].includes(request.state)) {
       try {
         await driveCouncil(team, request)
@@ -696,6 +705,11 @@ async function driveLeadRequests(team: ChatTeam) {
         await startLeadStage(team, request)
         continue
       }
+      if (request.action === 'startAuto') {
+        const { startLeadAuto } = await import('./leadAuto')
+        await startLeadAuto(team, request)
+        continue
+      }
       const auto = await import('./auto')
       if (request.action === 'startAgent') {
         const project = projectOf(team.projectId)
@@ -720,50 +734,17 @@ async function driveLeadRequests(team: ChatTeam) {
             },
           ],
         })
-      } else if (request.action === 'startAuto') {
-        const state = projectStateOf(team.projectId)
-        if (!state) throw new Error('Project is unavailable')
-        const previous = workspaceOf(state, team.task).auto
-        const device =
-          typeof request.settings.device === 'string'
-            ? request.settings.device
-            : team.lead.preset.id
-        const { story: storyId, ...requested } = request.settings
-        // Loaded only for a story, the board's code and its imports aren't needed otherwise.
-        const stories = typeof storyId === 'string' ? await import('./stories') : undefined
-        const story =
-          stories && typeof storyId === 'string'
-            ? await stories.findStory(team.projectId, storyId)
-            : undefined
-        const settings = {
-          goal: team.checkpoint.goal,
-          effort: defaultAutoEffort(state.simpleMode),
-          merge: previous?.merge ?? { mode: 'ask', destinationBranch: '' },
-          overrides: previous?.overrides,
-          agents: previous?.agents,
-          reviewers: previous?.reviewers,
-          scanners: previous?.scanners,
-          workers: previous?.workers,
-          autonomous: previous?.autonomous,
-          background: previous?.background,
-          resumeOnUsageReset: previous?.resumeOnUsageReset,
-          ...requested,
-          // A story's own text is the goal, as in the Auto panel, even beside a requested goal.
-          ...(story
-            ? { goal: stories!.storyGoal(story, projectStateOf(team.projectId)?.stories ?? []) }
-            : {}),
-          device,
-        } as import('./auto').AutoSettings
-        if (settings.merge.mode !== 'ask')
-          throw new Error('Lead-started Auto requires merge approval')
-        settings.overrides = autoOverrides(state.simpleMode, settings.overrides)
-        await auto.startAuto(team.projectId, team.task, settings)
-        // Linked once the run started, as the Auto panel does.
-        if (story) await stories!.linkAutoStory(team.projectId, team.task, story.id)
-      } else if (request.action === 'pauseAuto') auto.pauseAuto(team.projectId, team.task)
-      else if (request.action === 'resumeAuto') await auto.resumeAuto(team.projectId, team.task)
-      else if (request.action === 'stopAuto') auto.stopAuto(team.projectId, team.task)
-      else throw new Error('Unknown workflow action')
+      } else if (['pauseAuto', 'resumeAuto', 'stopAuto'].includes(request.action)) {
+        // `request` names the startAuto whose run to control, such as a story's own worktree.
+        const target = request.settings.request
+        const task =
+          typeof target === 'string'
+            ? (await import('./leadAuto')).leadAutoTask(team, target)
+            : team.task
+        if (request.action === 'pauseAuto') auto.pauseAuto(team.projectId, task)
+        else if (request.action === 'resumeAuto') await auto.resumeAuto(team.projectId, task)
+        else auto.stopAuto(team.projectId, task)
+      } else throw new Error('Unknown workflow action')
       await controlTeam(team, {
         kind: 'requestState',
         id: request.id,
@@ -774,15 +755,20 @@ async function driveLeadRequests(team: ChatTeam) {
             : 'Workflow control applied',
       })
     } catch (error) {
+      const newWorktree =
+        request.action === 'startAuto' &&
+        !!(await import('./leadAuto')).newWorktreeSettings(request.settings.newWorktree)
       // A request settled meanwhile (a merge that finished the task) rejects this; the others
       // still need driving.
       await controlTeam(team, {
         kind: 'requestState',
         id: request.id,
-        // A stage's handoff has side effects, so it reports failure instead of retrying.
+        // A stage's handoff has side effects, so it reports failure instead of retrying, and so
+        // does a startAuto that creates a worktree, which a retry would create again.
         // A merge agent's reservation waits like Auto's pause does, until it finishes.
         state:
           !leadStage &&
+          !newWorktree &&
           [
             'An unfinished provider run controls this worktree',
             'This worktree is controlled',

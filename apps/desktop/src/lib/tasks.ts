@@ -263,6 +263,25 @@ export async function createTask(draft: TaskDraft, goal?: string): Promise<Task>
   return task
 }
 
+/**
+ * Create a worktree for work that runs in the background, such as a lead's story Auto run. It
+ * never switches to the new worktree or takes a New worktree dialog's follow-up, so what the user
+ * has on screen (and the Chat they are talking in) stays put.
+ */
+export async function createBackgroundTask(projectId: string, draft: TaskDraft): Promise<Task> {
+  const task = await taskCreate(draft, projectId)
+  // Auto reads the worktree's setup and components from the list, so it must include it.
+  try {
+    await refreshTasks(projectId, { quiet: true, requireSuccess: true })
+  } catch (error) {
+    // The worktree exists now, so the failure must say where it is.
+    throw new Error(
+      `Worktree branch ${draft.branch ?? task.id} was created, but the worktree list could not refresh: ${String(error)}`,
+    )
+  }
+  return task
+}
+
 export async function attachTask(
   worktree: string,
   components: string[],
