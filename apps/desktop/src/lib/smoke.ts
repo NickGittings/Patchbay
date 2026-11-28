@@ -1,6 +1,6 @@
 import { openInEditor } from './navigation'
 import { readTextFile, guardEditorClose } from './fileEditor'
-import { useChatTeams, refreshChatTeams } from './chatTeams'
+import { useChatTeams, refreshChatTeams, leadDeliveryPending } from './chatTeams'
 import { useSimpleUi, simpleKey } from './simpleUi'
 import { startTaskAgent } from './implement'
 import { providerAuthCheck, providerLoginWrite, onProviderLoginEvent } from './ipc'
@@ -195,6 +195,7 @@ function smokeTerminalText(sid: string) {
 const hooks = {
   simpleUi: useSimpleUi,
   chatTeams: useChatTeams,
+  leadDeliveryPending,
   agentQuestions,
   refreshChatTeams,
   simpleKey,

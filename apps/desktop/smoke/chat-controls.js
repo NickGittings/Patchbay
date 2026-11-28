@@ -22,8 +22,7 @@
     [...root.querySelectorAll('button')].find(
       (b) => b.textContent.trim() === text || b.getAttribute('aria-label') === text,
     )
-  // React commits a click's update in a microtask; checking right after it avoids a polling round,
-  // which background smoke windows throttle to about a second.
+  // React commits a click's update in a microtask; checking right after it skips a polling round.
   const soon = async (label, check) => {
     await Promise.resolve()
     return check() || until(label, check)

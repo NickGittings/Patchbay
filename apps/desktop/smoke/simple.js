@@ -22,8 +22,7 @@
     [...root.querySelectorAll('button')].find(
       (b) => b.textContent.trim() === text || b.getAttribute('aria-label') === text,
     )
-  // React commits a click's update in a microtask; checking right after it avoids a polling round,
-  // which background smoke windows throttle to about a second.
+  // React commits a click's update in a microtask; checking right after it skips a polling round.
   const soon = async (label, check) => {
     await Promise.resolve()
     return check() || until(label, check)
@@ -343,6 +342,8 @@
     await until('builder card', () =>
       document.querySelector(`.agent-card[data-session="${CSS.escape(builder)}"]`),
     )
+    // Changes opens on the newest edit, once the agent's activity has reported it.
+    await until('builder edit reported', () => button('Edited src/third.txt'))
     click(
       await until('Changes tab', () =>
         [...document.querySelectorAll('.view-tabs button')].find((b) =>
@@ -654,8 +655,28 @@
       )
     }
     // A permission wait belongs to its originating agent and opens only when requested.
+    const stoppedGeneration = state().sessions[planner]?.generation
     await smoke.startTerminal('@plan', fake.id, task, projectId)
-    await until('planner restarted', () => state().sessions[planner]?.running)
+    // Input written before the new run reports its prompt can reach the old generation.
+    await until('planner restarted', () => {
+      const session = state().sessions[planner]
+      const agent = session?.status?.agent
+      return (
+        session?.running &&
+        session.generation !== stoppedGeneration &&
+        agent?.authoritative &&
+        ['idle', 'review'].includes(agent.state) &&
+        // The ready lead takes its pending coordination first; input typed into that paste
+        // would arrive as part of it.
+        !smoke.leadDeliveryPending(projectId, task, planner, session.generation)
+      )
+    }).catch((e) => {
+      const session = state().sessions[planner]
+      const agent = session?.status?.agent
+      throw new Error(
+        `${e.message}: running=${session?.running} generation=${session?.generation} (stopped ${stoppedGeneration}) authoritative=${agent?.authoritative} state=${agent?.state} pending=${session && smoke.leadDeliveryPending(projectId, task, planner, session.generation)}`,
+      )
+    })
     state().patchTask(projectId, task, {
       simple: {
         ...state().simple,
