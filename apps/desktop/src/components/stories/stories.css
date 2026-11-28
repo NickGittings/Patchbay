@@ -386,6 +386,8 @@
   align-items: center;
   gap: 4px;
   min-width: 0;
+  /* Every level shares the pills' height, so each sits on the bar's center line. */
+  height: 24px;
 }
 .story-scope li + li::before {
   content: '›';
@@ -418,7 +420,8 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  align-self: stretch;
+  /* Fills the pill the same way whether or not a ✕ sits beside it. */
+  height: 100%;
   min-width: 0;
   padding: 0 4px 0 9px;
   /* The hover and press fills follow the pill's curve. */
