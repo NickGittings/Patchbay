@@ -1,8 +1,8 @@
-import { createContext, useContext } from 'react'
+import { createContext, useContext, useMemo } from 'react'
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore } from '../store'
-import { useChatTeams } from './chatTeams'
+import { focusTeam, LEAD_HOME_TASK, useChatTeams } from './chatTeams'
 import { useExpiredDeadline } from './clock'
 import { chatReviewBase } from './reviewAgents'
 import { LAUNCH_RECORD_GRACE_MS, pendingLaunch, recordStage, thread } from './simple'
@@ -36,9 +36,10 @@ export function useStageModel(explicit?: WorktreeReader) {
     })),
   )
   const key = simpleKey(s.project?.id, s.activeTask)
-  const team = useChatTeams((state) =>
-    state.teams[s.project?.id ?? '']?.find((t) => t.task === s.activeTask),
+  const lead = useChatTeams((state) =>
+    state.teams[s.project?.id ?? '']?.find((t) => t.task === LEAD_HOME_TASK),
   )
+  const team = useMemo(() => focusTeam(lead, s.activeTask), [lead, s.activeTask])
   const ui = useSimpleUi((u) => u.worktrees[key] ?? EMPTY_SIMPLE_UI)
   const data = reader?.data
   const snapshot = {

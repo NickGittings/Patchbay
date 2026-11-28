@@ -10,6 +10,7 @@ import { roleDevice } from './agentRoles'
 import { controlTeam, type ChatTeam } from './chatTeams'
 import { gitBranches, gitWorktrees, mergeOutcome, planRead, terminalSnapshot } from './ipc'
 import { savedStage, type StageRun } from './leadStageRun'
+import { stageWhere } from './worktreeLabel'
 import { implementPlannerPlan, type HandoffTarget } from './planHandoff'
 import { agentTurnEnded } from './review'
 import { fixReviewFindings } from './reviewHandoff'
@@ -247,12 +248,20 @@ export async function startLeadStage(team: ChatTeam, request: Workflow) {
 
 type Finish = (state: 'completed' | 'failed', result: string, passive?: boolean) => Promise<unknown>
 
+/**
+ * Where the lead reads a worktree's plan. Its `$PATCHBAY_PLAN_FILE` names the project folder's
+ * plan; each worktree's plan sits beside it, named after its task id.
+ */
+export function leadPlanFile(task: string | null) {
+  return task ? `"$(dirname "$PATCHBAY_PLAN_FILE")/${task}.md"` : '$PATCHBAY_PLAN_FILE'
+}
+
 async function settlePlan(team: ChatTeam, run: StageRun, finish: Finish) {
   const plan = await planRead(team.projectId, team.task ?? undefined).catch(() => null)
   return plan?.text.trim() && (plan.savedMs ?? 0) >= run.startedMs
     ? finish(
         'completed',
-        'Plan saved. Read it from $PATCHBAY_PLAN_FILE and summarize it for the user. Do not build it unless asked.',
+        `Plan saved. Read it from ${leadPlanFile(team.task)} and summarize it for the user. Do not build it unless asked.`,
       )
     : finish(
         'failed',
@@ -281,12 +290,13 @@ async function settleMerge(team: ChatTeam, run: StageRun, finish: Finish) {
 export async function settleLeadStage(team: ChatTeam, request: Workflow) {
   const run = savedStage(request.result)
   const name = stageName(request)
+  const where = stageWhere(team)
   const finish: Finish = (state, result, passive) =>
     controlTeam(team, {
       kind: 'requestState',
       id: request.id,
       state,
-      result,
+      result: where ? `${name}${where}: ${result}` : result,
       ...(passive ? { passive } : {}),
     })
   if (!run) return finish('failed', `${name} agent can no longer be tracked. Inspect the worktree.`)

@@ -115,6 +115,7 @@ const AgentNode = memo(function AgentNode({ data: { card }, selected }: NodeProp
     <article
       className="agent-card"
       data-card={card.id}
+      data-focus={card.focused || undefined}
       data-row={card.row}
       data-role={card.roleKey}
       data-session={card.sessionId}
@@ -139,6 +140,12 @@ const AgentNode = memo(function AgentNode({ data: { card }, selected }: NodeProp
         </button>
         {card.detail && <span className="agent-card-detail">{card.detail}</span>}
       </header>
+      {/* The project's lead works in several worktrees, so every card says where. */}
+      {card.place && (
+        <p className="agent-card-place" title={card.place}>
+          {card.place}
+        </p>
+      )}
       <div className="agent-card-snippet">
         {agentSnippet(card, session).map((line, index) => (
           <p key={index} title={line}>
@@ -324,6 +331,7 @@ function AgentDetails({
         </button>
       </header>
       {card.detail && <p>{card.detail}</p>}
+      {card.place && <p className="agent-details-place">Works in {card.place}</p>}
       {steps.length > 0 && (
         <ol>
           {steps.map((step) => (
@@ -349,12 +357,14 @@ function AgentDetails({
 /** What the graph draws from; session activity reaches the cards through their own subscriptions. */
 const graphKey = (cards: AgentCard[]) =>
   JSON.stringify(
-    cards.map(({ id, row, role, roleKey, detail, sessionId, job }) => [
+    cards.map(({ id, row, role, roleKey, detail, place, focused, sessionId, job }) => [
       id,
       row,
       role,
       roleKey,
       detail,
+      place,
+      focused,
       sessionId,
       job?.requestId,
       job?.state,

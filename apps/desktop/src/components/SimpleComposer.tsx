@@ -33,6 +33,7 @@ import {
   type MentionPlacement,
 } from '../lib/caretPoint'
 import { useStore } from '../store'
+import { autoOf, simpleOf } from '../lib/chatHome'
 import { useShallow } from 'zustand/react/shallow'
 import type { SessionRecord } from '../types'
 import { recordStage, type SimpleStage } from '../lib/simple'
@@ -77,6 +78,7 @@ interface MentionCandidate {
 
 export default function SimpleComposer({
   scopeKey,
+  task,
   stage,
   records,
   terminalRecord,
@@ -84,6 +86,8 @@ export default function SimpleComposer({
   hidden,
 }: {
   scopeKey: string
+  /** The worktree whose conversation this is: Chat's lead lives in the project folder. */
+  task: string | null
   stage: SimpleStage
   records: SessionRecord[]
   terminalRecord?: SessionRecord
@@ -94,23 +98,22 @@ export default function SimpleComposer({
   const s = useStore(
     useShallow((s) => ({
       project: s.project,
-      activeTask: s.activeTask,
       nodes: s.nodes,
       stories: s.stories,
       devices: s.devices,
       agentRoles: s.agentRoles,
       chatAgent: s.workspaceSettings.chatAgent,
-      selectedAgent: s.simple?.selectedAgent,
-      autoStatus: s.auto?.status,
+      selectedAgent: simpleOf(s, task)?.selectedAgent,
+      autoStatus: autoOf(s, task)?.status,
       serviceConnected: s.serviceConnected,
     })),
   )
   const ui = useSimpleUi((s) => s.worktrees[scopeKey] ?? EMPTY_SIMPLE_UI)
   const patch = (change: Parameters<ReturnType<typeof useSimpleUi.getState>['patch']>[1]) =>
     useSimpleUi.getState().patch(scopeKey, change)
-  const recipient = useStore((s) => chatRecipient(records, s.simple?.selectedAgent))
+  const recipient = useStore((s) => chatRecipient(records, simpleOf(s, task)?.selectedAgent))
   const team = useChatTeams((state) =>
-    state.teams[s.project?.id ?? '']?.find((t) => t.task === s.activeTask),
+    state.teams[s.project?.id ?? '']?.find((t) => t.task === task),
   )
   const state = useStore((s) => (recipient ? s.sessions[recipient.id] : undefined))
   // The drawer renders only its record; one whose session is gone reads as closed.
@@ -223,7 +226,7 @@ export default function SimpleComposer({
             ? 'Pause work from the ••• menu to resume manual coding'
             : team
               ? 'Send to reconnect'
-              : s.project && chatPreset(s.project.id, s.activeTask)
+              : s.project && chatPreset(s.project.id, task)
                 ? 'Ready to start chat'
                 : 'Choose an available Chat agent in Settings',
           sendable:
@@ -231,7 +234,7 @@ export default function SimpleComposer({
             !pending &&
             !!s.project &&
             s.serviceConnected &&
-            (!!team || !!chatPreset(s.project.id, s.activeTask)),
+            (!!team || !!chatPreset(s.project.id, task)),
           action: 'none' as const,
           notice: undefined,
         }
@@ -337,7 +340,6 @@ export default function SimpleComposer({
     if (ui.unconfirmed || submitting.current || !(force ? canForce : status.sendable) || !s.project)
       return
     const projectId = s.project.id,
-      task = s.activeTask,
       draft = ui.draft,
       mentions = [...ui.mentions]
     const mountedEpoch = lifecycle.current
@@ -386,21 +388,17 @@ export default function SimpleComposer({
     setError('')
     let cancelled = false
     const unsubscribe = useStore.subscribe((next, prev) => {
-      if (
-        next.project?.id !== prev.project?.id ||
-        next.activeTask !== prev.activeTask ||
-        next.simpleMode !== prev.simpleMode
-      )
+      // Moving the focus to another worktree keeps the conversation, so it never cancels.
+      if (next.project?.id !== prev.project?.id || next.simpleMode !== prev.simpleMode)
         cancelled = true
     })
     const check = () => {
       if (
         lifecycle.current !== mountedEpoch ||
         cancelled ||
-        useStore.getState().project?.id !== projectId ||
-        useStore.getState().activeTask !== task
+        useStore.getState().project?.id !== projectId
       )
-        throw new Error('The worktree changed. Your draft was kept.')
+        throw new Error('The project changed. Your draft was kept.')
     }
     try {
       let target = recipient
@@ -460,8 +458,8 @@ export default function SimpleComposer({
       const stillCurrent = () => {
         check()
         if (
-          useStore.getState().simple?.selectedAgent !== sid ||
-          (!resolvedTeam && chatAutoActive(useStore.getState().auto?.status)) ||
+          simpleOf(useStore.getState(), task)?.selectedAgent !== sid ||
+          (!resolvedTeam && chatAutoActive(autoOf(useStore.getState(), task)?.status)) ||
           (recipientRef.current && recipientRef.current !== sid)
         )
           return undefined
@@ -555,7 +553,7 @@ export default function SimpleComposer({
   const markSent = (manual = false) => {
     const message = useSimpleUi.getState().worktrees[scopeKey]?.unconfirmed
     if (!message || !s.project || isSending(message.sessionId)) return
-    logSimple(s.project.id, s.activeTask, {
+    logSimple(s.project.id, task, {
       kind: 'prompt',
       sessionId: message.sessionId,
       generation: message.generation,
@@ -565,7 +563,7 @@ export default function SimpleComposer({
       atMs: message.atMs,
     })
     // The lead read the notes that message carried.
-    void settleLeadNotes(s.project.id, s.activeTask, message.noteIds ?? [])
+    void settleLeadNotes(s.project.id, task, message.noteIds ?? [])
     const latest = useSimpleUi.getState().worktrees[scopeKey]
     const matches =
       !!latest &&

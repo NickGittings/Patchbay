@@ -1,14 +1,20 @@
 import { useState } from 'react'
 import { projectOf, useStore } from '../store'
-import { controlTeam, requireTeamPreset, useChatTeams, type ChatTeam } from '../lib/chatTeams'
+import {
+  controlTeam,
+  LEAD_HOME_TASK,
+  requireTeamPreset,
+  useChatTeams,
+  type ChatTeam,
+} from '../lib/chatTeams'
 import { roleDevices } from '../lib/agentRoles'
 import { planTerminals } from '../lib/plan'
 import { SettingsSection } from './SettingsDialog'
 
 export default function ChatWorkerSettings() {
   const projectId = useStore((s) => s.project?.id)
-  const task = useStore((s) => s.activeTask)
-  const team = useChatTeams((s) => s.teams[projectId ?? '']?.find((t) => t.task === task))
+  // The project's one lead owns the sub-builders, whichever worktree is in focus.
+  const team = useChatTeams((s) => s.teams[projectId ?? '']?.find((t) => t.task === LEAD_HOME_TASK))
   return team ? <WorkerSettings key={team.id} team={team} /> : null
 }
 

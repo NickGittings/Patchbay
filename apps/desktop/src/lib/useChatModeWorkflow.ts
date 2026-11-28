@@ -14,6 +14,7 @@ import {
 import { openWorktreeAuto, workError, worktreeIdentity } from './workBlocker'
 import type { useSimpleData } from './useSimpleData'
 import { simpleKey, useSimpleUi } from './simpleUi'
+import { simpleOf } from './chatHome'
 import { clearSimpleChat } from './simpleActions'
 import { autoRun } from './auto'
 import { controlTeam, resetLead, type ChatTeam } from './chatTeams'
@@ -27,12 +28,23 @@ interface WorkflowContext {
   key: string
   projectId: string
   task: Store['activeTask']
-  model: ReturnType<typeof thread>
   source: Reader['source']
   auto: Store['auto']
   simple: Store['simple']
   changed: Reader['files']
+  /** The focused worktree's team, whose work Pause, Continue and Stop control. */
   team: ChatTeam | undefined
+  /**
+   * The conversation: Chat's lead lives in the project folder whichever worktree is in focus.
+   * Clear chat, Clear lead context and the Auto handoff's composer checks act on it.
+   */
+  chat: {
+    key: string
+    task: string | null
+    team: ChatTeam | undefined
+    model: ReturnType<typeof thread>
+    simple: Store['simple']
+  }
   focusComposer: () => void
 }
 
@@ -42,20 +54,23 @@ export function useChatModeWorkflow({
   key,
   projectId,
   task,
-  model,
   source,
   auto,
   simple,
   changed,
   team,
+  chat,
   focusComposer,
 }: WorkflowContext) {
   const [pendingResult, setPendingResult] = useState({ key: '', action: '' })
-  const pending = pendingResult.key === key ? pendingResult.action : ''
+  // The focused worktree's work and the conversation's reset each report here.
+  const pending =
+    pendingResult.key === key || pendingResult.key === chat.key ? pendingResult.action : ''
   const [failureResult, setFailureResult] = useState<{ key: string; error?: Error }>()
-  const failure = failureResult?.key === key ? failureResult.error : undefined
-  const setFailure = (error?: unknown) =>
-    setFailureResult({ key, error: error === undefined ? undefined : workError(error) })
+  const failure =
+    failureResult?.key === key || failureResult?.key === chat.key ? failureResult.error : undefined
+  const setFailure = (error?: unknown, scope = key) =>
+    setFailureResult({ key: scope, error: error === undefined ? undefined : workError(error) })
   const [workResult, setWorkResult] = useState<{ key: string; outcomes: WorkOutcome[] }>()
   const [autoPrompt, setAutoPrompt] = useState<string>()
   const targetWorktree = { projectId, task }
@@ -70,22 +85,23 @@ export function useChatModeWorkflow({
       worktreeIdentity(targetWorktree) === tree
     )
   }
-  // Keep each worktree's controls serialized even if Chat remounts.
-  const run = async (action: string, fn: () => Promise<void>) => {
-    const lock = key
+  // Keep each scope's controls serialized even if Chat remounts: the focused worktree's work, or
+  // the conversation (`chat.key`) for its lead's reset, which its composer and menu then wait on.
+  const run = async (action: string, fn: () => Promise<void>, scope = key) => {
+    const lock = scope
     if (pendingActions.has(lock)) return
     pendingActions.add(lock)
-    useSimpleUi.getState().patch(key, { pendingWorkflow: true })
-    setPendingResult({ key, action })
-    setFailure()
+    useSimpleUi.getState().patch(scope, { pendingWorkflow: true })
+    setPendingResult({ key: scope, action })
+    setFailure(undefined, scope)
     try {
       await fn()
     } catch (e) {
-      setFailure(e)
+      setFailure(e, scope)
     } finally {
       pendingActions.delete(lock)
-      useSimpleUi.getState().patch(key, { pendingWorkflow: false })
-      setPendingResult((current) => (current.key === key ? { key, action: '' } : current))
+      useSimpleUi.getState().patch(scope, { pendingWorkflow: false })
+      setPendingResult((current) => (current.key === scope ? { key: scope, action: '' } : current))
     }
   }
   const work = (command: WorkCommand, selection = selected(command), confirmedTree = tree) =>
@@ -104,38 +120,46 @@ export function useChatModeWorkflow({
   const canConfirm = (confirmationKey: string | undefined) => {
     const current = useStore.getState()
     return (
-      simpleKey(current.project?.id, current.activeTask) === confirmationKey &&
+      simpleKey(current.project?.id, chat.task) === confirmationKey &&
+      confirmationKey === chat.key &&
       !pendingActions.has(key) &&
-      !useSimpleUi.getState().worktrees[key]?.pendingAction
+      !pendingActions.has(chat.key) &&
+      !useSimpleUi.getState().worktrees[chat.key]?.pendingAction
     )
   }
   const clearHistory = async (confirmationKey: string | undefined) => {
     if (!canConfirm(confirmationKey)) return false
     try {
-      if (team) await controlTeam(team, { kind: 'historyBoundary' })
-      return clearSimpleChat(projectId, task)
+      if (chat.team) await controlTeam(chat.team, { kind: 'historyBoundary' })
+      return clearSimpleChat(projectId, chat.task)
     } catch (error) {
       setFailure(error)
       return false
     }
   }
   const startFresh = async (confirmationKey: string | undefined, completed: () => void) => {
-    if (!team || !canConfirm(confirmationKey)) return
-    await run('reset', async () => {
-      await resetLead(team)
-      completed()
-    })
+    const lead = chat.team
+    if (!lead || !canConfirm(confirmationKey)) return
+    await run(
+      'reset',
+      async () => {
+        await resetLead(lead)
+        completed()
+      },
+      chat.key,
+    )
   }
   const handoffAgent = () => {
     const state = useStore.getState()
-    const selected = chatRecipient(model.records, state.simple?.selectedAgent)
-    const lead = team && state.sessionRecords.find((record) => record.id === team.lead.sessionId)
+    const selected = chatRecipient(chat.model.records, simpleOf(state, chat.task)?.selectedAgent)
+    const lead =
+      chat.team && state.sessionRecords.find((record) => record.id === chat.team!.lead.sessionId)
     const record = selected ?? lead
     if (!record) return
     return { id: record.id, name: record.metadata.name, session: state.sessions[record.id] }
   }
   const handoffBlock = (duringInterrupt = false) => {
-    const ui = useSimpleUi.getState().worktrees[key]
+    const ui = useSimpleUi.getState().worktrees[chat.key]
     return chatAutoHandoff(
       duringInterrupt ? { ...ui, pendingWorkflow: false } : (ui ?? {}),
       handoffAgent(),
@@ -165,7 +189,7 @@ export function useChatModeWorkflow({
     const chatGoal = kept
       ? existing?.chatGoal
       : chatHandoff(
-          simple,
+          chat.simple ?? simple,
           source?.branch ?? 'Project folder',
           changed.map((f) => f.path),
         )
@@ -181,7 +205,7 @@ export function useChatModeWorkflow({
   }
   const cancelAutoQueue = () => {
     if (!currentScope() || !handoffBlock()?.queued) return
-    cancelQueued(key)
+    cancelQueued(chat.key)
     closeAutoPrompt()
     requestAnimationFrame(focusComposer)
   }

@@ -6,18 +6,25 @@ import { chatAutoActive, chatBusy, chatRecipient } from '../lib/chat'
 import { EMPTY_SIMPLE_UI, simpleKey, useSimpleUi } from '../lib/simpleUi'
 import { useChatTeams } from '../lib/chatTeams'
 import { changeChatAgent, defaultChatPreset } from '../lib/chatAgent'
+import { autoOf, simpleOf } from '../lib/chatHome'
 
-export default function ChatAgentPicker({ records }: { records: SessionRecord[] }) {
+export default function ChatAgentPicker({
+  records,
+  task,
+}: {
+  records: SessionRecord[]
+  /** The worktree whose conversation this is: Chat's lead lives in the project folder. */
+  task: string | null
+}) {
   const s = useStore()
   const projectId = s.project?.id ?? ''
-  const task = s.activeTask
   const key = simpleKey(projectId, task)
   const team = useChatTeams((s) => s.teams[projectId]?.find((t) => t.task === task))
   const ui = useSimpleUi((u) => u.worktrees[key] ?? EMPTY_SIMPLE_UI)
   const [open, setOpen] = useState(false)
   const [confirming, setConfirming] = useState('')
   const [error, setError] = useState('')
-  const recipient = chatRecipient(records, s.simple?.selectedAgent)
+  const recipient = chatRecipient(records, simpleOf(s, task)?.selectedAgent)
   const preset = defaultChatPreset(
     s.devices,
     s.agentRoles,
@@ -30,7 +37,7 @@ export default function ChatAgentPicker({ records }: { records: SessionRecord[] 
     !!ui.pendingAction ||
     !!ui.pendingWorkflow ||
     !!team?.reset ||
-    chatAutoActive(s.auto?.status) ||
+    chatAutoActive(autoOf(s, task)?.status) ||
     (!team && (!!ui.queued || leadBusy))
   const change = async (id: string) => {
     setConfirming('')

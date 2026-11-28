@@ -18,6 +18,12 @@ export interface AgentCard {
   role: string
   roleKey: ChatRoleKey
   detail: string
+  /** The worktree the agent works in (its task; null for the project folder). */
+  worktree: string | null
+  /** That worktree's name and branch, so a card always says where the agent works. */
+  place: string
+  /** It works in the worktree in focus. */
+  focused?: boolean
 }
 
 /**
@@ -35,6 +41,8 @@ export function chatAgentCards({
   jobs,
   allJobs,
   includeSharedPlanners = false,
+  project = false,
+  placeOf = () => '',
 }: {
   records: readonly SessionRecord[]
   sessions: Record<string, SessionState>
@@ -46,11 +54,18 @@ export function chatAgentCards({
   jobs: readonly ProviderJob[]
   allJobs: readonly ProviderJob[]
   includeSharedPlanners?: boolean
+  /** Every running agent of the project, in any worktree: the project's lead works in all. */
+  project?: boolean
+  /** A worktree's label: its name and branch. */
+  placeOf?: (task: string | null) => string
 }): AgentCard[] {
   const identity = (record: SessionRecord | undefined) => chatIdentity(record, teams, runs)
   const sessionCard = (record: SessionRecord): AgentCard => {
     const { role, roleKey, detail } = identity(record)
+    const task = record.metadata.task ?? null
     return {
+      worktree: task,
+      place: placeOf(task),
       id: `session:${record.id}`,
       sessionId: record.id,
       record,
@@ -74,15 +89,20 @@ export function chatAgentCards({
         sessions[record.id]?.running &&
         !jobSessions.has(record.id) &&
         (record.id === team?.lead.sessionId ||
-          (relatedSession(record, worktree, sessions[record.id]?.generation, simple) &&
-            (includeSharedPlanners || !foreignPlanner(record, sessions, simple)))),
+          (project
+            ? record.metadata.projectId === worktree.projectId && record.metadata.kind === 'agent'
+            : relatedSession(record, worktree, sessions[record.id]?.generation, simple) &&
+              (includeSharedPlanners || !foreignPlanner(record, sessions, simple)))),
     )
     .toSorted((a, b) => started(a) - started(b) || a.id.localeCompare(b.id))
     .map(sessionCard)
   const jobCards = jobs.map((job): AgentCard => {
     const record = workerSession(job, records as SessionRecord[], worktree.projectId)
     const known = record && identity(record)
+    const task = record?.metadata.task ?? job.task ?? null
     return {
+      worktree: task,
+      place: placeOf(task),
       id: `job:${job.id}`,
       sessionId: record?.id,
       record,
@@ -150,16 +170,37 @@ const WRAP_GAP = 24
 const ROWS: AgentRow[] = ['lead', 'worker', 'other', 'finished']
 
 /**
+ * The canvas's rows, top to bottom: the lead, then each worktree's agents together (the project
+ * folder's first, then the others in the order they appear), split by row kind.
+ */
+function agentRows(cards: readonly AgentCard[]) {
+  const places = [
+    ...new Set(
+      cards
+        .filter((card) => card.row !== 'lead')
+        .toSorted((a, b) => Number(a.worktree !== null) - Number(b.worktree !== null))
+        .map((card) => card.worktree),
+    ),
+  ]
+  return [
+    cards.filter((card) => card.row === 'lead'),
+    ...places.flatMap((place) =>
+      ROWS.filter((row) => row !== 'lead').map((row) =>
+        cards.filter((card) => card.row === row && card.worktree === place),
+      ),
+    ),
+  ].filter((members) => members.length)
+}
+
+/**
  * Cards in centered rows, top to bottom, each wrapping at `columns`, with the lead joined to its
- * active workers.
+ * active workers. Each worktree's agents stay together.
  */
 export function agentLayout(cards: readonly AgentCard[], columns = Infinity) {
   const positions: { card: AgentCard; x: number; y: number }[] = []
   let y = 0
   let width = 0
-  for (const row of ROWS) {
-    const members = cards.filter((card) => card.row === row)
-    if (!members.length) continue
+  for (const members of agentRows(cards)) {
     for (let start = 0; start < members.length; start += columns) {
       const line = members.slice(start, start + columns)
       const lineWidth = line.length * AGENT_CARD_WIDTH + (line.length - 1) * GAP_X
@@ -190,7 +231,7 @@ export function agentColumns(
   { width, height }: { width: number; height: number },
 ) {
   if (!width || !height) return Infinity
-  const widest = Math.max(1, ...ROWS.map((row) => cards.filter((c) => c.row === row).length))
+  const widest = Math.max(1, ...agentRows(cards).map((members) => members.length))
   const availableWidth = width - 2 * AGENT_CANVAS_INSET.side
   const availableHeight = height - AGENT_CANVAS_INSET.top - AGENT_CANVAS_INSET.bottom
   let best = 1

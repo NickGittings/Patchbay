@@ -63,7 +63,7 @@ test('a launch without a request claims no run', async () => {
   expect(ipc.sessionsList).not.toHaveBeenCalled()
 })
 
-test('Clear is isolated to its selected worktree and rechecks pending actions', async () => {
+test('Clear is isolated to its conversation and rechecks pending actions', async () => {
   const { clearSimpleChat } = await import('./simpleActions')
   const { simpleKey, useSimpleUi } = await import('./simpleUi')
   const { useStore } = await import('../store')
@@ -88,7 +88,8 @@ test('Clear is isolated to its selected worktree and rechecks pending actions', 
   useSimpleUi.getState().patch(key, { pendingAction: false, pendingWorkflow: true })
   expect(clearSimpleChat('p', null)).toBe(false)
   useSimpleUi.getState().patch(key, { pendingWorkflow: false })
-  expect(clearSimpleChat('p', 'sibling')).toBe(false)
+  // Another project's conversation is never cleared from this one.
+  expect(clearSimpleChat('other', null)).toBe(false)
   expect(clearSimpleChat('p', null)).toBe(true)
   expect(useStore.getState().simple?.log).toEqual([])
   expect(useStore.getState().taskWorkspaces.sibling.simple).toEqual(original)

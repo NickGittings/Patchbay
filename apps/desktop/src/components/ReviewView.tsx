@@ -1,4 +1,5 @@
 import WorkFeedback from './WorkFeedback'
+import AllWorkChanges from './changes/AllWorkChanges'
 import { autoBlocker } from '../lib/workBlocker'
 import { availableReviewBase } from '../lib/reviewAgents'
 import PanelStatus from './PanelStatus'
@@ -358,6 +359,8 @@ export default function ReviewView() {
           <PersistedGroup layoutId="ReviewView-1" orientation="horizontal">
             <Panel id="ReviewView-pane-1" defaultSize="38" minSize="20">
               <div className="review-list" ref={listPane}>
+                {/* All work, as in Chat's Changes: every open worktree, one click away. */}
+                <AllWorkChanges />
                 <div className="review-header">
                   <ReviewContext
                     title={reviewTask?.title}

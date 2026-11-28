@@ -881,6 +881,17 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.agent-card-place {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* Agents of the worktree in focus stand out; the others stay readable around them. */
+.agent-card[data-focus] {
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+}
 .agent-card-snippet {
   flex: 1;
   min-height: 0;
@@ -922,5 +933,47 @@
 p.simple-turn-time,
 .simple-turn-steps {
   margin: 4px 0;
+  color: var(--muted);
+}
+
+/* Which worktree and branch a stage result or another agent's question comes from. */
+.chat-worktree-chip {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.simple-result > .chat-worktree-chip,
+.simple-thread > div > div > .chat-worktree-chip {
+  margin-bottom: 4px;
+}
+
+/* All work in Changes: each open worktree, one click from its changes. */
+.all-work-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.all-work-changes button {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+}
+.all-work-changes button.active {
+  border-color: var(--accent);
+}
+.all-work-story {
   color: var(--muted);
 }

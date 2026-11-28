@@ -498,3 +498,14 @@
     backdrop-filter: none;
   }
 }
+
+/* The project's lead runs this story (a backlog run). */
+.story-lead {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.story-lead-count {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
