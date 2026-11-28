@@ -141,6 +141,18 @@ function StackTerminals({ node }: { node: FlowNode }) {
                 onChange={(e) => updateTerminal(node.id, t.id, { readyWhen: e.target.value })}
               />
             </label>
+            <label>
+              Stop command
+              <input
+                aria-label={`${node.data.name} › ${t.id} stop command`}
+                placeholder="Runs before it stops, e.g. docker compose stop db (optional)"
+                title="A running terminal picks up an edit when it restarts or Start reuses it"
+                value={t.stopCommand ?? ''}
+                onChange={(e) =>
+                  updateTerminal(node.id, t.id, { stopCommand: e.target.value || undefined })
+                }
+              />
+            </label>
           </div>
         ))}
       <button
@@ -580,6 +592,7 @@ export function StackReview({ pending, projectId }: { pending: PendingStack; pro
           )
           const patch = proposedPatch(t, existing, !!pending.stackId)
           const ready = patch?.readyWhen ?? existing?.readyWhen
+          const stop = patch && 'stopCommand' in patch ? patch.stopCommand : existing?.stopCommand
           const changed =
             existing &&
             patch &&
@@ -626,6 +639,10 @@ export function StackReview({ pending, projectId }: { pending: PendingStack; pro
                 <span className="hint">
                   {ready ? `Ready when “${ready}”` : 'Starts without waiting'}
                 </span>
+                {stop && <span className="hint">Stops with: {stop}</span>}
+                {existing?.stopCommand && stop !== existing.stopCommand && (
+                  <span className="hint">Previous stop command: {existing.stopCommand}</span>
+                )}
                 <span className="hint">{t.reason}</span>
               </span>
             </label>

@@ -315,6 +315,11 @@ export interface TerminalSpec {
   /** Output text that means a service is ready (`model::TerminalSpec::ready_when`). */
   adapter?: 'claude' | 'codex'
   readyWhen?: string
+  /**
+   * Runs in the terminal's folder before it stops, for work that outlives its process such as
+   * detached containers (`model::TerminalSpec::stop_command`).
+   */
+  stopCommand?: string
   action?: TerminalAction
 }
 
@@ -402,6 +407,8 @@ export interface ProposedStackTerminal {
   name?: string | null
   command?: string | null
   readyWhen: string
+  /** Absent when the agent left it out, which keeps the terminal's; empty clears it. */
+  stopCommand?: string
   reason: string
 }
 

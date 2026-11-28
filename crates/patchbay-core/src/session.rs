@@ -39,7 +39,8 @@ pub use briefing::with_pending_briefing;
 // Protocol 27 serializes merge cleanup and restoration with terminal launches.
 // Protocol 29 reports turns ended by usage limits, which an older service would leave busy.
 // Protocol 30 replaces ValidationSelection and StackSelection with DetectionLaunch.
-pub const PROTOCOL: u32 = 30;
+// Protocol 31 runs a terminal's stop command before stopping it; an older service drops it.
+pub const PROTOCOL: u32 = 31;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 /// Estimated wire size of the retained event ring (output travels as a JSON number array).
 const EVENT_CAP: usize = 8 * 1024 * 1024;
@@ -838,6 +839,7 @@ impl Client {
             | Request::Forget { .. }
             | Request::Shutdown { .. }
             | Request::ActionStopGroup { .. }
+            | Request::TerminalCloseGuard { .. }
             | Request::EndTask { .. } => Some(SLOW_TIMEOUT),
             _ => Some(TIMEOUT),
         };
@@ -1557,6 +1559,9 @@ impl Service {
             .iter()
             .map(|(project_id, actions)| (project_id.clone(), actions.clone()))
             .collect();
+        // The task's environments and its other terminals share one stop-command grace, so
+        // removal stays within the request's deadline.
+        let deadline = Instant::now() + crate::pty::STOP_COMMAND_GRACE;
         for (project_id, actions) in actions {
             let terminals = ServiceTerminals {
                 service: self.clone(),
@@ -1564,18 +1569,25 @@ impl Service {
                 project: None,
             };
             let epoch = actions.epoch();
-            actions.stop_task(&project_id, task, epoch, &terminals)?;
+            actions.stop_task(&project_id, task, epoch, &terminals, deadline)?;
         }
+        let task_ids = || -> Vec<String> {
+            self.records
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|r| r.metadata.task.as_deref() == Some(task))
+                .map(|r| r.id.clone())
+                .collect()
+        };
+        // Stop commands run before the operation lock, so other launches needn't wait for
+        // them. Exited runs' too: removing the worktree must not leave their containers up.
+        let ids = task_ids();
+        self.pty
+            .prepare_stop_until(&self.pty.current_runs(&ids, true), deadline);
         // Launches take the operation lock, so none of the task's can start meanwhile.
         let _operation = self.operation.lock().unwrap();
-        let ids: Vec<_> = self
-            .records
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|r| r.metadata.task.as_deref() == Some(task))
-            .map(|r| r.id.clone())
-            .collect();
+        let ids = task_ids();
         let runs = self.pty.begin_stop(|id| ids.iter().any(|i| i == id));
         self.pty.finish_stop_all(&runs)?;
         if forget {
@@ -1690,6 +1702,29 @@ impl Service {
         if mode.new_conversation()
             && let Some(snapshot) = self.pty.snapshot_with(&id, 0)
         {
+            // Run the old run's stop command without blocking other launches, then validate
+            // again, since anything may have changed meanwhile.
+            // A Restart stops the old run with the terminal's current stop command, so an edit
+            // made while it ran applies to it.
+            self.pty.refresh_stop_command(&spec);
+            if self.pty.stop_command_pending(&id, snapshot.generation) {
+                drop(_operation);
+                self.pty.prepare_stop(&[(id.clone(), snapshot.generation)]);
+                let result = self.start_with_command(
+                    request,
+                    metadata,
+                    spec,
+                    original_command,
+                    mode,
+                    restart_context,
+                );
+                // Its stop command ran, so a refused restart still finishes stopping it rather
+                // than leave it running, marked stopped, without what it started.
+                if result.is_err() {
+                    let _ = self.pty.stop_generation(&id, snapshot.generation);
+                }
+                return result;
+            }
             self.pty.stop_generation(&id, snapshot.generation)?;
         }
         // Every launch path (desktop, CLI, extensions and graph actions) records the task name.
@@ -2338,6 +2373,9 @@ impl Service {
                     .get(&id)
                     .map(|r| r.metadata.project_id.clone());
                 let stop = || {
+                    // A stop command can take a while; launches elsewhere needn't wait for it.
+                    self.pty
+                        .prepare_stop(&self.pty.current_runs(std::slice::from_ref(&id), false));
                     let _operation = self.operation.lock().unwrap();
                     self.pty.stop(&id);
                 };
@@ -2499,41 +2537,63 @@ impl Service {
                     })
                     .map(|r| r.id.clone())
                     .collect();
-                self.actions_for(&project_id).with_maintenance_guard(
-                    &ids,
-                    &component_ids,
-                    || {
-                        let _operation = self.operation.lock().unwrap();
-                        self.check_maintenance_block(&project_id, &component_ids)?;
-                        let token = uuid::Uuid::new_v4().to_string();
-                        self.maintenance.lock().unwrap().insert(
-                            token.clone(),
-                            MaintenanceLease {
-                                project_id: project_id.clone(),
-                                component_ids: component_ids.clone(),
-                                expires: Instant::now() + Duration::from_secs(30),
-                            },
-                        );
-                        // Read again under the launch lock: a start may have completed while
-                        // acquiring the graph guard. The lease rejects starts from every window.
-                        let ids: Vec<_> = self
-                            .records
-                            .lock()
-                            .unwrap()
-                            .values()
-                            .filter(|r| {
-                                r.metadata.project_id == project_id
-                                    && r.metadata.component_id == component_id
-                                    && r.metadata.terminal_id == terminal_id
-                            })
-                            .map(|r| r.id.clone())
-                            .collect();
-                        for id in ids {
-                            self.pty.stop(&id);
-                        }
-                        serde_json::to_value(token).map_err(Into::into)
-                    },
-                )?
+                let actions = self.actions_for(&project_id);
+                // Refuse up front what the guard would, before any stop command runs.
+                actions.with_maintenance_guard(&ids, &component_ids, || Ok(()))?;
+                self.check_maintenance_block(&project_id, &component_ids)?;
+                // Stop commands run before the graph and operation locks, all at once, so other
+                // work doesn't wait for them. Exited runs' too: closing must not leave their
+                // containers up.
+                let prepared: Vec<_> = self
+                    .pty
+                    .current_runs(&ids, true)
+                    .into_iter()
+                    .filter(|(id, generation)| self.pty.stop_command_pending(id, *generation))
+                    .collect();
+                self.pty.run_stop_commands_together(&prepared);
+                let result = actions.with_maintenance_guard(&ids, &component_ids, || {
+                    let _operation = self.operation.lock().unwrap();
+                    self.check_maintenance_block(&project_id, &component_ids)?;
+                    let token = uuid::Uuid::new_v4().to_string();
+                    self.maintenance.lock().unwrap().insert(
+                        token.clone(),
+                        MaintenanceLease {
+                            project_id: project_id.clone(),
+                            component_ids: component_ids.clone(),
+                            expires: Instant::now() + Duration::from_secs(30),
+                        },
+                    );
+                    // Read again under the launch lock: a start may have completed while
+                    // acquiring the graph guard. The lease rejects starts from every window.
+                    let ids: Vec<_> = self
+                        .records
+                        .lock()
+                        .unwrap()
+                        .values()
+                        .filter(|r| {
+                            r.metadata.project_id == project_id
+                                && r.metadata.component_id == component_id
+                                && r.metadata.terminal_id == terminal_id
+                        })
+                        .map(|r| r.id.clone())
+                        .collect();
+                    for id in ids {
+                        self.pty.stop(&id);
+                    }
+                    // The lease runs from when the terminal is closed, not from the request.
+                    if let Some(lease) = self.maintenance.lock().unwrap().get_mut(&token) {
+                        lease.expires = Instant::now() + Duration::from_secs(30);
+                    }
+                    serde_json::to_value(token).map_err(Into::into)
+                });
+                // Refused after all: only what ran a stop command finishes stopping, rather
+                // than run on, marked stopped, without what it started.
+                if result.is_err() {
+                    for (id, generation) in &prepared {
+                        let _ = self.pty.stop_generation(id, *generation);
+                    }
+                }
+                result?
             }
             Request::MaintenanceRelease { project_id, token } => {
                 let mut leases = self.maintenance.lock().unwrap();
@@ -2667,6 +2727,14 @@ impl Terminals for ServiceTerminals<'_> {
     }
     fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
         self.service.pty.stop_generation(id, generation)
+    }
+    fn stop_generation_until(&self, id: &str, generation: u64, deadline: Instant) -> Result<()> {
+        self.service
+            .pty
+            .stop_generation_until(id, generation, deadline)
+    }
+    fn refresh_stop_command(&self, spec: &SessionSpec) {
+        self.service.pty.refresh_stop_command(spec);
     }
 }
 
@@ -3741,6 +3809,7 @@ mod tests {
         let service = Service::load(&dir).unwrap();
         let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
         let spec = SessionSpec {
+            stop_command: String::new(),
             purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
@@ -3837,6 +3906,7 @@ mod tests {
                     "other".into(),
                     other,
                     SessionSpec {
+                        stop_command: String::new(),
                         purpose: crate::pty::LaunchPurpose::Ordinary,
                         resume_command: None,
                         rerun_on_resume: false,
@@ -3974,6 +4044,7 @@ mod tests {
                         request.into(),
                         metadata,
                         SessionSpec {
+                            stop_command: String::new(),
                             purpose: crate::pty::LaunchPurpose::Ordinary,
                             resume_command: None,
                             rerun_on_resume: false,
@@ -4145,6 +4216,7 @@ mod tests {
         private_dir(&dir).unwrap();
         let service = Service::load(&dir).unwrap();
         let spec = SessionSpec {
+            stop_command: String::new(),
             purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
@@ -4243,6 +4315,7 @@ mod tests {
         .unwrap();
         assert!(metadata.task_title.is_none());
         let spec = SessionSpec {
+            stop_command: String::new(),
             purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
@@ -4312,6 +4385,7 @@ mod tests {
         let service = Service::load(&dir).unwrap();
         let metadata: Metadata = serde_json::from_value(serde_json::json!({ "projectId":"p", "projectName":"P", "projectRoot":dir.display().to_string(), "componentId":"web", "terminalId":"shell", "name":"Shell", "kind":"shell" })).unwrap();
         let spec = SessionSpec {
+            stop_command: String::new(),
             purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
@@ -4505,6 +4579,7 @@ mod tests {
             command: String::new(),
         };
         let spec = SessionSpec {
+            stop_command: String::new(),
             purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
@@ -4858,6 +4933,7 @@ mod tests {
         }))
         .unwrap();
         let spec = SessionSpec {
+            stop_command: String::new(),
             purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
@@ -5150,6 +5226,7 @@ mod tests {
                     command: String::new(),
                 };
                 let spec = SessionSpec {
+                    stop_command: String::new(),
                     purpose: crate::pty::LaunchPurpose::Ordinary,
                     resume_command: None,
                     rerun_on_resume: false,
@@ -5240,6 +5317,7 @@ mod tests {
             command: String::new(),
         };
         let spec = SessionSpec {
+            stop_command: String::new(),
             purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
@@ -5410,6 +5488,7 @@ mod tests {
         }))
         .unwrap();
         let spec = SessionSpec {
+            stop_command: String::new(),
             purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
@@ -5501,6 +5580,7 @@ mod tests {
         }))
         .unwrap();
         let spec = SessionSpec {
+            stop_command: String::new(),
             id: "s".into(),
             command: "claude --model first".into(),
             purpose: crate::pty::LaunchPurpose::Ordinary,
@@ -7208,6 +7288,7 @@ for line in sys.stdin:
                 command: String::new(),
             },
             spec: SessionSpec {
+                stop_command: String::new(),
                 purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,

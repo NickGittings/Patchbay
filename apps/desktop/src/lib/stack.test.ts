@@ -133,3 +133,39 @@ test('replacement commands and empty readiness replace faulty configuration whil
     readyWhen: '',
   })
 })
+
+test('proposed stop commands are set, cleared when given empty and kept when left out', () => {
+  const db = terminal('db', 'docker compose up db', { stopCommand: 'docker compose down' })
+  const base = { component: 'api', terminal: 'db', readyWhen: '', reason: 'compose.yml:3' }
+  expect(proposedPatch({ ...base, stopCommand: ' docker compose stop db ' }, db)).toEqual({
+    action: 'development',
+    stopCommand: 'docker compose stop db',
+  })
+  // An older proposal that names the terminal without a command keeps the user's stop command.
+  expect(proposedPatch(base, db)).toEqual({ action: 'development' })
+  // Given empty, even without a new command, it clears the user's.
+  expect(proposedPatch({ ...base, stopCommand: '' }, db)).toEqual({
+    action: 'development',
+    stopCommand: undefined,
+  })
+  // Left out of a replacement or a new command, the user's stays.
+  expect(
+    proposedPatch({ ...base, command: 'docker compose up -d db' }, db, true),
+  ).not.toHaveProperty('stopCommand')
+  // A replacement decides a given one: empty clears.
+  const replaced = proposedPatch({ ...base, stopCommand: '' }, db, true)
+  expect(replaced).toHaveProperty('stopCommand', undefined)
+  expect(
+    proposedPatch(
+      { ...base, terminal: null, name: 'Postgres', command: 'up', stopCommand: 'down' },
+      undefined,
+    ),
+  ).toEqual({
+    name: 'Postgres',
+    command: 'up',
+    kind: 'task',
+    action: 'development',
+    readyWhen: '',
+    stopCommand: 'down',
+  })
+})

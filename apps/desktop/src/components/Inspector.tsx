@@ -300,6 +300,22 @@ function InspectorTerminal({
                 onChange={(e) => update({ readyWhen: e.target.value || undefined })}
               />
             </label>
+            <label>
+              Stop command
+              <input
+                className="mono"
+                spellCheck={false}
+                placeholder="Runs before it stops, e.g. docker compose stop db"
+                value={t.stopCommand ?? ''}
+                onChange={(e) => update({ stopCommand: e.target.value || undefined })}
+              />
+              {session?.running && (
+                <span className="hint">
+                  Restart picks up an edit; until then Stop uses the stop command this run started
+                  with.
+                </span>
+              )}
+            </label>
           </>
         )}
         <button

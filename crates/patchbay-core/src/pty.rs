@@ -63,6 +63,9 @@ pub struct SessionSpec {
     pub env: BTreeMap<String, String>,
     /// Output text that means a service is ready; empty for none.
     pub ready_when: String,
+    /// Runs with the session's folder and environment before every stop; empty for none.
+    #[serde(default)]
+    pub stop_command: String,
     /// A task terminal: watch its output for a local URL or `ready_when`.
     pub service: bool,
     /// A dim line retained and emitted before the process's output.
@@ -196,6 +199,17 @@ struct Backlog {
     notice: Option<String>,
     launch: Option<SessionSpec>,
     cleanup_error: Option<String>,
+    /// Whether this run's stop command has started or finished, so a repeated stop neither
+    /// runs it again nor hangs up before it finishes.
+    stop_state: StopState,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum StopState {
+    #[default]
+    Pending,
+    Running,
+    Done,
 }
 
 /// Wall-clock Unix milliseconds, the clock file modification times use, so
@@ -412,6 +426,128 @@ fn remove_status_file(path: Option<&Path>) {
     if let Some(path) = path {
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// The launch environment a session's own command may set. User launch options cannot
+/// redirect the private reporter transport.
+fn user_env(spec: &SessionSpec) -> impl Iterator<Item = (&String, &String)> {
+    spec.env.iter().filter(|(k, _)| {
+        !k.eq_ignore_ascii_case(COMMAND_ENV)
+            && !k.eq_ignore_ascii_case("PATCHBAY_PROFILE_TOKEN")
+            && !REPORTER_ENV.iter().any(|name| k.eq_ignore_ascii_case(name))
+    })
+}
+
+/// The private reporter transport, which a terminal's commands get only from Patchbay.
+const REPORTER_ENV: [&str; 5] = [
+    STATUS_ENV,
+    crate::agent_hooks::SESSION_ENV,
+    crate::agent_hooks::GENERATION_ENV,
+    crate::agent_hooks::PROVIDER_ENV,
+    crate::agent_hooks::JOURNAL_ENV,
+];
+
+/// How long one stop request's stop commands may run in all before stopping continues
+/// without them. With the hang-up grace it stays below the service's slow-request timeout.
+pub const STOP_COMMAND_GRACE: Duration = Duration::from_secs(60);
+
+/// Run `spec`'s stop command to completion (bounded by `grace`) in the session's folder and
+/// environment, through the same shell as its command. Returns what to show in the terminal.
+fn run_stop_command(spec: &SessionSpec, grace: Duration) -> Vec<u8> {
+    let command = spec.stop_command.trim();
+    let mut shown = format!(
+        "\r\n\x1b[2m[patchbay] Stopping: {}\x1b[0m\r\n",
+        command.replace(['\r', '\n', '\x1b'], " ")
+    )
+    .into_bytes();
+    let failed = |mut shown: Vec<u8>, error: &dyn std::fmt::Display| {
+        shown.extend(format!("[patchbay] Stop command could not start: {error}\r\n").bytes());
+        shown
+    };
+    // Its own terminal and session, through the same login shell as the terminal's command:
+    // the same PATH, no job-control warnings, and never stopped for taking Patchbay's tty.
+    let pair = match native_pty_system().openpty(pty_size(DEFAULT_SIZE)) {
+        Ok(pair) => pair,
+        Err(error) => return failed(shown, &error),
+    };
+    let mut cmd = shell_command(command);
+    cmd.cwd(&spec.cwd);
+    cmd.env("TERM", "xterm-256color");
+    // Cleared like the terminal's own command, so it can't report as another session.
+    for key in crate::agent_bridge::BRIDGE_ENV {
+        cmd.env_remove(key);
+    }
+    cmd.env_remove(DEV_PORT_ENV);
+    cmd.env_remove("PATCHBAY_PROFILE_TOKEN");
+    for (k, v) in user_env(spec) {
+        cmd.env(k, v);
+    }
+    for key in REPORTER_ENV {
+        cmd.env(key, "");
+    }
+    let mut child = match pair.slave.spawn_command(cmd) {
+        Ok(child) => child,
+        Err(error) => return failed(shown, &error),
+    };
+    drop(pair.slave);
+    let pid = child.process_id();
+    let (tx, rx) = mpsc::channel();
+    if let Ok(mut reader) = pair.master.try_clone_reader() {
+        // Sent as read, so a descendant holding the terminal open keeps what came before.
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    let deadline = Instant::now() + grace;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let mut process = Process {
+                    pid,
+                    killer: child.clone_killer(),
+                    reap_workers: true,
+                };
+                process.force_kill();
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    // Descendants that keep the terminal open must not hold up the stop.
+    let drain = Instant::now() + Duration::from_secs(1);
+    while let Ok(data) = rx.recv_timeout(drain.saturating_duration_since(Instant::now())) {
+        shown.extend(data);
+    }
+    drop(pair.master);
+    if !shown.ends_with(b"\n") {
+        shown.extend(b"\r\n");
+    }
+    match status {
+        Some(status) if status.success() => {}
+        Some(status) => shown.extend(
+            format!(
+                "\x1b[2m[patchbay] Stop command exited with {}\x1b[0m\r\n",
+                status.exit_code()
+            )
+            .bytes(),
+        ),
+        None => shown.extend(
+            format!(
+                "\x1b[2m[patchbay] Stop command was still running after {}s; stopping anyway\x1b[0m\r\n",
+                grace.as_secs()
+            )
+            .bytes(),
+        ),
+    }
+    shown
 }
 
 /// Run through the user's login shell so PATH matches their terminal, even when
@@ -977,31 +1113,12 @@ impl PtyManager {
         }
         // A nested `tauri dev` would otherwise reuse this app's (occupied) Vite port.
         cmd.env_remove(DEV_PORT_ENV);
-        // User launch options cannot redirect the private reporter transport.
-        for (k, v) in spec.env.iter().filter(|(k, _)| {
-            !k.eq_ignore_ascii_case(COMMAND_ENV)
-                && !k.eq_ignore_ascii_case("PATCHBAY_PROFILE_TOKEN")
-                && ![
-                    STATUS_ENV,
-                    crate::agent_hooks::SESSION_ENV,
-                    crate::agent_hooks::GENERATION_ENV,
-                    crate::agent_hooks::PROVIDER_ENV,
-                    crate::agent_hooks::JOURNAL_ENV,
-                ]
-                .iter()
-                .any(|name| k.eq_ignore_ascii_case(name))
-        }) {
+        for (k, v) in user_env(spec) {
             cmd.env(k, v);
         }
         // A helper launched from another Patchbay terminal can inherit its transport.
         // Clear it even when allocating this session's private status directory failed.
-        for key in [
-            STATUS_ENV,
-            crate::agent_hooks::SESSION_ENV,
-            crate::agent_hooks::GENERATION_ENV,
-            crate::agent_hooks::PROVIDER_ENV,
-            crate::agent_hooks::JOURNAL_ENV,
-        ] {
+        for key in REPORTER_ENV {
             cmd.env(key, "");
         }
         if let Some(status) = self.status_file(generation) {
@@ -1231,6 +1348,179 @@ impl PtyManager {
         Ok(())
     }
 
+    /// Run the stop command of each listed run that has one, at most once per run, before
+    /// the caller signals them; `together` runs them all at once, otherwise one after another
+    /// in order. All of them share `deadline`. A stop command reaches what
+    /// outlives the terminal's process, such as detached containers. The run is marked stopped
+    /// first, so its process exiting meanwhile counts as a stop and a start doesn't reuse it.
+    /// A run whose stop command another caller is running is waited for.
+    fn run_stop_commands(&self, runs: &[(String, u64)], together: bool, deadline: Instant) {
+        let mut jobs = Vec::new();
+        let mut waits = Vec::new();
+        for (id, generation) in runs {
+            let Some(backlog) = self.backlogs.lock().unwrap().get(id).cloned() else {
+                continue;
+            };
+            let mut b = backlog.lock().unwrap();
+            if b.generation != *generation {
+                continue;
+            }
+            match b.stop_state {
+                StopState::Done => {}
+                StopState::Running => {
+                    drop(b);
+                    waits.push((*generation, backlog));
+                }
+                StopState::Pending => {
+                    let Some(spec) = b
+                        .launch
+                        .as_ref()
+                        .filter(|l| !l.stop_command.trim().is_empty())
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    b.stop_state = StopState::Running;
+                    if b.running {
+                        b.tracker.on_stop();
+                    }
+                    drop(b);
+                    jobs.push((id.clone(), *generation, spec, backlog));
+                }
+            }
+        }
+        let run =
+            |(id, generation, spec, backlog): &(String, u64, SessionSpec, Arc<Mutex<Backlog>>)| {
+                let data =
+                    run_stop_command(spec, deadline.saturating_duration_since(Instant::now()));
+                let seq = {
+                    let mut backlog = backlog.lock().unwrap();
+                    backlog.stop_state = StopState::Done;
+                    if backlog.generation != *generation {
+                        return;
+                    }
+                    backlog.append(&data)
+                };
+                let sink = self
+                    .watched
+                    .lock()
+                    .unwrap()
+                    .get(generation)
+                    .map(|w| w.sink.clone());
+                if let Some(sink) = sink {
+                    sink.emit(TerminalEvent::Output {
+                        session_id: id.clone(),
+                        generation: *generation,
+                        seq,
+                        data,
+                    });
+                }
+            };
+        if together {
+            std::thread::scope(|scope| {
+                for job in &jobs {
+                    scope.spawn(|| run(job));
+                }
+            });
+        } else {
+            jobs.iter().for_each(run);
+        }
+        // Another caller's stop command must finish before this one hangs up or restarts.
+        let wait_deadline = deadline + Duration::from_secs(5);
+        for (generation, backlog) in waits {
+            while Instant::now() < wait_deadline {
+                let b = backlog.lock().unwrap();
+                if b.generation != generation || b.stop_state != StopState::Running {
+                    break;
+                }
+                drop(b);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    /// Run the listed runs' stop commands in order, one at a time, ahead of stopping them,
+    /// so a caller can do it without holding locks that launches need. They share one
+    /// [`STOP_COMMAND_GRACE`]. A later stop of these runs doesn't run them again.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn prepare_stop(&self, runs: &[(String, u64)]) {
+        self.prepare_stop_until(runs, Instant::now() + STOP_COMMAND_GRACE);
+    }
+
+    /// Like [`Self::prepare_stop`], sharing `deadline` with earlier stop commands of the
+    /// same request.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn prepare_stop_until(&self, runs: &[(String, u64)], deadline: Instant) {
+        self.run_stop_commands(runs, false, deadline);
+    }
+
+    /// Like [`Self::prepare_stop`], running all of them at once.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn run_stop_commands_together(&self, runs: &[(String, u64)]) {
+        self.run_stop_commands(runs, true, Instant::now() + STOP_COMMAND_GRACE);
+    }
+
+    /// Adopt `spec`'s stop command for its running session, so an edit made while it runs
+    /// applies to the next stop without a restart.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn refresh_stop_command(&self, spec: &SessionSpec) {
+        let Some(backlog) = self.backlogs.lock().unwrap().get(&spec.id).cloned() else {
+            return;
+        };
+        let mut backlog = backlog.lock().unwrap();
+        if backlog.running
+            && backlog.stop_state == StopState::Pending
+            && let Some(launch) = backlog.launch.as_mut()
+        {
+            launch.stop_command.clone_from(&spec.stop_command);
+        }
+    }
+
+    /// The current run of each of `ids`, also when it has exited if `exited`, ready for
+    /// [`Self::prepare_stop`]. An exited run's stop command still reaches what it left behind.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    #[must_use]
+    pub fn current_runs(&self, ids: &[String], exited: bool) -> Vec<(String, u64)> {
+        let backlogs = self.backlogs.lock().unwrap();
+        ids.iter()
+            .filter_map(|id| {
+                let backlog = backlogs.get(id)?.lock().unwrap();
+                (exited || backlog.running).then(|| (id.clone(), backlog.generation))
+            })
+            .collect()
+    }
+
+    /// Whether stopping this run would still have to run or wait for its stop command.
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    #[must_use]
+    pub fn stop_command_pending(&self, id: &str, generation: u64) -> bool {
+        let Some(backlog) = self.backlogs.lock().unwrap().get(id).cloned() else {
+            return false;
+        };
+        let b = backlog.lock().unwrap();
+        b.generation == generation
+            && match b.stop_state {
+                StopState::Done => false,
+                StopState::Running => true,
+                StopState::Pending => b
+                    .launch
+                    .as_ref()
+                    .is_some_and(|l| !l.stop_command.trim().is_empty()),
+            }
+    }
+
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn kill(&self, id: &str) {
@@ -1264,6 +1554,24 @@ impl PtyManager {
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
+        self.stop_generation_until(id, generation, Instant::now() + STOP_COMMAND_GRACE)
+    }
+
+    /// [`Self::stop_generation`], with its stop command ending by `deadline`, which one
+    /// request's stops share.
+    ///
+    /// # Errors
+    /// As [`Self::stop_generation`].
+    ///
+    /// # Panics
+    /// Panics if an internal lock is poisoned.
+    pub fn stop_generation_until(
+        &self,
+        id: &str,
+        generation: u64,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.prepare_stop_until(&[(id.to_string(), generation)], deadline);
         {
             let mut sessions = self.sessions.lock().unwrap();
             if let Some(session) = sessions.get_mut(id).filter(|s| s.generation == generation) {
@@ -1346,14 +1654,31 @@ impl PtyManager {
     /// # Panics
     /// Panics if an internal lock is poisoned.
     pub fn stop(&self, id: &str) {
-        let generation = self.sessions.lock().unwrap().get(id).map(|s| s.generation);
-        self.kill(id);
+        let Some(generation) = self.sessions.lock().unwrap().get(id).map(|s| s.generation) else {
+            return;
+        };
+        self.prepare_stop(&[(id.to_string(), generation)]);
+        // A run started while the stop command ran is not this stop's to signal.
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            let Some(session) = sessions.get_mut(id).filter(|s| s.generation == generation) else {
+                return;
+            };
+            session.process.hang_up();
+        }
+        let backlog = self.backlogs.lock().unwrap().get(id).cloned();
+        if let Some(backlog) = backlog {
+            let mut backlog = backlog.lock().unwrap();
+            if backlog.generation == generation {
+                backlog.tracker.on_stop();
+            }
+        }
         let deadline = Instant::now() + RESET_GRACE;
         while self.is_running(id) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         if let Some(session) = self.sessions.lock().unwrap().get_mut(id)
-            && Some(session.generation) == generation
+            && session.generation == generation
         {
             session.process.force_kill();
         }
@@ -1375,20 +1700,38 @@ impl PtyManager {
 
     /// Like [`Self::begin_stop_all`], for the running sessions `matches` selects.
     pub(crate) fn begin_stop(&self, matches: impl Fn(&str) -> bool) -> Vec<(String, u64)> {
-        let runs: Vec<_> = {
-            let mut sessions = self.sessions.lock().unwrap();
+        let selected: Vec<_> = {
+            let sessions = self.sessions.lock().unwrap();
             sessions
-                .iter_mut()
+                .iter()
                 .filter(|(id, _)| matches(id))
-                .map(|(id, session)| {
-                    session.process.hang_up();
-                    (id.clone(), session.generation)
-                })
+                .map(|(id, session)| (id.clone(), session.generation))
                 .collect()
         };
+        // Stop commands run without the sessions lock, all at once.
+        self.run_stop_commands_together(&selected);
+        // A run that exited meanwhile (its stop command can end it) stays in the batch, so
+        // its final lifecycle update and cleanup failure are still awaited and reported.
+        let hung_up: Vec<_> = {
+            let mut sessions = self.sessions.lock().unwrap();
+            selected
+                .iter()
+                .filter(|(id, generation)| {
+                    sessions.get_mut(id).is_some_and(|session| {
+                        session.generation == *generation && {
+                            session.process.hang_up();
+                            true
+                        }
+                    })
+                })
+                .cloned()
+                .collect()
+        };
+        let runs = selected;
         let backlogs: Vec<_> = {
             let backlogs = self.backlogs.lock().unwrap();
-            runs.iter()
+            hung_up
+                .iter()
                 .filter_map(|(id, generation)| backlogs.get(id).map(|b| (b.clone(), *generation)))
                 .collect()
         };
@@ -1654,6 +1997,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                stop_command: String::new(),
                 purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
@@ -1707,6 +2051,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                stop_command: String::new(),
                 purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
@@ -1762,6 +2107,7 @@ mod tests {
             )
         );
         let spec = SessionSpec {
+            stop_command: String::new(),
             id: "profile-test".into(),
             command,
             purpose: crate::pty::LaunchPurpose::Ordinary,
@@ -1789,6 +2135,236 @@ mod tests {
         assert_eq!(sink.wait_for_exit(), 0);
     }
 
+    fn stop_spec(id: &str, dir: &Path, command: &str, stop_command: &str) -> SessionSpec {
+        SessionSpec {
+            stop_command: stop_command.into(),
+            purpose: crate::pty::LaunchPurpose::Ordinary,
+            resume_command: None,
+            rerun_on_resume: false,
+            owns_briefing: false,
+            exclusive_cwd: false,
+            manual: false,
+            merge_source: None,
+            id: id.into(),
+            command: command.into(),
+            cwd: dir.to_path_buf(),
+            env: BTreeMap::from([("PATCHBAY_INSTANCE".to_string(), "3".to_string())]),
+            ready_when: String::new(),
+            service: true,
+            notice: None,
+            dirs: vec![],
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "patchbay-stop-{name}-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn stop_runs_the_stop_command_once_with_the_session_folder_and_env_before_hangup() {
+        let dir = scratch("once");
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        pty.spawn_managed(
+            stop_spec(
+                "c/dev",
+                &dir,
+                "echo $$ > pid; exec sleep 30",
+                "kill -0 \"$(cat pid)\" && echo \"alive $PATCHBAY_INSTANCE\" >> marker",
+            ),
+            sink.clone(),
+        )
+        .unwrap();
+        for _ in 0..200 {
+            if dir.join("pid").exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let generation = pty.snapshot_with("c/dev", 0).unwrap().generation;
+        pty.stop_generation("c/dev", generation).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("marker")).unwrap(),
+            "alive 3\n"
+        );
+        assert!(!pty.is_running("c/dev"));
+        assert!(sink.output().contains("[patchbay] Stopping: kill -0"));
+        // Stopping the same run again doesn't repeat its stop command.
+        pty.stop_generation("c/dev", generation).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("marker")).unwrap(),
+            "alive 3\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stopping_a_batch_runs_each_stop_command() {
+        let dir = scratch("batch");
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        for id in ["c/a", "c/b"] {
+            let name = id.replace('/', "-");
+            pty.spawn_managed(
+                stop_spec(id, &dir, "exec sleep 30", &format!("touch {name}")),
+                sink.clone(),
+            )
+            .unwrap();
+        }
+        let runs = pty.begin_stop(|id| id.starts_with("c/"));
+        pty.finish_stop_all(&runs).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert!(dir.join("c-a").exists() && dir.join("c-b").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_run_ended_by_its_own_stop_command_counts_as_stopped_and_stays_in_the_batch() {
+        let dir = scratch("self-exit");
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        // Like `docker compose logs -f`, the process ends once its stop command runs.
+        pty.spawn_managed(
+            stop_spec(
+                "c/dev",
+                &dir,
+                "while [ ! -e stopped ]; do sleep 0.05; done",
+                "touch stopped; sleep 0.5",
+            ),
+            sink.clone(),
+        )
+        .unwrap();
+        let runs = pty.begin_stop(|id| id == "c/dev");
+        assert_eq!(runs.len(), 1);
+        pty.finish_stop_all(&runs).unwrap();
+        let snapshot = pty.snapshot_with("c/dev", 0).unwrap();
+        assert!(!snapshot.running && snapshot.status.stopped);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_second_stop_waits_for_the_first_stop_command_before_hanging_up() {
+        let dir = scratch("concurrent");
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        pty.spawn_managed(
+            stop_spec("c/dev", &dir, "exec sleep 30", "sleep 0.6; touch done"),
+            sink.clone(),
+        )
+        .unwrap();
+        let generation = pty.snapshot_with("c/dev", 0).unwrap().generation;
+        let first = {
+            let pty = pty.clone();
+            std::thread::spawn(move || pty.stop_generation("c/dev", generation))
+        };
+        while !pty.stop_command_pending("c/dev", generation)
+            || pty
+                .snapshot_with("c/dev", 0)
+                .is_some_and(|s| !s.status.stopped)
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Marked stopped while its stop command runs, so a start won't reuse it.
+        assert!(pty.is_running("c/dev"));
+        pty.stop("c/dev");
+        assert!(dir.join("done").exists());
+        first.join().unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_exited_run_still_gets_its_stop_command_once() {
+        let dir = scratch("exited");
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        pty.spawn_managed(
+            stop_spec("c/dev", &dir, "true", "echo x >> marker"),
+            sink.clone(),
+        )
+        .unwrap();
+        sink.wait_for_exit();
+        let ids = vec!["c/dev".to_string()];
+        assert!(pty.current_runs(&ids, false).is_empty());
+        let runs = pty.current_runs(&ids, true);
+        pty.prepare_stop(&runs);
+        pty.prepare_stop(&runs);
+        assert_eq!(std::fs::read_to_string(dir.join("marker")).unwrap(), "x\n");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_stop_command_keeps_output_written_before_a_child_held_its_pipe_open() {
+        let dir = scratch("held");
+        let shown = run_stop_command(
+            &stop_spec("c/dev", &dir, "", "echo kept; sleep 5 &"),
+            Duration::from_secs(10),
+        );
+        let shown = String::from_utf8_lossy(&shown);
+        assert!(shown.contains("kept\r\n"), "{shown}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_edited_stop_command_reuses_the_run_and_applies_to_its_next_stop() {
+        let dir = scratch("edited");
+        let pty = Arc::new(PtyManager::new());
+        let sink = Arc::new(Collect::default());
+        pty.spawn_managed(stop_spec("c/dev", &dir, "exec sleep 30", ""), sink.clone())
+            .unwrap();
+        let edited = stop_spec("c/dev", &dir, "exec sleep 30", "touch stopped");
+        assert!(pty.launch_matches(&edited));
+        pty.refresh_stop_command(&edited);
+        pty.stop("c/dev");
+        assert!(dir.join("stopped").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_stop_command_runs_in_its_own_terminal() {
+        let dir = scratch("tty");
+        let shown = run_stop_command(
+            &stop_spec("c/dev", &dir, "", "[ -t 0 ] && [ -t 1 ] && echo on-a-tty"),
+            Duration::from_secs(10),
+        );
+        let shown = String::from_utf8_lossy(&shown);
+        assert!(shown.contains("on-a-tty"), "{shown}");
+        assert!(!shown.contains("exited with"), "{shown}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_hung_stop_command_is_bounded_and_reported() {
+        let dir = scratch("hung");
+        let started = Instant::now();
+        let shown = run_stop_command(
+            &stop_spec("c/dev", &dir, "", "echo before; sleep 20"),
+            Duration::from_millis(300),
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let shown = String::from_utf8_lossy(&shown);
+        assert!(shown.contains("still running after"), "{shown}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_stop_command_reports_its_exit_code() {
+        let dir = scratch("failed");
+        let shown = run_stop_command(
+            &stop_spec("c/dev", &dir, "", "echo nope >&2; exit 4"),
+            Duration::from_secs(10),
+        );
+        let shown = String::from_utf8_lossy(&shown);
+        assert!(shown.contains("nope\r\n"), "{shown}");
+        assert!(shown.contains("exited with 4"), "{shown}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn reports_status_from_the_status_file_and_output() {
         use crate::status::AgentState;
@@ -1796,6 +2372,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                stop_command: String::new(),
                 purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
@@ -1855,6 +2432,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                stop_command: String::new(),
                 purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
@@ -1901,6 +2479,7 @@ mod tests {
     fn reset_forgets_history_and_keeps_generations_unique() {
         let pty = Arc::new(PtyManager::new());
         let spec = |command: &str| SessionSpec {
+            stop_command: String::new(),
             purpose: crate::pty::LaunchPurpose::Ordinary,
             resume_command: None,
             rerun_on_resume: false,
@@ -1939,6 +2518,7 @@ mod tests {
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                stop_command: String::new(),
                 purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,
@@ -1979,6 +2559,7 @@ mod tests {
             let sink = Arc::new(Collect::default());
             pty.spawn(
                 SessionSpec {
+                    stop_command: String::new(),
                     purpose: crate::pty::LaunchPurpose::Ordinary,
                     resume_command: None,
                     rerun_on_resume: false,
@@ -2024,6 +2605,7 @@ mod tests {
                     barrier.wait();
                     pty.spawn(
                         SessionSpec {
+                            stop_command: String::new(),
                             purpose: crate::pty::LaunchPurpose::Ordinary,
                             resume_command: None,
                             rerun_on_resume: false,
@@ -2150,6 +2732,7 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
 "#;
         pty.spawn(
             SessionSpec {
+                stop_command: String::new(),
                 id: "activity-final".into(),
                 command: command.into(),
                 cwd: std::env::temp_dir(),
@@ -2262,6 +2845,7 @@ printf '{"session":"activity-final","generation":%s,"provider":"codex","sequence
         let sink = Arc::new(Collect::default());
         pty.spawn(
             SessionSpec {
+                stop_command: String::new(),
                 id: "prompt-generation".into(),
                 command: "IFS= read -r line; printf 'received:%s' \"$line\"".into(),
                 cwd: std::env::temp_dir(),

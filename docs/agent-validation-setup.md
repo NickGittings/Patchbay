@@ -20,13 +20,34 @@ applied components' validators in the active worktree, without traversing depend
 changes nothing. Changed folders, removed terminals, changed commands and assigned roles are left
 unapplied with an explanation.
 
+## Readiness and stopping
+
+The agent's `readyWhen` must appear on every start, including when a service is already
+running: an attached `docker compose up` doesn't replay a running container's startup log, so the
+briefing prefers `docker compose up -d --wait <service> && echo '<service> ready' && docker
+compose logs -f --since 1s <service>` with the marker as `readyWhen`. Terminals whose work outlives
+their process (detached containers, containers with a restart policy, simulator apps) get a
+`stopCommand`, which Patchbay runs from the same folder and environment before every stop, rollback
+and worktree removal (up to 60 seconds in all for one stop, including terminals that already
+exited when their worktree is removed). Without one, Stop hangs up the terminal and force-kills it
+a second later, leaving those containers running. The review shows each stop command; the Stack
+rail and Inspector edit it. Before submitting, the agent verifies its commands with read-only checks
+(`docker compose version` and `config`, `xcodebuild -list`, `xcrun simctl list devices available`,
+project files) and says in reasons what it couldn't verify. Apps a developer runs, such as an iOS
+app on a simulator, get a Development terminal that builds, installs and launches them.
+
 ## Parallel instances
 
 Every component terminal and worktree preparation gets `PATCHBAY_INSTANCE` (0 in the main
 checkout, the lowest free number from 1 per task), `PATCHBAY_INSTANCE_ID` (`main` or the task id),
 `PATCHBAY_PROJECT_ROOT` and `PATCHBAY_WORKTREE_ROOT`. Detected commands derive ports, database and
 compose project names from them with shell defaults, so the main checkout behaves as before, for
-example `PORT=$((3000 + ${PATCHBAY_INSTANCE:-0}*10))`. Patchbay does no templating. When
+example `PORT=$((3000 + ${PATCHBAY_INSTANCE:-0}*10))`. Patchbay does no templating. The main
+checkout keeps its existing compose project name, ports and data; worktrees suffix the compose
+project (`COMPOSE_PROJECT_NAME` overrides a file's `name:`) in every compose command, including
+preparation builds, and replace fixed host ports through a generated `ports: !override` file
+selected with `COMPOSE_FILE`. Native app builds receive the worktree's backend address as a
+build-setting override and run on a per-worktree simulator. When
 `instances.parallelSafe` is set, environment starts and validations run per checkout at once;
 otherwise one at a time per project.
 

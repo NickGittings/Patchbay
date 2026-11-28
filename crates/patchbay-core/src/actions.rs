@@ -35,6 +35,17 @@ pub trait Terminals {
     /// # Errors
     /// Fails if the run doesn't finish stopping.
     fn stop_generation(&self, id: &str, generation: u64) -> Result<()>;
+    /// [`Self::stop_generation`], with its stop command sharing `deadline` with the others
+    /// of the same request (see [`crate::pty::PtyManager::stop_generation_until`]).
+    ///
+    /// # Errors
+    /// As [`Self::stop_generation`].
+    fn stop_generation_until(&self, id: &str, generation: u64, _deadline: Instant) -> Result<()> {
+        self.stop_generation(id, generation)
+    }
+    /// Adopt `spec`'s stop command for the running session a start reuses (see
+    /// [`crate::pty::PtyManager::refresh_stop_command`]).
+    fn refresh_stop_command(&self, _spec: &SessionSpec) {}
 }
 use std::time::{Duration, Instant};
 
@@ -636,6 +647,7 @@ impl GraphActions {
                                 pty.launch_matches(spec),
                                 "Terminal {id} configuration changed; restart it before starting this environment"
                             );
+                            pty.refresh_stop_command(spec);
                         } else {
                             pty.launch(Launch {
                                 spec: spec.clone(),
@@ -694,7 +706,12 @@ impl GraphActions {
                             exit_code: None,
                             message: None,
                         });
-                        waits.push((run, ready));
+                        waits.push((
+                            run,
+                            ready,
+                            launch.terminal.name.clone(),
+                            !launch.terminal.stop_command.trim().is_empty(),
+                        ));
                     } else {
                         let deadline = Instant::now() + self.1;
                         let mut message = None;
@@ -725,8 +742,15 @@ impl GraphActions {
                 }
                 if environment.is_some() {
                     let deadline = Instant::now() + timeout;
-                    for (run, ready) in &waits {
-                        wait_for_readiness(pty, run, ready, deadline, &cancelled, &participating)?;
+                    for (run, ready, name, stops) in &waits {
+                        wait_for_readiness(
+                            pty,
+                            (run, name, *stops),
+                            ready,
+                            deadline,
+                            &cancelled,
+                            &participating,
+                        )?;
                     }
                 }
             }
@@ -759,8 +783,10 @@ impl GraphActions {
                 rollback
             };
             let mut failures = Vec::new();
+            // Dependents first, each stop command then its hang-up, within one grace.
+            let deadline = Instant::now() + crate::pty::STOP_COMMAND_GRACE;
             for run in rollback.iter().rev() {
-                if let Err(error) = pty.stop_generation(&run.id, run.generation) {
+                if let Err(error) = pty.stop_generation_until(&run.id, run.generation, deadline) {
                     failures.push(error.to_string());
                     // Preserve a retryable owner when cleanup did not finish.
                     let mut state = self.0.lock().unwrap();
@@ -872,11 +898,13 @@ impl GraphActions {
         pty: &dyn Terminals,
     ) -> Result<()> {
         let key = environment_key(project_id, group_id, task);
-        self.stop_environments(epoch, pty, |k| k == key)
+        let deadline = Instant::now() + crate::pty::STOP_COMMAND_GRACE;
+        self.stop_environments(epoch, pty, deadline, |k| k == key)
     }
 
     /// Stop every environment started in `task`'s worktree, including those of groups
-    /// no longer on the map, before the task goes away.
+    /// no longer on the map, before the task goes away. Their stop commands end by
+    /// `deadline`, which the caller shares with the task's other terminals.
     ///
     /// # Errors
     /// As [`GraphActions::stop_group`].
@@ -889,8 +917,9 @@ impl GraphActions {
         task: &str,
         epoch: u64,
         pty: &dyn Terminals,
+        deadline: Instant,
     ) -> Result<()> {
-        self.stop_environments(epoch, pty, |key| {
+        self.stop_environments(epoch, pty, deadline, |key| {
             environment_of(key)
                 .is_some_and(|(p, _, t)| p == project_id && t.as_deref() == Some(task))
         })
@@ -900,6 +929,7 @@ impl GraphActions {
         &self,
         epoch: u64,
         pty: &dyn Terminals,
+        deadline: Instant,
         matches: impl Fn(&str) -> bool,
     ) -> Result<()> {
         let stopping = {
@@ -933,10 +963,13 @@ impl GraphActions {
         };
         let mut failures = Vec::new();
         let mut unfinished = Vec::new();
+        // Dependents first, each stop command then its hang-up, so a dependency's stop
+        // command never runs under a live dependent. They share one grace, so a stack stays
+        // within the request's deadline however many stop commands it has.
         for (key, runs) in stopping {
             let mut left = Vec::new();
             for run in runs.iter().rev() {
-                if let Err(error) = pty.stop_generation(&run.id, run.generation) {
+                if let Err(error) = pty.stop_generation_until(&run.id, run.generation, deadline) {
                     failures.push(error.to_string());
                     left.push(run.clone());
                 }
@@ -1033,7 +1066,7 @@ fn check_environment_running(pty: &dyn Terminals, runs: &[Run]) -> Result<()> {
 
 fn wait_for_readiness(
     pty: &dyn Terminals,
-    run: &Run,
+    (run, name, has_stop_command): (&Run, &str, bool),
     ready: &str,
     deadline: Instant,
     cancelled: &AtomicBool,
@@ -1054,11 +1087,21 @@ fn wait_for_readiness(
         if ready.is_empty() || snapshot.status.ready {
             return Ok(());
         }
-        ensure!(
-            Instant::now() < deadline,
-            "Timed out waiting for {} to report: {ready}",
-            run.id
-        );
+        if Instant::now() >= deadline {
+            // A service left running by an earlier stop doesn't print its startup output again.
+            let hint = if has_stop_command {
+                ""
+            } else {
+                ". If the service may still be running from an earlier start, it won't print \
+                 its startup output again: give the terminal a stop command so Stop really \
+                 stops it, or a command that reports readiness on every start (for example \
+                 `docker compose up -d --wait`, then print a marker)"
+            };
+            bail!(
+                "Timed out waiting for {name} ({}) to report: {ready}{hint}",
+                run.id
+            );
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
 }
@@ -1292,7 +1335,13 @@ mod tests {
         }
         let terminals = Recording(Mutex::default());
         actions
-            .stop_task("p", "t1", actions.epoch(), &terminals)
+            .stop_task(
+                "p",
+                "t1",
+                actions.epoch(),
+                &terminals,
+                Instant::now() + crate::pty::STOP_COMMAND_GRACE,
+            )
             .unwrap();
         let mut stopped = terminals.0.into_inner().unwrap();
         stopped.sort();
@@ -1558,6 +1607,17 @@ mod tests {
             fn stop_generation(&self, id: &str, generation: u64) -> Result<()> {
                 self.0.stop_generation(id, generation)
             }
+            fn stop_generation_until(
+                &self,
+                id: &str,
+                generation: u64,
+                deadline: Instant,
+            ) -> Result<()> {
+                self.0.stop_generation_until(id, generation, deadline)
+            }
+            fn refresh_stop_command(&self, spec: &SessionSpec) {
+                self.0.refresh_stop_command(spec);
+            }
         }
         /// Inject a row Stop while group cleanup is in progress.
         struct RowStopDuringCleanup<'a> {
@@ -1713,6 +1773,34 @@ mod tests {
                     );
                 }
             }
+        }
+
+        #[test]
+        fn environment_stop_and_failed_startup_run_stop_commands_dependents_first() {
+            let mut f = Fixture::new();
+            for c in [0, 1] {
+                let id = f.project.components[c].id.clone();
+                f.project.components[c].terminals[0].stop_command = format!("echo {id} >> stops");
+            }
+            let stops = std::path::Path::new(&f.project.root).join("stops");
+            f.run(start()).unwrap();
+            f.actions
+                .stop_group("p", "dev", None, 0, &Local(f.pty.clone()))
+                .unwrap();
+            assert_eq!(std::fs::read_to_string(&stops).unwrap(), "web\napi\n");
+            assert!(!f.pty.is_running(&sid("api", "dev")));
+
+            // A readiness timeout rolls back what it started through the same stop commands.
+            std::fs::remove_file(&stops).unwrap();
+            f.project.groups[0].readiness_timeout_seconds = 1;
+            f.project.components[0].terminals[0].ready_when = "NEVER PRINTED".into();
+            let error = f.run(start()).unwrap_err().to_string();
+            // It has a stop command, so the error doesn't suggest adding one.
+            assert!(
+                error.contains("Timed out waiting for Dev") && !error.contains("stop command"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read_to_string(&stops).unwrap(), "web\napi\n");
         }
 
         #[test]

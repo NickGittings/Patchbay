@@ -1500,6 +1500,7 @@ fn build_job_agent_spec(
         return Err(anyhow!("blocked by policy: {reason}"));
     }
     Ok(SessionSpec {
+        stop_command: String::new(),
         purpose: crate::pty::LaunchPurpose::Ordinary,
         resume_command: Some(resume_command),
         rerun_on_resume: false,
@@ -2248,7 +2249,14 @@ fn root_session_spec(
     policy
         .check(Scope::Plan(&components), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
+    let stop_command = task_stop_command(terminal);
+    if !stop_command.is_empty() {
+        policy
+            .check(Scope::Plan(&components), &stop_command)
+            .map_err(|reason| anyhow!("stop command blocked by policy: {reason}"))?;
+    }
     Ok(SessionSpec {
+        stop_command,
         purpose,
         resume_command,
         rerun_on_resume: false,
@@ -2265,6 +2273,15 @@ fn root_session_spec(
         notice,
         dirs: context_dirs,
     })
+}
+
+/// A task terminal's stop command; shells and agents never run one.
+fn task_stop_command(terminal: &TerminalSpec) -> String {
+    if terminal.kind == TerminalKind::Task {
+        terminal.stop_command.trim().to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Build the session for one of a component's terminals.
@@ -2373,8 +2390,15 @@ pub fn session_spec_with(
     policy
         .check(Scope::Component(component), &command)
         .map_err(|reason| anyhow!("blocked by policy: {reason}"))?;
+    let stop_command = task_stop_command(terminal);
+    if !stop_command.is_empty() {
+        policy
+            .check(Scope::Component(component), &stop_command)
+            .map_err(|reason| anyhow!("stop command blocked by policy: {reason}"))?;
+    }
 
     Ok(SessionSpec {
+        stop_command,
         purpose: crate::pty::LaunchPurpose::Ordinary,
         resume_command: None,
         rerun_on_resume: false,
@@ -2923,6 +2947,7 @@ mod tests {
     #[test]
     fn extra_terminals_launch_in_the_component_and_replace_same_ids() {
         let terminal = TerminalSpec {
+            stop_command: String::new(),
             adapter: None,
             id: "agent".into(),
             name: "Ad hoc".into(),
@@ -2940,6 +2965,7 @@ mod tests {
         assert_eq!(spec.cwd, PathBuf::from("/repo/services/api"));
         assert!(!spec.env.contains_key(CONTEXT_ENV));
         let missing = TerminalSpec {
+            stop_command: String::new(),
             adapter: None,
             id: "x".into(),
             name: "X".into(),
@@ -2976,6 +3002,7 @@ mod tests {
                     "api",
                     "services/api",
                     vec![TerminalSpec {
+                        stop_command: String::new(),
                         adapter: None,
                         id: "agent".into(),
                         name: "Claude".into(),
@@ -3142,6 +3169,7 @@ mod tests {
 
     fn planner() -> TerminalSpec {
         TerminalSpec {
+            stop_command: String::new(),
             adapter: None,
             id: "claude".into(),
             name: "Claude".into(),

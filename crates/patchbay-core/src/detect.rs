@@ -49,6 +49,7 @@ struct Candidate {
 
 fn task(id: &str, name: &str, command: String) -> TerminalSpec {
     TerminalSpec {
+        stop_command: String::new(),
         adapter: None,
         id: id.into(),
         name: name.into(),
@@ -62,6 +63,7 @@ fn task(id: &str, name: &str, command: String) -> TerminalSpec {
 fn default_terminals() -> Vec<TerminalSpec> {
     vec![
         TerminalSpec {
+            stop_command: String::new(),
             adapter: None,
             id: "shell".into(),
             name: "Shell".into(),
@@ -71,6 +73,7 @@ fn default_terminals() -> Vec<TerminalSpec> {
             action: None,
         },
         TerminalSpec {
+            stop_command: String::new(),
             adapter: None,
             id: "claude".into(),
             name: "Claude".into(),

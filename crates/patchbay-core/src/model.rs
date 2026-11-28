@@ -185,6 +185,10 @@ pub struct TerminalSpec {
     /// URL counts only when no explicit text is configured.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ready_when: String,
+    /// Run in the terminal's folder before it is stopped, for work that outlives the
+    /// terminal's process, such as detached containers or a simulator app.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stop_command: String,
     /// Task commands included in graph actions; absent means manual only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<TerminalAction>,

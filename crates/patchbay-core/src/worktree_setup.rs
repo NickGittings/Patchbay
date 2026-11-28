@@ -171,6 +171,7 @@ pub fn action(
     setup.session = Some(sid.clone());
     write(root, id, setup.clone())?;
     let spec = SessionSpec {
+        stop_command: String::new(),
         id: sid.clone(),
         command: setup.command.clone(),
         cwd: task.worktree.clone().into(),

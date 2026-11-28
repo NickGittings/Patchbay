@@ -134,11 +134,14 @@ export function proposedPatch(
 ): Partial<TerminalSpec> | null {
   if (current && (current.kind !== 'task' || current.action === 'validation')) return null
   const readyWhen = proposed.readyWhen.trim()
+  const stopCommand = proposed.stopCommand?.trim() ?? ''
   if (current)
     return {
       action: 'development',
       ...(proposed.command != null ? { command: proposed.command.trim() } : {}),
       ...(replacing || proposed.command != null || readyWhen ? { readyWhen } : {}),
+      // Left out, it keeps the user's; given, it replaces it, and empty clears it.
+      ...(proposed.stopCommand !== undefined ? { stopCommand: stopCommand || undefined } : {}),
     }
   return {
     name: proposed.name ?? 'Dev',
@@ -146,5 +149,6 @@ export function proposedPatch(
     kind: 'task',
     action: 'development',
     readyWhen,
+    ...(stopCommand ? { stopCommand } : {}),
   }
 }

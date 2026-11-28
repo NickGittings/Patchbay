@@ -714,6 +714,7 @@ pub fn command_terminal(registry: &Registry, command_id: &str) -> Result<Termina
         .run
         .context("code command must be executed in the extension host")?;
     Ok(TerminalSpec {
+        stop_command: String::new(),
         adapter: None,
         id: format!("ext-{command_id}"),
         name: command.title,
@@ -737,6 +738,7 @@ pub fn run_terminal(extension_id: &str, command: String, key: &str) -> Result<Te
         bail!("invalid terminal request");
     }
     Ok(TerminalSpec {
+        stop_command: String::new(),
         adapter: None,
         id: format!("ext-{extension_id}-{key}"),
         name: extension_id.into(),
@@ -1112,6 +1114,7 @@ mod tests {
                 command: String::new(),
             },
             spec: SessionSpec {
+                stop_command: String::new(),
                 purpose: crate::pty::LaunchPurpose::Ordinary,
                 resume_command: None,
                 rerun_on_resume: false,

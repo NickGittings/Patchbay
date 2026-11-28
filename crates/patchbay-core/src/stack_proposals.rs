@@ -53,6 +53,10 @@ pub struct ProposedTerminal {
     pub command: Option<String>,
     #[serde(default)]
     pub ready_when: String,
+    /// Run before the terminal stops, for what outlives it (detached containers, a
+    /// simulator app). Empty clears it; absent keeps an existing terminal's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_command: Option<String>,
     pub reason: String,
 }
 
@@ -299,6 +303,12 @@ impl StackProposal {
                 one_line(&t.ready_when, READY_LIMIT),
                 "{at}: ready text is one line of at most {READY_LIMIT} characters"
             );
+            ensure!(
+                t.stop_command
+                    .as_deref()
+                    .is_none_or(|c| one_line(c, COMMAND_LIMIT)),
+                "{at}: stop commands are one line of at most {COMMAND_LIMIT} characters"
+            );
             ensure!(!t.reason.trim().is_empty(), "{at}: give a reason");
             ensure!(
                 t.reason.chars().count() <= REASON_LIMIT,
@@ -460,6 +470,7 @@ fn submit_in(
                 name: trimmed(t.name),
                 command: trimmed(t.command),
                 ready_when: t.ready_when.trim().into(),
+                stop_command: t.stop_command.map(|c| c.trim().to_owned()),
                 reason: t.reason.trim().into(),
                 ..t
             })
@@ -530,13 +541,18 @@ fn describe(t: &TerminalSpec) -> String {
         format!(", ready when `{}`", t.ready_when)
     };
     format!(
-        "  - `{}`: {} ({kind}{role}{ready}){}",
+        "  - `{}`: {} ({kind}{role}{ready}){}{}",
         t.id,
         t.name,
         if t.command.is_empty() {
             String::new()
         } else {
             format!(": `{}`", t.command)
+        },
+        if t.stop_command.is_empty() {
+            String::new()
+        } else {
+            format!("; stops with `{}`", t.stop_command)
         }
     )
 }
@@ -640,11 +656,37 @@ pub fn stack_context_for(
          Commands run relative to the component in the selected worktree; never hard-code another checkout. \
          Opening an IDE alone is not app launch. Report missing system tools, credentials and unavoidable \
          manual steps in the reasons without reading secrets. Leave tests and linters out of service terminals.\n\n\
+         Every component a developer runs as an app belongs in the stack, not only servers: a \
+         mobile or desktop app that talks to a backend gets its own Development terminal that \
+         builds, installs and launches it, and `orderedStartup` starts it after the services it \
+         uses. For an iOS app that means one command chaining `xcodebuild … -destination \
+         'platform=iOS Simulator,id=<udid>' -derivedDataPath <folder in the worktree> build`, \
+         `xcrun simctl boot` (tolerating an already booted device), `xcrun simctl install` and \
+         `xcrun simctl launch --console-pty <udid> <bundle id>`, which stays attached to the app; \
+         Android is similar with Gradle, `adb install` and `adb shell am start`.\n\n\
          For each terminal give `readyWhen`: text the process prints once it accepts \
-         connections (matched case-insensitively, such as `ready to accept connections` or \
-         `Listening on`), or an empty string when you can't tell. Set `orderedStartup` when \
+         connections (matched case-insensitively, such as `Listening on`), or an empty string \
+         when you can't tell. Readiness must be printed on every start, including when the \
+         service is already running or was left running by an earlier crash: \
+         `docker compose up <service>` attaches to a running container without printing its \
+         startup log again, so its readiness text never appears. For Docker Compose services, \
+         prefer `docker compose up -d --wait <service> && echo '<service> ready' && docker \
+         compose logs -f --since 1s <service>` with that echoed marker as `readyWhen`; \
+         `--wait` uses the service's healthcheck when it has one. Set `orderedStartup` when \
          some members depend on others, so dependencies start first and each waits until \
-         ready.\n",
+         ready.\n\n",
+    );
+    let _ = writeln!(
+        out,
+        "Give `stopCommand` to every terminal whose work outlives its process: Patchbay \
+         hangs up the terminal and force-kills it a second later, so detached containers, \
+         containers with a restart policy, simulator apps and background daemons keep \
+         running unless a stop command ends them. Patchbay runs it from the same folder with \
+         the same environment before every stop, rollback after a failed start, and worktree \
+         removal, waiting up to {grace} seconds in all. Examples: `docker compose stop <service>` and \
+         `xcrun simctl terminate <udid> <bundle id>`. Leave it empty when the process's exit \
+         ends everything.",
+        grace = crate::pty::STOP_COMMAND_GRACE.as_secs(),
     );
     out.push_str(
         "\n## Checks\n\nFind each component's one-shot test, lint, type check and format check \
@@ -685,7 +727,25 @@ pub fn stack_context_for(
          `isolation.resources`; or report it in `isolation.blockers` with the reason. Set \
          `isolation.parallelSafe` only when no blockers remain. When a value that needs \
          isolating appears only in a secret file (not in a template), report it as a blocker: \
-         isolation is uncertain. Don't use templating; Patchbay sets only these variables.\n",
+         isolation is uncertain. Don't use templating; Patchbay sets only these variables.\n\n\
+         The main checkout (instance 0) must keep exactly the names, ports and data it has \
+         now: never rename its compose project, containers, volumes or databases. A compose \
+         file's top-level `name:` is overridden by `COMPOSE_PROJECT_NAME`, so keep the current \
+         name for instance 0 and suffix it only in worktrees, for example \
+         `COMPOSE_PROJECT_NAME=shop$( [ \"${PATCHBAY_INSTANCE:-0}\" = 0 ] || echo \"-$PATCHBAY_INSTANCE\")`. \
+         Use that same project name in every compose command, including worktreeSetup builds, \
+         or a worktree rebuilds the main checkout's images. Fixed host ports in a compose file \
+         can be replaced only in worktrees by a generated override file with `ports: !override` \
+         (Docker Compose 2.24 or later), written into the worktree (by worktreeSetup or the \
+         command itself) and selected with `COMPOSE_FILE`; never edit the tracked compose file \
+         or change ports for instance 0. A native app built in a worktree needs that \
+         worktree's backend address: pass it as a build setting override on the build command \
+         line (for example `API_BASE_URL=https://host:<port>` after the `xcodebuild` \
+         arguments, when Info.plist reads `$(API_BASE_URL)`), never by reading or editing \
+         secret configuration files. Give each worktree its own simulator or emulator (for \
+         example create one named after PATCHBAY_INSTANCE_ID when it doesn't exist) and \
+         install any per-instance local certificate authority it must trust \
+         (`xcrun simctl keychain <udid> add-root-cert`).\n",
     );
     out.push_str(
         "\n## Worktree preparation\n\nCheck dependency installation, gitignored environment files \
@@ -701,6 +761,18 @@ pub fn stack_context_for(
          detection another agent triggered is applied at once, and its preparation is enabled \
          and run in that agent's worktree.\n",
     );
+    out.push_str(
+        "\n## Verify before submitting\n\nCheck each command you propose with read-only \
+         commands and cite what you saw in its reason: `docker compose version` (2.24 or later \
+         for `!override`), and `docker compose config` with the proposed environment and files \
+         to confirm the project name and published ports for instance 0 and instance 1; \
+         `xcodebuild -list` for the scheme, `xcrun simctl list devices available` for the \
+         destination, and the bundle identifier and build setting names from the project \
+         files and Info.plist; that each `readyWhen` is printed by the proposed command itself \
+         on every start; and that every terminal either ends all of its work when its process \
+         exits or has a `stopCommand`. Never start, stop, build or install anything while \
+         verifying. Say in the reason what you could not verify.\n",
+    );
     let _ = write!(
         out,
         "\n## Submit\n\nOnly read; don't edit project files, install anything, start servers or \
@@ -709,8 +781,9 @@ pub fn stack_context_for(
          Submit JSON {{\"version\":{VERSION},\"name\":\"Local stack\",\"orderedStartup\":true,\
          \"terminals\":[{{\"component\":\"api\",\"terminal\":\"dev\",\"readyWhen\":\"Listening on\",\
          \"reason\":\"api/package.json:7 runs the server\"}},{{\"component\":\"api\",\"name\":\"Postgres\",\
-         \"command\":\"docker compose up db\",\"readyWhen\":\"ready to accept connections\",\
-         \"reason\":\"docker-compose.yml:3 defines the database\"}}],\
+         \"command\":\"docker compose up -d --wait db && echo 'db ready' && docker compose logs -f --since 1s db\",\
+         \"readyWhen\":\"db ready\",\"stopCommand\":\"docker compose stop db\",\
+         \"reason\":\"docker-compose.yml:3 defines the database with a healthcheck\"}}],\
          \"checks\":[{{\"component\":\"api\",\"path\":\"api\",\"terminal\":null,\"name\":\"Tests\",\
          \"command\":\"npm test -- --run\",\"reason\":\"api/package.json:10\"}}],\
          \"missingChecks\":[{{\"component\":\"web\",\"reason\":\"no test or lint tooling configured\"}}],\
@@ -1193,6 +1266,67 @@ mod tests {
         v1.version = 1;
         let err = v1.validate(&p, &[]).unwrap_err().to_string();
         assert!(err.contains("need \"version\":2"), "{err}");
+    }
+
+    #[test]
+    fn stop_commands_are_one_line_trimmed_and_listed_in_the_briefing() {
+        let store = std::env::temp_dir().join(format!("patchbay-stack-{}", uuid::Uuid::new_v4()));
+        let mut p = project();
+        let db = json!({"component":"api","name":"Postgres","command":"docker compose up -d --wait db",
+            "readyWhen":"db ready","stopCommand":"  docker compose stop db ","reason":"compose.yml:3"});
+        let pending = submit_in(
+            &store,
+            &p,
+            "s-1",
+            &Launch::default(),
+            &proposal(json!([db])),
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            pending.terminals[0].stop_command.as_deref(),
+            Some("docker compose stop db")
+        );
+        let broken = json!({"component":"api","terminal":"dev","stopCommand":"a\nb","reason":"x"});
+        let error = proposal(json!([broken])).validate(&p, &[]).unwrap_err();
+        assert!(
+            error.to_string().contains("stop commands are one line"),
+            "{error}"
+        );
+        p.components[0].terminals[0].stop_command = "docker compose stop".into();
+        assert!(stack_context(&p).contains("stops with `docker compose stop`"));
+        let _ = std::fs::remove_dir_all(store);
+    }
+
+    #[test]
+    fn briefing_requires_repeatable_readiness_stop_commands_app_launch_and_verification() {
+        let text = stack_context(&project());
+        for part in [
+            "Readiness must be printed on every start",
+            "docker compose up -d --wait",
+            "Give `stopCommand`",
+            "xcrun simctl launch --console-pty",
+            "Every component a developer runs as an app belongs in the stack",
+            "must keep exactly the names, ports and data it has",
+            "`ports: !override`",
+            "## Verify before submitting",
+            "docker compose config",
+            "xcrun simctl list devices available",
+        ] {
+            assert!(text.contains(part), "{part}");
+        }
+        // The example the agent copies is itself a well-formed proposal.
+        let example = text
+            .split("Submit JSON ")
+            .nth(1)
+            .and_then(|rest| rest.split(" by piping").next())
+            .unwrap();
+        let example: StackProposal = serde_json::from_str(example).unwrap();
+        assert_eq!(
+            example.terminals[1].stop_command.as_deref(),
+            Some("docker compose stop db")
+        );
+        assert_eq!(example.terminals[1].ready_when, "db ready");
     }
 
     #[test]
