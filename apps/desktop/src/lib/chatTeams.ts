@@ -4,6 +4,7 @@ import { planTerminals } from './plan'
 import { checkHooks, hooksUsable } from './agentHooks'
 import { ProviderSetupRequired, requireProviderAuth } from './providerAuth'
 import { agentProvider, taskList } from './ipc'
+import { LEAD_HOME_TASK } from './chatHome'
 import { profileHookProvider } from './agentProfiles'
 import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
@@ -12,6 +13,7 @@ import {
   LEAD_RECIPIENT,
   type Project,
   type SessionRecord,
+  type Task,
   type TerminalSpec,
   type WorkflowAction,
   type WorkflowState,
@@ -165,9 +167,12 @@ export function requestTeam(
  * The team in worktree `id` as the service lists it: null when it is gone, undefined when the
  * list can't be read.
  */
-async function workspaceTask(team: ChatTeam, id: unknown): Promise<ChatTeam | null | undefined> {
+function workspaceTask(
+  team: ChatTeam,
+  id: unknown,
+  tasks: readonly Task[] | null,
+): ChatTeam | null | undefined {
   if (typeof id !== 'string') return null
-  const tasks = await taskList(team.projectId).catch(() => null)
   if (!tasks) return undefined
   const task = tasks.find((t) => t.id === id && !t.missing)
   return task ? { ...team, task: id, target: task.worktree } : null
@@ -185,8 +190,7 @@ export const UNSETTLED_REQUESTS: readonly WorkflowState[] = [
 /** Lead requests that pause, resume or stop an Auto run. */
 const AUTO_CONTROLS: readonly string[] = ['pauseAuto', 'resumeAuto', 'stopAuto']
 
-/** Mirrors core: Chat's one lead lives in the project folder and works in every worktree. */
-export const LEAD_HOME_TASK = null
+export { LEAD_HOME_TASK }
 
 /** The project's lead team, wherever the user's focus is. */
 export function projectTeam(projectId: string) {
@@ -225,8 +229,9 @@ export function requestWorktree(
 }
 
 /**
- * The project's lead as one worktree's stages see it: only its requests for that worktree, and
- * its status only where its latest stage or Auto request works. Older per-worktree teams are not
+ * The project's lead as one worktree's stages see it: only its requests for that worktree, its
+ * paused or stopped state only where it has requests, and its status only where its latest stage
+ * or Auto request works. Older per-worktree teams are not
  * consulted.
  */
 export function focusTeam(team: ChatTeam | undefined, task: string | null) {
@@ -239,10 +244,13 @@ export function focusTeam(team: ChatTeam | undefined, task: string | null) {
       r.action === 'startCouncilReview' ||
       r.action === 'startReview',
   )
+  const here = requests.filter((r) => requestWorktree(team, r) === task)
   return {
     ...team,
+    // Pausing or stopping the lead halts only the worktrees it has work in.
+    state: task === team.task || here.length ? team.state : 'running',
     status: !latest || requestWorktree(team, latest) === task ? team.status : null,
-    requests: requests.filter((r) => requestWorktree(team, r) === task),
+    requests: here,
   }
 }
 
@@ -815,6 +823,8 @@ export function autoOwnership(
 /** Claim durably before invoking existing workflow controls. Lost replies are never replayed. */
 async function driveLeadRequests(team: ChatTeam) {
   if (team.state !== 'running' || team.reset) return
+  // One listing from the service per pass, read only when the store doesn't know a worktree.
+  let listing: Promise<Task[] | null> | undefined
   for (const request of team.requests ?? []) {
     // Another Patchbay build's action: leave it for that build instead of claiming it.
     if (request.action === 'unknown') continue
@@ -822,21 +832,29 @@ async function driveLeadRequests(team: ChatTeam) {
     // hasn't started then fails, saying so; one already under way still settles from its saved
     // run, never from the project folder's state.
     let scoped = team
+    // Settled requests only read their saved outcome, so they never need the disk.
+    const acting =
+      UNSETTLED_REQUESTS.includes(request.state) ||
+      (request.action === 'startAuto' && request.state === 'failed')
     try {
-      scoped = requestTeam(team, request, { started: !PENDING_REQUESTS.includes(request.state) })
+      scoped = requestTeam(team, request, { started: !acting })
     } catch (error) {
       // The store's task list can lag behind a worktree created since, so ask the disk first.
-      const listed = await workspaceTask(team, request.settings.worktree)
+      listing ??= taskList(team.projectId).catch(() => null)
+      const listed = workspaceTask(team, request.settings.worktree, await listing)
       if (listed === undefined) continue
       if (listed) scoped = listed
-      else
+      else if (!PENDING_REQUESTS.includes(request.state))
+        scoped = requestTeam(team, request, { started: true })
+      else {
         await controlTeam(team, {
           kind: 'requestState',
           id: request.id,
           state: 'failed',
           result: String(error),
         }).catch(() => {})
-      if (!listed) continue
+        continue
+      }
     }
     const reviewRound = ['startCouncilReview', 'startReview'].includes(request.action)
     const leadStage = LEAD_STAGE_ACTIONS.includes(request.action)

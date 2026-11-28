@@ -131,7 +131,10 @@ export function useChatModeWorkflow({
     if (!canConfirm(confirmationKey)) return false
     try {
       if (chat.team) await controlTeam(chat.team, { kind: 'historyBoundary' })
-      return clearSimpleChat(projectId, chat.task)
+      if (!clearSimpleChat(projectId, chat.task)) return false
+      // The focused worktree's results show in the timeline too, so they clear with it.
+      if (task !== chat.task) clearSimpleChat(projectId, task)
+      return true
     } catch (error) {
       setFailure(error)
       return false

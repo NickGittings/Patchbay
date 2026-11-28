@@ -925,22 +925,24 @@ fn actor(s: &Store, launch: &LaunchContext, records: &[Record]) -> Result<(usize
             && r.snapshot.as_ref().is_some_and(|s| s.running),
         "Session launch ownership changed"
     );
-    for (i, t) in s
-        .teams
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| t.project_id == launch.project_id)
-    {
-        if t.lead.session_id == launch.agent_session {
-            ensure!(
-                t.lead.generation == generation(r)?
-                    && t.reset
-                        .as_ref()
-                        .is_none_or(|r| r.phase == ResetPhase::Queued),
-                "This lead was superseded or is being replaced"
-            );
-            return Ok((i, LEAD_RECIPIENT.into()));
-        }
+    let teams = || {
+        s.teams
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.project_id == launch.project_id)
+    };
+    // A team's own lead is never another team's member, whatever scope it was given.
+    if let Some((i, t)) = teams().find(|(_, t)| t.lead.session_id == launch.agent_session) {
+        ensure!(
+            t.lead.generation == generation(r)?
+                && t.reset
+                    .as_ref()
+                    .is_none_or(|r| r.phase == ResetPhase::Queued),
+            "This lead was superseded or is being replaced"
+        );
+        return Ok((i, LEAD_RECIPIENT.into()));
+    }
+    for (i, t) in teams() {
         if t.scopes
             .get(&launch.agent_session)
             .is_some_and(|scope| Some(scope.generation) == launch.generation)
@@ -1115,6 +1117,15 @@ pub fn command(
                 ensure!(
                     reaches(&t, r) && session != t.lead.session_id,
                     "Agent is outside this worktree"
+                );
+                ensure!(
+                    !s.teams.iter().any(|o| {
+                        o.project_id == t.project_id
+                            && o.id != t.id
+                            && o.state != State::Stopped
+                            && (o.lead.session_id == session || o.scopes.contains_key(&session))
+                    }),
+                    "Agent belongs to another chat team"
                 );
                 ensure!(
                     components
@@ -3849,6 +3860,42 @@ mod tests {
             shared_launch_available(&f.dir, "p", "round1", "a", &[f.lead.clone(), builder])
                 .is_err()
         );
+    }
+    #[test]
+    fn lead_busy_elsewhere_matches_the_frontend() {
+        // Mirrored in lib/chatTeams.ts, which matches on it.
+        assert_eq!(
+            LEAD_BUSY_ELSEWHERE,
+            "The lead is still at work in other worktrees"
+        );
+    }
+    #[test]
+    fn the_lead_cannot_scope_another_teams_lead() {
+        let f = Fixture::new();
+        let older = session(&f.dir, "older-lead");
+        modify(&f.dir, |s| {
+            let mut t = s.teams[0].clone();
+            t.id = "older-team".into();
+            t.task = Some("tree".into());
+            t.lead.session_id = older.id.clone();
+            t.scopes.clear();
+            s.teams.push(t);
+            Ok(())
+        })
+        .unwrap();
+        let refused = command(
+            &f.dir,
+            &f.project,
+            &f.auth(),
+            &[f.lead.clone(), older.clone()],
+            Command::Coordinate {
+                session: older.id.clone(),
+                components: vec![],
+                paths: vec!["src/b.rs".into()],
+            },
+        )
+        .unwrap_err();
+        assert!(refused.to_string().contains("another chat team"));
     }
     #[test]
     fn delegation_is_rejected_while_sub_builders_are_off() {

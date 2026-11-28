@@ -1,5 +1,6 @@
 import { usePlanningSelection } from './planningScope'
 import { simpleKey, useSimpleUi } from './simpleUi'
+import { LEAD_HOME_TASK, simpleOf } from './chatHome'
 import { agentChatTask } from './agentChats'
 import { ownsMerge, ownsPlanner, relatedSession } from './simple'
 import { autoWorkspace } from './autoState'
@@ -357,16 +358,15 @@ export function revealTerminal(
     if (task !== s.activeTask) s.setActiveTask(task, true)
     s.revealChat({ projectId: s.project.id, task })
     s.setActiveSession(record.id)
-    // A planner launched outside Chat has no conversation block; its terminal is still
-    // accessible in the chat drawer without changing the conversation's ownership.
+    // Only the lead's blocks show in the conversation (`leadThread`), which lives in the project
+    // folder. Any other agent, such as a planner launched outside Chat, opens in the conversation's
+    // drawer without changing the conversation's ownership.
+    const conversation = simpleOf(useStore.getState(), LEAD_HOME_TASK)
     if (
-      record.metadata.componentId === PLAN_SCOPE &&
-      (plannerTask === undefined ||
-        !(task === s.activeTask ? s.simple : s.taskWorkspaces[task ?? '']?.simple)?.log.some(
-          (e) => e.sessionId === record.id && e.generation === generation,
-        ))
+      (record.metadata.componentId === PLAN_SCOPE && plannerTask === undefined) ||
+      !conversation?.log.some((e) => e.sessionId === record.id && e.generation === generation)
     ) {
-      useSimpleUi.getState().patch(simpleKey(s.project.id, task), {
+      useSimpleUi.getState().patch(simpleKey(s.project.id, LEAD_HOME_TASK), {
         terminal: 'user',
         terminalSession: { id: record.id, generation, pinned: true },
       })

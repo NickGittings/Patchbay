@@ -125,3 +125,21 @@ test('dismissed assignments survive persistence and rehydration', async () => {
     useSimpleUi.persist.setOptions({ storage: previous })
   }
 })
+
+test('worktree drafts from before one conversation per project fold into it once', async () => {
+  const { foldWorktreeDrafts, simpleKey, emptySimpleUi } = await import('./simpleUi')
+  const home = simpleKey('p', null)
+  const tree = simpleKey('p', 'w1')
+  const folded = foldWorktreeDrafts({
+    [home]: { ...emptySimpleUi(), draft: 'Home' },
+    [tree]: {
+      ...emptySimpleUi(),
+      draft: 'Fix @app',
+      mentions: [{ id: 'app', start: 4, end: 8 }] as never,
+    },
+  })
+  expect(folded[home].draft).toBe('Home\n\nFix @app')
+  expect(folded[home].mentions).toEqual([{ id: 'app', start: 10, end: 14 }])
+  expect(folded[tree].draft).toBe('')
+  expect(foldWorktreeDrafts(folded)).toEqual(folded)
+})

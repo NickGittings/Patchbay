@@ -2,8 +2,11 @@ import type { useStore } from '../store'
 
 type State = ReturnType<typeof useStore.getState>
 
+/** Mirrors core: Chat's one lead lives in the project folder and works in every worktree. */
+export const LEAD_HOME_TASK = null
+
 /**
- * Chat's one conversation lives in the project folder (`LEAD_HOME_TASK` in `chatTeams`). The
+ * Chat's one conversation lives in the project folder (`LEAD_HOME_TASK`). The
  * worktree picker only moves the focus, so these read a worktree's saved state wherever the
  * focus is.
  */

@@ -121,8 +121,9 @@ export default function ChatMode({
   const closeConfirm = () => setConfirm(undefined)
   const chatRef = useRef<HTMLDivElement>(null)
   // Pause, Continue and Stop work control the lead's team only in the project folder; in another
-  // worktree they control its Auto run, never the lead's other work.
-  const workTeam = focused ? undefined : team
+  // worktree they control its Auto run, never the lead's other work. A worktree's own lead from
+  // before one lead per project stays controllable there until it retires.
+  const workTeam = !focused || team?.task === task ? team : undefined
   const workflow = useChatModeWorkflow({
     key,
     projectId,

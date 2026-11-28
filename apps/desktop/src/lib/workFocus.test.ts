@@ -107,3 +107,30 @@ test('focusing a missing worktree leaves All work on', () => {
   expect(useStore.getState().activeTask).toBeNull()
   useStore.setState(useStore.getInitialState())
 })
+
+test('the lead-busy completion error matches core', async () => {
+  const { LEAD_BUSY_ELSEWHERE } = await import('./chatTeams')
+  // Mirrors orchestration::chat::LEAD_BUSY_ELSEWHERE.
+  expect(LEAD_BUSY_ELSEWHERE).toBe('The lead is still at work in other worktrees')
+})
+
+test('a stopped lead halts only the worktrees it has work in', async () => {
+  const { focusTeam } = await import('./chatTeams')
+  const team = {
+    task: null,
+    projectId: 'p',
+    state: 'stopped',
+    requests: [
+      {
+        id: 'b',
+        action: 'startBuild',
+        state: 'failed',
+        settings: { worktree: 'a' },
+        result: null,
+      },
+    ],
+  } as unknown as ChatTeam
+  expect(focusTeam(team, null)!.state).toBe('stopped')
+  expect(focusTeam(team, 'a')!.state).toBe('stopped')
+  expect(focusTeam(team, 'untouched')!.state).toBe('running')
+})
