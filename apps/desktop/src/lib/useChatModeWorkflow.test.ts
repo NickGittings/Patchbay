@@ -48,7 +48,9 @@ const makeTeam = (task: Context['task']): NonNullable<Context['team']> =>
   }) as NonNullable<Context['team']>
 function render(overrides: Partial<Context> = {}) {
   hooks.cursor = 0
-  return Workflow({ ...context, ...overrides })
+  // The project's lead is the conversation's team wherever the focus is.
+  const chat = { ...context.chat, team: overrides.team ?? context.chat.team }
+  return Workflow({ ...context, chat, ...overrides })
 }
 function Workflow(props: Context) {
   return useChatModeWorkflow(props)
@@ -71,10 +73,16 @@ beforeEach(() => {
     key: simpleKey('p', null),
     projectId: 'p',
     task: null,
-    model: thread(
-      { records: [], sessions: {}, simple: null, auto: null },
-      { projectId: 'p', task: null, path: '/p' },
-    ),
+    chat: {
+      key: simpleKey('p', null),
+      task: null,
+      team: undefined,
+      simple: null,
+      model: thread(
+        { records: [], sessions: {}, simple: null, auto: null },
+        { projectId: 'p', task: null, path: '/p' },
+      ),
+    },
     source: undefined,
     auto: null,
     simple: null,
@@ -137,50 +145,14 @@ test('a stale Stop confirmation leaves both worktrees untouched after switching'
   expect(render(other).workOutcomes).toEqual([])
 })
 
-test('a stale reset confirmation cannot reset either lead after switching worktrees', async () => {
-  const workflow = render({ team: makeTeam(null) })
-  const completed = vi.fn()
-  useStore.setState({ activeTask: other.task })
-  await workflow.startFresh(context.key, completed)
-  await render({ ...other, team: makeTeam(other.task) }).startFresh(context.key, completed)
-  expect(resetLead).not.toHaveBeenCalled()
-  expect(completed).not.toHaveBeenCalled()
-})
-
-test('a late reset failure stays in its original worktree and leaves another reset pending', async () => {
-  let rejectFirst!: (error: Error) => void
-  let resolveOther!: (team: NonNullable<Context['team']>) => void
-  vi.mocked(resetLead)
-    .mockReturnValueOnce(
-      new Promise((_, reject) => {
-        rejectFirst = reject
-      }),
-    )
-    .mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveOther = resolve
-      }),
-    )
+test('Clear lead context resets the project’s lead whichever worktree is in focus', async () => {
   const team = makeTeam(null)
-  const otherTeam = makeTeam(other.task)
-  const otherContext = { ...other, team: otherTeam }
-  const first = render({ team }).startFresh(context.key, vi.fn())
-  useStore.setState({ activeTask: other.task })
   const completed = vi.fn()
-  const second = render(otherContext).startFresh(other.key, completed)
-
-  rejectFirst(new Error('first reset failed'))
-  await first
-  expect(resetLead).toHaveBeenNthCalledWith(1, team)
-  expect(resetLead).toHaveBeenNthCalledWith(2, otherTeam)
-  expect(render({ team }).failure?.message).toBe('first reset failed')
-  expect(render(otherContext).failure).toBeUndefined()
-  expect(render(otherContext).pending).toBe('reset')
-  expect(useSimpleUi.getState().worktrees[context.key]?.pendingWorkflow).toBe(false)
-  expect(useSimpleUi.getState().worktrees[other.key]?.pendingWorkflow).toBe(true)
-
-  resolveOther(otherTeam)
-  await second
+  useStore.setState({ activeTask: other.task })
+  // A confirmation made for another conversation never resets this lead.
+  await render({ ...other, team }).startFresh(other.key, completed)
+  expect(resetLead).not.toHaveBeenCalled()
+  await render({ ...other, team }).startFresh(context.key, completed)
+  expect(resetLead).toHaveBeenCalledExactlyOnceWith(team)
   expect(completed).toHaveBeenCalledOnce()
-  expect(render(otherContext).pending).toBe('')
 })

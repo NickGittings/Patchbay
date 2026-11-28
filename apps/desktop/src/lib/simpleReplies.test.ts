@@ -201,9 +201,27 @@ test('shared planner replies persist only in chats that used that generation', (
   expect(useStore.getState().simple?.log.at(-1)?.kind).toBe('reply')
   expect(useStore.getState().taskWorkspaces.t.simple?.log).toEqual([])
 })
-test('notification View selects the task and latest chat block without leaving Chat', () => {
+test('notification View focuses the task and shows the latest chat block without leaving Chat', () => {
   const r = record()
   useStore.setState({ sessionRecords: [r], simpleMode: true, view: 'review' })
+  // Only the conversation's blocks show in Chat; it lives in the project folder.
+  useStore.getState().patchTask('p', null, {
+    simple: {
+      startedMs: 1,
+      log: [
+        {
+          kind: 'prompt',
+          id: 'p',
+          atMs: 1,
+          stage: 'build',
+          sessionId: 's',
+
+          text: 'Go',
+          mentions: [],
+        },
+      ],
+    },
+  })
   revealTerminal({ sid: r.id, componentId: '@task' })
   expect(useStore.getState()).toMatchObject({
     simpleMode: true,
@@ -211,6 +229,17 @@ test('notification View selects the task and latest chat block without leaving C
     activeTask: 't',
     activeSession: 's',
     revealed: { sid: 's', componentId: '@task' },
+  })
+})
+
+test('notification View opens an agent outside the conversation in its drawer', () => {
+  const r = record()
+  useStore.setState({ sessionRecords: [r], simpleMode: true, view: 'review' })
+  revealTerminal({ sid: r.id, componentId: '@task' })
+  expect(useStore.getState()).toMatchObject({ activeTask: 't', revealed: null })
+  expect(useSimpleUi.getState().worktrees[simpleKey('p', null)]).toMatchObject({
+    terminal: 'user',
+    terminalSession: { id: 's', pinned: true },
   })
 })
 

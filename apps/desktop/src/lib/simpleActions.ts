@@ -13,17 +13,14 @@ type Entry = SimpleEntry extends infer E
 
 type Run = { generation?: number; startedMs?: number } | null | undefined
 
-/** Confirmation is bound to the selected worktree and rechecks in-flight actions at commit. */
+/**
+ * Confirmation is bound to the project and rechecks in-flight actions at commit. Chat's
+ * conversation lives in the project folder whichever worktree is in focus.
+ */
 export function clearSimpleChat(projectId: string, task: string | null) {
   const current = useStore.getState()
   const ui = useSimpleUi.getState().worktrees[simpleKey(projectId, task)]
-  if (
-    current.project?.id !== projectId ||
-    current.activeTask !== task ||
-    ui?.pendingAction ||
-    ui?.pendingWorkflow
-  )
-    return false
+  if (current.project?.id !== projectId || ui?.pendingAction || ui?.pendingWorkflow) return false
   const state = projectStateOf(projectId)
   if (!state) return false
   const simple = workspaceOf(state, task).simple ?? { startedMs: Date.now(), log: [] }

@@ -20,6 +20,12 @@ interface TimelineProps {
   scopeKey: string
   model: ReturnType<typeof thread>
   items: TimelineItem[]
+  /** The worktree and branch each item that isn't the lead's comes from, by item id. */
+  chips?: ReadonlyMap<string, string>
+  /** For a question from an agent other than the lead: its role, worktree and branch. */
+  questionLabel?: (record: SessionRecord) => string | undefined
+  /** The conversation's agent that is working, when it isn't the focused worktree's. */
+  busyAgent?: string
   state: SimpleFlow
   questions: ReturnType<typeof chatInputRequests>
   /** The sessions whose input requests Chat shows: the conversation's agents and running workers. */
@@ -40,6 +46,9 @@ export default function ChatModeTimeline({
   scopeKey: key,
   model,
   items,
+  chips,
+  questionLabel,
+  busyAgent,
   state,
   questions,
   askers,
@@ -61,8 +70,9 @@ export default function ChatModeTimeline({
   const latestMergeResult = items.findLast(
     (item) => item.kind === 'result' && item.result === 'merge',
   )
-  // What can grow the thread, without serializing its records or reply texts on every render.
-  const replies = model.items.flatMap((item) =>
+  // What can grow the thread as shown (only the lead talks), without serializing its records or
+  // reply texts on every render.
+  const replies = items.flatMap((item) =>
     item.kind === 'agent'
       ? item.entries.flatMap((entry) =>
           entry.kind === 'reply'
@@ -77,7 +87,7 @@ export default function ChatModeTimeline({
       : [],
   )
   const contentKey = JSON.stringify([
-    model.items.map((i) =>
+    items.map((i) =>
       i.kind === 'agent'
         ? `${i.id}:${i.entries.length}`
         : i.kind === 'plan'
@@ -129,14 +139,18 @@ export default function ChatModeTimeline({
                   sessionId={item.sessionId}
                   entries={item.entries}
                   latest={latest}
-                  working={state.busyAgent?.id === item.sessionId}
+                  working={(busyAgent ?? state.busyAgent?.id) === item.sessionId}
                   openFile={(file) => openDiff(file)}
                 />
               )
             }
+            const chip = chips?.get(item.id) && (
+              <span className="chat-worktree-chip">{chips.get(item.id)}</span>
+            )
             if (item.kind === 'line')
               return (
                 <p className="simple-narration" key={item.id}>
+                  {chip}
                   {item.text}
                 </p>
               )
@@ -144,6 +158,7 @@ export default function ChatModeTimeline({
               return item.stale ? (
                 <details className="simple-earlier-plan" key={item.id}>
                   <summary>
+                    {chip}
                     An earlier worktree plan exists
                     {item.atMs ? ` (saved ${new Date(item.atMs).toLocaleString()})` : ''} · Show
                   </summary>
@@ -151,6 +166,7 @@ export default function ChatModeTimeline({
                 </details>
               ) : (
                 <article className="simple-result" key={item.id}>
+                  {chip}
                   <h3>Plan</h3>
                   <time dateTime={new Date(item.atMs).toISOString()}>
                     {new Date(item.atMs).toLocaleString()}
@@ -162,6 +178,7 @@ export default function ChatModeTimeline({
               return (
                 findings?.findings && (
                   <article className="simple-result" key={item.id}>
+                    {chip}
                     <h3>
                       Review <VerdictBadge findings={findings.findings} running={runningReview} />
                       <SeverityCounts findings={findings.findings} />
@@ -180,11 +197,13 @@ export default function ChatModeTimeline({
             if (state.step === 'merged')
               return state.prompt ? (
                 <p className="simple-narration" key={item.id}>
+                  {chip}
                   {state.prompt.text}
                 </p>
               ) : null
             return (
               <p className="simple-narration" key={item.id}>
+                {chip}
                 {mergeStatus ??
                   data?.outcomeError ??
                   (data?.outcome === 'inProgress'
@@ -222,12 +241,12 @@ export default function ChatModeTimeline({
         {questions.map((request) => {
           const record = askers.find((r) => r.id === request.sessionId)
           if (!record) return null
+          const label = questionLabel?.(record)
           return (
-            <ChatQuestion
-              key={`${request.sessionId}:${request.generation}:${request.sinceMs}`}
-              record={record}
-              request={request}
-            />
+            <div key={`${request.sessionId}:${request.generation}:${request.sinceMs}`}>
+              {label && <span className="chat-worktree-chip">{label}</span>}
+              <ChatQuestion record={record} request={request} />
+            </div>
           )
         })}
         {failure && <WorkFeedback error={failure} />}

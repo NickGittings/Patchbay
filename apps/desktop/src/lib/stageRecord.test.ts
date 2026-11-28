@@ -1,7 +1,10 @@
 import { beforeEach, expect, test, vi } from 'vitest'
 vi.mock('./simpleActions', () => ({ logLaunch: vi.fn(async () => {}) }))
 vi.mock('./stageRetire', () => ({ retireStageAgents: vi.fn(async () => {}) }))
-vi.mock('./chatTeams', () => ({ noteLead: vi.fn(async () => {}), teamFor: vi.fn(() => team) }))
+vi.mock('./chatTeams', () => ({
+  noteLead: vi.fn(async () => {}),
+  projectTeam: vi.fn(() => team),
+}))
 const team = vi.hoisted(() => ({ id: 'team' }))
 import { useStore } from '../store'
 import { noteLead } from './chatTeams'
@@ -67,7 +70,7 @@ test('Chat and the regular views retire the stage before and tell the lead', asy
     expect(retireStageAgents).toHaveBeenCalledWith('p', 't', ['agent'], undefined)
     expect(noteLead).toHaveBeenCalledWith(
       team,
-      'a review of this worktree',
+      'a review in worktree t',
       ['agent'],
       'request',
       origin === 'chat' ? 'in Chat mode' : 'outside Chat',

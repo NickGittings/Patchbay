@@ -259,6 +259,13 @@ async function advanceCouncil(team: ChatTeam, request: Workflow) {
   for (const member of run.members) {
     if (member.state !== 'queued' || team.state !== 'running' || team.recovery || capacity-- <= 0)
       continue
+    // A removed worktree (`requestTeam` without a target) has nothing left to review.
+    if (!team.target) {
+      member.state = 'failed'
+      member.error = 'Its worktree is no longer open'
+      await save(team, request, run)
+      continue
+    }
     member.state = 'launching'
     member.startedMs = Date.now()
     await save(team, request, run)

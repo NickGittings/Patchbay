@@ -50,13 +50,20 @@ def report(event, **extra):
 def git(*args):
     return subprocess.check_output(['git', *args], text=True).strip()
 
+def planning():
+    # Planners plan, and so does Chat's lead in the project folder (the main checkout), which
+    # leaves building to the worktrees' stages.
+    if os.environ.get('PATCHBAY_COMPONENT') == 'plan':
+        return True
+    return 'PATCHBAY_PLAN_FILE' in os.environ and git('rev-parse', '--git-dir') == git('rev-parse', '--git-common-dir')
+
 def work():
     report('UserPromptSubmit')
     report('PreToolUse', tool='Edit', target='src/app.txt', fileTarget=True)
     component = os.environ.get('PATCHBAY_COMPONENT')
     # Long enough for the smoke to reach the Queue check, and its Send anyway check, mid-turn.
-    time.sleep(3 if component == 'plan' else 1.5)
-    if component == 'plan':
+    time.sleep(3 if planning() else 1.5)
+    if planning():
         pathlib.Path(os.environ['PATCHBAY_PLAN_FILE']).write_text('# Simple fixture plan\n\nUpdate the app.\n')
         reply = 'I planned the **fixture feature**. The plan is ready.'
     elif component == '@merge':
@@ -84,7 +91,7 @@ if any('Reply ‘Ready’' in arg for arg in sys.argv[1:]):
     time.sleep(.4)
     report('Stop', last_assistant_message='Ready')
 print('simple-ready', flush=True)
-if os.environ.get('PATCHBAY_COMPONENT') != 'plan':
+if not planning():
     work()
 buffer = ''
 for line in sys.stdin:
@@ -102,12 +109,15 @@ for line in sys.stdin:
         report('Stop', last_assistant_message='The lead retained coordination context.')
         continue
     if line.startswith('smoke-stage '):
-        request = line.split()[1]
+        words = line.split()
+        request = words[1]
+        # The project's one lead names the worktree a stage runs in.
+        stage_settings = {'worktree': words[2]} if len(words) > 2 else {}
         action = {'build': 'startBuild', 'review': 'startReview', 'fix': 'startFix',
                   'review-again': 'startReview', 'merge': 'startMerge'}[request]
         report('UserPromptSubmit')
         with tempfile.NamedTemporaryFile(mode='w') as settings:
-            json.dump({}, settings)
+            json.dump(stage_settings, settings)
             settings.flush()
             subprocess.run([os.environ['PATCHBAY_CLI'], 'agent', 'team-request', '--id', request,
                             '--action', action, '--file', settings.name], check=True)

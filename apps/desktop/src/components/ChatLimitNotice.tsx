@@ -5,6 +5,7 @@ import { agentDevices } from '../lib/plan'
 import { chatAutoActive, chatRecipient, limitStopped } from '../lib/chat'
 import { changeChatAgent } from '../lib/chatAgent'
 import { useChatTeams } from '../lib/chatTeams'
+import { autoOf, simpleOf } from '../lib/chatHome'
 import { useClockNow } from '../lib/clock'
 import { EMPTY_SIMPLE_UI, simpleKey, useSimpleUi } from '../lib/simpleUi'
 import {
@@ -17,15 +18,21 @@ import {
 } from '../lib/usage'
 
 /** A recipient stopped by its usage limit, with one click to continue on another agent. */
-export default function ChatLimitNotice({ records }: { records: SessionRecord[] }) {
+export default function ChatLimitNotice({
+  records,
+  task,
+}: {
+  records: SessionRecord[]
+  /** The conversation's worktree: Chat's lead lives in the project folder. */
+  task: string | null
+}) {
   const s = useStore()
   const projectId = s.project?.id ?? ''
-  const task = s.activeTask
   const team = useChatTeams((t) => t.teams[projectId]?.find((team) => team.task === task))
   const ui = useSimpleUi((u) => u.worktrees[simpleKey(projectId, task)] ?? EMPTY_SIMPLE_UI)
   const usage = useUsage((u) => u.usage)
   const [error, setError] = useState('')
-  const recipient = chatRecipient(records, s.simple?.selectedAgent)
+  const recipient = chatRecipient(records, simpleOf(s, task)?.selectedAgent)
   const session = recipient && s.sessions[recipient.id]
   const provider = session?.status?.agent?.provider
   const presets = agentDevices(s.devices)
@@ -43,7 +50,10 @@ export default function ChatLimitNotice({ records }: { records: SessionRecord[] 
   )
   const isLead = team?.lead.sessionId === recipient.id
   const disabled =
-    !!ui.pendingAction || !!ui.pendingWorkflow || !!team?.reset || chatAutoActive(s.auto?.status)
+    !!ui.pendingAction ||
+    !!ui.pendingWorkflow ||
+    !!team?.reset ||
+    chatAutoActive(autoOf(s, task)?.status)
   const command = recipient.metadata.command || recipient.spec.command
   return (
     <div className="chat-limit-notice" role="status">

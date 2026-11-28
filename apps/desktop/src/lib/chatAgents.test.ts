@@ -198,3 +198,33 @@ test('only finished or failed assignments can be dismissed', () => {
   expect(agentDismissible(card({ row: 'worker', job: job('a', 'running') }))).toBe(false)
   expect(agentDismissible(card({ row: 'other' }))).toBe(false)
 })
+
+test('the project’s Agents show every worktree’s agents, each saying where it works', () => {
+  const lead = record('lead', { task: null })
+  const result = chatAgentCards({
+    records: [
+      lead,
+      record('builder', { task: 'login' }),
+      record('reviewer', { task: 'search' }),
+      record('shell', { task: 'login', kind: 'shell' }),
+    ],
+    sessions: { lead: running(), builder: running(), reviewer: running(), shell: running() },
+    simple: null,
+    worktree: { projectId: 'p', task: null, path: '/p' },
+    team: { ...team, task: null } as ChatTeam,
+    teams: [{ ...team, task: null } as ChatTeam],
+    runs: [],
+    jobs: [],
+    allJobs: [],
+    project: true,
+    placeOf: (task) => (task ? `${task} · feat/${task}` : 'Project folder · main'),
+  })
+  expect(result.map((c) => [c.sessionId, c.place])).toEqual([
+    ['lead', 'Project folder · main'],
+    ['builder', 'login · feat/login'],
+    ['reviewer', 'search · feat/search'],
+  ])
+  // Each worktree's agents sit on their own rows below the lead.
+  const rows = agentLayout(result).positions.map((p) => [p.card.sessionId, p.y])
+  expect(new Set(rows.map(([, y]) => y)).size).toBe(3)
+})

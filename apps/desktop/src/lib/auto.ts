@@ -1,4 +1,4 @@
-import { autoOwnership, completeAutoTask } from './chatTeams'
+import { LEAD_BUSY_ELSEWHERE, autoOwnership, completeAutoTask } from './chatTeams'
 import { requireDeviceAuth, ProviderSetupRequired } from './providerAuth'
 import { waitForSetup } from './worktreeSetup'
 import {
@@ -414,7 +414,11 @@ function patch(
   if (update.status === 'done' || (update.status === 'stopped' && releaseOwnership))
     void autoOwnership(projectId, task, false, run.ownershipId ?? run.runId)
       .then(() => (update.status === 'done' ? completeAutoTask(projectId, task) : undefined))
-      .catch((e) => useStore.getState().setMessage(String(e), undefined, undefined, 'error'))
+      .catch((e) => {
+        // The refresh retries it once the lead's other work settles.
+        if (!String(e).includes(LEAD_BUSY_ELSEWHERE))
+          useStore.getState().setMessage(String(e), undefined, undefined, 'error')
+      })
   if (update.status === 'done')
     void completeAutoStories(projectId, task, run.runId).catch((e) =>
       useStore

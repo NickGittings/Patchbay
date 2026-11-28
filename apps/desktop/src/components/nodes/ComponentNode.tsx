@@ -15,8 +15,11 @@ import { KIND_COLOR, mostUrgent, statusTitle, terminalStatus } from '../../lib/d
 import { useStore, type FlowNode } from '../../store'
 import { openComponentWindow } from '../../lib/windows'
 import { useMaintenance } from '../../lib/maintenance'
-import { sessionId } from '../../types'
+import { sessionId, type Task } from '../../types'
+import { focusWork, useAllWorkOn, worktreesOf } from '../../lib/workFocus'
 import AttentionPill from '../status/AttentionPill'
+
+const NO_TASKS: Task[] = []
 
 function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
@@ -25,13 +28,21 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
   const roles = useMapActivity(rolesOf(id))
   const planningTask = usePlanningTask()
   const planning = useStore((s) => s.simpleMode || s.view === 'plan')
-  const highlighted = useStore((s) => planningHighlights(s, planningTask).includes(id))
+  // All work highlights what any open worktree works on, each named by a badge.
+  const allWork = useAllWorkOn()
+  const workTrees = useStore(useShallow((s) => (allWork ? worktreesOf(s.tasks, id) : NO_TASKS)))
+  const highlighted =
+    useStore((s) => planningHighlights(s, planningTask).includes(id)) || workTrees.length > 0
   const nearby = useStore(
     (s) =>
       (s.simpleMode || s.view === 'plan') &&
       nearbyIds(planningHighlights(s, planningTask), s.edges).has(id),
   )
-  const hasHighlights = useStore((s) => planningHighlights(s, planningTask).length > 0)
+  const hasHighlights = useStore(
+    (s) =>
+      planningHighlights(s, planningTask).length > 0 ||
+      (allWork && s.tasks.some((t) => !t.missing && t.components.length > 0)),
+  )
   const proposed = useStore((s) => s.view === 'plan' && s.proposedScope.includes(id))
   const planClass = !planning
     ? ''
@@ -141,7 +152,12 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
           ⧉
         </button>
       </div>
-      {(inTask || repo || issues.length > 0 || changes > 0 || !!badges?.length) && (
+      {(inTask ||
+        repo ||
+        issues.length > 0 ||
+        changes > 0 ||
+        !!badges?.length ||
+        workTrees.length > 0) && (
         <div className="component-metadata">
           {inTask && (
             <span className="task-badge" title="In the active task">
@@ -160,6 +176,19 @@ function ComponentNode({ id, data, selected }: NodeProps<FlowNode>) {
           ))}
           {changes > 0 && <ChangesPopover componentId={id} />}
           <ExtensionBadges componentId={id} />
+          {workTrees.map((t) => (
+            <button
+              key={t.id}
+              className="nodrag work-badge"
+              title={`${t.title}${t.branch ? ` · ${t.branch}` : ''}: focus this worktree`}
+              onClick={(e) => {
+                e.stopPropagation()
+                focusWork(t.id)
+              }}
+            >
+              {t.title}
+            </button>
+          ))}
         </div>
       )}
       {roles.length > 0 && <AgentRoles roles={roles} />}
